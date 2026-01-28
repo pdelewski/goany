@@ -134,6 +134,13 @@ type RustEmitter struct {
 	currentCallArgIdentsStack    []map[string]int  // Stack of identifier counts per nested call
 	currentReturnNode            *ast.ReturnStmt   // Current return statement being processed
 	funcLitDepth                 int               // Nesting depth of function literals (closures)
+	// Temp extraction: pre-extract field accesses so struct can be moved
+	moveOptTempBindings          []string          // temp var declarations to emit before assignment
+	moveOptArgReplacements       map[int]string    // arg index → replacement variable name
+	moveOptModifiedCounts        map[string]int    // modified ident counts excluding extracted fields
+	moveOptActive                bool              // whether extraction is active for current assignment
+	moveOptReplacingArg          bool              // whether current arg is being replaced
+	moveOptArgStartMarker        int               // token buffer position at start of replaced arg
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -405,6 +412,10 @@ func (re *RustEmitter) canMoveArg(varName string) bool {
 	if re.currentAssignLhsNames == nil || !re.currentAssignLhsNames[varName] {
 		return false
 	}
+	// When temp extraction is active, use modified counts that exclude extracted fields
+	if re.moveOptActive && re.moveOptModifiedCounts != nil {
+		return re.moveOptModifiedCounts[varName] <= 1
+	}
 	// Check the outermost call's arg ident counts (bottom of stack)
 	if len(re.currentCallArgIdentsStack) > 0 {
 		outermostCounts := re.currentCallArgIdentsStack[0]
@@ -413,6 +424,196 @@ func (re *RustEmitter) canMoveArg(varName string) bool {
 		}
 	}
 	return true
+}
+
+// isCopyType checks if a Go type maps to a Rust Copy type (primitives)
+func isCopyType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		switch u.Kind() {
+		case types.Bool, types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
+			types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64,
+			types.Float32, types.Float64:
+			return true
+		}
+	}
+	return false
+}
+
+// analyzeMoveOptExtraction scans an assignment's RHS call to find field accesses
+// on a struct being moved, and creates temp variable bindings to extract them.
+// Pattern: c = Func(c, c.Field) → let _v0 = c.Field; c = Func(c, _v0);
+func (re *RustEmitter) analyzeMoveOptExtraction(node *ast.AssignStmt, indent int) {
+	re.moveOptTempBindings = nil
+	re.moveOptArgReplacements = nil
+	re.moveOptModifiedCounts = nil
+	re.moveOptActive = false
+
+	if re.funcLitDepth > 0 {
+		return
+	}
+	if len(node.Rhs) != 1 {
+		return
+	}
+	callExpr, ok := node.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return
+	}
+	if len(callExpr.Args) < 2 {
+		return
+	}
+
+	// Find which arg is a struct ident matching an LHS name
+	structArgName := ""
+	structArgIdx := -1
+	for i, arg := range callExpr.Args {
+		ident, ok := arg.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		if re.currentAssignLhsNames == nil || !re.currentAssignLhsNames[ident.Name] {
+			continue
+		}
+		// Check if it's a struct type
+		tv := re.pkg.TypesInfo.Types[arg]
+		if tv.Type == nil {
+			continue
+		}
+		if named, ok := tv.Type.(*types.Named); ok {
+			if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+				structArgName = ident.Name
+				structArgIdx = i
+				break
+			}
+		}
+	}
+	if structArgIdx < 0 {
+		return
+	}
+
+	// Check other args for field accesses on the same struct with Copy-type results
+	tempIdx := 0
+	replacements := make(map[int]string)
+	var bindings []string
+	modifiedCounts := re.collectCallArgIdentCounts(callExpr.Args)
+
+	for i, arg := range callExpr.Args {
+		if i == structArgIdx {
+			continue
+		}
+		// Check if this arg (or sub-expressions) references the struct
+		if !re.exprContainsIdent(arg, structArgName) {
+			continue
+		}
+		// Get the result type of this arg - must be Copy
+		tv := re.pkg.TypesInfo.Types[arg]
+		if tv.Type == nil || !isCopyType(tv.Type) {
+			continue
+		}
+		// This arg references the struct and produces a Copy value - extract it
+		tempName := fmt.Sprintf("__mv%d", tempIdx)
+		tempIdx++
+		rustType := re.mapGoTypeToRust(tv.Type.Underlying().(*types.Basic).Name())
+		binding := fmt.Sprintf("let %s: %s = ", tempName, rustType)
+		// We'll emit the binding text; the actual expression will be emitted by
+		// re-visiting the arg AST. Instead, we'll emit the expression manually.
+		// For SelectorExpr like c.A, emit "c.A"
+		exprStr := re.exprToString(arg)
+		if exprStr == "" {
+			continue
+		}
+		binding += exprStr + ";\n"
+		bindings = append(bindings, binding)
+		replacements[i] = tempName
+		// Remove this arg's struct references from the modified counts
+		re.subtractIdentsInExpr(arg, modifiedCounts)
+	}
+
+	if len(replacements) > 0 {
+		re.moveOptTempBindings = bindings
+		re.moveOptArgReplacements = replacements
+		re.moveOptModifiedCounts = modifiedCounts
+		re.moveOptActive = true
+	}
+}
+
+// exprToString converts a simple expression to its Rust string representation
+func (re *RustEmitter) exprToString(expr ast.Expr) string {
+	if expr == nil {
+		return ""
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return escapeRustKeyword(e.Name)
+	case *ast.SelectorExpr:
+		base := re.exprToString(e.X)
+		if base == "" {
+			return ""
+		}
+		return base + "." + e.Sel.Name
+	case *ast.IndexExpr:
+		base := re.exprToString(e.X)
+		idx := re.exprToString(e.Index)
+		if base == "" || idx == "" {
+			return ""
+		}
+		return base + "[" + idx + " as usize]"
+	case *ast.BasicLit:
+		return e.Value
+	case *ast.BinaryExpr:
+		left := re.exprToString(e.X)
+		right := re.exprToString(e.Y)
+		if left == "" || right == "" {
+			return ""
+		}
+		return "(" + left + " " + e.Op.String() + " " + right + ")"
+	case *ast.ParenExpr:
+		inner := re.exprToString(e.X)
+		if inner == "" {
+			return ""
+		}
+		return "(" + inner + ")"
+	case *ast.CallExpr:
+		// Don't handle complex expressions - bail out
+		return ""
+	}
+	return ""
+}
+
+// subtractIdentsInExpr removes identifier occurrences found in expr from counts
+func (re *RustEmitter) subtractIdentsInExpr(expr ast.Expr, counts map[string]int) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if re.pkg != nil && re.pkg.TypesInfo != nil {
+			if obj := re.pkg.TypesInfo.ObjectOf(e); obj != nil {
+				if _, isTypeName := obj.(*types.TypeName); isTypeName {
+					return
+				}
+				if _, isPkgName := obj.(*types.PkgName); isPkgName {
+					return
+				}
+			}
+		}
+		counts[e.Name]--
+	case *ast.SelectorExpr:
+		re.subtractIdentsInExpr(e.X, counts)
+	case *ast.IndexExpr:
+		re.subtractIdentsInExpr(e.X, counts)
+		re.subtractIdentsInExpr(e.Index, counts)
+	case *ast.BinaryExpr:
+		re.subtractIdentsInExpr(e.X, counts)
+		re.subtractIdentsInExpr(e.Y, counts)
+	case *ast.UnaryExpr:
+		re.subtractIdentsInExpr(e.X, counts)
+	case *ast.ParenExpr:
+		re.subtractIdentsInExpr(e.X, counts)
+	}
 }
 
 // collectIdentifiersInStmt collects all identifiers used as function call arguments in a statement
@@ -2206,11 +2407,24 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			re.currentAssignLhsNames[ident.Name] = true
 		}
 	}
+	// Analyze for temp extraction (pre-extract field accesses so struct can be moved)
+	re.analyzeMoveOptExtraction(node, indent)
+	// Emit temp variable bindings before the assignment
+	if len(re.moveOptTempBindings) > 0 {
+		for _, binding := range re.moveOptTempBindings {
+			bindStr := re.emitAsString(binding, indent)
+			re.gir.emitToFileBuffer(bindStr, EmptyVisitMethod)
+		}
+	}
 	str := re.emitAsString("", indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
 func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	re.currentAssignLhsNames = nil
+	re.moveOptActive = false
+	re.moveOptTempBindings = nil
+	re.moveOptArgReplacements = nil
+	re.moveOptModifiedCounts = nil
 	// Reset blank identifier suppression if it was set
 	if re.suppressRangeEmit {
 		re.suppressRangeEmit = false
@@ -2697,9 +2911,25 @@ func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 	}
 	// Track that we're inside a call argument (for closure wrapping decisions)
 	re.inCallExprArg = true
+	// Record marker if this arg will be replaced by a temp variable
+	re.moveOptReplacingArg = false
+	if re.moveOptActive && re.moveOptArgReplacements != nil {
+		if _, ok := re.moveOptArgReplacements[index]; ok {
+			re.moveOptArgStartMarker = len(re.gir.tokenSlice)
+			re.moveOptReplacingArg = true
+		}
+	}
 }
 
 func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
+	// Replace arg tokens with temp var name if this arg was pre-extracted
+	defer func() {
+		if re.moveOptReplacingArg {
+			re.gir.tokenSlice = re.gir.tokenSlice[:re.moveOptArgStartMarker]
+			re.emitToken(re.moveOptArgReplacements[index], Identifier, 0)
+			re.moveOptReplacingArg = false
+		}
+	}()
 	if re.forwardDecls {
 		re.inCallExprArg = false
 		return
