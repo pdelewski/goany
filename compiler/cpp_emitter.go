@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,125 @@ type CPPEmitter struct {
 	pendingValueName      string
 	pendingCollectionExpr string
 	pendingKeyName        string
+	// Move optimization: add std::move() for struct arguments
+	currentAssignLhsNames     map[string]bool  // LHS variable names of current assignment
+	currentCallArgIdentsStack []map[string]int // Stack of identifier counts per nested call
+	moveCurrentArg            bool             // Flag set in Pre, read in Post for std::move wrapping
+	funcLitDepth              int              // Nesting depth of function literals (closures)
+	currentReturnNode         *ast.ReturnStmt  // Current return statement being processed
+	moveCurrentReturn         bool             // Flag for std::move wrapping in return
+}
+
+// collectCallArgIdentCounts counts how many times each base identifier
+// appears across all arguments of a function call
+func (cppe *CPPEmitter) collectCallArgIdentCounts(args []ast.Expr) map[string]int {
+	counts := make(map[string]int)
+	for _, arg := range args {
+		cppe.countIdentsInExpr(arg, counts)
+	}
+	return counts
+}
+
+// countIdentsInExpr recursively counts identifier occurrences in an expression
+func (cppe *CPPEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+			if obj := cppe.pkg.TypesInfo.ObjectOf(e); obj != nil {
+				if _, isTypeName := obj.(*types.TypeName); isTypeName {
+					return
+				}
+				if _, isPkgName := obj.(*types.PkgName); isPkgName {
+					return
+				}
+			}
+		}
+		counts[e.Name]++
+	case *ast.SelectorExpr:
+		cppe.countIdentsInExpr(e.X, counts)
+	case *ast.CallExpr:
+		for _, arg := range e.Args {
+			cppe.countIdentsInExpr(arg, counts)
+		}
+		cppe.countIdentsInExpr(e.Fun, counts)
+	case *ast.IndexExpr:
+		cppe.countIdentsInExpr(e.X, counts)
+		cppe.countIdentsInExpr(e.Index, counts)
+	case *ast.BinaryExpr:
+		cppe.countIdentsInExpr(e.X, counts)
+		cppe.countIdentsInExpr(e.Y, counts)
+	case *ast.UnaryExpr:
+		cppe.countIdentsInExpr(e.X, counts)
+	case *ast.ParenExpr:
+		cppe.countIdentsInExpr(e.X, counts)
+	case *ast.TypeAssertExpr:
+		cppe.countIdentsInExpr(e.X, counts)
+	case *ast.CompositeLit:
+		for _, elt := range e.Elts {
+			cppe.countIdentsInExpr(elt, counts)
+		}
+	case *ast.KeyValueExpr:
+		cppe.countIdentsInExpr(e.Value, counts)
+	}
+}
+
+// exprContainsIdent checks if an expression references a given identifier
+func (cppe *CPPEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
+	if expr == nil {
+		return false
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == name
+	case *ast.SelectorExpr:
+		return cppe.exprContainsIdent(e.X, name)
+	case *ast.CallExpr:
+		for _, arg := range e.Args {
+			if cppe.exprContainsIdent(arg, name) {
+				return true
+			}
+		}
+		return cppe.exprContainsIdent(e.Fun, name)
+	case *ast.IndexExpr:
+		return cppe.exprContainsIdent(e.X, name) || cppe.exprContainsIdent(e.Index, name)
+	case *ast.BinaryExpr:
+		return cppe.exprContainsIdent(e.X, name) || cppe.exprContainsIdent(e.Y, name)
+	case *ast.UnaryExpr:
+		return cppe.exprContainsIdent(e.X, name)
+	case *ast.ParenExpr:
+		return cppe.exprContainsIdent(e.X, name)
+	case *ast.TypeAssertExpr:
+		return cppe.exprContainsIdent(e.X, name)
+	case *ast.CompositeLit:
+		for _, elt := range e.Elts {
+			if cppe.exprContainsIdent(elt, name) {
+				return true
+			}
+		}
+	case *ast.KeyValueExpr:
+		return cppe.exprContainsIdent(e.Value, name)
+	}
+	return false
+}
+
+// canMoveArg checks if a call argument identifier can be moved instead of copied.
+func (cppe *CPPEmitter) canMoveArg(varName string) bool {
+	if cppe.funcLitDepth > 0 {
+		return false
+	}
+	if cppe.currentAssignLhsNames == nil || !cppe.currentAssignLhsNames[varName] {
+		return false
+	}
+	if len(cppe.currentCallArgIdentsStack) > 0 {
+		outermostCounts := cppe.currentCallArgIdentsStack[0]
+		if outermostCounts[varName] > 1 {
+			return false
+		}
+	}
+	return true
 }
 
 func (*CPPEmitter) lowerToBuiltins(selector string) string {
@@ -305,10 +425,14 @@ func (cppe *CPPEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
 }
 
 func (cppe *CPPEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
+	cppe.currentCallArgIdentsStack = append(cppe.currentCallArgIdentsStack, cppe.collectCallArgIdentCounts(node))
 	str := cppe.emitAsString("(", 0)
 	cppe.emitToFile(str)
 }
 func (cppe *CPPEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
+	if len(cppe.currentCallArgIdentsStack) > 0 {
+		cppe.currentCallArgIdentsStack = cppe.currentCallArgIdentsStack[:len(cppe.currentCallArgIdentsStack)-1]
+	}
 	str := cppe.emitAsString(")", 0)
 	cppe.emitToFile(str)
 }
@@ -317,6 +441,32 @@ func (cppe *CPPEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int
 	if index > 0 {
 		str := cppe.emitAsString(", ", 0)
 		cppe.emitToFile(str)
+	}
+	// Check if this argument is a struct that can be moved
+	cppe.moveCurrentArg = false
+	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+		if ident, isIdent := node.(*ast.Ident); isIdent {
+			tv := cppe.pkg.TypesInfo.Types[node]
+			if tv.Type != nil {
+				if named, ok := tv.Type.(*types.Named); ok {
+					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+						if cppe.canMoveArg(ident.Name) {
+							cppe.moveCurrentArg = true
+							str := cppe.emitAsString("std::move(", 0)
+							cppe.emitToFile(str)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func (cppe *CPPEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
+	if cppe.moveCurrentArg {
+		str := cppe.emitAsString(")", 0)
+		cppe.emitToFile(str)
+		cppe.moveCurrentArg = false
 	}
 }
 
@@ -493,10 +643,12 @@ func (cppe *CPPEmitter) PreVisitKeyValueExprValue(node ast.Expr, indent int) {
 }
 
 func (cppe *CPPEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
+	cppe.funcLitDepth++
 	str := cppe.emitAsString("[&](", indent)
 	cppe.emitToFile(str)
 }
 func (cppe *CPPEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
+	cppe.funcLitDepth--
 	str := cppe.emitAsString("}", 0)
 	cppe.emitToFile(str)
 }
@@ -619,11 +771,19 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		cppe.suppressRangeEmit = true
 		return
 	}
+	// Capture LHS variable names for move optimization
+	cppe.currentAssignLhsNames = make(map[string]bool)
+	for _, lhs := range node.Lhs {
+		if ident, ok := lhs.(*ast.Ident); ok {
+			cppe.currentAssignLhsNames[ident.Name] = true
+		}
+	}
 	str := cppe.emitAsString("", indent)
 	cppe.emitToFile(str)
 }
 
 func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	cppe.currentAssignLhsNames = nil
 	// Reset blank identifier suppression if it was set
 	if cppe.suppressRangeEmit {
 		cppe.suppressRangeEmit = false
@@ -690,6 +850,7 @@ func (cppe *CPPEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, inde
 }
 
 func (cppe *CPPEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	cppe.currentReturnNode = node
 	str := cppe.emitAsString("return ", indent)
 	cppe.emitToFile(str)
 	if len(node.Results) > 1 {
@@ -705,12 +866,48 @@ func (cppe *CPPEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	}
 	str := cppe.emitAsString(";", 0)
 	cppe.emitToFile(str)
+	cppe.currentReturnNode = nil
 }
 
 func (cppe *CPPEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent int) {
 	if index > 0 {
 		str := cppe.emitAsString(", ", 0)
 		cppe.emitToFile(str)
+	}
+	// For multi-value returns, add std::move() for the first struct result
+	// when later results don't reference the same identifier
+	cppe.moveCurrentReturn = false
+	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil && cppe.currentReturnNode != nil && len(cppe.currentReturnNode.Results) > 1 && index == 0 {
+		if ident, ok := node.(*ast.Ident); ok {
+			tv := cppe.pkg.TypesInfo.Types[node]
+			if tv.Type != nil {
+				if named, ok := tv.Type.(*types.Named); ok {
+					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+						// Only move if later results don't reference this identifier
+						needsClone := false
+						for i := 1; i < len(cppe.currentReturnNode.Results); i++ {
+							if cppe.exprContainsIdent(cppe.currentReturnNode.Results[i], ident.Name) {
+								needsClone = true
+								break
+							}
+						}
+						if !needsClone && cppe.funcLitDepth == 0 {
+							cppe.moveCurrentReturn = true
+							str := cppe.emitAsString("std::move(", 0)
+							cppe.emitToFile(str)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func (cppe *CPPEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
+	if cppe.moveCurrentReturn {
+		str := cppe.emitAsString(")", 0)
+		cppe.emitToFile(str)
+		cppe.moveCurrentReturn = false
 	}
 }
 

@@ -129,6 +129,11 @@ type RustEmitter struct {
 	loopIncrementVal             string            // Value to increment by
 	inForLoopBody                bool              // Track if current block is the for loop body
 	forLoopBodyDepth             int               // Depth counter to track nested blocks within loop body
+	// Move optimization: avoid unnecessary .clone() for structs
+	currentAssignLhsNames        map[string]bool   // LHS variable names of current assignment
+	currentCallArgIdentsStack    []map[string]int  // Stack of identifier counts per nested call
+	currentReturnNode            *ast.ReturnStmt   // Current return statement being processed
+	funcLitDepth                 int               // Nesting depth of function literals (closures)
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -294,6 +299,120 @@ func (re *RustEmitter) collectIdentifiersInCallArgs(expr ast.Expr, result map[st
 	case *ast.KeyValueExpr:
 		re.collectIdentifiersInCallArgs(e.Value, result)
 	}
+}
+
+// collectCallArgIdentCounts counts how many times each base identifier
+// appears across all arguments of a function call
+func (re *RustEmitter) collectCallArgIdentCounts(args []ast.Expr) map[string]int {
+	counts := make(map[string]int)
+	for _, arg := range args {
+		re.countIdentsInExpr(arg, counts)
+	}
+	return counts
+}
+
+// countIdentsInExpr recursively counts identifier occurrences in an expression
+func (re *RustEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		if obj := re.pkg.TypesInfo.ObjectOf(e); obj != nil {
+			if _, isTypeName := obj.(*types.TypeName); isTypeName {
+				return
+			}
+			if _, isPkgName := obj.(*types.PkgName); isPkgName {
+				return
+			}
+		}
+		counts[e.Name]++
+	case *ast.SelectorExpr:
+		re.countIdentsInExpr(e.X, counts)
+	case *ast.CallExpr:
+		for _, arg := range e.Args {
+			re.countIdentsInExpr(arg, counts)
+		}
+		re.countIdentsInExpr(e.Fun, counts)
+	case *ast.IndexExpr:
+		re.countIdentsInExpr(e.X, counts)
+		re.countIdentsInExpr(e.Index, counts)
+	case *ast.BinaryExpr:
+		re.countIdentsInExpr(e.X, counts)
+		re.countIdentsInExpr(e.Y, counts)
+	case *ast.UnaryExpr:
+		re.countIdentsInExpr(e.X, counts)
+	case *ast.ParenExpr:
+		re.countIdentsInExpr(e.X, counts)
+	case *ast.TypeAssertExpr:
+		re.countIdentsInExpr(e.X, counts)
+	case *ast.CompositeLit:
+		for _, elt := range e.Elts {
+			re.countIdentsInExpr(elt, counts)
+		}
+	case *ast.KeyValueExpr:
+		re.countIdentsInExpr(e.Value, counts)
+	}
+}
+
+// exprContainsIdent checks if an expression references a given identifier
+func (re *RustEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
+	if expr == nil {
+		return false
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == name
+	case *ast.SelectorExpr:
+		return re.exprContainsIdent(e.X, name)
+	case *ast.CallExpr:
+		for _, arg := range e.Args {
+			if re.exprContainsIdent(arg, name) {
+				return true
+			}
+		}
+		return re.exprContainsIdent(e.Fun, name)
+	case *ast.IndexExpr:
+		return re.exprContainsIdent(e.X, name) || re.exprContainsIdent(e.Index, name)
+	case *ast.BinaryExpr:
+		return re.exprContainsIdent(e.X, name) || re.exprContainsIdent(e.Y, name)
+	case *ast.UnaryExpr:
+		return re.exprContainsIdent(e.X, name)
+	case *ast.ParenExpr:
+		return re.exprContainsIdent(e.X, name)
+	case *ast.TypeAssertExpr:
+		return re.exprContainsIdent(e.X, name)
+	case *ast.CompositeLit:
+		for _, elt := range e.Elts {
+			if re.exprContainsIdent(elt, name) {
+				return true
+			}
+		}
+	case *ast.KeyValueExpr:
+		return re.exprContainsIdent(e.Value, name)
+	}
+	return false
+}
+
+// canMoveArg checks if a call argument identifier can be moved instead of cloned.
+// Returns true when the variable is being reassigned from this call's return value
+// and is the only reference to itself across all args of the outermost call.
+func (re *RustEmitter) canMoveArg(varName string) bool {
+	// Cannot move captured variables inside closures (FnMut)
+	if re.funcLitDepth > 0 {
+		return false
+	}
+	if re.currentAssignLhsNames == nil || !re.currentAssignLhsNames[varName] {
+		return false
+	}
+	// Check the outermost call's arg ident counts (bottom of stack)
+	if len(re.currentCallArgIdentsStack) > 0 {
+		outermostCounts := re.currentCallArgIdentsStack[0]
+		if outermostCounts[varName] > 1 {
+			return false
+		}
+	}
+	return true
 }
 
 // collectIdentifiersInStmt collects all identifiers used as function call arguments in a statement
@@ -824,6 +943,8 @@ func (re *RustEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 	re.callExprArgsMarkerStack = append(re.callExprArgsMarkerStack, len(re.gir.tokenSlice))
 	re.gir.emitToFileBuffer("", "@PreVisitCallExprArgs")
 	re.emitToken("(", LeftParen, 0)
+	// Push call arg identifier counts for move optimization
+	re.currentCallArgIdentsStack = append(re.currentCallArgIdentsStack, re.collectCallArgIdentCounts(node))
 	// Use stack indices for function name extraction (top of stacks = current call)
 	re.currentCallIsAppend = false // Reset for each call
 	if len(re.callExprFunMarkerStack) > 0 && len(re.callExprFunEndMarkerStack) > 0 {
@@ -903,6 +1024,9 @@ func (re *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		}
 		if len(re.callExprArgsMarkerStack) > 0 {
 			re.callExprArgsMarkerStack = re.callExprArgsMarkerStack[:len(re.callExprArgsMarkerStack)-1]
+		}
+		if len(re.currentCallArgIdentsStack) > 0 {
+			re.currentCallArgIdentsStack = re.currentCallArgIdentsStack[:len(re.currentCallArgIdentsStack)-1]
 		}
 	}()
 
@@ -1928,6 +2052,7 @@ func (re *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	}
 	re.shouldGenerate = true
 	re.inReturnStmt = true
+	re.currentReturnNode = node
 	str := re.emitAsString("return ", indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 
@@ -1947,6 +2072,7 @@ func (re *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	}
 	re.inMultiValueReturn = false
 	re.inReturnStmt = false
+	re.currentReturnNode = nil
 	str := re.emitAsString(";", 0)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
@@ -1977,10 +2103,21 @@ func (re *RustEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, inden
 		return
 	}
 	// Add .clone() to the first result in a multi-value return if it's an identifier
-	// This prevents "borrow of moved value" errors when subsequent results reference fields
+	// AND a later result references the same identifier (prevents "borrow of moved value")
 	if re.inMultiValueReturn && index == 0 {
-		if _, ok := node.(*ast.Ident); ok {
-			re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+		if ident, ok := node.(*ast.Ident); ok {
+			needsClone := false
+			if re.currentReturnNode != nil {
+				for i := 1; i < len(re.currentReturnNode.Results); i++ {
+					if re.exprContainsIdent(re.currentReturnNode.Results[i], ident.Name) {
+						needsClone = true
+						break
+					}
+				}
+			}
+			if needsClone {
+				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+			}
 		}
 	}
 
@@ -2062,10 +2199,18 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		return
 	}
 	re.shouldGenerate = true
+	// Capture LHS variable names for move optimization
+	re.currentAssignLhsNames = make(map[string]bool)
+	for _, lhs := range node.Lhs {
+		if ident, ok := lhs.(*ast.Ident); ok {
+			re.currentAssignLhsNames[ident.Name] = true
+		}
+	}
 	str := re.emitAsString("", indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
 func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	re.currentAssignLhsNames = nil
 	// Reset blank identifier suppression if it was set
 	if re.suppressRangeEmit {
 		re.suppressRangeEmit = false
@@ -2610,15 +2755,19 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 					re.inCallExprArg = false
 					return
 				}
-				// Clone all other structs (including those with function fields - Rc implements Clone)
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+				// Clone structs unless the argument can be moved (consumed and reassigned)
+				if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
+					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+				}
 				re.inCallExprArg = false
 				return
 			}
 		}
 		// Also handle non-named struct types (rare but possible)
 		if _, isStruct := tv.Type.(*types.Struct); isStruct {
-			re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+			if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
+				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+			}
 			re.inCallExprArg = false
 			return
 		}
@@ -2628,6 +2777,12 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 	// we need to clone it now to avoid Rust move errors
 	if ident, isIdent := node.(*ast.Ident); isIdent {
 		if re.isVariableUsedInLaterStatements(ident.Name) {
+			// Skip clone if variable is being reassigned from this call's return value
+			// Later uses will see the new value, so no clone needed
+			if re.canMoveArg(ident.Name) {
+				re.inCallExprArg = false
+				return
+			}
 			// Check if the type requires cloning (non-Copy types)
 			if tv.Type != nil {
 				typeStr := tv.Type.String()
@@ -3417,6 +3572,7 @@ func (re *RustEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
 }
 
 func (re *RustEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
+	re.funcLitDepth++
 	// For local closure inlining, skip wrapper emission
 	if re.localClosureAssign && re.currentClosureName != "" {
 		return
@@ -3450,6 +3606,7 @@ func (re *RustEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
 	re.emitToken("|", Identifier, indent)
 }
 func (re *RustEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
+	re.funcLitDepth--
 	// For local closures being inlined, extract and store body tokens, skip wrapper
 	if re.inLocalClosureBody && re.currentClosureName != "" {
 		// Extract body tokens (from after { to current position)
