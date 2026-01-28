@@ -542,21 +542,42 @@ func (re *RustEmitter) analyzeMoveOptExtraction(node *ast.AssignStmt, indent int
 
 // exprToString converts a simple expression to its Rust string representation
 func (re *RustEmitter) exprToString(expr ast.Expr) string {
+	return re.exprToStringImpl(expr, "")
+}
+
+// exprToStringImpl converts an expression to Rust string with optional cast hint.
+// castHint is the Rust type name to cast untyped constants to (e.g. "u8" inside uint8(...)).
+func (re *RustEmitter) exprToStringImpl(expr ast.Expr, castHint string) string {
 	if expr == nil {
 		return ""
 	}
 	switch e := expr.(type) {
 	case *ast.Ident:
-		return escapeRustKeyword(e.Name)
+		name := escapeRustKeyword(e.Name)
+		// If we have a cast hint and this ident is a constant, cast it
+		if castHint != "" && re.pkg != nil && re.pkg.TypesInfo != nil {
+			if obj := re.pkg.TypesInfo.ObjectOf(e); obj != nil {
+				if _, isConst := obj.(*types.Const); isConst {
+					// Check if the constant's Rust type differs from the cast hint
+					if named, ok := obj.Type().(*types.Basic); ok {
+						constRustType := re.mapGoTypeToRust(named.Name())
+						if constRustType != castHint {
+							return "(" + name + " as " + castHint + ")"
+						}
+					}
+				}
+			}
+		}
+		return name
 	case *ast.SelectorExpr:
-		base := re.exprToString(e.X)
+		base := re.exprToStringImpl(e.X, "")
 		if base == "" {
 			return ""
 		}
 		return base + "." + e.Sel.Name
 	case *ast.IndexExpr:
-		base := re.exprToString(e.X)
-		idx := re.exprToString(e.Index)
+		base := re.exprToStringImpl(e.X, "")
+		idx := re.exprToStringImpl(e.Index, "")
 		if base == "" || idx == "" {
 			return ""
 		}
@@ -564,20 +585,32 @@ func (re *RustEmitter) exprToString(expr ast.Expr) string {
 	case *ast.BasicLit:
 		return e.Value
 	case *ast.BinaryExpr:
-		left := re.exprToString(e.X)
-		right := re.exprToString(e.Y)
+		left := re.exprToStringImpl(e.X, castHint)
+		right := re.exprToStringImpl(e.Y, castHint)
 		if left == "" || right == "" {
 			return ""
 		}
 		return "(" + left + " " + e.Op.String() + " " + right + ")"
 	case *ast.ParenExpr:
-		inner := re.exprToString(e.X)
+		inner := re.exprToStringImpl(e.X, castHint)
 		if inner == "" {
 			return ""
 		}
 		return "(" + inner + ")"
 	case *ast.CallExpr:
-		// Don't handle complex expressions - bail out
+		// Handle type conversions: int(x), uint8(x), etc.
+		if len(e.Args) == 1 {
+			if funIdent, ok := e.Fun.(*ast.Ident); ok {
+				if rustType, ok := rustTypesMap[funIdent.Name]; ok {
+					// Pass the target type as cast hint so inner constants get cast
+					inner := re.exprToStringImpl(e.Args[0], rustType)
+					if inner != "" {
+						return "(" + inner + " as " + rustType + ")"
+					}
+				}
+			}
+		}
+		// Don't handle actual function calls - bail out
 		return ""
 	}
 	return ""
@@ -613,6 +646,11 @@ func (re *RustEmitter) subtractIdentsInExpr(expr ast.Expr, counts map[string]int
 		re.subtractIdentsInExpr(e.X, counts)
 	case *ast.ParenExpr:
 		re.subtractIdentsInExpr(e.X, counts)
+	case *ast.CallExpr:
+		for _, arg := range e.Args {
+			re.subtractIdentsInExpr(arg, counts)
+		}
+		re.subtractIdentsInExpr(e.Fun, counts)
 	}
 }
 
@@ -2911,9 +2949,10 @@ func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 	}
 	// Track that we're inside a call argument (for closure wrapping decisions)
 	re.inCallExprArg = true
-	// Record marker if this arg will be replaced by a temp variable
-	re.moveOptReplacingArg = false
-	if re.moveOptActive && re.moveOptArgReplacements != nil {
+	// Record marker if this arg will be replaced by a temp variable.
+	// Only apply at outermost call depth (stack depth == 1) to avoid
+	// nested CallExpr (like type conversions int(x)) resetting the flag.
+	if re.moveOptActive && re.moveOptArgReplacements != nil && len(re.currentCallArgIdentsStack) == 1 {
 		if _, ok := re.moveOptArgReplacements[index]; ok {
 			re.moveOptArgStartMarker = len(re.gir.tokenSlice)
 			re.moveOptReplacingArg = true
@@ -2922,9 +2961,10 @@ func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 }
 
 func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	// Replace arg tokens with temp var name if this arg was pre-extracted
+	// Replace arg tokens with temp var name if this arg was pre-extracted.
+	// Only at outermost call depth (stack depth == 1).
 	defer func() {
-		if re.moveOptReplacingArg {
+		if re.moveOptReplacingArg && len(re.currentCallArgIdentsStack) == 1 {
 			re.gir.tokenSlice = re.gir.tokenSlice[:re.moveOptArgStartMarker]
 			re.emitToken(re.moveOptArgReplacements[index], Identifier, 0)
 			re.moveOptReplacingArg = false
