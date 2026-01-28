@@ -47,6 +47,8 @@ type RustEmitter struct {
 	OutputName      string
 	LinkRuntime     string // Path to runtime directory (empty = disabled)
 	GraphicsRuntime string // Graphics backend: tigr (default), sdl2, none
+	OptimizeMoves   bool   // Enable move optimizations to reduce struct cloning
+	MoveOptCount    int    // Count of clones removed by move optimizations
 	file            *os.File
 	BaseEmitter
 	pkg                          *packages.Package
@@ -405,6 +407,9 @@ func (re *RustEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
 // Returns true when the variable is being reassigned from this call's return value
 // and is the only reference to itself across all args of the outermost call.
 func (re *RustEmitter) canMoveArg(varName string) bool {
+	if !re.OptimizeMoves {
+		return false
+	}
 	// Cannot move captured variables inside closures (FnMut)
 	if re.funcLitDepth > 0 {
 		return false
@@ -414,7 +419,11 @@ func (re *RustEmitter) canMoveArg(varName string) bool {
 	}
 	// When temp extraction is active, use modified counts that exclude extracted fields
 	if re.moveOptActive && re.moveOptModifiedCounts != nil {
-		return re.moveOptModifiedCounts[varName] <= 1
+		if re.moveOptModifiedCounts[varName] <= 1 {
+			re.MoveOptCount++
+			return true
+		}
+		return false
 	}
 	// Check the outermost call's arg ident counts (bottom of stack)
 	if len(re.currentCallArgIdentsStack) > 0 {
@@ -423,6 +432,7 @@ func (re *RustEmitter) canMoveArg(varName string) bool {
 			return false
 		}
 	}
+	re.MoveOptCount++
 	return true
 }
 
@@ -452,6 +462,9 @@ func (re *RustEmitter) analyzeMoveOptExtraction(node *ast.AssignStmt, indent int
 	re.moveOptModifiedCounts = nil
 	re.moveOptActive = false
 
+	if !re.OptimizeMoves {
+		return
+	}
 	if re.funcLitDepth > 0 {
 		return
 	}
@@ -1017,6 +1030,10 @@ func (re *RustEmitter) PostVisitProgram(indent int) {
 		if err := re.GenerateBuildRs(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
+	}
+
+	if re.OptimizeMoves && re.MoveOptCount > 0 {
+		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", re.MoveOptCount)
 	}
 }
 
@@ -2341,21 +2358,30 @@ func (re *RustEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, inden
 	if re.forwardDecls {
 		return
 	}
-	// Add .clone() to the first result in a multi-value return if it's an identifier
-	// AND a later result references the same identifier (prevents "borrow of moved value")
+	// Add .clone() to the first result in a multi-value return if it's an identifier.
+	// With OptimizeMoves: only clone when a later result references the same identifier.
+	// Without OptimizeMoves: always clone (baseline behavior).
 	if re.inMultiValueReturn && index == 0 {
-		if ident, ok := node.(*ast.Ident); ok {
-			needsClone := false
-			if re.currentReturnNode != nil {
-				for i := 1; i < len(re.currentReturnNode.Results); i++ {
-					if re.exprContainsIdent(re.currentReturnNode.Results[i], ident.Name) {
-						needsClone = true
-						break
+		if _, ok := node.(*ast.Ident); ok {
+			if !re.OptimizeMoves {
+				// Baseline: unconditional clone
+				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+			} else {
+				// Optimized: only clone when a later result references the same identifier
+				needsClone := false
+				if ident, ok2 := node.(*ast.Ident); ok2 && re.currentReturnNode != nil {
+					for i := 1; i < len(re.currentReturnNode.Results); i++ {
+						if re.exprContainsIdent(re.currentReturnNode.Results[i], ident.Name) {
+							needsClone = true
+							break
+						}
 					}
 				}
-			}
-			if needsClone {
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+				if needsClone {
+					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+				} else {
+					re.MoveOptCount++
+				}
 			}
 		}
 	}

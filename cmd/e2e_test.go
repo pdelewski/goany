@@ -85,6 +85,7 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		fmt.Sprintf("--source=%s", tc.SourceDir),
 		fmt.Sprintf("--output=%s", outputPath),
 		fmt.Sprintf("--link-runtime=%s", runtimePath),
+		"--optimize-moves",
 	}
 	// Add JS backend if enabled (JS is opt-in, not included in "all")
 	if tc.JsEnabled {

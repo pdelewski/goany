@@ -34,6 +34,8 @@ type CPPEmitter struct {
 	OutputName      string
 	LinkRuntime     string // Path to runtime directory (empty = disabled)
 	GraphicsRuntime string // Graphics backend: tigr (default), sdl2, none
+	OptimizeMoves   bool   // Enable move optimizations to reduce struct cloning
+	MoveOptCount    int    // Count of copies replaced by std::move()
 	file            *os.File
 	Emitter
 	pkg               *packages.Package
@@ -158,6 +160,9 @@ func (cppe *CPPEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
 
 // canMoveArg checks if a call argument identifier can be moved instead of copied.
 func (cppe *CPPEmitter) canMoveArg(varName string) bool {
+	if !cppe.OptimizeMoves {
+		return false
+	}
 	if cppe.funcLitDepth > 0 {
 		return false
 	}
@@ -170,6 +175,7 @@ func (cppe *CPPEmitter) canMoveArg(varName string) bool {
 			return false
 		}
 	}
+	cppe.MoveOptCount++
 	return true
 }
 
@@ -347,9 +353,14 @@ func (cppe *CPPEmitter) PostVisitProgram(indent int) {
 	if err := cppe.GenerateMakefile(); err != nil {
 		log.Printf("Warning: %v", err)
 	}
+
+	if cppe.OptimizeMoves && cppe.MoveOptCount > 0 {
+		fmt.Printf("  C++: %d copy(ies) replaced by std::move()\n", cppe.MoveOptCount)
+	}
 }
 
 func (cppe *CPPEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
+	cppe.pkg = pkg
 	name := pkg.Name
 	DebugLogPrintf("CPPEmitter: PreVisitPackage: %s (path: %s)", name, pkg.PkgPath)
 	if name == "main" {
@@ -877,7 +888,7 @@ func (cppe *CPPEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, inden
 	// For multi-value returns, add std::move() for the first struct result
 	// when later results don't reference the same identifier
 	cppe.moveCurrentReturn = false
-	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil && cppe.currentReturnNode != nil && len(cppe.currentReturnNode.Results) > 1 && index == 0 {
+	if cppe.OptimizeMoves && cppe.pkg != nil && cppe.pkg.TypesInfo != nil && cppe.currentReturnNode != nil && len(cppe.currentReturnNode.Results) > 1 && index == 0 {
 		if ident, ok := node.(*ast.Ident); ok {
 			tv := cppe.pkg.TypesInfo.Types[node]
 			if tv.Type != nil {
@@ -893,6 +904,7 @@ func (cppe *CPPEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, inden
 						}
 						if !needsClone && cppe.funcLitDepth == 0 {
 							cppe.moveCurrentReturn = true
+							cppe.MoveOptCount++
 							str := cppe.emitAsString("std::move(", 0)
 							cppe.emitToFile(str)
 						}
