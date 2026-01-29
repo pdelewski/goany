@@ -173,6 +173,11 @@ type RustEmitter struct {
 	// Pattern: c = func(c, ReadIndirectX(c, zp)) → let __mv0 = ReadIndirectX(&c, zp); c = func(c, __mv0);
 	moveOptCallExts              []moveOptCallExt  // function call args to extract
 	moveOptAssignStartMarker     int               // token buffer position at start of assignment
+	// Return temp extraction: extract later return results into temps so first result can be moved
+	// Pattern: return c, c.Memory[addr] → let __mv0: u8 = c.Memory[addr]; return (c, __mv0);
+	returnTempReplacements       map[int]string    // return result index → replacement temp variable name
+	returnTempResultMarker       int               // token buffer position at start of a return result being replaced
+	returnTempReplacing          bool              // whether current return result is being replaced
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -2761,6 +2766,47 @@ func (re *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	re.shouldGenerate = true
 	re.inReturnStmt = true
 	re.currentReturnNode = node
+	re.returnTempReplacements = nil
+	re.returnTempReplacing = false
+
+	// Return temp extraction: when the first return result is an identifier and
+	// later results reference it, extract those later results into temp variables
+	// so the first result can be moved instead of cloned.
+	if re.OptimizeMoves && len(node.Results) > 1 {
+		if ident, ok := node.Results[0].(*ast.Ident); ok {
+			replacements := make(map[int]string)
+			tempIdx := 0
+			for i := 1; i < len(node.Results); i++ {
+				if !re.exprContainsIdent(node.Results[i], ident.Name) {
+					continue
+				}
+				// Check if the result type is Copy
+				tv := re.pkg.TypesInfo.Types[node.Results[i]]
+				if tv.Type == nil || !isCopyType(tv.Type) {
+					continue
+				}
+				basic, isBasic := tv.Type.Underlying().(*types.Basic)
+				if !isBasic {
+					continue
+				}
+				exprStr := re.exprToString(node.Results[i])
+				if exprStr == "" {
+					continue
+				}
+				tempName := fmt.Sprintf("__mv%d", tempIdx)
+				tempIdx++
+				rustType := re.mapGoTypeToRust(basic.Name())
+				binding := fmt.Sprintf("let %s: %s = %s;\n", tempName, rustType, exprStr)
+				bindStr := re.emitAsString(binding, indent)
+				re.gir.emitToFileBuffer(bindStr, EmptyVisitMethod)
+				replacements[i] = tempName
+			}
+			if len(replacements) > 0 {
+				re.returnTempReplacements = replacements
+			}
+		}
+	}
+
 	str := re.emitAsString("return ", indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 
@@ -2781,6 +2827,8 @@ func (re *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	re.inMultiValueReturn = false
 	re.inReturnStmt = false
 	re.currentReturnNode = nil
+	re.returnTempReplacements = nil
+	re.returnTempReplacing = false
 	str := re.emitAsString(";", 0)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
@@ -2791,6 +2839,14 @@ func (re *RustEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 	}
 	re.multiValueReturnResultIndex = index
+
+	// Mark token position for return results that will be replaced by temp variables
+	if re.returnTempReplacements != nil {
+		if _, ok := re.returnTempReplacements[index]; ok {
+			re.returnTempResultMarker = len(re.gir.tokenSlice)
+			re.returnTempReplacing = true
+		}
+	}
 
 	// If returning from a function that returns any (Box<dyn Any>),
 	// and the return value is a concrete type, wrap in Box::new()
@@ -2810,6 +2866,16 @@ func (re *RustEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, inden
 	if re.forwardDecls {
 		return
 	}
+	// Replace later return results with temp variable names when extraction is active
+	if re.returnTempReplacing && re.returnTempReplacements != nil {
+		if tempName, ok := re.returnTempReplacements[index]; ok {
+			// Truncate tokens emitted for this result and replace with temp name
+			re.gir.tokenSlice = re.gir.tokenSlice[:re.returnTempResultMarker]
+			re.emitToken(tempName, Identifier, 0)
+			re.returnTempReplacing = false
+		}
+	}
+
 	// Add .clone() to the first result in a multi-value return if it's an identifier.
 	// With OptimizeMoves: only clone when a later result references the same identifier.
 	// Without OptimizeMoves: always clone (baseline behavior).
@@ -2830,7 +2896,28 @@ func (re *RustEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, inden
 					}
 				}
 				if needsClone {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					// Check if all conflicting results have been extracted to temps
+					if re.returnTempReplacements != nil {
+						allExtracted := true
+						if ident, ok3 := node.(*ast.Ident); ok3 {
+							for i := 1; i < len(re.currentReturnNode.Results); i++ {
+								if re.exprContainsIdent(re.currentReturnNode.Results[i], ident.Name) {
+									if _, replaced := re.returnTempReplacements[i]; !replaced {
+										allExtracted = false
+										break
+									}
+								}
+							}
+						}
+						if allExtracted {
+							// All conflicting results extracted - no clone needed
+							re.MoveOptCount++
+						} else {
+							re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+						}
+					} else {
+						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					}
 				} else {
 					re.MoveOptCount++
 				}
