@@ -294,6 +294,25 @@ inline void RunLoop(Window w, std::function<bool(Window)> frameFunc) {
     }
 }
 
+// RunLoopWithState runs the main loop with explicit state threading.
+// The state is passed to frameFunc and returned each frame, avoiding closure capture.
+// frameFunc receives the window and state, returns updated state and true to continue.
+template<typename S, typename F>
+inline void RunLoopWithState(Window w, S state, F frameFunc) {
+    while (true) {
+        bool running;
+        std::tie(w, running) = PollEvents(w);
+        if (!running) {
+            break;
+        }
+        bool cont;
+        std::tie(state, cont) = frameFunc(w, std::move(state));
+        if (!cont) {
+            break;
+        }
+    }
+}
+
 } // namespace graphics
 
 #endif // GRAPHICS_RUNTIME_SDL2_HPP

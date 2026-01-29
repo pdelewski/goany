@@ -31,6 +31,7 @@ var e2eTestCases = []TestCase{
 	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, true, true, false},       // JS transpile only (needs browser)
 	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false}, // JS transpile only (needs browser)
 	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, true, true, false},         // JS transpile only (needs browser)
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false}, // JS transpile only (needs browser) - uses RunLoopWithState API
 }
 
 func TestE2E(t *testing.T) {

@@ -446,6 +446,22 @@ const graphics = {
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
+  },
+
+  RunLoopWithState: function(canvas, state, frameFunc) {
+    const self = this;
+    function loop() {
+      if (!self.running) return;
+      // Call frameFunc with canvas and state, returns [newState, shouldContinue]
+      const result = frameFunc(canvas, state);
+      state = result[0];
+      if (result[1] === false) {
+        self.running = false;
+        return;
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
   }
 };
 

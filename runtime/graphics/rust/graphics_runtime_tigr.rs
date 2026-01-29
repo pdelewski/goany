@@ -422,3 +422,25 @@ where
         }
     }
 }
+
+/// RunLoopWithState runs the main loop with explicit state threading.
+/// The state is passed to frameFunc and returned each frame, avoiding closure capture.
+/// This eliminates the need to clone state in FnMut closures.
+/// frameFunc receives the window and state, returns updated state and true to continue.
+pub fn RunLoopWithState<S, F>(mut w: Window, mut state: S, mut frameFunc: F)
+where
+    F: FnMut(Window, S) -> (S, bool),
+{
+    loop {
+        let running: bool;
+        (w, running) = PollEvents(w);
+        if !running {
+            break;
+        }
+        let cont: bool;
+        (state, cont) = frameFunc(w, state);
+        if !cont {
+            break;
+        }
+    }
+}

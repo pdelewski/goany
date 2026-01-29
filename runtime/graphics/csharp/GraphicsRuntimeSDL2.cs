@@ -353,4 +353,26 @@ public static class graphics
             }
         }
     }
+
+    // RunLoopWithState runs the main loop with explicit state threading.
+    // The state is passed to frameFunc and returned each frame, avoiding closure capture.
+    // frameFunc receives the window and state, returns updated state and true to continue.
+    public static void RunLoopWithState<S>(Window w, S state, Func<Window, S, (S, bool)> frameFunc)
+    {
+        while (true)
+        {
+            bool running;
+            (w, running) = PollEvents(w);
+            if (!running)
+            {
+                break;
+            }
+            bool cont;
+            (state, cont) = frameFunc(w, state);
+            if (!cont)
+            {
+                break;
+            }
+        }
+    }
 }
