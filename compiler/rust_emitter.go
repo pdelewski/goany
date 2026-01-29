@@ -95,6 +95,8 @@ type RustEmitter struct {
 	compLitTypeNoDefaultStack    []bool                  // Stack to save/restore currentCompLitTypeNoDefault for nested composite literals
 	inFuncParam                  bool                    // Track if we're in function parameter type (for slice -> &[T])
 	currentCallIsAppend          bool                    // Track if current function call is to append (takes ownership)
+	currentCallIsLen             bool                    // Track if current function call is to len (read-only, no clone needed)
+	argAlreadyCloned             bool                    // Track if current call arg already got .clone() from vec element access
 	inCallExprArg                bool                    // Track if we're inside a call expression argument (for closure wrapping)
 	closureWrappedInRc           bool                    // Track if current closure was wrapped in Rc::new()
 	currentCompLitType           types.Type              // Track the current composite literal's type for checking at post-visit
@@ -1641,6 +1643,7 @@ func (re *RustEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 	re.currentCallArgIdentsStack = append(re.currentCallArgIdentsStack, re.collectCallArgIdentCounts(node))
 	// Use stack indices for function name extraction (top of stacks = current call)
 	re.currentCallIsAppend = false // Reset for each call
+	re.currentCallIsLen = false
 	// Push nil for ref opt callee stack (will be set below if applicable)
 	if re.OptimizeRefs {
 		re.refOptCalleeReadOnly = append(re.refOptCalleeReadOnly, nil)
@@ -1658,6 +1661,9 @@ func (re *RustEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 		// Track if this is an append call (takes ownership, not reference)
 		if strings.Contains(funNameStr, "append") {
 			re.currentCallIsAppend = true
+		}
+		if strings.Contains(funNameStr, "len") {
+			re.currentCallIsLen = true
 		}
 		// Look up callee's read-only param flags for reference optimization
 		if re.OptimizeRefs && len(re.refOptCalleeReadOnly) > 0 {
@@ -3373,11 +3379,17 @@ func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 				// Check if element type is a struct (non-Copy type)
 				if _, isStruct := elemType.Underlying().(*types.Struct); isStruct {
 					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					if re.inCallExprArg {
+						re.argAlreadyCloned = true
+					}
 				}
 				// Check if element type is a string (also non-Copy in Rust)
 				if basic, isBasic := elemType.Underlying().(*types.Basic); isBasic {
 					if basic.Kind() == types.String {
 						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+						if re.inCallExprArg {
+							re.argAlreadyCloned = true
+						}
 					}
 				}
 			}
@@ -3553,6 +3565,7 @@ func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 	}
 	// Track that we're inside a call argument (for closure wrapping decisions)
 	re.inCallExprArg = true
+	re.argAlreadyCloned = false
 	// Reference optimization: emit & before argument if callee param is read-only (&T)
 	if re.isRefOptArg(index) {
 		// If the argument is already a reference param in the current function, pass as-is
@@ -3636,15 +3649,30 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 		re.inCallExprArg = false
 		return
 	}
+	// len() is read-only (& already prepended) — skip all cloning for its arguments
+	if re.currentCallIsLen && re.OptimizeMoves {
+		re.inCallExprArg = false
+		return
+	}
+	// Skip redundant .clone() when vec element access already produced an owned value
+	if re.argAlreadyCloned && re.OptimizeMoves {
+		re.argAlreadyCloned = false
+		re.MoveOptCount++
+		re.inCallExprArg = false
+		return
+	}
 	// Check if the argument type needs .clone()
 	tv := re.pkg.TypesInfo.Types[node]
 	if tv.Type != nil {
 		typeStr := tv.Type.String()
 
-		// Clone Vec/slice types (but not for append which takes ownership)
+		// Clone Vec/slice types (but not for append which takes ownership,
+		// and not when the slice can be moved via canMoveArg)
 		if strings.HasPrefix(typeStr, "[]") {
 			if !re.currentCallIsAppend {
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+				if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
+					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+				}
 			}
 			re.inCallExprArg = false
 			return
@@ -3664,7 +3692,9 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 			// Check if underlying type is a slice (e.g., type AST []Statement)
 			if _, isSlice := named.Underlying().(*types.Slice); isSlice {
 				if !re.currentCallIsAppend {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
+						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					}
 				}
 				re.inCallExprArg = false
 				return
