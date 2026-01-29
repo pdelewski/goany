@@ -150,6 +150,12 @@ type RustEmitter struct {
 	refOptCurrentFunc            string            // qualified name of current function being emitted
 	refOptCurrentRefParams       map[string]bool   // params that are &T in current function
 	refOptCalleeReadOnly         [][]bool          // stack of callee read-only flags for nested calls
+	// std::mem::take optimization for struct field reassignment
+	// Pattern: state.C = func(state.C.clone()) → state.C = func(std::mem::take(&mut state.C))
+	memTakeActive                bool              // whether take optimization is active for current assignment
+	memTakeLhsExpr               string            // the LHS selector expression string (e.g., "state.C")
+	memTakeArgIdx                int               // which argument index to replace with std::mem::take
+	memTakeArgMarker             int               // token buffer position at start of the arg being replaced
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -558,6 +564,109 @@ func (re *RustEmitter) analyzeMoveOptExtraction(node *ast.AssignStmt, indent int
 		re.moveOptModifiedCounts = modifiedCounts
 		re.moveOptActive = true
 	}
+}
+
+// analyzeMemTakeOpt detects the pattern: state.Field = func(state.Field, ...)
+// and marks it for std::mem::take optimization to avoid cloning.
+func (re *RustEmitter) analyzeMemTakeOpt(node *ast.AssignStmt) {
+	re.memTakeActive = false
+	re.memTakeLhsExpr = ""
+	re.memTakeArgIdx = -1
+
+	if !re.OptimizeMoves {
+		return
+	}
+	if re.funcLitDepth > 0 {
+		return
+	}
+	if len(node.Lhs) != 1 || len(node.Rhs) != 1 {
+		return
+	}
+
+	// LHS must be a SelectorExpr (e.g., state.C)
+	lhsSel, ok := node.Lhs[0].(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+
+	// RHS must be a CallExpr
+	callExpr, ok := node.Rhs[0].(*ast.CallExpr)
+	if !ok {
+		return
+	}
+
+	// Get the LHS expression string
+	lhsStr := re.exprToString(lhsSel)
+	if lhsStr == "" {
+		return
+	}
+
+	// Check LHS type: must be a named struct type (not a Copy type)
+	lhsTV := re.pkg.TypesInfo.Types[lhsSel]
+	if lhsTV.Type == nil {
+		return
+	}
+	if isCopyType(lhsTV.Type) {
+		return
+	}
+	named, ok := lhsTV.Type.(*types.Named)
+	if !ok {
+		return
+	}
+	if _, isStruct := named.Underlying().(*types.Struct); !isStruct {
+		return
+	}
+
+	// Find which call arg matches the LHS SelectorExpr
+	targetArgIdx := -1
+	for i, arg := range callExpr.Args {
+		argStr := re.exprToString(arg)
+		if argStr == lhsStr {
+			targetArgIdx = i
+			break
+		}
+	}
+	if targetArgIdx < 0 {
+		return
+	}
+
+	// Safety: no other arg should reference the LHS field or its sub-fields
+	lhsPrefix := lhsStr + "."
+	for i, arg := range callExpr.Args {
+		if i == targetArgIdx {
+			continue
+		}
+		if re.exprContainsSelectorPath(arg, lhsStr, lhsPrefix) {
+			return
+		}
+	}
+
+	re.memTakeActive = true
+	re.memTakeLhsExpr = lhsStr
+	re.memTakeArgIdx = targetArgIdx
+}
+
+// exprContainsSelectorPath checks if an expression contains a selector path
+// that matches exactly or starts with the given prefix (for sub-field access).
+func (re *RustEmitter) exprContainsSelectorPath(expr ast.Expr, exact string, prefix string) bool {
+	if expr == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			path := re.exprToString(sel)
+			if path == exact || strings.HasPrefix(path, prefix) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // exprToString converts a simple expression to its Rust string representation
@@ -2784,6 +2893,8 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 	// Analyze for temp extraction (pre-extract field accesses so struct can be moved)
 	re.analyzeMoveOptExtraction(node, indent)
+	// Analyze for std::mem::take optimization (struct field reassignment)
+	re.analyzeMemTakeOpt(node)
 	// Emit temp variable bindings before the assignment
 	if len(re.moveOptTempBindings) > 0 {
 		for _, binding := range re.moveOptTempBindings {
@@ -2800,6 +2911,9 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	re.moveOptTempBindings = nil
 	re.moveOptArgReplacements = nil
 	re.moveOptModifiedCounts = nil
+	re.memTakeActive = false
+	re.memTakeLhsExpr = ""
+	re.memTakeArgIdx = -1
 	// Reset blank identifier suppression if it was set
 	if re.suppressRangeEmit {
 		re.suppressRangeEmit = false
@@ -3308,6 +3422,10 @@ func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 			re.moveOptReplacingArg = true
 		}
 	}
+	// Record marker for std::mem::take replacement
+	if re.memTakeActive && index == re.memTakeArgIdx && len(re.currentCallArgIdentsStack) == 1 {
+		re.memTakeArgMarker = len(re.gir.tokenSlice)
+	}
 }
 
 func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
@@ -3328,6 +3446,14 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 	// (& was already prepended in PreVisitCallExprArg)
 	if re.isRefOptArg(index) {
 		re.RefOptCount++
+		re.inCallExprArg = false
+		return
+	}
+	// std::mem::take optimization: replace state.Field.clone() with std::mem::take(&mut state.Field)
+	if re.memTakeActive && index == re.memTakeArgIdx && len(re.currentCallArgIdentsStack) == 1 {
+		re.gir.tokenSlice = re.gir.tokenSlice[:re.memTakeArgMarker]
+		re.emitToken("std::mem::take(&mut "+re.memTakeLhsExpr+")", Identifier, 0)
+		re.MoveOptCount++
 		re.inCallExprArg = false
 		return
 	}
@@ -4730,6 +4856,7 @@ edition = "2021"
 opt-level = 3
 lto = true
 codegen-units = 1
+panic = "abort"
 `, re.OutputName)
 	case "tigr":
 		// tigr graphics - uses cc build dependency to compile tigr.c
@@ -4747,6 +4874,7 @@ cc = "1.0"
 opt-level = 3
 lto = true
 codegen-units = 1
+panic = "abort"
 `, re.OutputName)
 	default:
 		// SDL2 graphics
@@ -4762,6 +4890,7 @@ sdl2 = "0.36"
 opt-level = 3
 lto = true
 codegen-units = 1
+panic = "abort"
 `, re.OutputName)
 	}
 

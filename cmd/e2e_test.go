@@ -124,10 +124,10 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		t.Logf("C# compilation output: %s", output)
 	}
 
-	// Step 4: Compile Rust using cargo build
+	// Step 4: Compile Rust using cargo build --release (matches C++ -O3)
 	if tc.RustEnabled {
 		t.Logf("Compiling Rust for %s", tc.Name)
-		cmd = exec.Command("cargo", "build")
+		cmd = exec.Command("cargo", "build", "--release")
 		cmd.Dir = outputDir
 		output, err = cmd.CombinedOutput()
 		if err != nil {
