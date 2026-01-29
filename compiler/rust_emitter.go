@@ -41,6 +41,19 @@ func (re *RustEmitter) mapGoTypeToRust(goType string) string {
 	return goType
 }
 
+// moveOptCallExt tracks a function call arg that needs to be extracted
+// into a temp variable before the assignment to avoid borrow conflicts.
+// Pattern: c = doADC(c, ReadIndirectX(c, zp))
+// Becomes: let __mv0: u8 = ReadIndirectX(&c, zp); c = doADC(c, __mv0);
+type moveOptCallExt struct {
+	argIdx   int    // which argument index in the outer call
+	tempName string // temp variable name (e.g., "__mv0")
+	rustType string // Rust type of the result (e.g., "u8")
+	// Token capture (filled during emission)
+	argMarker int     // token buffer position at start of arg emission
+	tokens    []Token // captured tokens for the function call
+}
+
 type RustEmitter struct {
 	Output          string
 	OutputDir       string
@@ -156,6 +169,10 @@ type RustEmitter struct {
 	memTakeLhsExpr               string            // the LHS selector expression string (e.g., "state.C")
 	memTakeArgIdx                int               // which argument index to replace with std::mem::take
 	memTakeArgMarker             int               // token buffer position at start of the arg being replaced
+	// Call expression extraction: extract function call args that borrow a moved struct
+	// Pattern: c = func(c, ReadIndirectX(c, zp)) → let __mv0 = ReadIndirectX(&c, zp); c = func(c, __mv0);
+	moveOptCallExts              []moveOptCallExt  // function call args to extract
+	moveOptAssignStartMarker     int               // token buffer position at start of assignment
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -524,6 +541,7 @@ func (re *RustEmitter) analyzeMoveOptExtraction(node *ast.AssignStmt, indent int
 	tempIdx := 0
 	replacements := make(map[int]string)
 	var bindings []string
+	var callExts []moveOptCallExt
 	modifiedCounts := re.collectCallArgIdentCounts(callExpr.Args)
 
 	for i, arg := range callExpr.Args {
@@ -542,27 +560,41 @@ func (re *RustEmitter) analyzeMoveOptExtraction(node *ast.AssignStmt, indent int
 		// This arg references the struct and produces a Copy value - extract it
 		tempName := fmt.Sprintf("__mv%d", tempIdx)
 		tempIdx++
-		rustType := re.mapGoTypeToRust(tv.Type.Underlying().(*types.Basic).Name())
-		binding := fmt.Sprintf("let %s: %s = ", tempName, rustType)
-		// We'll emit the binding text; the actual expression will be emitted by
-		// re-visiting the arg AST. Instead, we'll emit the expression manually.
-		// For SelectorExpr like c.A, emit "c.A"
-		exprStr := re.exprToString(arg)
-		if exprStr == "" {
+		basic, isBasic := tv.Type.Underlying().(*types.Basic)
+		if !isBasic {
 			continue
 		}
-		binding += exprStr + ";\n"
-		bindings = append(bindings, binding)
-		replacements[i] = tempName
-		// Remove this arg's struct references from the modified counts
-		re.subtractIdentsInExpr(arg, modifiedCounts)
+		rustType := re.mapGoTypeToRust(basic.Name())
+		// Try string-based extraction first (for simple expressions like c.A)
+		exprStr := re.exprToString(arg)
+		if exprStr != "" {
+			binding := fmt.Sprintf("let %s: %s = ", tempName, rustType)
+			binding += exprStr + ";\n"
+			bindings = append(bindings, binding)
+			replacements[i] = tempName
+			re.subtractIdentsInExpr(arg, modifiedCounts)
+			continue
+		}
+		// For function call expressions that can't be stringified, use deferred
+		// token buffer capture. The arg will be emitted normally, then its tokens
+		// are captured and relocated before the assignment statement.
+		if _, isCall := arg.(*ast.CallExpr); isCall {
+			callExts = append(callExts, moveOptCallExt{
+				argIdx:   i,
+				tempName: tempName,
+				rustType: rustType,
+			})
+			re.subtractIdentsInExpr(arg, modifiedCounts)
+			continue
+		}
 	}
 
-	if len(replacements) > 0 {
+	if len(replacements) > 0 || len(callExts) > 0 {
 		re.moveOptTempBindings = bindings
 		re.moveOptArgReplacements = replacements
 		re.moveOptModifiedCounts = modifiedCounts
 		re.moveOptActive = true
+		re.moveOptCallExts = callExts
 	}
 }
 
@@ -2902,21 +2934,55 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			re.gir.emitToFileBuffer(bindStr, EmptyVisitMethod)
 		}
 	}
+	// Save marker for call extraction rearrangement (before assignment indent)
+	if len(re.moveOptCallExts) > 0 {
+		re.moveOptAssignStartMarker = len(re.gir.tokenSlice)
+	}
 	str := re.emitAsString("", indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
 func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Save call extractions before cleanup resets them
+	callExts := re.moveOptCallExts
+	assignMarker := re.moveOptAssignStartMarker
+
 	re.currentAssignLhsNames = nil
 	re.moveOptActive = false
 	re.moveOptTempBindings = nil
 	re.moveOptArgReplacements = nil
 	re.moveOptModifiedCounts = nil
+	re.moveOptCallExts = nil
 	re.memTakeActive = false
 	re.memTakeLhsExpr = ""
 	re.memTakeArgIdx = -1
 	// Reset blank identifier suppression if it was set
 	if re.suppressRangeEmit {
 		re.suppressRangeEmit = false
+		return
+	}
+	// Insert call extraction bindings before the assignment
+	if len(callExts) > 0 {
+		// Emit the semicolon for the assignment first
+		if !re.insideForPostCond {
+			re.emitToken(";", Semicolon, 0)
+		}
+		// Save assignment tokens (from marker to current position)
+		assignTokens := make([]Token, len(re.gir.tokenSlice)-assignMarker)
+		copy(assignTokens, re.gir.tokenSlice[assignMarker:])
+		// Truncate back to before the assignment
+		re.gir.tokenSlice = re.gir.tokenSlice[:assignMarker]
+		// Emit extraction bindings (one per extracted function call arg)
+		indentStr := strings.Repeat(" ", indent)
+		for _, ext := range callExts {
+			bindingPrefix := CreateToken(Identifier, indentStr+"let "+ext.tempName+": "+ext.rustType+" = ")
+			re.gir.tokenSlice = append(re.gir.tokenSlice, bindingPrefix)
+			re.gir.tokenSlice = append(re.gir.tokenSlice, ext.tokens...)
+			bindingSuffix := CreateToken(Semicolon, ";\n")
+			re.gir.tokenSlice = append(re.gir.tokenSlice, bindingSuffix)
+		}
+		// Re-append the assignment tokens
+		re.gir.tokenSlice = append(re.gir.tokenSlice, assignTokens...)
+		re.shouldGenerate = false
 		return
 	}
 	// Don't emit semicolon inside for loop post statement
@@ -3426,6 +3492,15 @@ func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 	if re.memTakeActive && index == re.memTakeArgIdx && len(re.currentCallArgIdentsStack) == 1 {
 		re.memTakeArgMarker = len(re.gir.tokenSlice)
 	}
+	// Record marker for call expression extraction
+	if len(re.moveOptCallExts) > 0 && len(re.currentCallArgIdentsStack) == 1 {
+		for i := range re.moveOptCallExts {
+			if re.moveOptCallExts[i].argIdx == index {
+				re.moveOptCallExts[i].argMarker = len(re.gir.tokenSlice)
+				break
+			}
+		}
+	}
 }
 
 func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
@@ -3441,6 +3516,23 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 	if re.forwardDecls {
 		re.inCallExprArg = false
 		return
+	}
+	// Call expression extraction: capture emitted tokens and replace with temp name
+	if len(re.moveOptCallExts) > 0 && len(re.currentCallArgIdentsStack) == 1 {
+		for i := range re.moveOptCallExts {
+			if re.moveOptCallExts[i].argIdx == index {
+				ext := &re.moveOptCallExts[i]
+				// Capture the emitted tokens for this function call arg
+				ext.tokens = make([]Token, len(re.gir.tokenSlice)-ext.argMarker)
+				copy(ext.tokens, re.gir.tokenSlice[ext.argMarker:])
+				// Replace with temp variable name
+				re.gir.tokenSlice = re.gir.tokenSlice[:ext.argMarker]
+				re.emitToken(ext.tempName, Identifier, 0)
+				re.MoveOptCount++
+				re.inCallExprArg = false
+				return
+			}
+		}
 	}
 	// Reference optimization: if callee param is read-only, skip .clone() entirely
 	// (& was already prepended in PreVisitCallExprArg)
