@@ -204,3 +204,22 @@ func RunLoop(w Window, frameFunc func(Window) bool) {
 		}
 	}
 }
+
+// RunLoopWithState runs the main loop with explicit state threading.
+// The state is passed to frameFunc and returned each frame, avoiding closure capture.
+// This eliminates the need to clone state in Rust's FnMut closures.
+// frameFunc receives the window and state, returns updated state and true to continue.
+func RunLoopWithState[S any](w Window, state S, frameFunc func(Window, S) (S, bool)) {
+	for {
+		var running bool
+		w, running = PollEvents(w)
+		if !running {
+			break
+		}
+		var cont bool
+		state, cont = frameFunc(w, state)
+		if !cont {
+			break
+		}
+	}
+}
