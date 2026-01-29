@@ -356,34 +356,327 @@ C++ output:     return std::make_tuple(std::move(c), value);  // c is moved into
 
 ---
 
+## Optimization 6: `std::mem::take` for Struct Field Reassignment (Rust)
+
+**Flag**: `--optimize-moves`
+
+**Pattern**: `state.Field = Function(state.Field, ...)`
+
+When the left-hand side of an assignment is a struct field (a `SelectorExpr` like `state.C`) and the same field appears as an argument to the called function, the emitter replaces the clone with `std::mem::take(&mut state.Field)`.
+
+### Why `canMoveArg` Doesn't Apply Here
+
+`canMoveArg` handles local variables (`c = func(c)`), where Rust can move the variable directly. Struct fields are different — you cannot move out of a field while the parent struct is still alive. Rust requires the field to remain valid.
+
+`std::mem::take` solves this by replacing the field with its `Default` value (for `Vec<u8>`, that's an empty vec) and returning the old value. The field is always valid, and the caller gets ownership of the old value without cloning.
+
+### Before
+
+```
+Go source:      state.C = cpu.Run(state.C, 100000)
+
+Rust output:    state.C = cpu::Run(state.C.clone(), 100000);   // 64KB deep copy
+```
+
+### After
+
+```
+Rust output:    state.C = cpu::Run(std::mem::take(&mut state.C), 100000);   // zero-cost swap
+```
+
+### Conditions
+
+1. **LHS is a SelectorExpr**: e.g., `state.C`, `state.BasicState`.
+2. **LHS type is a named struct**: Not a primitive/Copy type.
+3. **RHS is a CallExpr**: The RHS is a function call.
+4. **An argument matches the LHS**: One of the call arguments has the same expression string as the LHS.
+5. **No other argument references the field or sub-fields**: Safety check using `exprContainsSelectorPath`.
+6. **Not inside a closure**: `funcLitDepth == 0`.
+
+### Implementation
+
+`analyzeMemTakeOpt` runs in `PreVisitAssignStmt` after `analyzeMoveOptExtraction`. It stores `memTakeLhsExpr` and `memTakeArgIdx`. In `PostVisitCallExprArg`, when the arg index matches, the emitted tokens are truncated and replaced with `std::mem::take(&mut <lhsExpr>)`.
+
+### Impact
+
+This is critical for the c64-v2 emulator which uses a `State` struct containing `C: CPU`. Without this optimization, every CPU operation in the event handler (`LoadProgram`, `SetPC`, `ClearHalted`, `Run`, `printReady`, `scrollScreenUp`) would clone 64KB. With it, all are zero-cost swaps.
+
+---
+
+## Optimization 7: Reference Optimization for Read-Only Parameters
+
+**Flag**: `--optimize-refs`
+
+**Pattern**: Function parameters that are never mutated, returned, or assigned from can be passed by `&T` instead of by value, eliminating the `.clone()` at call sites.
+
+### Analysis Pass
+
+Before emitting code, `analyzeReadOnlyParamsForPackage` scans every function in the package:
+
+1. **Collect mutated variables**: Any parameter assigned to (LHS of `=`), or whose fields are assigned, is marked mutable.
+2. **Collect returned variables**: Parameters that appear in `return` statements are marked (they need ownership to be returned).
+3. **Collect assigned-from variables**: Parameters that are assigned whole to another variable (e.g., `x = param`) need ownership.
+4. **Build read-only flags**: A parameter is read-only if it's an eligible type (struct or slice, not primitive) and is NOT mutated, returned, or assigned-from.
+5. **Exclude callbacks**: Functions used as values (passed to higher-order functions) are skipped because their signatures must match the expected type.
+
+The result is stored in `refOptReadOnly[funcKey]` as a per-parameter boolean array.
+
+### Emission
+
+**Function signatures**: Read-only parameters emit `name: &Type` instead of `mut name: Type`.
+
+**Call sites**: In `PostVisitCallExprArg`, when `isRefOptArg(index)` returns true, the `.clone()` is skipped entirely. The `&` prefix is already emitted in `PreVisitCallExprArg`.
+
+### Before
+
+```
+Go source:      code := basic.CompileImmediate(state.BasicState, line)
+
+Rust output:    let mut code = basic::CompileImmediate(state.BasicState.clone(), line.clone());
+```
+
+### After
+
+```
+// CompileImmediate(state: &BasicState, line: String) -- state is read-only
+Rust output:    let mut code = basic::CompileImmediate(&state.BasicState, line.clone());
+```
+
+The function signature changes from `state: BasicState` to `state: &BasicState`, and the call site replaces `.clone()` with `&`.
+
+### Before (AssembleLines)
+
+```
+Go source:      return assembler.AssembleLines(asmLines)
+
+Rust output:    return assembler::AssembleLines(asmLines.clone());
+```
+
+### After
+
+```
+// AssembleLines(lines: &Vec<String>) -- lines is read-only
+Rust output:    return assembler::AssembleLines(&asmLines);
+```
+
+### Impact
+
+Eliminated **162 `.clone()` calls** across the c64-v2 codebase by converting read-only parameters to references.
+
+---
+
+## Optimization 8: Return Temp Extraction for Multi-Value Returns
+
+**Flag**: `--optimize-moves`
+
+**Pattern**: `return variable, expression_referencing_variable`
+
+Optimization 4 detects when the first return result needs cloning because a later result references the same identifier. This optimization goes further: when the conflicting later results produce **Copy-type values**, it extracts them into temporary variables before the `return`, eliminating the clone entirely.
+
+### Motivating Example: `PullByte`
+
+```go
+func PullByte(c CPU) (CPU, uint8) {
+    c.SP = c.SP + 1
+    return c, c.Memory[0x100+int(c.SP)]
+}
+```
+
+The second result `c.Memory[...]` references `c`, so Optimization 4 adds `.clone()` to the first result. But `c.Memory[...]` evaluates to `uint8`, which is a Copy type. We can extract it before the return.
+
+### Before (Optimization 4 only)
+
+```rust
+pub fn PullByte(mut c: CPU) -> (CPU, u8) {
+    c.SP = (c.SP + 1);
+    return (c.clone(), c.Memory[(0x100 + (c.SP as i32)) as usize]);
+    //      ^^^^^^^^^ 64KB deep copy
+}
+```
+
+### After
+
+```rust
+pub fn PullByte(mut c: CPU) -> (CPU, u8) {
+    c.SP = (c.SP + 1);
+    let __mv0: u8 = c.Memory[(0x100 + (c.SP as i32)) as usize];
+    return (c, __mv0);
+    //      ^ zero-cost move
+}
+```
+
+### Conditions for Extraction
+
+1. **Multi-value return**: The function returns more than one value.
+2. **First result is an identifier**: e.g., `c`.
+3. **A later result references the identifier**: `exprContainsIdent` returns true.
+4. **The later result is a Copy type**: `isCopyType` returns true (bool, integers, floats).
+5. **The expression is stringifiable**: `exprToString` can generate valid Rust.
+
+### Implementation
+
+In `PreVisitReturnStmt`, before emitting `return`, the optimization:
+
+1. Walks each later result (index 1..N) that references the first result's identifier.
+2. For each that is Copy-type and stringifiable, emits `let __mv{N}: {type} = {expr};`.
+3. Records the replacement in `returnTempReplacements[index] = tempName`.
+
+In `PreVisitReturnStmtResult`, when entering a replaced result, the token buffer position is saved.
+
+In `PostVisitReturnStmtResult`:
+- For replaced results: truncate emitted tokens and substitute the temp variable name.
+- For index 0: if all conflicting results were extracted, skip `.clone()`.
+
+### Impact
+
+This is critical for functions like `PullByte` which is called inside the `Step` loop (up to 100,000 cycles in `cpu.Run`). Each PullByte call previously deep-copied 64KB. With this optimization, it's a zero-cost move. For the CLR command alone, this eliminates hundreds of megabytes of unnecessary allocations.
+
+---
+
+## Optimization 9: `len()` Argument Clone Elimination
+
+**Flag**: `--optimize-moves`
+
+**Pattern**: `len(collection)` where collection is a Vec/slice or String
+
+The `len()` built-in is read-only — it only needs a reference to compute the length. The emitter already prepends `&` to `len()` arguments. However, `PostVisitCallExprArg` was still adding `.clone()` because it saw a non-Copy type (slice or string) passed to a non-`append` function.
+
+### Before
+
+```
+Go source:      if i >= len(lines) { break }
+
+Rust output:    if (i >= len(&lines.clone())) { break; }
+                //              ^^^^^^^^ deep copies entire Vec<String> just for length!
+```
+
+Inside a loop with ~1000 assembly lines, this clones the entire string vector **twice per iteration** (the length check appears in two places in `AssembleLines`).
+
+### After
+
+```
+Rust output:    if (i >= len(&lines)) { break; }
+```
+
+### Implementation
+
+A `currentCallIsLen` flag (analogous to `currentCallIsAppend`) is set in `PostVisitCallExprArgs` when the function name contains `"len"`. In `PostVisitCallExprArg`, when this flag is set and `OptimizeMoves` is enabled, all cloning is skipped — the `&` prefix is sufficient.
+
+### Impact
+
+This is a systemic optimization. The `len(&x.clone())` pattern appeared pervasively in every loop condition throughout the tokenizer, parser, and assembler. For the CLR command compiling ~1000 assembly lines, this eliminated ~2000 unnecessary vector clones per command invocation.
+
+---
+
+## Optimization 10: Move Semantics for Slice/Vec Arguments
+
+**Flag**: `--optimize-moves`
+
+**Pattern**: `variable = Function(variable, ...)` where variable is a slice/Vec type
+
+`canMoveArg` previously only allowed moves for struct types. Slice types (`[]T`) always got `.clone()` unless the call was `append`. This meant patterns like `allBytes = AppendLineBytes(allBytes, lineBytes)` would deep-copy the growing byte buffer on every iteration.
+
+### Before
+
+```
+Go source:      allBytes = AppendLineBytes(allBytes, lineBytes)
+
+Rust output:    allBytes = AppendLineBytes(allBytes.clone(), &lineBytes);
+                //                         ^^^^^^^^^^^^^^^^ deep copies growing buffer!
+```
+
+In `AssembleLines`, this runs ~1000 times. The buffer grows each iteration, so the total allocation is O(n²).
+
+### After
+
+```
+Rust output:    allBytes = AppendLineBytes(allBytes, &lineBytes);
+                //                         ^^^^^^^^ zero-cost move
+```
+
+### Implementation
+
+The `canMoveArg` check was added to the slice-type clone path in `PostVisitCallExprArg`, alongside the existing `currentCallIsAppend` check. The same check was also added for named slice type aliases (e.g., `type AST []Statement`).
+
+The conditions are the same as for structs:
+1. The argument is an identifier on the LHS of the assignment.
+2. The identifier appears only once in the call arguments.
+3. Not inside a closure.
+
+### Impact
+
+Eliminated O(n²) allocation behavior in the assembler. For the CLR command with ~1000 lines, this removed ~1000 buffer clones.
+
+---
+
+## Optimization 11: Double-Clone Suppression for Vec Element Access
+
+**Flag**: `--optimize-moves`
+
+**Pattern**: `Function(collection[index])` where element type is non-Copy (string or struct)
+
+When a non-Copy element is accessed from a Vec and passed to a function, two `.clone()` calls were emitted:
+
+1. `PostVisitIndexExpr` adds `.clone()` because Rust doesn't allow moving out of indexed collections.
+2. `PostVisitCallExprArg` adds another `.clone()` because it sees a non-Copy type argument.
+
+The first clone already produces an owned value. The second is redundant.
+
+### Before
+
+```
+Go source:      lineBytes := StringToBytes(lines[i])
+
+Rust output:    let mut lineBytes = StringToBytes(lines[i as usize].clone().clone());
+                //                                                  ^^^^^^^^^^^^^^^^ two clones!
+```
+
+### After
+
+```
+Rust output:    let mut lineBytes = StringToBytes(lines[i as usize].clone());
+                //                                                  ^^^^^^^^ one clone (necessary)
+```
+
+### Implementation
+
+An `argAlreadyCloned` flag is set in `PostVisitIndexExpr` when a `.clone()` is emitted for a non-Copy vec element while inside a call expression argument (`inCallExprArg` is true). In `PostVisitCallExprArg`, if this flag is set and `OptimizeMoves` is enabled, the redundant second `.clone()` is skipped.
+
+The flag is reset at the start of each argument in `PreVisitCallExprArg`.
+
+### Impact
+
+Eliminated ~1000 redundant string clones per CLR command in the assembler path (one per assembly line).
+
+---
+
 ## Summary of Results
 
-### Clone Reduction for CPU Struct (Rust)
+### Clone Reduction (Rust, c64-v2 emulator)
 
-| Phase | `c.clone()` Count | Temp Bindings | Change |
-|-------|-------------------|---------------|--------|
-| Baseline (before optimization) | ~319 | 0 | -- |
-| Optimization 1 (move detection) | 127 | 0 | -192 |
-| Optimization 2 (field extraction) | 83 | 161 | -44 |
-| Optimization 3 (type conversion) | 66 | 189 | -17 |
-| **Total reduction** | | | **-253 (79%)** |
-
-### Remaining Clones (Genuinely Required)
-
-| Category | Count | Reason |
-|----------|-------|--------|
-| Inside closures | 28 | Rust FnMut cannot move captured variables |
-| Condition expressions | 20 | Variable not reassigned, used later |
-| Field assignment LHS | 8 | `c.A = ReadIndirect(c, zp)` -- c needed alive for field assignment |
-| Nested function calls consuming c | 6 | Both outer and inner call consume c |
-| Different LHS variable | 2 | `let addr = GetIndirect(c, zp)` -- c not reassigned |
-| Multi-value return with shared ref | 1 | Both results reference c |
-| Other | 1 | -- |
+| Phase | Optimizations | Clones Removed |
+|-------|--------------|----------------|
+| Optimization 1 | Move detection for reassigned variables | -192 |
+| Optimization 2 | Temporary variable extraction for field accesses | -44 |
+| Optimization 3 | Type conversion support in expression extraction | -17 |
+| Optimization 4 | Conditional multi-value return clone | included above |
+| Optimization 6 | `std::mem::take` for struct field reassignment | included in move count |
+| Optimization 7 | Reference optimization for read-only parameters | -162 |
+| Optimization 8 | Return temp extraction for multi-value returns | included in move count |
+| Optimizations 9-11 | `len()` clone elimination, slice move, double-clone suppression | included in move count |
+| **Total** | **`--optimize-moves --optimize-refs`** | **322 move + 162 ref = 484 clones eliminated** |
 
 ### Implementation Files
 
-- `compiler/rust_emitter.go` -- Rust emitter with all optimizations (1-4)
+- `compiler/rust_emitter.go` -- Rust emitter with all optimizations (1-4, 6-11)
 - `compiler/cpp_emitter.go` -- C++ emitter with optimizations (1, 5)
+
+### Flags
+
+| Flag | Optimizations | Description |
+|------|--------------|-------------|
+| `--optimize-moves` | 1, 2, 3, 4, 6, 8, 9, 10, 11 | Move semantics, temp extraction, `std::mem::take`, `len()` clone elimination, slice moves, double-clone suppression |
+| `--optimize-refs` | 7 | Reference optimization for read-only parameters |
 
 ---
 
