@@ -5060,12 +5060,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
 `, re.OutputName)
 	case "tigr":
 		// tigr graphics - uses cc build dependency to compile tigr.c
@@ -5078,12 +5072,6 @@ edition = "2021"
 
 [build-dependencies]
 cc = "1.0"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
 `, re.OutputName)
 	default:
 		// SDL2 graphics
@@ -5094,12 +5082,6 @@ edition = "2021"
 
 [dependencies]
 sdl2 = "0.36"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
 `, re.OutputName)
 	}
 
