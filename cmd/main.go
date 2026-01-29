@@ -69,7 +69,11 @@ func main() {
 	flag.StringVar(&backend, "backend", "all", "Backend to use: all, cpp, cs, rust, js (comma-separated for multiple)")
 	flag.StringVar(&linkRuntime, "link-runtime", "", "Path to runtime for linking (generates Makefile with -I flag)")
 	flag.StringVar(&graphicsRuntime, "graphics-runtime", "tigr", "Graphics runtime: tigr (default), sdl2, none")
+	var optimizeMoves bool
+	var optimizeRefs bool
 	flag.BoolVar(&compiler.DebugMode, "debug", false, "Enable debug output")
+	flag.BoolVar(&optimizeMoves, "optimize-moves", false, "Enable move optimizations to reduce struct cloning")
+	flag.BoolVar(&optimizeRefs, "optimize-refs", false, "Enable reference optimization for read-only parameters")
 	flag.Parse()
 	if sourceDir == "" {
 		fmt.Println("Please provide a source directory")
@@ -134,6 +138,7 @@ func main() {
 			GraphicsRuntime: graphicsRuntime,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
+			OptimizeMoves:   optimizeMoves,
 		}}
 		passes = append(passes, cppBackend)
 		programFiles = append(programFiles, "cpp")
@@ -158,6 +163,8 @@ func main() {
 			GraphicsRuntime: graphicsRuntime,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
+			OptimizeMoves:   optimizeMoves,
+			OptimizeRefs:    optimizeRefs,
 		}}
 		passes = append(passes, rustBackend)
 		programFiles = append(programFiles, "rs")

@@ -85,6 +85,8 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		fmt.Sprintf("--source=%s", tc.SourceDir),
 		fmt.Sprintf("--output=%s", outputPath),
 		fmt.Sprintf("--link-runtime=%s", runtimePath),
+		"--optimize-moves",
+		"--optimize-refs",
 	}
 	// Add JS backend if enabled (JS is opt-in, not included in "all")
 	if tc.JsEnabled {
@@ -122,10 +124,10 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		t.Logf("C# compilation output: %s", output)
 	}
 
-	// Step 4: Compile Rust using cargo build
+	// Step 4: Compile Rust using cargo build --release (matches C++ -O3)
 	if tc.RustEnabled {
 		t.Logf("Compiling Rust for %s", tc.Name)
-		cmd = exec.Command("cargo", "build")
+		cmd = exec.Command("cargo", "build", "--release")
 		cmd.Dir = outputDir
 		output, err = cmd.CombinedOutput()
 		if err != nil {
