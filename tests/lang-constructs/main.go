@@ -11,19 +11,16 @@ package main
 // 2. len(string) - String length
 //    C++ backend uses std::size() which doesn't work on C-style strings
 //
-// 3. for condition { } - While-style loops
-//    C# backend has a bug with semicolons in loop body
-//
-// 4. iota - Constant enumeration
+// 3. iota - Constant enumeration
 //    Not yet implemented
 //
-// 5. fmt.Sprintf - String formatting
+// 4. fmt.Sprintf - String formatting
 //    Rust backend has type mismatch issues with string_format2
 //
-// 6. for _, x := range []int{1,2,3} - Range over inline slice literal
+// 5. for _, x := range []int{1,2,3} - Range over inline slice literal
 //    Rust backend generates malformed code
 //
-// 7. []interface{} - Slice of empty interface (any type)
+// 6. []interface{} - Slice of empty interface (any type)
 //    Not supported across backends
 //
 // SUPPORTED WITH LIMITATIONS:
@@ -633,6 +630,75 @@ func testEmptyInterface() {
 	fmt.Println("interface{} test passed")
 }
 
+// Helper: sum all elements in a slice and print the result
+func printSliceSum(s []int) {
+	total := 0
+	i := 0
+	for i < len(s) {
+		total = total + s[i]
+		i = i + 1
+	}
+	fmt.Printf("sum: %d\n", total)
+}
+
+// Nested condition-only for loops (while-style)
+// Tests that nested "for cond { for cond { } }" generates correct Rust
+func testNestedWhileLoops() {
+	// Nested condition-only for loops
+	outer := 0
+	innerTotal := 0
+	for outer < 3 {
+		j := 0
+		for j < 4 {
+			innerTotal = innerTotal + 1
+			j = j + 1
+		}
+		outer = outer + 1
+	}
+	fmt.Printf("nested while: %d\n", innerTotal) // 3 * 4 = 12
+
+	// Condition-only loop nested inside traditional for loop
+	sum2 := 0
+	for i := 0; i < 3; i++ {
+		k := 0
+		for k < 2 {
+			sum2 = sum2 + 1
+			k = k + 1
+		}
+	}
+	fmt.Printf("traditional outer, while inner: %d\n", sum2) // 3 * 2 = 6
+
+	// Three levels of nesting: while > while > while
+	total3 := 0
+	a := 0
+	for a < 2 {
+		b := 0
+		for b < 2 {
+			c := 0
+			for c < 2 {
+				total3 = total3 + 1
+				c = c + 1
+			}
+			b = b + 1
+		}
+		a = a + 1
+	}
+	fmt.Printf("triple nested while: %d\n", total3) // 2 * 2 * 2 = 8
+}
+
+// Inline composite literal as function argument
+// Tests that func([]int{1,2,3}) generates correct Rust
+func testInlineCompositeLitArg() {
+	// Pass inline composite literal to a function
+	printSliceSum([]int{10, 20, 30}) // sum: 60
+
+	// Pass inline composite literal with single element
+	printSliceSum([]int{42}) // sum: 42
+
+	// Pass inline composite literal with many elements
+	printSliceSum([]int{1, 2, 3, 4, 5}) // sum: 15
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -660,6 +726,8 @@ func main() {
 	testNestedStructField()
 	testMultiPackageImport()
 	testEmptyInterface()
+	testNestedWhileLoops()
+	testInlineCompositeLitArg()
 
 	fmt.Println("=== Done ===")
 }
