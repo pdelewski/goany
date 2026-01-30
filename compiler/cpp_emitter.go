@@ -1336,7 +1336,7 @@ ifeq ($(UNAME_S),Linux)
 endif
 # Windows (MinGW)
 ifeq ($(OS),Windows_NT)
-    LDFLAGS = -lopengl32 -lgdi32 -luser32
+    LDFLAGS = -lopengl32 -lgdi32 -luser32 -lshell32 -ladvapi32
 endif
 
 all: $(TARGET)

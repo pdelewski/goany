@@ -5332,6 +5332,10 @@ func (re *RustEmitter) GenerateBuildRs() error {
         println!("cargo:rustc-link-lib=opengl32");
         println!("cargo:rustc-link-lib=gdi32");
         println!("cargo:rustc-link-lib=user32");
+        println!("cargo:rustc-link-lib=shell32");
+        println!("cargo:rustc-link-lib=advapi32");
+        // MSVC CRT: resolve legacy _vsnprintf/vsnprintf symbols used by tigr.c
+        println!("cargo:rustc-link-lib=legacy_stdio_definitions");
     }
 }
 `

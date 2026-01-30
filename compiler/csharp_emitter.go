@@ -1828,8 +1828,8 @@ func (cse *CSharpEmitter) GenerateCsproj() error {
     <Exec Command="gcc -shared -fPIC -o $(OutputPath)libtigr.so tigr.c screen_helper.c -lGL -lX11 -lm"
           Condition="$([MSBuild]::IsOSPlatform('Linux'))"
           WorkingDirectory="$(ProjectDir)" />
-    <!-- Windows -->
-    <Exec Command="cl /LD tigr.c screen_helper.c opengl32.lib gdi32.lib user32.lib /Fe:$(OutputPath)tigr.dll"
+    <!-- Windows (MinGW) -->
+    <Exec Command="gcc -shared -o $(OutputPath)tigr.dll tigr.c screen_helper.c -lopengl32 -lgdi32 -luser32 -lshell32 -ladvapi32"
           Condition="$([MSBuild]::IsOSPlatform('Windows'))"
           WorkingDirectory="$(ProjectDir)" />
   </Target>
