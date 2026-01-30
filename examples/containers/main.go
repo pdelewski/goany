@@ -1,7 +1,7 @@
 package main
 
 import "fmt"
-import "containers_tests/containers"
+import "libs/containers"
 
 func main() {
 	// === Linked List Demo ===
