@@ -85,199 +85,215 @@ func main() {
 
 		ctx, menuState = gui.EndMenuBar(ctx, menuState)
 
-		// Main demo panel (draggable)
-		if showDemo {
-			ctx, demoWin = gui.DraggablePanel(ctx, w, "Demo Window", demoWin)
+		// --- Z-ordered window rendering ---
+		pass := int32(0)
+		numPasses := gui.WindowPassCount(ctx)
+		for pass < numPasses {
+			ctx = gui.BeginWindowPass(ctx, pass)
 
-			ctx = gui.BeginLayout(ctx, demoWin.X+10, demoWin.Y+50, 6)
+			// Main demo panel (draggable)
+			if showDemo {
+				ctx, demoWin = gui.DraggablePanel(ctx, w, "Demo Window", demoWin)
+				if ctx.DrawContent {
+					ctx = gui.BeginLayout(ctx, demoWin.X+10, demoWin.Y+50, 6)
 
-			ctx = gui.AutoLabel(ctx, w, "Hello from goany GUI!")
+					ctx = gui.AutoLabel(ctx, w, "Hello from goany GUI!")
 
-			gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
-			ctx.CursorY = ctx.CursorY + 4
+					gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
+					ctx.CursorY = ctx.CursorY + 4
 
-			// Buttons in a row
-			ctx, clicked = gui.Button(ctx, w, "Click", demoWin.X+10, ctx.CursorY, 80, 26)
-			if clicked {
-				counter = counter + 1
-			}
-			ctx, clicked = gui.Button(ctx, w, "Reset", demoWin.X+100, ctx.CursorY, 80, 26)
-			if clicked {
-				counter = 0
-				volume = 0.5
-				brightness = 75.0
-				progress = 0.35
-			}
-			gui.Label(ctx, w, "Count: "+intToString(counter), demoWin.X+190, ctx.CursorY+4)
-			ctx = gui.NextRow(ctx, 26)
-
-			gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
-			ctx.CursorY = ctx.CursorY + 4
-
-			// Checkboxes
-			ctx, showDemo = gui.AutoCheckbox(ctx, w, "Show Demo Window", showDemo)
-			ctx, showWidgets = gui.AutoCheckbox(ctx, w, "Show Widgets Window", showWidgets)
-			ctx, showAnother = gui.AutoCheckbox(ctx, w, "Show Another Window", showAnother)
-			ctx, enabled = gui.AutoCheckbox(ctx, w, "Enable Feature", enabled)
-
-			gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
-			ctx.CursorY = ctx.CursorY + 4
-
-			// Sliders
-			ctx, volume = gui.AutoSlider(ctx, w, "Volume", 320, 0.0, 1.0, volume)
-			ctx, brightness = gui.AutoSlider(ctx, w, "Bright", 320, 0.0, 100.0, brightness)
-
-			gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
-			ctx.CursorY = ctx.CursorY + 4
-
-			// Progress bar
-			ctx = gui.AutoLabel(ctx, w, "Progress Bar:")
-			gui.ProgressBar(ctx, w, demoWin.X+10, ctx.CursorY, 320, 20, progress)
-			ctx = gui.NextRow(ctx, 24)
-
-			// Animate progress
-			progress = progress + 0.002
-			if progress > 1.0 {
-				progress = 0.0
-			}
-		}
-
-		// Widgets showcase window
-		if showWidgets {
-			ctx, widgetsWin = gui.DraggablePanel(ctx, w, "Widgets Showcase", widgetsWin)
-
-			// Tab bar
-			ctx, tabState = gui.TabBar(ctx, w, tabState, tabLabels, widgetsWin.X+10, widgetsWin.Y+35)
-
-			contentY := widgetsWin.Y + 70
-
-			if tabState.ActiveTab == 0 {
-				// Basic widgets tab
-				ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 6)
-
-				ctx = gui.AutoLabel(ctx, w, "Radio Buttons:")
-				ctx, clicked = gui.AutoRadioButton(ctx, w, "Option A", radioSelection == 0)
-				if clicked {
-					radioSelection = 0
-				}
-				ctx, clicked = gui.AutoRadioButton(ctx, w, "Option B", radioSelection == 1)
-				if clicked {
-					radioSelection = 1
-				}
-				ctx, clicked = gui.AutoRadioButton(ctx, w, "Option C", radioSelection == 2)
-				if clicked {
-					radioSelection = 2
-				}
-
-				gui.Separator(ctx, w, widgetsWin.X+15, ctx.CursorY, 350)
-				ctx.CursorY = ctx.CursorY + 8
-
-				ctx = gui.AutoLabel(ctx, w, "Spinner:")
-				ctx, spinnerValue = gui.Spinner(ctx, w, "Value", widgetsWin.X+15, ctx.CursorY, spinnerValue, 0, 100)
-				ctx = gui.NextRow(ctx, 28)
-
-				gui.Separator(ctx, w, widgetsWin.X+15, ctx.CursorY, 350)
-				ctx.CursorY = ctx.CursorY + 8
-
-				// Color picker
-				ctx, pickedColor = gui.ColorPicker(ctx, w, "Color Picker:", widgetsWin.X+15, ctx.CursorY, 340, pickedColor)
-
-			} else if tabState.ActiveTab == 1 {
-				// Lists tab
-				ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 6)
-
-				ctx = gui.AutoLabel(ctx, w, "List Box (select an item):")
-				ctx, selectedItem, scrollOffset = gui.ListBox(ctx, w, listItems, widgetsWin.X+15, ctx.CursorY, 200, 150, selectedItem, scrollOffset)
-				ctx.CursorY = ctx.CursorY + 155
-
-				ctx = gui.AutoLabel(ctx, w, "Selected: "+listItems[selectedItem])
-
-			} else if tabState.ActiveTab == 2 {
-				// Tree tab
-				ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 4)
-
-				ctx = gui.AutoLabel(ctx, w, "Tree View:")
-
-				var expanded bool
-				nodeY := ctx.CursorY
-
-				ctx, treeState, expanded = gui.TreeNode(ctx, w, treeState, "Root", widgetsWin.X+15, nodeY, 0)
-				nodeY = nodeY + 20
-
-				if expanded {
-					ctx, treeState, expanded = gui.TreeNode(ctx, w, treeState, "Branch 1", widgetsWin.X+15, nodeY, 20)
-					nodeY = nodeY + 20
-
-					if expanded {
-						ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 1.1", widgetsWin.X+15, nodeY, 40)
-						nodeY = nodeY + 20
-						ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 1.2", widgetsWin.X+15, nodeY, 40)
-						nodeY = nodeY + 20
-						ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 1.3", widgetsWin.X+15, nodeY, 40)
-						nodeY = nodeY + 20
+					// Buttons in a row
+					ctx, clicked = gui.Button(ctx, w, "Click", demoWin.X+10, ctx.CursorY, 80, 26)
+					if clicked {
+						counter = counter + 1
 					}
-
-					ctx, treeState, expanded = gui.TreeNode(ctx, w, treeState, "Branch 2", widgetsWin.X+15, nodeY, 20)
-					nodeY = nodeY + 20
-
-					if expanded {
-						ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 2.1", widgetsWin.X+15, nodeY, 40)
-						nodeY = nodeY + 20
-						ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 2.2", widgetsWin.X+15, nodeY, 40)
-						nodeY = nodeY + 20
+					ctx, clicked = gui.Button(ctx, w, "Reset", demoWin.X+100, ctx.CursorY, 80, 26)
+					if clicked {
+						counter = 0
+						volume = 0.5
+						brightness = 75.0
+						progress = 0.35
 					}
+					gui.Label(ctx, w, "Count: "+intToString(counter), demoWin.X+190, ctx.CursorY+4)
+					ctx = gui.NextRow(ctx, 26)
 
-					ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 3", widgetsWin.X+15, nodeY, 20)
-					nodeY = nodeY + 20
+					gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
+					ctx.CursorY = ctx.CursorY + 4
+
+					// Checkboxes
+					ctx, showDemo = gui.AutoCheckbox(ctx, w, "Show Demo Window", showDemo)
+					ctx, showWidgets = gui.AutoCheckbox(ctx, w, "Show Widgets Window", showWidgets)
+					ctx, showAnother = gui.AutoCheckbox(ctx, w, "Show Another Window", showAnother)
+					ctx, enabled = gui.AutoCheckbox(ctx, w, "Enable Feature", enabled)
+
+					gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
+					ctx.CursorY = ctx.CursorY + 4
+
+					// Sliders
+					ctx, volume = gui.AutoSlider(ctx, w, "Volume", 320, 0.0, 1.0, volume)
+					ctx, brightness = gui.AutoSlider(ctx, w, "Bright", 320, 0.0, 100.0, brightness)
+
+					gui.Separator(ctx, w, demoWin.X+10, ctx.CursorY-2, 330)
+					ctx.CursorY = ctx.CursorY + 4
+
+					// Progress bar
+					ctx = gui.AutoLabel(ctx, w, "Progress Bar:")
+					gui.ProgressBar(ctx, w, demoWin.X+10, ctx.CursorY, 320, 20, progress)
+					ctx = gui.NextRow(ctx, 24)
+
+					// Animate progress
+					progress = progress + 0.002
+					if progress > 1.0 {
+						progress = 0.0
+					}
 				}
-
-			} else if tabState.ActiveTab == 3 {
-				// Inputs tab
-				ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 8)
-
-				ctx = gui.AutoLabel(ctx, w, "Text Input:")
-				gui.Label(ctx, w, "Name:", widgetsWin.X+15, ctx.CursorY+4)
-				ctx, textInput = gui.TextInput(ctx, w, textInput, widgetsWin.X+70, ctx.CursorY, 200)
-				ctx = gui.NextRow(ctx, 28)
-
-				gui.Label(ctx, w, "Email:", widgetsWin.X+15, ctx.CursorY+4)
-				ctx, textInput2 = gui.TextInput(ctx, w, textInput2, widgetsWin.X+70, ctx.CursorY, 200)
-				ctx = gui.NextRow(ctx, 28)
-
-				gui.Separator(ctx, w, widgetsWin.X+15, ctx.CursorY, 350)
-				ctx.CursorY = ctx.CursorY + 8
-
-				ctx = gui.AutoLabel(ctx, w, "Entered text:")
-				ctx = gui.AutoLabel(ctx, w, "  Name: "+textInput.Text)
-				ctx = gui.AutoLabel(ctx, w, "  Email: "+textInput2.Text)
 			}
-		}
 
-		// Another window
-		if showAnother {
-			ctx, anotherWin = gui.DraggablePanel(ctx, w, "Another Window", anotherWin)
-			gui.Label(ctx, w, "This is another panel!", anotherWin.X+10, anotherWin.Y+50)
-			ctx, clicked = gui.Button(ctx, w, "Close", anotherWin.X+10, anotherWin.Y+90, 100, 26)
-			if clicked {
-				showAnother = false
+			// Widgets showcase window
+			if showWidgets {
+				ctx, widgetsWin = gui.DraggablePanel(ctx, w, "Widgets Showcase", widgetsWin)
+				if ctx.DrawContent {
+					// Tab bar
+					ctx, tabState = gui.TabBar(ctx, w, tabState, tabLabels, widgetsWin.X+10, widgetsWin.Y+35)
+
+					contentY := widgetsWin.Y + 70
+
+					if tabState.ActiveTab == 0 {
+						// Basic widgets tab
+						ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 6)
+
+						ctx = gui.AutoLabel(ctx, w, "Radio Buttons:")
+						ctx, clicked = gui.AutoRadioButton(ctx, w, "Option A", radioSelection == 0)
+						if clicked {
+							radioSelection = 0
+						}
+						ctx, clicked = gui.AutoRadioButton(ctx, w, "Option B", radioSelection == 1)
+						if clicked {
+							radioSelection = 1
+						}
+						ctx, clicked = gui.AutoRadioButton(ctx, w, "Option C", radioSelection == 2)
+						if clicked {
+							radioSelection = 2
+						}
+
+						gui.Separator(ctx, w, widgetsWin.X+15, ctx.CursorY, 350)
+						ctx.CursorY = ctx.CursorY + 8
+
+						ctx = gui.AutoLabel(ctx, w, "Spinner:")
+						ctx, spinnerValue = gui.Spinner(ctx, w, "Value", widgetsWin.X+15, ctx.CursorY, spinnerValue, 0, 100)
+						ctx = gui.NextRow(ctx, 28)
+
+						gui.Separator(ctx, w, widgetsWin.X+15, ctx.CursorY, 350)
+						ctx.CursorY = ctx.CursorY + 8
+
+						// Color picker
+						ctx, pickedColor = gui.ColorPicker(ctx, w, "Color Picker:", widgetsWin.X+15, ctx.CursorY, 340, pickedColor)
+
+					} else if tabState.ActiveTab == 1 {
+						// Lists tab
+						ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 6)
+
+						ctx = gui.AutoLabel(ctx, w, "List Box (select an item):")
+						ctx, selectedItem, scrollOffset = gui.ListBox(ctx, w, listItems, widgetsWin.X+15, ctx.CursorY, 200, 150, selectedItem, scrollOffset)
+						ctx.CursorY = ctx.CursorY + 155
+
+						ctx = gui.AutoLabel(ctx, w, "Selected: "+listItems[selectedItem])
+
+					} else if tabState.ActiveTab == 2 {
+						// Tree tab
+						ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 4)
+
+						ctx = gui.AutoLabel(ctx, w, "Tree View:")
+
+						var expanded bool
+						nodeY := ctx.CursorY
+
+						ctx, treeState, expanded = gui.TreeNode(ctx, w, treeState, "Root", widgetsWin.X+15, nodeY, 0)
+						nodeY = nodeY + 20
+
+						if expanded {
+							ctx, treeState, expanded = gui.TreeNode(ctx, w, treeState, "Branch 1", widgetsWin.X+15, nodeY, 20)
+							nodeY = nodeY + 20
+
+							if expanded {
+								ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 1.1", widgetsWin.X+15, nodeY, 40)
+								nodeY = nodeY + 20
+								ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 1.2", widgetsWin.X+15, nodeY, 40)
+								nodeY = nodeY + 20
+								ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 1.3", widgetsWin.X+15, nodeY, 40)
+								nodeY = nodeY + 20
+							}
+
+							ctx, treeState, expanded = gui.TreeNode(ctx, w, treeState, "Branch 2", widgetsWin.X+15, nodeY, 20)
+							nodeY = nodeY + 20
+
+							if expanded {
+								ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 2.1", widgetsWin.X+15, nodeY, 40)
+								nodeY = nodeY + 20
+								ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 2.2", widgetsWin.X+15, nodeY, 40)
+								nodeY = nodeY + 20
+							}
+
+							ctx, clicked = gui.TreeLeaf(ctx, w, "Leaf 3", widgetsWin.X+15, nodeY, 20)
+							nodeY = nodeY + 20
+						}
+
+					} else if tabState.ActiveTab == 3 {
+						// Inputs tab
+						ctx = gui.BeginLayout(ctx, widgetsWin.X+15, contentY, 8)
+
+						ctx = gui.AutoLabel(ctx, w, "Text Input:")
+						gui.Label(ctx, w, "Name:", widgetsWin.X+15, ctx.CursorY+4)
+						ctx, textInput = gui.TextInput(ctx, w, textInput, widgetsWin.X+70, ctx.CursorY, 200)
+						ctx = gui.NextRow(ctx, 28)
+
+						gui.Label(ctx, w, "Email:", widgetsWin.X+15, ctx.CursorY+4)
+						ctx, textInput2 = gui.TextInput(ctx, w, textInput2, widgetsWin.X+70, ctx.CursorY, 200)
+						ctx = gui.NextRow(ctx, 28)
+
+						gui.Separator(ctx, w, widgetsWin.X+15, ctx.CursorY, 350)
+						ctx.CursorY = ctx.CursorY + 8
+
+						ctx = gui.AutoLabel(ctx, w, "Entered text:")
+						ctx = gui.AutoLabel(ctx, w, "  Name: "+textInput.Text)
+						ctx = gui.AutoLabel(ctx, w, "  Email: "+textInput2.Text)
+					}
+				}
 			}
-		}
 
-		// Info panel
-		ctx, infoWin = gui.DraggablePanel(ctx, w, "Info", infoWin)
-		ctx = gui.BeginLayout(ctx, infoWin.X+10, infoWin.Y+50, 4)
-		ctx = gui.AutoLabel(ctx, w, "Application Stats:")
-		ctx = gui.AutoLabel(ctx, w, "  Volume: "+floatToString(volume))
-		ctx = gui.AutoLabel(ctx, w, "  Brightness: "+floatToString(brightness))
-		ctx = gui.AutoLabel(ctx, w, "  Clicks: "+intToString(counter))
-		ctx = gui.AutoLabel(ctx, w, "  Spinner: "+intToString(int(spinnerValue)))
-		ctx = gui.AutoLabel(ctx, w, "  Radio: "+intToString(radioSelection))
+			// Another window
+			if showAnother {
+				ctx, anotherWin = gui.DraggablePanel(ctx, w, "Another Window", anotherWin)
+				if ctx.DrawContent {
+					gui.Label(ctx, w, "This is another panel!", anotherWin.X+10, anotherWin.Y+50)
+					ctx, clicked = gui.Button(ctx, w, "Close", anotherWin.X+10, anotherWin.Y+90, 100, 26)
+					if clicked {
+						showAnother = false
+					}
+				}
+			}
 
-		// Tooltip demo (show when hovering over info panel title area)
-		if ctx.MouseX >= infoWin.X && ctx.MouseX <= infoWin.X+infoWin.Width &&
-			ctx.MouseY >= infoWin.Y && ctx.MouseY <= infoWin.Y+30 {
-			gui.Tooltip(ctx, w, "Drag to move this panel", ctx.MouseX, ctx.MouseY)
+			// Info panel
+			ctx, infoWin = gui.DraggablePanel(ctx, w, "Info", infoWin)
+			if ctx.DrawContent {
+				ctx = gui.BeginLayout(ctx, infoWin.X+10, infoWin.Y+50, 4)
+				ctx = gui.AutoLabel(ctx, w, "Application Stats:")
+				ctx = gui.AutoLabel(ctx, w, "  Volume: "+floatToString(volume))
+				ctx = gui.AutoLabel(ctx, w, "  Brightness: "+floatToString(brightness))
+				ctx = gui.AutoLabel(ctx, w, "  Clicks: "+intToString(counter))
+				ctx = gui.AutoLabel(ctx, w, "  Spinner: "+intToString(int(spinnerValue)))
+				ctx = gui.AutoLabel(ctx, w, "  Radio: "+intToString(radioSelection))
+
+				// Tooltip demo (show when hovering over info panel title area)
+				if ctx.MouseX >= infoWin.X && ctx.MouseX <= infoWin.X+infoWin.Width &&
+					ctx.MouseY >= infoWin.Y && ctx.MouseY <= infoWin.Y+30 {
+					gui.Tooltip(ctx, w, "Drag to move this panel", ctx.MouseX, ctx.MouseY)
+				}
+			}
+
+			pass = pass + 1
 		}
+		ctx = gui.EndWindowPasses(ctx)
 
 		// Quit button at bottom right
 		ctx, clicked = gui.Button(ctx, w, "Quit", 1150, 900, 100, 30)

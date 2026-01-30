@@ -25,6 +25,12 @@ type GuiContext struct {
 
 	// Current style
 	Style GuiStyle
+
+	// Z-order management
+	WindowZOrder []int32 // Window IDs in back-to-front render order
+	RenderPass   int32   // Current render pass index
+	DrawContent  bool    // Set by DraggablePanel: draw this window's content?
+	ZOrderReady  bool    // True after first frame (bootstrap flag)
 }
 
 // WindowState holds position and drag state for a draggable window
@@ -219,6 +225,59 @@ func TextHeight(scale int32) int32 {
 // pointInRect checks if a point is inside a rectangle
 func pointInRect(px int32, py int32, x int32, y int32, w int32, h int32) bool {
 	return px >= x && px < x+w && py >= y && py < y+h
+}
+
+// --- Z-Order Management ---
+
+// registerWindow adds a window ID to the z-order if not already present
+func registerWindow(ctx GuiContext, id int32) GuiContext {
+	i := 0
+	for i < len(ctx.WindowZOrder) {
+		if ctx.WindowZOrder[i] == id {
+			return ctx
+		}
+		i = i + 1
+	}
+	ctx.WindowZOrder = append(ctx.WindowZOrder, id)
+	return ctx
+}
+
+// bringWindowToFront moves the given window ID to the front (end) of the z-order
+func bringWindowToFront(ctx GuiContext, id int32) GuiContext {
+	newOrder := []int32{}
+	i := 0
+	for i < len(ctx.WindowZOrder) {
+		if ctx.WindowZOrder[i] != id {
+			newOrder = append(newOrder, ctx.WindowZOrder[i])
+		}
+		i = i + 1
+	}
+	newOrder = append(newOrder, id)
+	ctx.WindowZOrder = newOrder
+	return ctx
+}
+
+// WindowPassCount returns the number of render passes needed for z-ordered windows
+func WindowPassCount(ctx GuiContext) int32 {
+	if !ctx.ZOrderReady || len(ctx.WindowZOrder) == 0 {
+		return 1
+	}
+	return int32(len(ctx.WindowZOrder))
+}
+
+// BeginWindowPass sets up the context for a specific render pass
+func BeginWindowPass(ctx GuiContext, pass int32) GuiContext {
+	ctx.RenderPass = pass
+	ctx.DrawContent = false
+	return ctx
+}
+
+// EndWindowPasses marks z-order as ready after the first full frame
+func EndWindowPasses(ctx GuiContext) GuiContext {
+	if !ctx.ZOrderReady && len(ctx.WindowZOrder) > 0 {
+		ctx.ZOrderReady = true
+	}
+	return ctx
 }
 
 // --- Widgets ---
@@ -521,16 +580,39 @@ func Panel(ctx GuiContext, w graphics.Window, title string, x int32, y int32, wi
 
 // DraggablePanel draws a draggable panel/window and returns updated context and window state
 func DraggablePanel(ctx GuiContext, w graphics.Window, title string, state WindowState) (GuiContext, WindowState) {
-	// Generate ID from title (avoid reusing title after concat)
+	// Generate ID from title
 	idStr := title
 	idStr += "_panel"
 	id := GenID(idStr)
 	titleH := TextHeight(ctx.Style.FontSize) + ctx.Style.Padding*2
 
-	// Check if mouse is in title bar (drag area)
-	inTitleBar := pointInRect(ctx.MouseX, ctx.MouseY, state.X, state.Y, state.Width, titleH)
+	// Register in z-order
+	ctx = registerWindow(ctx, id)
 
-	// Handle drag start
+	// Determine if this window should render on the current pass
+	shouldRender := true
+	if ctx.ZOrderReady && len(ctx.WindowZOrder) > 0 {
+		shouldRender = false
+		if ctx.RenderPass >= 0 && ctx.RenderPass < int32(len(ctx.WindowZOrder)) {
+			if ctx.WindowZOrder[ctx.RenderPass] == id {
+				shouldRender = true
+			}
+		}
+	}
+
+	if !shouldRender {
+		ctx.DrawContent = false
+		return ctx, state
+	}
+
+	// Click anywhere in window brings to front
+	inWindow := pointInRect(ctx.MouseX, ctx.MouseY, state.X, state.Y, state.Width, state.Height)
+	if inWindow && ctx.MouseClicked {
+		ctx = bringWindowToFront(ctx, id)
+	}
+
+	// Drag start (title bar only)
+	inTitleBar := pointInRect(ctx.MouseX, ctx.MouseY, state.X, state.Y, state.Width, titleH)
 	if inTitleBar && ctx.MouseClicked {
 		state.Dragging = true
 		state.DragOffsetX = ctx.MouseX - state.X
@@ -555,6 +637,7 @@ func DraggablePanel(ctx GuiContext, w graphics.Window, title string, state Windo
 	// Draw the panel at current position
 	Panel(ctx, w, title, state.X, state.Y, state.Width, state.Height)
 
+	ctx.DrawContent = true
 	return ctx, state
 }
 
