@@ -222,6 +222,68 @@ func main() {
 	fmt.Println("Tree after inserting 10, 20, 30, 40, 50:")
 	containers.PrintTree(tree)
 
+	fmt.Printf("TreeSize: %d\n", containers.TreeSize(tree))
+	fmt.Printf("TreeHeight: %d\n", containers.TreeHeight(tree))
+	fmt.Printf("TreeMin: %d\n", containers.TreeMin(tree))
+	fmt.Printf("TreeMax: %d\n", containers.TreeMax(tree))
+
+	if containers.TreeContains(tree, 30) {
+		fmt.Println("TreeContains 30: true")
+	} else {
+		fmt.Println("TreeContains 30: false")
+	}
+
+	if containers.TreeContains(tree, 99) {
+		fmt.Println("TreeContains 99: true")
+	} else {
+		fmt.Println("TreeContains 99: false")
+	}
+
+	levelorder := containers.TreeLevelOrder(tree)
+	fmt.Printf("LevelOrder: ")
+	idx = 0
+	for idx < len(levelorder) {
+		fmt.Printf("%d ", levelorder[idx])
+		idx = idx + 1
+	}
+	fmt.Println()
+
+	tinorder := containers.TreeInOrder(tree)
+	fmt.Printf("InOrder: ")
+	idx = 0
+	for idx < len(tinorder) {
+		fmt.Printf("%d ", tinorder[idx])
+		idx = idx + 1
+	}
+	fmt.Println()
+
+	tpreorder := containers.TreePreOrder(tree)
+	fmt.Printf("PreOrder: ")
+	idx = 0
+	for idx < len(tpreorder) {
+		fmt.Printf("%d ", tpreorder[idx])
+		idx = idx + 1
+	}
+	fmt.Println()
+
+	tpostorder := containers.TreePostOrder(tree)
+	fmt.Printf("PostOrder: ")
+	idx = 0
+	for idx < len(tpostorder) {
+		fmt.Printf("%d ", tpostorder[idx])
+		idx = idx + 1
+	}
+	fmt.Println()
+
+	tslice := containers.TreeToSlice(tree)
+	fmt.Printf("TreeToSlice: ")
+	idx = 0
+	for idx < len(tslice) {
+		fmt.Printf("%d ", tslice[idx])
+		idx = idx + 1
+	}
+	fmt.Println()
+
 	tree = containers.RemoveFromTree(tree, 30)
 	fmt.Println("Tree after removing 30:")
 	containers.PrintTree(tree)

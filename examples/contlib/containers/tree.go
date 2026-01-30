@@ -175,3 +175,213 @@ func RemoveFromTree(t BinaryTree, value int) BinaryTree {
 
 	return t
 }
+
+// TreeInOrder returns values in in-order traversal (left, root, right) using iterative approach
+func TreeInOrder(t BinaryTree) []int {
+	result := []int{}
+	if t.root == -1 {
+		return result
+	}
+	stk := []int{}
+	currIndex := t.root
+	for currIndex != -1 || len(stk) > 0 {
+		for currIndex != -1 {
+			stk = append(stk, currIndex)
+			currIndex = t.nodes[currIndex].left
+		}
+		currIndex = stk[len(stk)-1]
+		stk = stk[:len(stk)-1]
+		result = append(result, t.nodes[currIndex].value)
+		currIndex = t.nodes[currIndex].right
+	}
+	return result
+}
+
+// TreePreOrder returns values in pre-order traversal (root, left, right) using iterative approach
+func TreePreOrder(t BinaryTree) []int {
+	result := []int{}
+	if t.root == -1 {
+		return result
+	}
+	stk := []int{t.root}
+	for len(stk) > 0 {
+		currIndex := stk[len(stk)-1]
+		stk = stk[:len(stk)-1]
+		result = append(result, t.nodes[currIndex].value)
+		if t.nodes[currIndex].right != -1 {
+			stk = append(stk, t.nodes[currIndex].right)
+		}
+		if t.nodes[currIndex].left != -1 {
+			stk = append(stk, t.nodes[currIndex].left)
+		}
+	}
+	return result
+}
+
+// TreePostOrder returns values in post-order traversal (left, right, root) using two-stack approach
+func TreePostOrder(t BinaryTree) []int {
+	result := []int{}
+	if t.root == -1 {
+		return result
+	}
+	stk1 := []int{t.root}
+	stk2 := []int{}
+	for len(stk1) > 0 {
+		currIndex := stk1[len(stk1)-1]
+		stk1 = stk1[:len(stk1)-1]
+		stk2 = append(stk2, currIndex)
+		if t.nodes[currIndex].left != -1 {
+			stk1 = append(stk1, t.nodes[currIndex].left)
+		}
+		if t.nodes[currIndex].right != -1 {
+			stk1 = append(stk1, t.nodes[currIndex].right)
+		}
+	}
+	i := len(stk2)
+	for i > 0 {
+		i = i - 1
+		result = append(result, t.nodes[stk2[i]].value)
+	}
+	return result
+}
+
+// TreeLevelOrder returns values in level-order (BFS) traversal
+func TreeLevelOrder(t BinaryTree) []int {
+	result := []int{}
+	if t.root == -1 {
+		return result
+	}
+	queue := []int{t.root}
+	for len(queue) > 0 {
+		currIndex := queue[0]
+		queue = queue[1:]
+		result = append(result, t.nodes[currIndex].value)
+		if t.nodes[currIndex].left != -1 {
+			queue = append(queue, t.nodes[currIndex].left)
+		}
+		if t.nodes[currIndex].right != -1 {
+			queue = append(queue, t.nodes[currIndex].right)
+		}
+	}
+	return result
+}
+
+// TreeSize returns the number of reachable nodes in the tree
+func TreeSize(t BinaryTree) int {
+	if t.root == -1 {
+		return 0
+	}
+	queue := []int{t.root}
+	count := 0
+	for len(queue) > 0 {
+		currIndex := queue[0]
+		queue = queue[1:]
+		count = count + 1
+		if t.nodes[currIndex].left != -1 {
+			queue = append(queue, t.nodes[currIndex].left)
+		}
+		if t.nodes[currIndex].right != -1 {
+			queue = append(queue, t.nodes[currIndex].right)
+		}
+	}
+	return count
+}
+
+// TreeHeight returns the height of the tree using BFS level counting
+func TreeHeight(t BinaryTree) int {
+	if t.root == -1 {
+		return 0
+	}
+	queue := []int{t.root}
+	height := 0
+	for len(queue) > 0 {
+		levelSize := len(queue)
+		i := 0
+		for i < levelSize {
+			currIndex := queue[0]
+			queue = queue[1:]
+			if t.nodes[currIndex].left != -1 {
+				queue = append(queue, t.nodes[currIndex].left)
+			}
+			if t.nodes[currIndex].right != -1 {
+				queue = append(queue, t.nodes[currIndex].right)
+			}
+			i = i + 1
+		}
+		height = height + 1
+	}
+	return height
+}
+
+// TreeContains returns true if the value exists in the tree (linear BFS search)
+func TreeContains(t BinaryTree, value int) bool {
+	if t.root == -1 {
+		return false
+	}
+	queue := []int{t.root}
+	for len(queue) > 0 {
+		currIndex := queue[0]
+		queue = queue[1:]
+		if t.nodes[currIndex].value == value {
+			return true
+		}
+		if t.nodes[currIndex].left != -1 {
+			queue = append(queue, t.nodes[currIndex].left)
+		}
+		if t.nodes[currIndex].right != -1 {
+			queue = append(queue, t.nodes[currIndex].right)
+		}
+	}
+	return false
+}
+
+// TreeMin returns the minimum value in the tree (BFS scan)
+func TreeMin(t BinaryTree) int {
+	if t.root == -1 {
+		return -1
+	}
+	minVal := t.nodes[t.root].value
+	queue := []int{t.root}
+	for len(queue) > 0 {
+		currIndex := queue[0]
+		queue = queue[1:]
+		if t.nodes[currIndex].value < minVal {
+			minVal = t.nodes[currIndex].value
+		}
+		if t.nodes[currIndex].left != -1 {
+			queue = append(queue, t.nodes[currIndex].left)
+		}
+		if t.nodes[currIndex].right != -1 {
+			queue = append(queue, t.nodes[currIndex].right)
+		}
+	}
+	return minVal
+}
+
+// TreeMax returns the maximum value in the tree (BFS scan)
+func TreeMax(t BinaryTree) int {
+	if t.root == -1 {
+		return -1
+	}
+	maxVal := t.nodes[t.root].value
+	queue := []int{t.root}
+	for len(queue) > 0 {
+		currIndex := queue[0]
+		queue = queue[1:]
+		if t.nodes[currIndex].value > maxVal {
+			maxVal = t.nodes[currIndex].value
+		}
+		if t.nodes[currIndex].left != -1 {
+			queue = append(queue, t.nodes[currIndex].left)
+		}
+		if t.nodes[currIndex].right != -1 {
+			queue = append(queue, t.nodes[currIndex].right)
+		}
+	}
+	return maxVal
+}
+
+// TreeToSlice returns the tree values as a flat slice in level-order
+func TreeToSlice(t BinaryTree) []int {
+	return TreeLevelOrder(t)
+}
