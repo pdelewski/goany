@@ -1324,6 +1324,7 @@ CFLAGS = -O3
 TARGET = %s
 SRCS = %s.cpp
 TIGR_SRC = %s/graphics/cpp/tigr.c
+SCREEN_SRC = %s/graphics/cpp/screen_helper.c
 
 # Platform-specific flags
 UNAME_S := $(shell uname -s)
@@ -1343,14 +1344,17 @@ all: $(TARGET)
 tigr.o: $(TIGR_SRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET): $(SRCS) tigr.o
-	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) tigr.o $(LDFLAGS)
+screen_helper.o: $(SCREEN_SRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(SRCS) tigr.o screen_helper.o
+	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) tigr.o screen_helper.o $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET) tigr.o
+	rm -f $(TARGET) tigr.o screen_helper.o
 
 .PHONY: all clean
-`, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath)
+`, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath, absRuntimePath)
 	}
 
 	_, err = file.WriteString(makefile)
