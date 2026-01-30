@@ -54,6 +54,21 @@ type moveOptCallExt struct {
 	tokens    []Token // captured tokens for the function call
 }
 
+// forLoopState saves for-loop tracking flags across nested loops
+type forLoopState struct {
+	sawIncrement         bool
+	sawDecrement         bool
+	forLoopStep          int
+	forLoopInclusive     bool
+	forLoopReverse       bool
+	isInfiniteLoop       bool
+	pendingLoopIncrement bool
+	inForLoopBody        bool
+	loopIncrementVar     string
+	loopIncrementOp      string
+	loopIncrementVal     string
+}
+
 type RustEmitter struct {
 	Output          string
 	OutputDir       string
@@ -83,6 +98,7 @@ type RustEmitter struct {
 	forLoopInclusive             bool                    // Track if condition uses <= or >= (inclusive range)
 	forLoopReverse               bool                    // Track if loop should be reversed (decrement or >)
 	isInfiniteLoop               bool                    // Track if current for loop is infinite (no init, cond, post)
+	forLoopStateStack            []forLoopState          // Stack to save/restore for-loop state across nested loops
 	declType                     string                  // Store the type for multi-name declarations
 	declNameCount                int                     // Count of names in current declaration
 	declNameIndex                int                     // Current name index
@@ -153,6 +169,8 @@ type RustEmitter struct {
 	currentCallArgIdentsStack    []map[string]int  // Stack of identifier counts per nested call
 	currentReturnNode            *ast.ReturnStmt   // Current return statement being processed
 	funcLitDepth                 int               // Nesting depth of function literals (closures)
+	// Condition-only for loop support (emit while directly, no token rewriting needed)
+	isCondOnlyLoopStack          []bool            // Stack to track condition-only for loops for nested support
 	// Temp extraction: pre-extract field accesses so struct can be moved
 	moveOptTempBindings          []string          // temp var declarations to emit before assignment
 	moveOptArgReplacements       map[int]string    // arg index → replacement variable name
@@ -3811,6 +3829,20 @@ func (re *RustEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
 
 func (re *RustEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
 	re.insideForPostCond = true
+	// Save current for loop state before resetting (for nested loop support)
+	re.forLoopStateStack = append(re.forLoopStateStack, forLoopState{
+		sawIncrement:         re.sawIncrement,
+		sawDecrement:         re.sawDecrement,
+		forLoopStep:          re.forLoopStep,
+		forLoopInclusive:     re.forLoopInclusive,
+		forLoopReverse:       re.forLoopReverse,
+		isInfiniteLoop:       re.isInfiniteLoop,
+		pendingLoopIncrement: re.pendingLoopIncrement,
+		inForLoopBody:        re.inForLoopBody,
+		loopIncrementVar:     re.loopIncrementVar,
+		loopIncrementOp:      re.loopIncrementOp,
+		loopIncrementVal:     re.loopIncrementVal,
+	})
 	// Reset all for loop tracking flags
 	re.sawIncrement = false
 	re.sawDecrement = false
@@ -3855,11 +3887,19 @@ func (re *RustEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
 	}
 
 	// Detect loop type upfront to emit correct Rust keyword
+	isCondOnly := node.Init == nil && node.Cond != nil && node.Post == nil
+	re.isCondOnlyLoopStack = append(re.isCondOnlyLoopStack, isCondOnly)
+
 	var str string
 	if node.Init == nil && node.Cond == nil && node.Post == nil {
 		// Infinite loop: for { } -> loop { }
 		str = re.emitAsString("loop", indent)
 		re.isInfiniteLoop = true
+	} else if isCondOnly {
+		// Condition-only loop: for cond { } -> while cond { }
+		// Emit "while " directly to avoid token rewriting issues with nested loops
+		str = re.emitAsString("while ", indent)
+		re.isInfiniteLoop = false
 	} else {
 		str = re.emitAsString("for ", indent)
 		re.isInfiniteLoop = false
@@ -3888,6 +3928,10 @@ func (re *RustEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
 	if re.isInfiniteLoop {
 		return
 	}
+	// Don't emit semicolon for condition-only loops (they use `while` keyword)
+	if len(re.isCondOnlyLoopStack) > 0 && re.isCondOnlyLoopStack[len(re.isCondOnlyLoopStack)-1] {
+		return
+	}
 	if node == nil {
 		str := re.emitAsString(";", 0)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
@@ -3907,7 +3951,9 @@ func (re *RustEmitter) PreVisitIfStmtElse(node *ast.IfStmt, indent int) {
 
 func (re *RustEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
 	// Don't emit semicolon for infinite loops (they use `loop` keyword)
-	if !re.isInfiniteLoop {
+	// Don't emit semicolon for condition-only loops (they use `while` keyword)
+	isCondOnly := len(re.isCondOnlyLoopStack) > 0 && re.isCondOnlyLoopStack[len(re.isCondOnlyLoopStack)-1]
+	if !re.isInfiniteLoop && !isCondOnly {
 		str := re.emitAsString(";", 0)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 	}
@@ -3917,6 +3963,42 @@ func (re *RustEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
 func (re *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	re.shouldGenerate = false
 	re.insideForPostCond = false
+
+	// Pop the condition-only loop stack
+	isCondOnly := false
+	if len(re.isCondOnlyLoopStack) > 0 {
+		isCondOnly = re.isCondOnlyLoopStack[len(re.isCondOnlyLoopStack)-1]
+		re.isCondOnlyLoopStack = re.isCondOnlyLoopStack[:len(re.isCondOnlyLoopStack)-1]
+	}
+
+	// For condition-only loops, the token stream is already correct (while cond \n)
+	// No rewriting needed — just clean up pointers and restore parent state
+	if isCondOnly {
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmt)
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtInit)
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtInit)
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtCond)
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtCond)
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtPost)
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtPost)
+		// Restore parent for-loop state
+		if len(re.forLoopStateStack) > 0 {
+			prev := re.forLoopStateStack[len(re.forLoopStateStack)-1]
+			re.forLoopStateStack = re.forLoopStateStack[:len(re.forLoopStateStack)-1]
+			re.sawIncrement = prev.sawIncrement
+			re.sawDecrement = prev.sawDecrement
+			re.forLoopStep = prev.forLoopStep
+			re.forLoopInclusive = prev.forLoopInclusive
+			re.forLoopReverse = prev.forLoopReverse
+			re.isInfiniteLoop = prev.isInfiniteLoop
+			re.pendingLoopIncrement = prev.pendingLoopIncrement
+			re.inForLoopBody = prev.inForLoopBody
+			re.loopIncrementVar = prev.loopIncrementVar
+			re.loopIncrementOp = prev.loopIncrementOp
+			re.loopIncrementVal = prev.loopIncrementVal
+		}
+		return
+	}
 
 	p1 := SearchPointerIndexReverse(PreVisitForStmtInit, re.gir.pointerAndIndexVec)
 	p2 := SearchPointerIndexReverse(PostVisitForStmtInit, re.gir.pointerAndIndexVec)
@@ -4194,6 +4276,23 @@ func (re *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtCond)
 	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtPost)
 	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtPost)
+
+	// Restore parent for-loop state
+	if len(re.forLoopStateStack) > 0 {
+		prev := re.forLoopStateStack[len(re.forLoopStateStack)-1]
+		re.forLoopStateStack = re.forLoopStateStack[:len(re.forLoopStateStack)-1]
+		re.sawIncrement = prev.sawIncrement
+		re.sawDecrement = prev.sawDecrement
+		re.forLoopStep = prev.forLoopStep
+		re.forLoopInclusive = prev.forLoopInclusive
+		re.forLoopReverse = prev.forLoopReverse
+		re.isInfiniteLoop = prev.isInfiniteLoop
+		re.pendingLoopIncrement = prev.pendingLoopIncrement
+		re.inForLoopBody = prev.inForLoopBody
+		re.loopIncrementVar = prev.loopIncrementVar
+		re.loopIncrementOp = prev.loopIncrementOp
+		re.loopIncrementVal = prev.loopIncrementVal
+	}
 }
 
 func (re *RustEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
@@ -4373,7 +4472,7 @@ func (re *RustEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
 		// For slice type aliases (like AST = []Statement), replace with Vec::new()
 		// The braces will be suppressed in PreVisitCompositeLitElts/PostVisitCompositeLitElts
 		if re.currentCompLitIsSlice {
-			if re.inKeyValueExpr || re.inFieldAssign || re.inReturnStmt {
+			if re.inKeyValueExpr || re.inFieldAssign || re.inReturnStmt || re.inCallExprArg {
 				// Inside struct field initialization, field assignment, or return statement
 				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), []string{"Vec::new()"})
 			} else {
@@ -4407,7 +4506,7 @@ func (re *RustEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
 			// TODO that's still hack
 			// we operate on string representation of the type
 			// has to be rewritten to use some kind of IR
-			if re.inKeyValueExpr || re.inFieldAssign || re.inReturnStmt {
+			if re.inKeyValueExpr || re.inFieldAssign || re.inReturnStmt || re.inCallExprArg {
 				// Inside struct field initialization, field assignment, or return statement: []Type{} -> vec![]
 				// Just replace the type with vec!, keeping context intact
 				newTokens := []string{"vec!"}
