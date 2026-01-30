@@ -238,36 +238,7 @@ const graphics = {
   mouseY: 0,
   mouseDown: false,
 
-  CreateWindow: function(title, width, height) {
-    // Make canvas fill entire browser window
-    document.body.style.margin = '0';
-    document.body.style.padding = '0';
-    document.body.style.overflow = 'hidden';
-
-    this.canvas = document.createElement('canvas');
-    this.canvas.width = window.innerWidth;
-    this.canvas.height = window.innerHeight;
-    this.canvas.style.display = 'block';
-    this.ctx = this.canvas.getContext('2d');
-    document.body.appendChild(this.canvas);
-    document.title = title;
-
-    // Create window object with dimensions that can be updated
-    this.windowObj = {
-      canvas: this.canvas,
-      width: this.canvas.width,
-      height: this.canvas.height
-    };
-
-    // Resize canvas when browser window resizes
-    window.addEventListener('resize', () => {
-      this.canvas.width = window.innerWidth;
-      this.canvas.height = window.innerHeight;
-      this.windowObj.width = this.canvas.width;
-      this.windowObj.height = this.canvas.height;
-    });
-
-    // Event listeners
+  _setupEventListeners: function() {
     window.addEventListener('keydown', (e) => {
       this.keys[e.key] = true;
       // Store ASCII code for GetLastKey
@@ -300,13 +271,54 @@ const graphics = {
     });
     this.canvas.addEventListener('mousedown', () => { this.mouseDown = true; });
     this.canvas.addEventListener('mouseup', () => { this.mouseDown = false; });
+  },
 
+  CreateWindow: function(title, width, height) {
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.ctx = this.canvas.getContext('2d');
+    document.body.appendChild(this.canvas);
+    document.title = title;
+
+    this.windowObj = {
+      canvas: this.canvas,
+      width: width,
+      height: height
+    };
+
+    this._setupEventListeners();
     return this.windowObj;
   },
 
-  // CreateWindowFullscreen - same as CreateWindow since JS canvas already fills the browser window
   CreateWindowFullscreen: function(title, width, height) {
-    return this.CreateWindow(title, width, height);
+    document.body.style.margin = '0';
+    document.body.style.padding = '0';
+    document.body.style.overflow = 'hidden';
+
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+    this.canvas.style.display = 'block';
+    this.ctx = this.canvas.getContext('2d');
+    document.body.appendChild(this.canvas);
+    document.title = title;
+
+    this.windowObj = {
+      canvas: this.canvas,
+      width: this.canvas.width,
+      height: this.canvas.height
+    };
+
+    window.addEventListener('resize', () => {
+      this.canvas.width = window.innerWidth;
+      this.canvas.height = window.innerHeight;
+      this.windowObj.width = this.canvas.width;
+      this.windowObj.height = this.canvas.height;
+    });
+
+    this._setupEventListeners();
+    return this.windowObj;
   },
 
   NewColor: function(r, g, b, a) {
