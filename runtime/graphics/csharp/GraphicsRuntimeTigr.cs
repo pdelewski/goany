@@ -11,12 +11,19 @@ using System.Runtime.InteropServices;
 
 public static class graphics
 {
-    // GetScreenSize returns a safe default size for tigr (windowed mode)
+    // GetScreenSize returns the usable screen area via native screen_helper.c
     internal static class ScreenInfo
     {
+        private const string LibName = "tigr";
+
+        [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+        private static extern void getScreenSize(out int width, out int height);
+
         public static (int, int) GetSize()
         {
-            return (1024, 768);
+            int w, h;
+            getScreenSize(out w, out h);
+            return (w, h);
         }
     }
 

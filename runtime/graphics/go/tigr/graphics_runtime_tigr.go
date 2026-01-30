@@ -3,7 +3,7 @@ package tigr
 
 /*
 #cgo CFLAGS: -I.
-#cgo darwin LDFLAGS: -framework OpenGL -framework Cocoa
+#cgo darwin LDFLAGS: -framework OpenGL -framework Cocoa -framework CoreGraphics
 #cgo linux LDFLAGS: -lGL -lX11
 #cgo windows LDFLAGS: -lopengl32 -lgdi32 -luser32
 
@@ -27,11 +27,55 @@ static Tigr* createTigrWindowFullscreen(const char* title, int width, int height
     return tigrWindow(width, height, title, TIGR_FULLSCREEN);
 }
 
-// GetScreenSize returns a safe default size for tigr (windowed mode)
+// GetScreenSize returns the usable screen area in logical points (excludes menu bar and Dock)
+#ifdef __APPLE__
+#include <objc/runtime.h>
+#include <objc/message.h>
+#include <CoreGraphics/CGGeometry.h>
+static void getScreenSize(int* width, int* height) {
+    id screenClass = (id)objc_getClass("NSScreen");
+    id mainScreen = ((id (*)(id, SEL))objc_msgSend)(screenClass, sel_registerName("mainScreen"));
+    if (mainScreen) {
+        typedef struct { CGPoint origin; CGSize size; } NSRect;
+#if defined(__aarch64__)
+        NSRect frame = ((NSRect (*)(id, SEL))objc_msgSend)(mainScreen, sel_registerName("visibleFrame"));
+#else
+        NSRect frame;
+        ((void (*)(NSRect*, id, SEL))objc_msgSend_stret)(&frame, mainScreen, sel_registerName("visibleFrame"));
+#endif
+        *width = (int)frame.size.width;
+        *height = (int)frame.size.height;
+    } else {
+        *width = 1024;
+        *height = 768;
+    }
+}
+#elif defined(_WIN32)
+#include <windows.h>
+static void getScreenSize(int* width, int* height) {
+    *width = GetSystemMetrics(SM_CXSCREEN);
+    *height = GetSystemMetrics(SM_CYSCREEN);
+}
+#elif defined(__linux__)
+#include <X11/Xlib.h>
+static void getScreenSize(int* width, int* height) {
+    Display* dpy = XOpenDisplay(NULL);
+    if (dpy) {
+        Screen* scr = DefaultScreenOfDisplay(dpy);
+        *width = scr->width;
+        *height = scr->height;
+        XCloseDisplay(dpy);
+    } else {
+        *width = 1024;
+        *height = 768;
+    }
+}
+#else
 static void getScreenSize(int* width, int* height) {
     *width = 1024;
     *height = 768;
 }
+#endif
 
 // Poll events and return 1 if quit requested
 static int pollTigrEvents(Tigr* win) {

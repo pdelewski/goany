@@ -6,7 +6,10 @@ import (
 )
 
 func main() {
-	w := graphics.CreateWindow("GUI Widgets Demo", 1280, 960)
+	screenW, screenH := graphics.GetScreenSize()
+	winW := screenW
+	winH := screenH - 40
+	w := graphics.CreateWindow("GUI Widgets Demo", int32(winW), int32(winH))
 	ctx := gui.NewContext()
 
 	// State variables
@@ -49,9 +52,10 @@ func main() {
 
 	// Draggable window states
 	demoWin := gui.NewWindowState(20, 45, 350, 420)
-	anotherWin := gui.NewWindowState(780, 45, 250, 180)
 	widgetsWin := gui.NewWindowState(390, 45, 380, 550)
-	infoWin := gui.NewWindowState(780, 240, 250, 200)
+	anotherWin := gui.NewWindowState(790, 45, 250, 180)
+	infoWin := gui.NewWindowState(790, 240, 250, 200)
+	sphereWin := gui.NewWindowState(790, 455, 250, 250)
 
 	var clicked bool
 	var fileMenuOpen bool
@@ -291,6 +295,13 @@ func main() {
 				}
 			}
 
+			// Sphere window
+			ctx, sphereWin = gui.DraggablePanel(ctx, w, "3D Sphere", sphereWin)
+			if ctx.DrawContent {
+				drawSphere(w, sphereWin.X+125, sphereWin.Y+150, 80,
+					graphics.NewColor(180, 180, 190, 255))
+			}
+
 			pass = pass + 1
 		}
 		ctx = gui.EndWindowPasses(ctx)
@@ -379,4 +390,71 @@ func floatToString(f float64) string {
 		fracStr = "0" + fracStr
 	}
 	return intToString(intPart) + "." + fracStr
+}
+
+// sinTable returns sin values for 0-354 degrees in 6-degree steps, scaled by 1000
+func sinTable() []int {
+	return []int{0, 105, 208, 309, 407, 500, 588, 669, 743, 809,
+		866, 914, 951, 978, 995, 1000, 995, 978, 951, 914,
+		866, 809, 743, 669, 588, 500, 407, 309, 208, 105,
+		0, -105, -208, -309, -407, -500, -588, -669, -743, -809,
+		-866, -914, -951, -978, -995, -1000, -995, -978, -951, -914,
+		-866, -809, -743, -669, -588, -500, -407, -309, -208, -105}
+}
+
+// cosTable returns cos values for 0-354 degrees in 6-degree steps, scaled by 1000
+func cosTable() []int {
+	return []int{1000, 995, 978, 951, 914, 866, 809, 743, 669, 588,
+		500, 407, 309, 208, 105, 0, -105, -208, -309, -407,
+		-500, -588, -669, -743, -809, -866, -914, -951, -978, -995,
+		-1000, -995, -978, -951, -914, -866, -809, -743, -669, -588,
+		-500, -407, -309, -208, -105, 0, 105, 208, 309, 407,
+		500, 588, 669, 743, 809, 866, 914, 951, 978, 995}
+}
+
+// drawSphere draws a triangulated wireframe sphere using orthographic projection
+func drawSphere(w graphics.Window, cx int32, cy int32, radius int32, color graphics.Color) {
+	sin := sinTable()
+	cos := cosTable()
+
+	// Latitude indices: south pole (-90°) to north pole (+90°) in 30° steps
+	// -90°=idx45, -60°=idx50, -30°=idx55, 0°=idx0, 30°=idx5, 60°=idx10, 90°=idx15
+	latIdx := []int{45, 50, 55, 0, 5, 10, 15}
+
+	// 12 longitude divisions (30° = 5 table entries each)
+	numLon := 12
+
+	lat := 0
+	for lat < 6 {
+		li0 := latIdx[lat]
+		li1 := latIdx[lat+1]
+		sinLat0 := sin[li0]
+		cosLat0 := cos[li0]
+		sinLat1 := sin[li1]
+		cosLat1 := cos[li1]
+		y0 := int32(sinLat0) * radius / 1000
+		y1 := int32(sinLat1) * radius / 1000
+
+		lon := 0
+		for lon < numLon {
+			lonIdx0 := (lon * 5) % 60
+			lonIdx1 := ((lon + 1) * 5) % 60
+
+			x00 := int32((cosLat0 * cos[lonIdx0]) / 1000) * radius / 1000
+			x01 := int32((cosLat0 * cos[lonIdx1]) / 1000) * radius / 1000
+			x10 := int32((cosLat1 * cos[lonIdx0]) / 1000) * radius / 1000
+			x11 := int32((cosLat1 * cos[lonIdx1]) / 1000) * radius / 1000
+
+			// Latitude edges (horizontal)
+			graphics.DrawLine(w, cx+x00, cy-y0, cx+x01, cy-y0, color)
+			graphics.DrawLine(w, cx+x10, cy-y1, cx+x11, cy-y1, color)
+			// Longitude edge (vertical)
+			graphics.DrawLine(w, cx+x00, cy-y0, cx+x10, cy-y1, color)
+			// Diagonal to form triangles
+			graphics.DrawLine(w, cx+x00, cy-y0, cx+x11, cy-y1, color)
+
+			lon = lon + 1
+		}
+		lat = lat + 1
+	}
 }

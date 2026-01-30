@@ -1328,14 +1328,14 @@ TIGR_SRC = %s/graphics/cpp/tigr.c
 # Platform-specific flags
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-    LDFLAGS = -framework OpenGL -framework Cocoa
+    LDFLAGS = -framework OpenGL -framework Cocoa -framework CoreGraphics
 endif
 ifeq ($(UNAME_S),Linux)
     LDFLAGS = -lGL -lX11
 endif
 # Windows (MinGW)
 ifeq ($(OS),Windows_NT)
-    LDFLAGS = -lopengl32 -lgdi32
+    LDFLAGS = -lopengl32 -lgdi32 -luser32
 endif
 
 all: $(TARGET)

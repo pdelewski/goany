@@ -5263,6 +5263,18 @@ func (re *RustEmitter) GenerateGraphicsMod() error {
 			return fmt.Errorf("failed to write tigr.h: %w", err)
 		}
 		DebugLogPrintf("Copied tigr.h to %s", tigrHDst)
+
+		// Copy screen_helper.c (platform-specific screen size detection)
+		shSrc := filepath.Join(re.LinkRuntime, "graphics", "cpp", "screen_helper.c")
+		shDst := filepath.Join(srcDir, "screen_helper.c")
+		shContent, err := os.ReadFile(shSrc)
+		if err != nil {
+			return fmt.Errorf("failed to read screen_helper.c from %s: %w", shSrc, err)
+		}
+		if err := os.WriteFile(shDst, shContent, 0644); err != nil {
+			return fmt.Errorf("failed to write screen_helper.c: %w", err)
+		}
+		DebugLogPrintf("Copied screen_helper.c to %s", shDst)
 	}
 
 	return nil
@@ -5289,18 +5301,24 @@ func (re *RustEmitter) GenerateBuildRs() error {
 
 	var buildRs string
 	if graphicsBackend == "tigr" {
-		// tigr: compile tigr.c and link platform libraries
+		// tigr: compile tigr.c and screen_helper.c, link platform libraries
 		buildRs = `fn main() {
     // Compile tigr.c
     cc::Build::new()
         .file("src/tigr.c")
         .compile("tigr");
 
+    // Compile screen_helper.c (platform-specific screen size detection)
+    cc::Build::new()
+        .file("src/screen_helper.c")
+        .compile("screen_helper");
+
     // Link platform-specific libraries
     #[cfg(target_os = "macos")]
     {
         println!("cargo:rustc-link-lib=framework=OpenGL");
         println!("cargo:rustc-link-lib=framework=Cocoa");
+        println!("cargo:rustc-link-lib=framework=CoreGraphics");
     }
 
     #[cfg(target_os = "linux")]
@@ -5313,6 +5331,7 @@ func (re *RustEmitter) GenerateBuildRs() error {
     {
         println!("cargo:rustc-link-lib=opengl32");
         println!("cargo:rustc-link-lib=gdi32");
+        println!("cargo:rustc-link-lib=user32");
     }
 }
 `

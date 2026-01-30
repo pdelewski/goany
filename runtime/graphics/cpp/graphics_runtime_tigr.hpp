@@ -11,6 +11,16 @@
 #include <cstdint>
 #include <functional>
 
+#ifdef __APPLE__
+#include <objc/runtime.h>
+#include <objc/message.h>
+#include <CoreGraphics/CGGeometry.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#elif defined(__linux__)
+#include <X11/Xlib.h>
+#endif
+
 namespace graphics {
 
 struct Color {
@@ -194,9 +204,41 @@ inline std::tuple<int32_t, int32_t, int32_t> GetMouse(Window w) {
 inline int32_t GetWidth(Window w) { return w.width; }
 inline int32_t GetHeight(Window w) { return w.height; }
 
-// GetScreenSize returns a safe default size for tigr (windowed mode)
+// GetScreenSize returns the usable screen area in logical points (excludes menu bar and Dock)
 inline std::tuple<int32_t, int32_t> GetScreenSize() {
+#ifdef __APPLE__
+    {
+        id screenClass = (id)objc_getClass("NSScreen");
+        id mainScreen = ((id (*)(id, SEL))objc_msgSend)(screenClass, sel_registerName("mainScreen"));
+        if (mainScreen) {
+            typedef struct { CGPoint origin; CGSize size; } NSRect;
+#if defined(__aarch64__)
+            NSRect frame = ((NSRect (*)(id, SEL))objc_msgSend)(mainScreen, sel_registerName("visibleFrame"));
+#else
+            NSRect frame;
+            ((void (*)(NSRect*, id, SEL))objc_msgSend_stret)(&frame, mainScreen, sel_registerName("visibleFrame"));
+#endif
+            return {static_cast<int32_t>(frame.size.width),
+                    static_cast<int32_t>(frame.size.height)};
+        }
+        return {1024, 768};
+    }
+#elif defined(_WIN32)
+    return {static_cast<int32_t>(GetSystemMetrics(SM_CXSCREEN)),
+            static_cast<int32_t>(GetSystemMetrics(SM_CYSCREEN))};
+#elif defined(__linux__)
+    Display* dpy = XOpenDisplay(NULL);
+    if (dpy) {
+        Screen* scr = DefaultScreenOfDisplay(dpy);
+        int32_t w = scr->width;
+        int32_t h = scr->height;
+        XCloseDisplay(dpy);
+        return {w, h};
+    }
     return {1024, 768};
+#else
+    return {1024, 768};
+#endif
 }
 
 // --- Rendering ---
