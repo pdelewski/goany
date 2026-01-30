@@ -133,36 +133,7 @@ const graphics = {
   mouseY: 0,
   mouseDown: false,
 
-  CreateWindow: function (title, width, height) {
-    // Make canvas fill entire browser window
-    document.body.style.margin = "0";
-    document.body.style.padding = "0";
-    document.body.style.overflow = "hidden";
-
-    this.canvas = document.createElement("canvas");
-    this.canvas.width = window.innerWidth;
-    this.canvas.height = window.innerHeight;
-    this.canvas.style.display = "block";
-    this.ctx = this.canvas.getContext("2d");
-    document.body.appendChild(this.canvas);
-    document.title = title;
-
-    // Create window object with dimensions that can be updated
-    this.windowObj = {
-      canvas: this.canvas,
-      width: this.canvas.width,
-      height: this.canvas.height,
-    };
-
-    // Resize canvas when browser window resizes
-    window.addEventListener("resize", () => {
-      this.canvas.width = window.innerWidth;
-      this.canvas.height = window.innerHeight;
-      this.windowObj.width = this.canvas.width;
-      this.windowObj.height = this.canvas.height;
-    });
-
-    // Event listeners
+  _setupEventListeners: function () {
     window.addEventListener("keydown", (e) => {
       this.keys[e.key] = true;
       // Store ASCII code for GetLastKey
@@ -201,13 +172,54 @@ const graphics = {
     this.canvas.addEventListener("mouseup", () => {
       this.mouseDown = false;
     });
+  },
 
+  CreateWindow: function (title, width, height) {
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.ctx = this.canvas.getContext("2d");
+    document.body.appendChild(this.canvas);
+    document.title = title;
+
+    this.windowObj = {
+      canvas: this.canvas,
+      width: width,
+      height: height,
+    };
+
+    this._setupEventListeners();
     return this.windowObj;
   },
 
-  // CreateWindowFullscreen - same as CreateWindow since JS canvas already fills the browser window
   CreateWindowFullscreen: function (title, width, height) {
-    return this.CreateWindow(title, width, height);
+    document.body.style.margin = "0";
+    document.body.style.padding = "0";
+    document.body.style.overflow = "hidden";
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+    this.canvas.style.display = "block";
+    this.ctx = this.canvas.getContext("2d");
+    document.body.appendChild(this.canvas);
+    document.title = title;
+
+    this.windowObj = {
+      canvas: this.canvas,
+      width: this.canvas.width,
+      height: this.canvas.height,
+    };
+
+    window.addEventListener("resize", () => {
+      this.canvas.width = window.innerWidth;
+      this.canvas.height = window.innerHeight;
+      this.windowObj.width = this.canvas.width;
+      this.windowObj.height = this.canvas.height;
+    });
+
+    this._setupEventListeners();
+    return this.windowObj;
   },
 
   NewColor: function (r, g, b, a) {
@@ -358,6 +370,22 @@ const graphics = {
     }
     requestAnimationFrame(loop);
   },
+
+  RunLoopWithState: function (canvas, state, frameFunc) {
+    const self = this;
+    function loop() {
+      if (!self.running) return;
+      // Call frameFunc with canvas and state, returns [newState, shouldContinue]
+      const result = frameFunc(canvas, state);
+      state = result[0];
+      if (result[1] === false) {
+        self.running = false;
+        return;
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  },
 };
 
 const gui = {
@@ -387,16 +415,16 @@ const gui = {
     return {
       BackgroundColor: graphics.NewColor(45, 45, 48, 250),
       TextColor: graphics.NewColor(240, 240, 245, 255),
-      ButtonColor: graphics.NewColor(70, 130, 210, 180),
-      ButtonHoverColor: graphics.NewColor(90, 150, 230, 220),
-      ButtonActiveColor: graphics.NewColor(50, 110, 190, 255),
-      CheckboxColor: graphics.NewColor(55, 65, 85, 255),
-      CheckmarkColor: graphics.NewColor(100, 180, 255, 255),
-      SliderTrackColor: graphics.NewColor(80, 160, 240, 200),
-      SliderKnobColor: graphics.NewColor(120, 180, 255, 255),
-      BorderColor: graphics.NewColor(60, 65, 75, 255),
-      FrameBgColor: graphics.NewColor(45, 50, 60, 220),
-      TitleBgColor: graphics.NewColor(55, 95, 160, 255),
+      ButtonColor: graphics.NewColor(90, 90, 95, 200),
+      ButtonHoverColor: graphics.NewColor(110, 110, 115, 230),
+      ButtonActiveColor: graphics.NewColor(70, 70, 75, 255),
+      CheckboxColor: graphics.NewColor(60, 60, 65, 255),
+      CheckmarkColor: graphics.NewColor(200, 200, 210, 255),
+      SliderTrackColor: graphics.NewColor(130, 130, 140, 220),
+      SliderKnobColor: graphics.NewColor(180, 180, 190, 255),
+      BorderColor: graphics.NewColor(65, 65, 70, 255),
+      FrameBgColor: graphics.NewColor(50, 50, 55, 220),
+      TitleBgColor: graphics.NewColor(75, 75, 80, 255),
       FontSize: 1,
       Padding: 8,
       ButtonHeight: 24,
@@ -419,6 +447,10 @@ const gui = {
       CursorX: 0,
       CursorY: 0,
       Spacing: 0,
+      WindowZOrder: [],
+      RenderPass: 0,
+      DrawContent: false,
+      ZOrderReady: false,
     };
   },
   GenID: function (label) {
@@ -487,6 +519,47 @@ const gui = {
   },
   pointInRect: function (px, py, x, y, w, h) {
     return px >= x && px < x + w && py >= y && py < y + h;
+  },
+  registerWindow: function (ctx, id) {
+    let i = 0;
+    for (; i < len(ctx.WindowZOrder); ) {
+      if (ctx.WindowZOrder[i] == id) {
+        return ctx;
+      }
+      i = i + 1;
+    }
+    ctx.WindowZOrder = append(ctx.WindowZOrder, id);
+    return ctx;
+  },
+  bringWindowToFront: function (ctx, id) {
+    let newOrder = [];
+    let i = 0;
+    for (; i < len(ctx.WindowZOrder); ) {
+      if (ctx.WindowZOrder[i] != id) {
+        newOrder = append(newOrder, ctx.WindowZOrder[i]);
+      }
+      i = i + 1;
+    }
+    newOrder = append(newOrder, id);
+    ctx.WindowZOrder = newOrder;
+    return ctx;
+  },
+  WindowPassCount: function (ctx) {
+    if (!ctx.ZOrderReady || len(ctx.WindowZOrder) == 0) {
+      return 1;
+    }
+    return int32(len(ctx.WindowZOrder));
+  },
+  BeginWindowPass: function (ctx, pass) {
+    ctx.RenderPass = pass;
+    ctx.DrawContent = false;
+    return ctx;
+  },
+  EndWindowPasses: function (ctx) {
+    if (!ctx.ZOrderReady && len(ctx.WindowZOrder) > 0) {
+      ctx.ZOrderReady = true;
+    }
+    return ctx;
   },
   Label: function (ctx, w, text, x, y) {
     this.DrawText(w, text, x, y, ctx.Style.FontSize, ctx.Style.TextColor);
@@ -1025,6 +1098,34 @@ const gui = {
     idStr += "_panel";
     let id = this.GenID(idStr);
     let titleH = this.TextHeight(ctx.Style.FontSize) + ctx.Style.Padding * 2;
+    ctx = this.registerWindow(ctx, id);
+    let shouldRender = true;
+    if (ctx.ZOrderReady && len(ctx.WindowZOrder) > 0) {
+      shouldRender = false;
+      if (
+        ctx.RenderPass >= 0 &&
+        ctx.RenderPass < int32(len(ctx.WindowZOrder))
+      ) {
+        if (ctx.WindowZOrder[ctx.RenderPass] == id) {
+          shouldRender = true;
+        }
+      }
+    }
+    if (!shouldRender) {
+      ctx.DrawContent = false;
+      return [ctx, state];
+    }
+    let inWindow = this.pointInRect(
+      ctx.MouseX,
+      ctx.MouseY,
+      state.X,
+      state.Y,
+      state.Width,
+      state.Height,
+    );
+    if (inWindow && ctx.MouseClicked) {
+      ctx = this.bringWindowToFront(ctx, id);
+    }
     let inTitleBar = this.pointInRect(
       ctx.MouseX,
       ctx.MouseY,
@@ -1050,6 +1151,7 @@ const gui = {
       }
     }
     this.Panel(ctx, w, title, state.X, state.Y, state.Width, state.Height);
+    ctx.DrawContent = true;
     return [ctx, state];
   },
   Separator: function (ctx, w, x, y, width) {
@@ -1896,10 +1998,11 @@ const gui = {
     if (startIndex < 0) {
       startIndex = 0;
     }
-    for (let i = int32(0); i < visibleCount; i++) {
-      if (int(startIndex + i) >= len(items)) {
-        break;
-      }
+    for (
+      let i = int32(0);
+      i < visibleCount && int(startIndex + i) < len(items);
+      i++
+    ) {
       let itemIndex = startIndex + i;
       let item = items[itemIndex];
       let itemY = y + 2 + i * itemH;
@@ -2479,7 +2582,10 @@ const gui = {
 };
 
 function main() {
-  let w = graphics.CreateWindow("GUI Widgets Demo", 1280, 960);
+  let [screenW, screenH] = graphics.GetScreenSize();
+  let winW = screenW;
+  let winH = screenH - 40;
+  let w = graphics.CreateWindow("GUI Widgets Demo", int32(winW), int32(winH));
   let ctx = gui.NewContext();
   let showDemo = true;
   let showAnother = false;
@@ -2511,9 +2617,10 @@ function main() {
   let radioSelection = 0;
   let pickedColor = graphics.NewColor(100, 150, 200, 255);
   let demoWin = gui.NewWindowState(20, 45, 350, 420);
-  let anotherWin = gui.NewWindowState(780, 45, 250, 180);
   let widgetsWin = gui.NewWindowState(390, 45, 380, 550);
-  let infoWin = gui.NewWindowState(780, 240, 250, 200);
+  let anotherWin = gui.NewWindowState(790, 45, 250, 180);
+  let infoWin = gui.NewWindowState(790, 240, 250, 200);
+  let sphereWin = gui.NewWindowState(790, 455, 250, 250);
   let clicked = false;
   let fileMenuOpen = false;
   let viewMenuOpen = false;
@@ -2541,340 +2648,400 @@ function main() {
       viewDropX = menuState.CurrentMenuX - menuState.CurrentMenuW;
     }
     [ctx, menuState] = gui.EndMenuBar(ctx, menuState);
-    if (showDemo) {
-      [ctx, demoWin] = gui.DraggablePanel(ctx, w, "Demo Window", demoWin);
-      ctx = gui.BeginLayout(ctx, demoWin.X + 10, demoWin.Y + 50, 6);
-      ctx = gui.AutoLabel(ctx, w, "Hello from goany GUI!");
-      gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
-      ctx.CursorY = ctx.CursorY + 4;
-      [ctx, clicked] = gui.Button(
-        ctx,
-        w,
-        "Click",
-        demoWin.X + 10,
-        ctx.CursorY,
-        80,
-        26,
-      );
-      if (clicked) {
-        counter = counter + 1;
-      }
-      [ctx, clicked] = gui.Button(
-        ctx,
-        w,
-        "Reset",
-        demoWin.X + 100,
-        ctx.CursorY,
-        80,
-        26,
-      );
-      if (clicked) {
-        counter = 0;
-        volume = 0.5;
-        brightness = 75.0;
-        progress = 0.35;
-      }
-      gui.Label(
-        ctx,
-        w,
-        "Count: " + intToString(counter),
-        demoWin.X + 190,
-        ctx.CursorY + 4,
-      );
-      ctx = gui.NextRow(ctx, 26);
-      gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
-      ctx.CursorY = ctx.CursorY + 4;
-      [ctx, showDemo] = gui.AutoCheckbox(ctx, w, "Show Demo Window", showDemo);
-      [ctx, showWidgets] = gui.AutoCheckbox(
-        ctx,
-        w,
-        "Show Widgets Window",
-        showWidgets,
-      );
-      [ctx, showAnother] = gui.AutoCheckbox(
-        ctx,
-        w,
-        "Show Another Window",
-        showAnother,
-      );
-      [ctx, enabled] = gui.AutoCheckbox(ctx, w, "Enable Feature", enabled);
-      gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
-      ctx.CursorY = ctx.CursorY + 4;
-      [ctx, volume] = gui.AutoSlider(ctx, w, "Volume", 320, 0.0, 1.0, volume);
-      [ctx, brightness] = gui.AutoSlider(
-        ctx,
-        w,
-        "Bright",
-        320,
-        0.0,
-        100.0,
-        brightness,
-      );
-      gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
-      ctx.CursorY = ctx.CursorY + 4;
-      ctx = gui.AutoLabel(ctx, w, "Progress Bar:");
-      gui.ProgressBar(ctx, w, demoWin.X + 10, ctx.CursorY, 320, 20, progress);
-      ctx = gui.NextRow(ctx, 24);
-      progress = progress + 0.002;
-      if (progress > 1.0) {
-        progress = 0.0;
-      }
-    }
-    if (showWidgets) {
-      [ctx, widgetsWin] = gui.DraggablePanel(
-        ctx,
-        w,
-        "Widgets Showcase",
-        widgetsWin,
-      );
-      [ctx, tabState] = gui.TabBar(
-        ctx,
-        w,
-        tabState,
-        tabLabels,
-        widgetsWin.X + 10,
-        widgetsWin.Y + 35,
-      );
-      let contentY = widgetsWin.Y + 70;
-      if (tabState.ActiveTab == 0) {
-        ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 6);
-        ctx = gui.AutoLabel(ctx, w, "Radio Buttons:");
-        [ctx, clicked] = gui.AutoRadioButton(
-          ctx,
-          w,
-          "Option A",
-          radioSelection == 0,
-        );
-        if (clicked) {
-          radioSelection = 0;
-        }
-        [ctx, clicked] = gui.AutoRadioButton(
-          ctx,
-          w,
-          "Option B",
-          radioSelection == 1,
-        );
-        if (clicked) {
-          radioSelection = 1;
-        }
-        [ctx, clicked] = gui.AutoRadioButton(
-          ctx,
-          w,
-          "Option C",
-          radioSelection == 2,
-        );
-        if (clicked) {
-          radioSelection = 2;
-        }
-        gui.Separator(ctx, w, widgetsWin.X + 15, ctx.CursorY, 350);
-        ctx.CursorY = ctx.CursorY + 8;
-        ctx = gui.AutoLabel(ctx, w, "Spinner:");
-        [ctx, spinnerValue] = gui.Spinner(
-          ctx,
-          w,
-          "Value",
-          widgetsWin.X + 15,
-          ctx.CursorY,
-          spinnerValue,
-          0,
-          100,
-        );
-        ctx = gui.NextRow(ctx, 28);
-        gui.Separator(ctx, w, widgetsWin.X + 15, ctx.CursorY, 350);
-        ctx.CursorY = ctx.CursorY + 8;
-        [ctx, pickedColor] = gui.ColorPicker(
-          ctx,
-          w,
-          "Color Picker:",
-          widgetsWin.X + 15,
-          ctx.CursorY,
-          340,
-          pickedColor,
-        );
-      } else if (tabState.ActiveTab == 1) {
-        ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 6);
-        ctx = gui.AutoLabel(ctx, w, "List Box (select an item):");
-        [ctx, selectedItem, scrollOffset] = gui.ListBox(
-          ctx,
-          w,
-          listItems,
-          widgetsWin.X + 15,
-          ctx.CursorY,
-          200,
-          150,
-          selectedItem,
-          scrollOffset,
-        );
-        ctx.CursorY = ctx.CursorY + 155;
-        ctx = gui.AutoLabel(ctx, w, "Selected: " + listItems[selectedItem]);
-      } else if (tabState.ActiveTab == 2) {
-        ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 4);
-        ctx = gui.AutoLabel(ctx, w, "Tree View:");
-        let expanded = false;
-        let nodeY = ctx.CursorY;
-        [ctx, treeState, expanded] = gui.TreeNode(
-          ctx,
-          w,
-          treeState,
-          "Root",
-          widgetsWin.X + 15,
-          nodeY,
-          0,
-        );
-        nodeY = nodeY + 20;
-        if (expanded) {
-          [ctx, treeState, expanded] = gui.TreeNode(
+    let pass = int32(0);
+    let numPasses = gui.WindowPassCount(ctx);
+    for (; pass < numPasses; ) {
+      ctx = gui.BeginWindowPass(ctx, pass);
+      if (showDemo) {
+        [ctx, demoWin] = gui.DraggablePanel(ctx, w, "Demo Window", demoWin);
+        if (ctx.DrawContent) {
+          ctx = gui.BeginLayout(ctx, demoWin.X + 10, demoWin.Y + 50, 6);
+          ctx = gui.AutoLabel(ctx, w, "Hello from goany GUI!");
+          gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
+          ctx.CursorY = ctx.CursorY + 4;
+          [ctx, clicked] = gui.Button(
             ctx,
             w,
-            treeState,
-            "Branch 1",
-            widgetsWin.X + 15,
-            nodeY,
-            20,
+            "Click",
+            demoWin.X + 10,
+            ctx.CursorY,
+            80,
+            26,
           );
-          nodeY = nodeY + 20;
-          if (expanded) {
-            [ctx, clicked] = gui.TreeLeaf(
-              ctx,
-              w,
-              "Leaf 1.1",
-              widgetsWin.X + 15,
-              nodeY,
-              40,
-            );
-            nodeY = nodeY + 20;
-            [ctx, clicked] = gui.TreeLeaf(
-              ctx,
-              w,
-              "Leaf 1.2",
-              widgetsWin.X + 15,
-              nodeY,
-              40,
-            );
-            nodeY = nodeY + 20;
-            [ctx, clicked] = gui.TreeLeaf(
-              ctx,
-              w,
-              "Leaf 1.3",
-              widgetsWin.X + 15,
-              nodeY,
-              40,
-            );
-            nodeY = nodeY + 20;
+          if (clicked) {
+            counter = counter + 1;
           }
-          [ctx, treeState, expanded] = gui.TreeNode(
+          [ctx, clicked] = gui.Button(
             ctx,
             w,
-            treeState,
-            "Branch 2",
-            widgetsWin.X + 15,
-            nodeY,
-            20,
+            "Reset",
+            demoWin.X + 100,
+            ctx.CursorY,
+            80,
+            26,
           );
-          nodeY = nodeY + 20;
-          if (expanded) {
-            [ctx, clicked] = gui.TreeLeaf(
-              ctx,
-              w,
-              "Leaf 2.1",
-              widgetsWin.X + 15,
-              nodeY,
-              40,
-            );
-            nodeY = nodeY + 20;
-            [ctx, clicked] = gui.TreeLeaf(
-              ctx,
-              w,
-              "Leaf 2.2",
-              widgetsWin.X + 15,
-              nodeY,
-              40,
-            );
-            nodeY = nodeY + 20;
+          if (clicked) {
+            counter = 0;
+            volume = 0.5;
+            brightness = 75.0;
+            progress = 0.35;
           }
-          [ctx, clicked] = gui.TreeLeaf(
+          gui.Label(
             ctx,
             w,
-            "Leaf 3",
-            widgetsWin.X + 15,
-            nodeY,
-            20,
+            "Count: " + intToString(counter),
+            demoWin.X + 190,
+            ctx.CursorY + 4,
           );
-          nodeY = nodeY + 20;
+          ctx = gui.NextRow(ctx, 26);
+          gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
+          ctx.CursorY = ctx.CursorY + 4;
+          [ctx, showDemo] = gui.AutoCheckbox(
+            ctx,
+            w,
+            "Show Demo Window",
+            showDemo,
+          );
+          [ctx, showWidgets] = gui.AutoCheckbox(
+            ctx,
+            w,
+            "Show Widgets Window",
+            showWidgets,
+          );
+          [ctx, showAnother] = gui.AutoCheckbox(
+            ctx,
+            w,
+            "Show Another Window",
+            showAnother,
+          );
+          [ctx, enabled] = gui.AutoCheckbox(ctx, w, "Enable Feature", enabled);
+          gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
+          ctx.CursorY = ctx.CursorY + 4;
+          [ctx, volume] = gui.AutoSlider(
+            ctx,
+            w,
+            "Volume",
+            320,
+            0.0,
+            1.0,
+            volume,
+          );
+          [ctx, brightness] = gui.AutoSlider(
+            ctx,
+            w,
+            "Bright",
+            320,
+            0.0,
+            100.0,
+            brightness,
+          );
+          gui.Separator(ctx, w, demoWin.X + 10, ctx.CursorY - 2, 330);
+          ctx.CursorY = ctx.CursorY + 4;
+          ctx = gui.AutoLabel(ctx, w, "Progress Bar:");
+          gui.ProgressBar(
+            ctx,
+            w,
+            demoWin.X + 10,
+            ctx.CursorY,
+            320,
+            20,
+            progress,
+          );
+          ctx = gui.NextRow(ctx, 24);
+          progress = progress + 0.002;
+          if (progress > 1.0) {
+            progress = 0.0;
+          }
         }
-      } else if (tabState.ActiveTab == 3) {
-        ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 8);
-        ctx = gui.AutoLabel(ctx, w, "Text Input:");
-        gui.Label(ctx, w, "Name:", widgetsWin.X + 15, ctx.CursorY + 4);
-        [ctx, textInput] = gui.TextInput(
+      }
+      if (showWidgets) {
+        [ctx, widgetsWin] = gui.DraggablePanel(
           ctx,
           w,
-          textInput,
-          widgetsWin.X + 70,
-          ctx.CursorY,
-          200,
+          "Widgets Showcase",
+          widgetsWin,
         );
-        ctx = gui.NextRow(ctx, 28);
-        gui.Label(ctx, w, "Email:", widgetsWin.X + 15, ctx.CursorY + 4);
-        [ctx, textInput2] = gui.TextInput(
+        if (ctx.DrawContent) {
+          [ctx, tabState] = gui.TabBar(
+            ctx,
+            w,
+            tabState,
+            tabLabels,
+            widgetsWin.X + 10,
+            widgetsWin.Y + 35,
+          );
+          let contentY = widgetsWin.Y + 70;
+          if (tabState.ActiveTab == 0) {
+            ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 6);
+            ctx = gui.AutoLabel(ctx, w, "Radio Buttons:");
+            [ctx, clicked] = gui.AutoRadioButton(
+              ctx,
+              w,
+              "Option A",
+              radioSelection == 0,
+            );
+            if (clicked) {
+              radioSelection = 0;
+            }
+            [ctx, clicked] = gui.AutoRadioButton(
+              ctx,
+              w,
+              "Option B",
+              radioSelection == 1,
+            );
+            if (clicked) {
+              radioSelection = 1;
+            }
+            [ctx, clicked] = gui.AutoRadioButton(
+              ctx,
+              w,
+              "Option C",
+              radioSelection == 2,
+            );
+            if (clicked) {
+              radioSelection = 2;
+            }
+            gui.Separator(ctx, w, widgetsWin.X + 15, ctx.CursorY, 350);
+            ctx.CursorY = ctx.CursorY + 8;
+            ctx = gui.AutoLabel(ctx, w, "Spinner:");
+            [ctx, spinnerValue] = gui.Spinner(
+              ctx,
+              w,
+              "Value",
+              widgetsWin.X + 15,
+              ctx.CursorY,
+              spinnerValue,
+              0,
+              100,
+            );
+            ctx = gui.NextRow(ctx, 28);
+            gui.Separator(ctx, w, widgetsWin.X + 15, ctx.CursorY, 350);
+            ctx.CursorY = ctx.CursorY + 8;
+            [ctx, pickedColor] = gui.ColorPicker(
+              ctx,
+              w,
+              "Color Picker:",
+              widgetsWin.X + 15,
+              ctx.CursorY,
+              340,
+              pickedColor,
+            );
+          } else if (tabState.ActiveTab == 1) {
+            ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 6);
+            ctx = gui.AutoLabel(ctx, w, "List Box (select an item):");
+            [ctx, selectedItem, scrollOffset] = gui.ListBox(
+              ctx,
+              w,
+              listItems,
+              widgetsWin.X + 15,
+              ctx.CursorY,
+              200,
+              150,
+              selectedItem,
+              scrollOffset,
+            );
+            ctx.CursorY = ctx.CursorY + 155;
+            ctx = gui.AutoLabel(ctx, w, "Selected: " + listItems[selectedItem]);
+          } else if (tabState.ActiveTab == 2) {
+            ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 4);
+            ctx = gui.AutoLabel(ctx, w, "Tree View:");
+            let expanded = false;
+            let nodeY = ctx.CursorY;
+            [ctx, treeState, expanded] = gui.TreeNode(
+              ctx,
+              w,
+              treeState,
+              "Root",
+              widgetsWin.X + 15,
+              nodeY,
+              0,
+            );
+            nodeY = nodeY + 20;
+            if (expanded) {
+              [ctx, treeState, expanded] = gui.TreeNode(
+                ctx,
+                w,
+                treeState,
+                "Branch 1",
+                widgetsWin.X + 15,
+                nodeY,
+                20,
+              );
+              nodeY = nodeY + 20;
+              if (expanded) {
+                [ctx, clicked] = gui.TreeLeaf(
+                  ctx,
+                  w,
+                  "Leaf 1.1",
+                  widgetsWin.X + 15,
+                  nodeY,
+                  40,
+                );
+                nodeY = nodeY + 20;
+                [ctx, clicked] = gui.TreeLeaf(
+                  ctx,
+                  w,
+                  "Leaf 1.2",
+                  widgetsWin.X + 15,
+                  nodeY,
+                  40,
+                );
+                nodeY = nodeY + 20;
+                [ctx, clicked] = gui.TreeLeaf(
+                  ctx,
+                  w,
+                  "Leaf 1.3",
+                  widgetsWin.X + 15,
+                  nodeY,
+                  40,
+                );
+                nodeY = nodeY + 20;
+              }
+              [ctx, treeState, expanded] = gui.TreeNode(
+                ctx,
+                w,
+                treeState,
+                "Branch 2",
+                widgetsWin.X + 15,
+                nodeY,
+                20,
+              );
+              nodeY = nodeY + 20;
+              if (expanded) {
+                [ctx, clicked] = gui.TreeLeaf(
+                  ctx,
+                  w,
+                  "Leaf 2.1",
+                  widgetsWin.X + 15,
+                  nodeY,
+                  40,
+                );
+                nodeY = nodeY + 20;
+                [ctx, clicked] = gui.TreeLeaf(
+                  ctx,
+                  w,
+                  "Leaf 2.2",
+                  widgetsWin.X + 15,
+                  nodeY,
+                  40,
+                );
+                nodeY = nodeY + 20;
+              }
+              [ctx, clicked] = gui.TreeLeaf(
+                ctx,
+                w,
+                "Leaf 3",
+                widgetsWin.X + 15,
+                nodeY,
+                20,
+              );
+              nodeY = nodeY + 20;
+            }
+          } else if (tabState.ActiveTab == 3) {
+            ctx = gui.BeginLayout(ctx, widgetsWin.X + 15, contentY, 8);
+            ctx = gui.AutoLabel(ctx, w, "Text Input:");
+            gui.Label(ctx, w, "Name:", widgetsWin.X + 15, ctx.CursorY + 4);
+            [ctx, textInput] = gui.TextInput(
+              ctx,
+              w,
+              textInput,
+              widgetsWin.X + 70,
+              ctx.CursorY,
+              200,
+            );
+            ctx = gui.NextRow(ctx, 28);
+            gui.Label(ctx, w, "Email:", widgetsWin.X + 15, ctx.CursorY + 4);
+            [ctx, textInput2] = gui.TextInput(
+              ctx,
+              w,
+              textInput2,
+              widgetsWin.X + 70,
+              ctx.CursorY,
+              200,
+            );
+            ctx = gui.NextRow(ctx, 28);
+            gui.Separator(ctx, w, widgetsWin.X + 15, ctx.CursorY, 350);
+            ctx.CursorY = ctx.CursorY + 8;
+            ctx = gui.AutoLabel(ctx, w, "Entered text:");
+            ctx = gui.AutoLabel(ctx, w, "  Name: " + textInput.Text);
+            ctx = gui.AutoLabel(ctx, w, "  Email: " + textInput2.Text);
+          }
+        }
+      }
+      if (showAnother) {
+        [ctx, anotherWin] = gui.DraggablePanel(
           ctx,
           w,
-          textInput2,
-          widgetsWin.X + 70,
-          ctx.CursorY,
-          200,
+          "Another Window",
+          anotherWin,
         );
-        ctx = gui.NextRow(ctx, 28);
-        gui.Separator(ctx, w, widgetsWin.X + 15, ctx.CursorY, 350);
-        ctx.CursorY = ctx.CursorY + 8;
-        ctx = gui.AutoLabel(ctx, w, "Entered text:");
-        ctx = gui.AutoLabel(ctx, w, "  Name: " + textInput.Text);
-        ctx = gui.AutoLabel(ctx, w, "  Email: " + textInput2.Text);
+        if (ctx.DrawContent) {
+          gui.Label(
+            ctx,
+            w,
+            "This is another panel!",
+            anotherWin.X + 10,
+            anotherWin.Y + 50,
+          );
+          [ctx, clicked] = gui.Button(
+            ctx,
+            w,
+            "Close",
+            anotherWin.X + 10,
+            anotherWin.Y + 90,
+            100,
+            26,
+          );
+          if (clicked) {
+            showAnother = false;
+          }
+        }
       }
-    }
-    if (showAnother) {
-      [ctx, anotherWin] = gui.DraggablePanel(
-        ctx,
-        w,
-        "Another Window",
-        anotherWin,
-      );
-      gui.Label(
-        ctx,
-        w,
-        "This is another panel!",
-        anotherWin.X + 10,
-        anotherWin.Y + 50,
-      );
-      [ctx, clicked] = gui.Button(
-        ctx,
-        w,
-        "Close",
-        anotherWin.X + 10,
-        anotherWin.Y + 90,
-        100,
-        26,
-      );
-      if (clicked) {
-        showAnother = false;
+      [ctx, infoWin] = gui.DraggablePanel(ctx, w, "Info", infoWin);
+      if (ctx.DrawContent) {
+        ctx = gui.BeginLayout(ctx, infoWin.X + 10, infoWin.Y + 50, 4);
+        ctx = gui.AutoLabel(ctx, w, "Application Stats:");
+        ctx = gui.AutoLabel(ctx, w, "  Volume: " + floatToString(volume));
+        ctx = gui.AutoLabel(
+          ctx,
+          w,
+          "  Brightness: " + floatToString(brightness),
+        );
+        ctx = gui.AutoLabel(ctx, w, "  Clicks: " + intToString(counter));
+        ctx = gui.AutoLabel(
+          ctx,
+          w,
+          "  Spinner: " + intToString(int(spinnerValue)),
+        );
+        ctx = gui.AutoLabel(ctx, w, "  Radio: " + intToString(radioSelection));
+        if (
+          ctx.MouseX >= infoWin.X &&
+          ctx.MouseX <= infoWin.X + infoWin.Width &&
+          ctx.MouseY >= infoWin.Y &&
+          ctx.MouseY <= infoWin.Y + 30
+        ) {
+          gui.Tooltip(
+            ctx,
+            w,
+            "Drag to move this panel",
+            ctx.MouseX,
+            ctx.MouseY,
+          );
+        }
       }
+      [ctx, sphereWin] = gui.DraggablePanel(ctx, w, "3D Sphere", sphereWin);
+      if (ctx.DrawContent) {
+        drawSphere(
+          w,
+          sphereWin.X + 125,
+          sphereWin.Y + 150,
+          80,
+          graphics.NewColor(180, 180, 190, 255),
+        );
+      }
+      pass = pass + 1;
     }
-    [ctx, infoWin] = gui.DraggablePanel(ctx, w, "Info", infoWin);
-    ctx = gui.BeginLayout(ctx, infoWin.X + 10, infoWin.Y + 50, 4);
-    ctx = gui.AutoLabel(ctx, w, "Application Stats:");
-    ctx = gui.AutoLabel(ctx, w, "  Volume: " + floatToString(volume));
-    ctx = gui.AutoLabel(ctx, w, "  Brightness: " + floatToString(brightness));
-    ctx = gui.AutoLabel(ctx, w, "  Clicks: " + intToString(counter));
-    ctx = gui.AutoLabel(ctx, w, "  Spinner: " + intToString(int(spinnerValue)));
-    ctx = gui.AutoLabel(ctx, w, "  Radio: " + intToString(radioSelection));
-    if (
-      ctx.MouseX >= infoWin.X &&
-      ctx.MouseX <= infoWin.X + infoWin.Width &&
-      ctx.MouseY >= infoWin.Y &&
-      ctx.MouseY <= infoWin.Y + 30
-    ) {
-      gui.Tooltip(ctx, w, "Drag to move this panel", ctx.MouseX, ctx.MouseY);
-    }
+    ctx = gui.EndWindowPasses(ctx);
     [ctx, clicked] = gui.Button(ctx, w, "Quit", 1150, 900, 100, 30);
     if (clicked) {
       return false;
@@ -3005,6 +3172,59 @@ function floatToString(f) {
     fracStr = "0" + fracStr;
   }
   return intToString(intPart) + "." + fracStr;
+}
+
+function sinTable() {
+  return [
+    0, 105, 208, 309, 407, 500, 588, 669, 743, 809, 866, 914, 951, 978, 995,
+    1000, 995, 978, 951, 914, 866, 809, 743, 669, 588, 500, 407, 309, 208, 105,
+    0, -105, -208, -309, -407, -500, -588, -669, -743, -809, -866, -914, -951,
+    -978, -995, -1000, -995, -978, -951, -914, -866, -809, -743, -669, -588,
+    -500, -407, -309, -208, -105,
+  ];
+}
+
+function cosTable() {
+  return [
+    1000, 995, 978, 951, 914, 866, 809, 743, 669, 588, 500, 407, 309, 208, 105,
+    0, -105, -208, -309, -407, -500, -588, -669, -743, -809, -866, -914, -951,
+    -978, -995, -1000, -995, -978, -951, -914, -866, -809, -743, -669, -588,
+    -500, -407, -309, -208, -105, 0, 105, 208, 309, 407, 500, 588, 669, 743,
+    809, 866, 914, 951, 978, 995,
+  ];
+}
+
+function drawSphere(w, cx, cy, radius, color) {
+  let sin = sinTable();
+  let cos = cosTable();
+  let latIdx = [45, 50, 55, 0, 5, 10, 15];
+  let numLon = 12;
+  let lat = 0;
+  for (; lat < 6; ) {
+    let li0 = latIdx[lat];
+    let li1 = latIdx[lat + 1];
+    let sinLat0 = sin[li0];
+    let cosLat0 = cos[li0];
+    let sinLat1 = sin[li1];
+    let cosLat1 = cos[li1];
+    let y0 = ((int32(sinLat0) * radius) / 1000) | 0;
+    let y1 = ((int32(sinLat1) * radius) / 1000) | 0;
+    let lon = 0;
+    for (; lon < numLon; ) {
+      let lonIdx0 = (lon * 5) % 60;
+      let lonIdx1 = ((lon + 1) * 5) % 60;
+      let x00 = (int32(((cosLat0 * cos[lonIdx0]) / 1000) | 0) * radius) / 1000;
+      let x01 = (int32(((cosLat0 * cos[lonIdx1]) / 1000) | 0) * radius) / 1000;
+      let x10 = (int32(((cosLat1 * cos[lonIdx0]) / 1000) | 0) * radius) / 1000;
+      let x11 = (int32(((cosLat1 * cos[lonIdx1]) / 1000) | 0) * radius) / 1000;
+      graphics.DrawLine(w, cx + x00, cy - y0, cx + x01, cy - y0, color);
+      graphics.DrawLine(w, cx + x10, cy - y1, cx + x11, cy - y1, color);
+      graphics.DrawLine(w, cx + x00, cy - y0, cx + x10, cy - y1, color);
+      graphics.DrawLine(w, cx + x00, cy - y0, cx + x11, cy - y1, color);
+      lon = lon + 1;
+    }
+    lat = lat + 1;
+  }
 }
 
 // Run main
