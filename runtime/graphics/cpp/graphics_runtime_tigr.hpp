@@ -11,6 +11,9 @@
 #include <cstdint>
 #include <functional>
 
+// Platform-specific screen size (implemented in screen_helper.c)
+extern "C" void getScreenSize(int* width, int* height);
+
 namespace graphics {
 
 struct Color {
@@ -194,9 +197,11 @@ inline std::tuple<int32_t, int32_t, int32_t> GetMouse(Window w) {
 inline int32_t GetWidth(Window w) { return w.width; }
 inline int32_t GetHeight(Window w) { return w.height; }
 
-// GetScreenSize returns a safe default size for tigr (windowed mode)
+// GetScreenSize returns the usable screen area in logical points
 inline std::tuple<int32_t, int32_t> GetScreenSize() {
-    return {1024, 768};
+    int w, h;
+    getScreenSize(&w, &h);
+    return {static_cast<int32_t>(w), static_cast<int32_t>(h)};
 }
 
 // --- Rendering ---

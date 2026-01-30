@@ -1324,18 +1324,19 @@ CFLAGS = -O3
 TARGET = %s
 SRCS = %s.cpp
 TIGR_SRC = %s/graphics/cpp/tigr.c
+SCREEN_SRC = %s/graphics/cpp/screen_helper.c
 
 # Platform-specific flags
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-    LDFLAGS = -framework OpenGL -framework Cocoa
+    LDFLAGS = -framework OpenGL -framework Cocoa -framework CoreGraphics
 endif
 ifeq ($(UNAME_S),Linux)
     LDFLAGS = -lGL -lX11
 endif
 # Windows (MinGW)
 ifeq ($(OS),Windows_NT)
-    LDFLAGS = -lopengl32 -lgdi32
+    LDFLAGS = -lopengl32 -lgdi32 -luser32 -lshell32 -ladvapi32
 endif
 
 all: $(TARGET)
@@ -1343,14 +1344,17 @@ all: $(TARGET)
 tigr.o: $(TIGR_SRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET): $(SRCS) tigr.o
-	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) tigr.o $(LDFLAGS)
+screen_helper.o: $(SCREEN_SRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(SRCS) tigr.o screen_helper.o
+	$(CXX) $(CXXFLAGS) -o $@ $(SRCS) tigr.o screen_helper.o $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET) tigr.o
+	rm -f $(TARGET) tigr.o screen_helper.o
 
 .PHONY: all clean
-`, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath)
+`, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath, absRuntimePath)
 	}
 
 	_, err = file.WriteString(makefile)

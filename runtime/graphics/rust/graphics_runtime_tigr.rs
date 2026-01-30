@@ -70,6 +70,27 @@ extern "C" {
     fn tigrMouse(bmp: *mut Tigr, x: *mut c_int, y: *mut c_int, buttons: *mut c_int);
 }
 
+// Platform-specific screen size FFI
+// On macOS, getScreenSize is implemented in screen_helper.c (compiled via build.rs)
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn getScreenSize(width: *mut c_int, height: *mut c_int);
+}
+
+#[cfg(target_os = "linux")]
+extern "C" {
+    fn XOpenDisplay(display_name: *const c_char) -> *mut std::ffi::c_void;
+    fn XCloseDisplay(display: *mut std::ffi::c_void) -> c_int;
+    fn XDefaultScreenOfDisplay(display: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn XWidthOfScreen(screen: *mut std::ffi::c_void) -> c_int;
+    fn XHeightOfScreen(screen: *mut std::ffi::c_void) -> c_int;
+}
+
+#[cfg(target_os = "windows")]
+extern "C" {
+    fn GetSystemMetrics(nIndex: c_int) -> c_int;
+}
+
 // --- Thread-local storage ---
 
 thread_local! {
@@ -301,9 +322,43 @@ pub fn GetMouse(w: Window) -> (i32, i32, i32) {
 pub fn GetWidth(w: Window) -> i32 { w.width }
 pub fn GetHeight(w: Window) -> i32 { w.height }
 
-/// GetScreenSize returns a safe default size for tigr (windowed mode)
+/// GetScreenSize returns the actual screen resolution
 pub fn GetScreenSize() -> (i32, i32) {
-    (1024, 768)
+    #[cfg(target_os = "macos")]
+    {
+        unsafe {
+            let mut w: c_int = 1024;
+            let mut h: c_int = 768;
+            getScreenSize(&mut w, &mut h);
+            return (w, h);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        const SM_CXSCREEN: c_int = 0;
+        const SM_CYSCREEN: c_int = 1;
+        unsafe {
+            return (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let dpy = XOpenDisplay(std::ptr::null());
+            if !dpy.is_null() {
+                let scr = XDefaultScreenOfDisplay(dpy);
+                let w = XWidthOfScreen(scr);
+                let h = XHeightOfScreen(scr);
+                XCloseDisplay(dpy);
+                return (w, h);
+            }
+        }
+        return (1024, 768);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        (1024, 768)
+    }
 }
 
 // --- Rendering ---

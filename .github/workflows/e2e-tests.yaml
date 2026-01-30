@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  run-tests:
+  run-tests-linux:
     runs-on: ubuntu-latest
 
     steps:
@@ -44,4 +44,81 @@ jobs:
       - name: Run E2E tests
         run: |
           cd cmd
+          go test -v -run TestE2E
+
+  run-tests-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.23
+
+      - name: Install SDL2
+        run: brew install sdl2
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Build
+        run: |
+          cd cmd
+          make
+
+      - name: Run E2E tests
+        run: |
+          cd cmd
+          go test -v -run TestE2E
+
+  run-tests-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.23
+
+      - name: Install MinGW and Make
+        run: choco install mingw make -y
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Run E2E tests
+        shell: cmd
+        run: |
+          cd cmd
+          set CGO_ENABLED=1
+          set CC=gcc
+          set CXX=g++
           go test -v -run TestE2E

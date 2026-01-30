@@ -103,16 +103,16 @@ func DefaultStyle() GuiStyle {
 		// Modern dark theme with better contrast and softer colors
 		BackgroundColor:   graphics.NewColor(45, 45, 48, 250),    // Window body - neutral gray
 		TextColor:         graphics.NewColor(240, 240, 245, 255), // Soft white text
-		ButtonColor:       graphics.NewColor(70, 130, 210, 180),  // Button normal - softer blue
-		ButtonHoverColor:  graphics.NewColor(90, 150, 230, 220),  // Button hover - brighter
-		ButtonActiveColor: graphics.NewColor(50, 110, 190, 255),  // Button pressed - deeper
-		CheckboxColor:     graphics.NewColor(55, 65, 85, 255),    // Checkbox/frame bg
-		CheckmarkColor:    graphics.NewColor(100, 180, 255, 255), // Checkmark - bright accent
-		SliderTrackColor:  graphics.NewColor(80, 160, 240, 200),  // Slider filled
-		SliderKnobColor:   graphics.NewColor(120, 180, 255, 255), // Slider grab - bright
-		BorderColor:       graphics.NewColor(60, 65, 75, 255),    // Subtle borders
-		FrameBgColor:      graphics.NewColor(45, 50, 60, 220),    // Input field bg
-		TitleBgColor:      graphics.NewColor(55, 95, 160, 255),   // Title bar - refined blue
+		ButtonColor:       graphics.NewColor(90, 90, 95, 200),    // Button normal - gray
+		ButtonHoverColor:  graphics.NewColor(110, 110, 115, 230), // Button hover - lighter gray
+		ButtonActiveColor: graphics.NewColor(70, 70, 75, 255),    // Button pressed - darker gray
+		CheckboxColor:     graphics.NewColor(60, 60, 65, 255),    // Checkbox/frame bg - gray
+		CheckmarkColor:    graphics.NewColor(200, 200, 210, 255), // Checkmark - light gray
+		SliderTrackColor:  graphics.NewColor(130, 130, 140, 220), // Slider filled - medium gray
+		SliderKnobColor:   graphics.NewColor(180, 180, 190, 255), // Slider grab - light gray
+		BorderColor:       graphics.NewColor(65, 65, 70, 255),    // Subtle borders
+		FrameBgColor:      graphics.NewColor(50, 50, 55, 220),    // Input field bg - dark gray
+		TitleBgColor:      graphics.NewColor(75, 75, 80, 255),    // Title bar - neutral gray
 		FontSize:          1,
 		Padding:           8,
 		ButtonHeight:      24,

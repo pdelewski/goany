@@ -1821,15 +1821,15 @@ func (cse *CSharpEmitter) GenerateCsproj() error {
   <!-- Compile tigr.c to native library before build -->
   <Target Name="CompileTigr" BeforeTargets="Build">
     <!-- macOS -->
-    <Exec Command="cc -shared -o $(OutputPath)libtigr.dylib tigr.c -framework OpenGL -framework Cocoa"
+    <Exec Command="cc -shared -o $(OutputPath)libtigr.dylib tigr.c screen_helper.c -framework OpenGL -framework Cocoa -framework CoreGraphics"
           Condition="$([MSBuild]::IsOSPlatform('OSX'))"
           WorkingDirectory="$(ProjectDir)" />
     <!-- Linux -->
-    <Exec Command="gcc -shared -fPIC -o $(OutputPath)libtigr.so tigr.c -lGL -lX11 -lm"
+    <Exec Command="gcc -shared -fPIC -o $(OutputPath)libtigr.so tigr.c screen_helper.c -lGL -lX11 -lm"
           Condition="$([MSBuild]::IsOSPlatform('Linux'))"
           WorkingDirectory="$(ProjectDir)" />
-    <!-- Windows -->
-    <Exec Command="cl /LD tigr.c opengl32.lib gdi32.lib user32.lib /Fe:$(OutputPath)tigr.dll"
+    <!-- Windows (MinGW) -->
+    <Exec Command="gcc -shared -o $(OutputPath)tigr.dll tigr.c screen_helper.c -lopengl32 -lgdi32 -luser32 -lshell32 -ladvapi32"
           Condition="$([MSBuild]::IsOSPlatform('Windows'))"
           WorkingDirectory="$(ProjectDir)" />
   </Target>
@@ -1944,6 +1944,18 @@ func (cse *CSharpEmitter) CopyGraphicsRuntime() error {
 			return fmt.Errorf("failed to write tigr.h: %w", err)
 		}
 		DebugLogPrintf("Copied tigr.h to %s", tigrHDst)
+
+		// Copy screen_helper.c (platform-specific screen size detection)
+		shSrc := filepath.Join(cse.LinkRuntime, "graphics", "cpp", "screen_helper.c")
+		shDst := filepath.Join(cse.OutputDir, "screen_helper.c")
+		shContent, err := os.ReadFile(shSrc)
+		if err != nil {
+			return fmt.Errorf("failed to read screen_helper.c from %s: %w", shSrc, err)
+		}
+		if err := os.WriteFile(shDst, shContent, 0644); err != nil {
+			return fmt.Errorf("failed to write screen_helper.c: %w", err)
+		}
+		DebugLogPrintf("Copied screen_helper.c to %s", shDst)
 	}
 
 	return nil
