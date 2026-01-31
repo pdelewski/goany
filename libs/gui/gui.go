@@ -227,6 +227,26 @@ func pointInRect(px int32, py int32, x int32, y int32, w int32, h int32) bool {
 	return px >= x && px < x+w && py >= y && py < y+h
 }
 
+// drawHGradient draws a horizontal left-to-right gradient fill
+func drawHGradient(w graphics.Window, x int32, y int32, width int32, height int32,
+	r1 int32, g1 int32, b1 int32, r2 int32, g2 int32, b2 int32) {
+	step := int32(3)
+	i := int32(0)
+	for i < width {
+		sw := step
+		if i+sw > width {
+			sw = width - i
+		}
+		t := i * 1000 / width
+		r := r1 + (r2-r1)*t/1000
+		g := g1 + (g2-g1)*t/1000
+		b := b1 + (b2-b1)*t/1000
+		graphics.FillRect(w, graphics.NewRect(x+i, y, sw, height),
+			graphics.NewColor(uint8(r), uint8(g), uint8(b), 255))
+		i = i + step
+	}
+}
+
 // --- Z-Order Management ---
 
 // registerWindow adds a window ID to the z-order if not already present
@@ -550,15 +570,15 @@ func Panel(ctx GuiContext, w graphics.Window, title string, x int32, y int32, wi
 	graphics.FillRect(w, graphics.NewRect(x+3, y+3, width, height), graphics.NewColor(0, 0, 0, 50))
 	graphics.FillRect(w, graphics.NewRect(x+2, y+2, width, height), graphics.NewColor(0, 0, 0, 60))
 
-	// Draw title bar background
-	graphics.FillRect(w, graphics.NewRect(x, y, width, titleH), ctx.Style.TitleBgColor)
+	// Draw title bar with left-to-right gradient (dark to gray)
+	drawHGradient(w, x, y, width, titleH, 25, 25, 30, 85, 85, 90)
 
 	// Convex effect - bright top edge
-	graphics.DrawLine(w, x+1, y+1, x+width-2, y+1, graphics.NewColor(255, 255, 255, 80))
-	graphics.DrawLine(w, x+1, y+2, x+width-2, y+2, graphics.NewColor(255, 255, 255, 40))
-	graphics.DrawLine(w, x+1, y+1, x+1, y+titleH-2, graphics.NewColor(255, 255, 255, 50))
+	graphics.DrawLine(w, x+1, y+1, x+width-2, y+1, graphics.NewColor(255, 255, 255, 60))
+	graphics.DrawLine(w, x+1, y+2, x+width-2, y+2, graphics.NewColor(255, 255, 255, 25))
+	graphics.DrawLine(w, x+1, y+1, x+1, y+titleH-2, graphics.NewColor(255, 255, 255, 35))
 
-	// Convex effect - darker bottom of title bar
+	// Darker bottom of title bar
 	graphics.DrawLine(w, x+1, y+titleH-2, x+width-2, y+titleH-2, graphics.NewColor(0, 0, 0, 50))
 	graphics.DrawLine(w, x+1, y+titleH-1, x+width-2, y+titleH-1, graphics.NewColor(0, 0, 0, 80))
 
@@ -653,10 +673,10 @@ func Separator(ctx GuiContext, w graphics.Window, x int32, y int32, width int32)
 func BeginMenuBar(ctx GuiContext, w graphics.Window, state MenuState, x int32, y int32, width int32) (GuiContext, MenuState) {
 	height := TextHeight(ctx.Style.FontSize) + ctx.Style.Padding*2
 
-	// Draw menu bar background with gradient effect
-	graphics.FillRect(w, graphics.NewRect(x, y, width, height), ctx.Style.TitleBgColor)
+	// Draw menu bar background with left-to-right gradient (dark to gray)
+	drawHGradient(w, x, y, width, height, 25, 25, 30, 85, 85, 90)
 	// Top highlight
-	graphics.DrawLine(w, x, y+1, x+width-1, y+1, graphics.NewColor(255, 255, 255, 30))
+	graphics.DrawLine(w, x, y+1, x+width-1, y+1, graphics.NewColor(255, 255, 255, 25))
 	// Bottom shadow
 	graphics.DrawLine(w, x, y+height-1, x+width, y+height-1, graphics.NewColor(0, 0, 0, 60))
 	graphics.DrawLine(w, x, y+height, x+width, y+height, graphics.NewColor(0, 0, 0, 30))
@@ -801,6 +821,109 @@ func MenuItemSeparator(ctx GuiContext, w graphics.Window, dropX int32, dropY int
 	// Draw separator with subtle 3D effect
 	graphics.DrawLine(w, dropX+padding, y, dropX+itemW-padding, y, graphics.NewColor(30, 35, 45, 255))
 	graphics.DrawLine(w, dropX+padding, y+1, dropX+itemW-padding, y+1, graphics.NewColor(70, 75, 85, 255))
+}
+
+// --- Toolbar ---
+
+// ToolbarState holds positioning state for toolbar buttons
+type ToolbarState struct {
+	X      int32 // Current X cursor for next button
+	Y      int32 // Toolbar Y position
+	Height int32 // Toolbar height
+}
+
+// BeginToolbar starts a toolbar bar at the given position
+func BeginToolbar(ctx GuiContext, w graphics.Window, x int32, y int32, width int32) (GuiContext, ToolbarState) {
+	height := TextHeight(ctx.Style.FontSize) + ctx.Style.Padding*2 - 2
+	padding := ctx.Style.Padding
+
+	// Draw toolbar background - slightly lighter than menu bar
+	graphics.FillRect(w, graphics.NewRect(x, y, width, height), graphics.NewColor(60, 60, 65, 255))
+	// Top highlight
+	graphics.DrawLine(w, x, y, x+width-1, y, graphics.NewColor(255, 255, 255, 20))
+	// Bottom shadow
+	graphics.DrawLine(w, x, y+height-1, x+width, y+height-1, graphics.NewColor(0, 0, 0, 50))
+	graphics.DrawLine(w, x, y+height, x+width, y+height, graphics.NewColor(0, 0, 0, 25))
+
+	state := ToolbarState{
+		X:      x + padding,
+		Y:      y,
+		Height: height,
+	}
+	return ctx, state
+}
+
+// ToolbarButton draws a compact toolbar button and returns true if clicked
+func ToolbarButton(ctx GuiContext, w graphics.Window, state ToolbarState, label string) (GuiContext, ToolbarState, bool) {
+	id := GenID("tb_" + label)
+	padding := ctx.Style.Padding
+	textW := TextWidth(label, ctx.Style.FontSize)
+	textH := TextHeight(ctx.Style.FontSize)
+	btnW := textW + padding*2
+	btnH := state.Height - 6
+	x := state.X
+	y := state.Y + 3
+
+	// Hit test
+	hovered := pointInRect(ctx.MouseX, ctx.MouseY, x, y, btnW, btnH)
+	clicked := false
+
+	// Determine visual state
+	if hovered {
+		ctx.HotID = id
+		if ctx.MouseClicked {
+			ctx.ActiveID = id
+		}
+	}
+
+	if ctx.ActiveID == id && hovered {
+		// Pressed
+		graphics.FillRect(w, graphics.NewRect(x, y, btnW, btnH), ctx.Style.ButtonActiveColor)
+		// Inset effect
+		graphics.DrawLine(w, x, y, x+btnW-1, y, graphics.NewColor(0, 0, 0, 60))
+		graphics.DrawLine(w, x, y, x, y+btnH-1, graphics.NewColor(0, 0, 0, 40))
+	} else if ctx.HotID == id {
+		// Hovered - subtle raised look
+		graphics.FillRect(w, graphics.NewRect(x, y, btnW, btnH), ctx.Style.ButtonHoverColor)
+		graphics.DrawLine(w, x+1, y+1, x+btnW-2, y+1, graphics.NewColor(255, 255, 255, 50))
+		graphics.DrawLine(w, x+1, y+1, x+1, y+btnH-2, graphics.NewColor(255, 255, 255, 30))
+		graphics.DrawLine(w, x+1, y+btnH-1, x+btnW-1, y+btnH-1, graphics.NewColor(0, 0, 0, 50))
+		graphics.DrawLine(w, x+btnW-1, y+1, x+btnW-1, y+btnH-1, graphics.NewColor(0, 0, 0, 30))
+	}
+	// Normal state: no background (flat toolbar style)
+
+	// Check click
+	if ctx.ReleasedID == id && hovered {
+		clicked = true
+	}
+
+	// Draw label centered
+	textX := x + (btnW-textW)/2
+	textY := y + (btnH-textH)/2
+	DrawText(w, label, textX, textY, ctx.Style.FontSize, ctx.Style.TextColor)
+
+	// Advance cursor
+	state.X = x + btnW + 2
+	return ctx, state, clicked
+}
+
+// ToolbarSeparator draws a vertical separator between toolbar button groups
+func ToolbarSeparator(w graphics.Window, state ToolbarState) ToolbarState {
+	x := state.X + 3
+	y := state.Y + 5
+	h := state.Height - 10
+
+	// Dark line then light line for 3D groove effect
+	graphics.DrawLine(w, x, y, x, y+h, graphics.NewColor(0, 0, 0, 80))
+	graphics.DrawLine(w, x+1, y, x+1, y+h, graphics.NewColor(255, 255, 255, 40))
+
+	state.X = x + 8
+	return state
+}
+
+// EndToolbar finishes the toolbar (currently a no-op, reserved for future use)
+func EndToolbar(ctx GuiContext, state ToolbarState) GuiContext {
+	return ctx
 }
 
 // --- Layout Helpers ---

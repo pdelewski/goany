@@ -51,11 +51,11 @@ func main() {
 	pickedColor := graphics.NewColor(100, 150, 200, 255)
 
 	// Draggable window states
-	demoWin := gui.NewWindowState(20, 45, 350, 420)
-	widgetsWin := gui.NewWindowState(390, 45, 380, 550)
-	anotherWin := gui.NewWindowState(790, 45, 250, 180)
-	infoWin := gui.NewWindowState(790, 240, 250, 200)
-	sphereWin := gui.NewWindowState(790, 455, 250, 250)
+	demoWin := gui.NewWindowState(20, 70, 350, 420)
+	widgetsWin := gui.NewWindowState(390, 70, 380, 550)
+	anotherWin := gui.NewWindowState(790, 70, 250, 180)
+	infoWin := gui.NewWindowState(790, 265, 250, 200)
+	sphereWin := gui.NewWindowState(790, 480, 250, 250)
 
 	var clicked bool
 	var fileMenuOpen bool
@@ -64,6 +64,7 @@ func main() {
 	var dropX int32
 	var fileDropX int32
 	var viewDropX int32
+	var toolbarState gui.ToolbarState
 
 	graphics.RunLoop(w, func(w graphics.Window) bool {
 		// Update input first
@@ -88,6 +89,22 @@ func main() {
 		}
 
 		ctx, menuState = gui.EndMenuBar(ctx, menuState)
+
+		// Toolbar under menu bar
+		ctx, toolbarState = gui.BeginToolbar(ctx, w, 0, menuState.MenuBarH, graphics.GetWidth(w))
+		ctx, toolbarState, clicked = gui.ToolbarButton(ctx, w, toolbarState, "New")
+		if clicked {
+			counter = 0
+		}
+		ctx, toolbarState, clicked = gui.ToolbarButton(ctx, w, toolbarState, "Open")
+		ctx, toolbarState, clicked = gui.ToolbarButton(ctx, w, toolbarState, "Save")
+		toolbarState = gui.ToolbarSeparator(w, toolbarState)
+		ctx, toolbarState, clicked = gui.ToolbarButton(ctx, w, toolbarState, "Undo")
+		ctx, toolbarState, clicked = gui.ToolbarButton(ctx, w, toolbarState, "Redo")
+		toolbarState = gui.ToolbarSeparator(w, toolbarState)
+		ctx, toolbarState, clicked = gui.ToolbarButton(ctx, w, toolbarState, "Zoom In")
+		ctx, toolbarState, clicked = gui.ToolbarButton(ctx, w, toolbarState, "Zoom Out")
+		ctx = gui.EndToolbar(ctx, toolbarState)
 
 		// --- Z-ordered window rendering ---
 		pass := int32(0)
