@@ -520,6 +520,26 @@ const gui = {
   pointInRect: function (px, py, x, y, w, h) {
     return px >= x && px < x + w && py >= y && py < y + h;
   },
+  drawHGradient: function (w, x, y, width, height, r1, g1, b1, r2, g2, b2) {
+    let step = int32(3);
+    let i = int32(0);
+    for (; i < width; ) {
+      let sw = step;
+      if (i + sw > width) {
+        sw = width - i;
+      }
+      let t = ((i * 1000) / width) | 0;
+      let r = r1 + ((((r2 - r1) * t) / 1000) | 0);
+      let g = g1 + ((((g2 - g1) * t) / 1000) | 0);
+      let b = b1 + ((((b2 - b1) * t) / 1000) | 0);
+      graphics.FillRect(
+        w,
+        graphics.NewRect(x + i, y, sw, height),
+        graphics.NewColor(uint8(r), uint8(g), uint8(b), 255),
+      );
+      i = i + step;
+    }
+  },
   registerWindow: function (ctx, id) {
     let i = 0;
     for (; i < len(ctx.WindowZOrder); ) {
@@ -1013,18 +1033,14 @@ const gui = {
       graphics.NewRect(x + 2, y + 2, width, height),
       graphics.NewColor(0, 0, 0, 60),
     );
-    graphics.FillRect(
-      w,
-      graphics.NewRect(x, y, width, titleH),
-      ctx.Style.TitleBgColor,
-    );
+    this.drawHGradient(w, x, y, width, titleH, 25, 25, 30, 85, 85, 90);
     graphics.DrawLine(
       w,
       x + 1,
       y + 1,
       x + width - 2,
       y + 1,
-      graphics.NewColor(255, 255, 255, 80),
+      graphics.NewColor(255, 255, 255, 60),
     );
     graphics.DrawLine(
       w,
@@ -1032,7 +1048,7 @@ const gui = {
       y + 2,
       x + width - 2,
       y + 2,
-      graphics.NewColor(255, 255, 255, 40),
+      graphics.NewColor(255, 255, 255, 25),
     );
     graphics.DrawLine(
       w,
@@ -1040,7 +1056,7 @@ const gui = {
       y + 1,
       x + 1,
       y + titleH - 2,
-      graphics.NewColor(255, 255, 255, 50),
+      graphics.NewColor(255, 255, 255, 35),
     );
     graphics.DrawLine(
       w,
@@ -1174,18 +1190,14 @@ const gui = {
   },
   BeginMenuBar: function (ctx, w, state, x, y, width) {
     let height = this.TextHeight(ctx.Style.FontSize) + ctx.Style.Padding * 2;
-    graphics.FillRect(
-      w,
-      graphics.NewRect(x, y, width, height),
-      ctx.Style.TitleBgColor,
-    );
+    this.drawHGradient(w, x, y, width, height, 25, 25, 30, 85, 85, 90);
     graphics.DrawLine(
       w,
       x,
       y + 1,
       x + width - 1,
       y + 1,
-      graphics.NewColor(255, 255, 255, 30),
+      graphics.NewColor(255, 255, 255, 25),
     );
     graphics.DrawLine(
       w,
@@ -1364,6 +1376,155 @@ const gui = {
       y + 1,
       graphics.NewColor(70, 75, 85, 255),
     );
+  },
+  BeginToolbar: function (ctx, w, x, y, width) {
+    let height =
+      this.TextHeight(ctx.Style.FontSize) + ctx.Style.Padding * 2 - 2;
+    let padding = ctx.Style.Padding;
+    graphics.FillRect(
+      w,
+      graphics.NewRect(x, y, width, height),
+      graphics.NewColor(60, 60, 65, 255),
+    );
+    graphics.DrawLine(
+      w,
+      x,
+      y,
+      x + width - 1,
+      y,
+      graphics.NewColor(255, 255, 255, 20),
+    );
+    graphics.DrawLine(
+      w,
+      x,
+      y + height - 1,
+      x + width,
+      y + height - 1,
+      graphics.NewColor(0, 0, 0, 50),
+    );
+    graphics.DrawLine(
+      w,
+      x,
+      y + height,
+      x + width,
+      y + height,
+      graphics.NewColor(0, 0, 0, 25),
+    );
+    let state = { X: x + padding, Y: y, Height: height };
+    return [ctx, state];
+  },
+  ToolbarButton: function (ctx, w, state, label) {
+    let id = this.GenID("tb_" + label);
+    let padding = ctx.Style.Padding;
+    let textW = this.TextWidth(label, ctx.Style.FontSize);
+    let textH = this.TextHeight(ctx.Style.FontSize);
+    let btnW = textW + padding * 2;
+    let btnH = state.Height - 6;
+    let x = state.X;
+    let y = state.Y + 3;
+    let hovered = this.pointInRect(ctx.MouseX, ctx.MouseY, x, y, btnW, btnH);
+    let clicked = false;
+    if (hovered) {
+      ctx.HotID = id;
+      if (ctx.MouseClicked) {
+        ctx.ActiveID = id;
+      }
+    }
+    if (ctx.ActiveID == id && hovered) {
+      graphics.FillRect(
+        w,
+        graphics.NewRect(x, y, btnW, btnH),
+        ctx.Style.ButtonActiveColor,
+      );
+      graphics.DrawLine(
+        w,
+        x,
+        y,
+        x + btnW - 1,
+        y,
+        graphics.NewColor(0, 0, 0, 60),
+      );
+      graphics.DrawLine(
+        w,
+        x,
+        y,
+        x,
+        y + btnH - 1,
+        graphics.NewColor(0, 0, 0, 40),
+      );
+    } else if (ctx.HotID == id) {
+      graphics.FillRect(
+        w,
+        graphics.NewRect(x, y, btnW, btnH),
+        ctx.Style.ButtonHoverColor,
+      );
+      graphics.DrawLine(
+        w,
+        x + 1,
+        y + 1,
+        x + btnW - 2,
+        y + 1,
+        graphics.NewColor(255, 255, 255, 50),
+      );
+      graphics.DrawLine(
+        w,
+        x + 1,
+        y + 1,
+        x + 1,
+        y + btnH - 2,
+        graphics.NewColor(255, 255, 255, 30),
+      );
+      graphics.DrawLine(
+        w,
+        x + 1,
+        y + btnH - 1,
+        x + btnW - 1,
+        y + btnH - 1,
+        graphics.NewColor(0, 0, 0, 50),
+      );
+      graphics.DrawLine(
+        w,
+        x + btnW - 1,
+        y + 1,
+        x + btnW - 1,
+        y + btnH - 1,
+        graphics.NewColor(0, 0, 0, 30),
+      );
+    }
+    if (ctx.ReleasedID == id && hovered) {
+      clicked = true;
+    }
+    let textX = x + (((btnW - textW) / 2) | 0);
+    let textY = y + (((btnH - textH) / 2) | 0);
+    this.DrawText(
+      w,
+      label,
+      textX,
+      textY,
+      ctx.Style.FontSize,
+      ctx.Style.TextColor,
+    );
+    state.X = x + btnW + 2;
+    return [ctx, state, clicked];
+  },
+  ToolbarSeparator: function (w, state) {
+    let x = state.X + 3;
+    let y = state.Y + 5;
+    let h = state.Height - 10;
+    graphics.DrawLine(w, x, y, x, y + h, graphics.NewColor(0, 0, 0, 80));
+    graphics.DrawLine(
+      w,
+      x + 1,
+      y,
+      x + 1,
+      y + h,
+      graphics.NewColor(255, 255, 255, 40),
+    );
+    state.X = x + 8;
+    return state;
+  },
+  EndToolbar: function (ctx, state) {
+    return ctx;
   },
   BeginLayout: function (ctx, x, y, spacing) {
     ctx.CursorX = x;
@@ -2616,11 +2777,11 @@ function main() {
   let spinnerValue = int32(50);
   let radioSelection = 0;
   let pickedColor = graphics.NewColor(100, 150, 200, 255);
-  let demoWin = gui.NewWindowState(20, 45, 350, 420);
-  let widgetsWin = gui.NewWindowState(390, 45, 380, 550);
-  let anotherWin = gui.NewWindowState(790, 45, 250, 180);
-  let infoWin = gui.NewWindowState(790, 240, 250, 200);
-  let sphereWin = gui.NewWindowState(790, 455, 250, 250);
+  let demoWin = gui.NewWindowState(20, 70, 350, 420);
+  let widgetsWin = gui.NewWindowState(390, 70, 380, 550);
+  let anotherWin = gui.NewWindowState(790, 70, 250, 180);
+  let infoWin = gui.NewWindowState(790, 265, 250, 200);
+  let sphereWin = gui.NewWindowState(790, 480, 250, 250);
   let clicked = false;
   let fileMenuOpen = false;
   let viewMenuOpen = false;
@@ -2628,6 +2789,7 @@ function main() {
   let dropX = 0;
   let fileDropX = 0;
   let viewDropX = 0;
+  let toolbarState = { X: 0, Y: 0, Height: 0 };
   graphics.RunLoop(w, function (w) {
     ctx = gui.UpdateInput(ctx, w);
     graphics.Clear(w, graphics.NewColor(30, 30, 30, 255));
@@ -2648,6 +2810,61 @@ function main() {
       viewDropX = menuState.CurrentMenuX - menuState.CurrentMenuW;
     }
     [ctx, menuState] = gui.EndMenuBar(ctx, menuState);
+    [ctx, toolbarState] = gui.BeginToolbar(
+      ctx,
+      w,
+      0,
+      menuState.MenuBarH,
+      graphics.GetWidth(w),
+    );
+    [ctx, toolbarState, clicked] = gui.ToolbarButton(
+      ctx,
+      w,
+      toolbarState,
+      "New",
+    );
+    if (clicked) {
+      counter = 0;
+    }
+    [ctx, toolbarState, clicked] = gui.ToolbarButton(
+      ctx,
+      w,
+      toolbarState,
+      "Open",
+    );
+    [ctx, toolbarState, clicked] = gui.ToolbarButton(
+      ctx,
+      w,
+      toolbarState,
+      "Save",
+    );
+    toolbarState = gui.ToolbarSeparator(w, toolbarState);
+    [ctx, toolbarState, clicked] = gui.ToolbarButton(
+      ctx,
+      w,
+      toolbarState,
+      "Undo",
+    );
+    [ctx, toolbarState, clicked] = gui.ToolbarButton(
+      ctx,
+      w,
+      toolbarState,
+      "Redo",
+    );
+    toolbarState = gui.ToolbarSeparator(w, toolbarState);
+    [ctx, toolbarState, clicked] = gui.ToolbarButton(
+      ctx,
+      w,
+      toolbarState,
+      "Zoom In",
+    );
+    [ctx, toolbarState, clicked] = gui.ToolbarButton(
+      ctx,
+      w,
+      toolbarState,
+      "Zoom Out",
+    );
+    ctx = gui.EndToolbar(ctx, toolbarState);
     let pass = int32(0);
     let numPasses = gui.WindowPassCount(ctx);
     for (; pass < numPasses; ) {
