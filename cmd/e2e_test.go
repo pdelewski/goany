@@ -24,6 +24,7 @@ var e2eTestCases = []TestCase{
 	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true},
 	{"containers", "../examples/containers", true, true, true, true, true},
 	{"uql", "../examples/uql", true, true, true, true, true},
+	{"ast-demo", "../examples/ast-demo", true, true, true, true, true},
 	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false},  // JS transpile only (needs browser)
 	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false},        // JS transpile only (needs browser)
 	{"gui-demo", "../examples/gui-demo", true, true, true, true, false},                  // JS transpile only (needs browser)

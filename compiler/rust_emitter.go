@@ -13,7 +13,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-var rustDestTypes = []string{"i8", "i16", "i32", "i64", "u8", "u16", "Box<dyn Any>", "String", "i32"}
+var rustDestTypes = []string{"i8", "i16", "i32", "i64", "u8", "u16", "Rc<dyn Any>", "String", "i32"}
 
 var rustTypesMap = map[string]string{
 	"int8":    rustDestTypes[0],
@@ -2115,9 +2115,9 @@ func (re *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index in
 			str += " = " + defaultVal
 		} else if typeName == "String" {
 			str += " = String::new()"
-		} else if len(typeName) > 0 && !strings.Contains(typeName, "Box<dyn") {
+		} else if len(typeName) > 0 && !strings.Contains(typeName, "Rc<dyn") {
 			// For struct types declared without value (var x StructType), initialize with default
-			// Skip Box<dyn Any> - can't call default() on trait objects
+			// Skip Rc<dyn Any> - can't call default() on trait objects
 			// Handle module-qualified types like types::Plan by checking the type name part
 			typeNamePart := typeName
 			if idx := strings.LastIndex(typeName, "::"); idx >= 0 {
@@ -2332,8 +2332,9 @@ func (re *RustEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
 		// but not Default or Debug (dyn Fn doesn't implement these)
 		str = re.emitAsString("#[derive(Clone)]\n", indent+2)
 	} else if hasInterfaceFields {
-		// Only derive Debug for structs with Any/interface{} fields
-		str = re.emitAsString("#[derive(Debug)]\n", indent+2)
+		// Derive Clone and Debug for structs with Rc<dyn Any>/interface{} fields
+		// Rc<dyn Any> implements Clone (cheap ref count bump), so struct can derive Clone
+		str = re.emitAsString("#[derive(Clone, Debug)]\n", indent+2)
 	} else {
 		// Check if struct only has primitive/Copy types (can derive Copy)
 		canCopy := re.structCanDeriveCopy(node.Name)
@@ -2507,7 +2508,82 @@ func (re *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	re.emitToken("}", RightBrace, indent+2)
 	str := re.emitAsString("\n\n", 0)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
+
+	// Generate manual impl Default for structs with interface{} fields
+	// (Rc<dyn Any> doesn't implement Default, so we can't derive it)
+	// Skip structs with function fields - they have complex closure types that can't easily get defaults
+	if re.structHasInterfaceFields(node.Name) && !re.structHasFunctionFields(node.Name) && node.Struct != nil && node.Struct.Fields != nil {
+		defaultStr := fmt.Sprintf("impl Default for %s {\n", node.Name)
+		defaultStr += "    fn default() -> Self {\n"
+		defaultStr += fmt.Sprintf("        %s {\n", node.Name)
+		for _, field := range node.Struct.Fields.List {
+			if len(field.Names) == 0 {
+				continue
+			}
+			fieldName := field.Names[0].Name
+			fieldType := re.pkg.TypesInfo.Types[field.Type].Type
+			defaultVal := re.rustDefaultValueForType(fieldType)
+			defaultStr += fmt.Sprintf("            %s: %s,\n", fieldName, defaultVal)
+		}
+		defaultStr += "        }\n"
+		defaultStr += "    }\n"
+		defaultStr += "}\n\n"
+		re.gir.emitToFileBuffer(defaultStr, EmptyVisitMethod)
+	}
+
 	re.shouldGenerate = false
+}
+
+// rustDefaultValueForType returns the Rust default value for a Go type
+func (re *RustEmitter) rustDefaultValueForType(t types.Type) string {
+	if t == nil {
+		return "Default::default()"
+	}
+	typeStr := t.String()
+
+	// Check for interface{} / any
+	if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") || typeStr == "any" {
+		return "Rc::new(0_i32)"
+	}
+
+	// Check for slice types
+	if strings.HasPrefix(typeStr, "[]") {
+		return "Vec::new()"
+	}
+
+	// Check for function types
+	if strings.HasPrefix(typeStr, "func(") {
+		return "Rc::new(|_| {})"
+	}
+
+	// Check basic types
+	switch typeStr {
+	case "int", "int8", "int16", "int32", "int64":
+		return "0"
+	case "uint8", "uint16", "uint32", "uint64":
+		return "0"
+	case "float32":
+		return "0.0_f32"
+	case "float64":
+		return "0.0"
+	case "bool":
+		return "false"
+	case "string":
+		return "String::new()"
+	}
+
+	// For named struct types, use their default
+	if named, ok := t.(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			return named.Obj().Name() + "::default()"
+		}
+		// For named slice types
+		if _, isSlice := named.Underlying().(*types.Slice); isSlice {
+			return "Vec::new()"
+		}
+	}
+
+	return "Default::default()"
 }
 
 func (re *RustEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
@@ -2872,15 +2948,15 @@ func (re *RustEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent
 		}
 	}
 
-	// If returning from a function that returns any (Box<dyn Any>),
-	// and the return value is a concrete type, wrap in Box::new()
+	// If returning from a function that returns any (Rc<dyn Any>),
+	// and the return value is a concrete type, wrap in Rc::new()
 	if re.currentFuncReturnsAny && node != nil {
 		nodeType := re.pkg.TypesInfo.Types[node]
 		if nodeType.Type != nil {
 			typeStr := nodeType.Type.String()
-			// Don't wrap if already Box<dyn Any> or interface{}
-			if typeStr != "interface{}" && typeStr != "any" && !strings.Contains(typeStr, "Box<dyn Any>") {
-				re.gir.emitToFileBuffer("Box::new(", EmptyVisitMethod)
+			// Don't wrap if already Rc<dyn Any> or interface{}
+			if typeStr != "interface{}" && typeStr != "any" && !strings.Contains(typeStr, "Rc<dyn Any>") {
+				re.gir.emitToFileBuffer("Rc::new(", EmptyVisitMethod)
 			}
 		}
 	}
@@ -2949,12 +3025,12 @@ func (re *RustEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, inden
 		}
 	}
 
-	// Close Box::new() if we opened it in Pre
+	// Close Rc::new() if we opened it in Pre
 	if re.currentFuncReturnsAny && node != nil {
 		nodeType := re.pkg.TypesInfo.Types[node]
 		if nodeType.Type != nil {
 			typeStr := nodeType.Type.String()
-			if typeStr != "interface{}" && typeStr != "any" && !strings.Contains(typeStr, "Box<dyn Any>") {
+			if typeStr != "interface{}" && typeStr != "any" && !strings.Contains(typeStr, "Rc<dyn Any>") {
 				re.gir.emitToFileBuffer(")", EmptyVisitMethod)
 			}
 		}
@@ -3122,17 +3198,17 @@ func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 		}
 	}
 
-	// If assigning to a variable of type any (interface{}), wrap RHS in Box::new()
+	// If assigning to a variable of type any (interface{}), wrap RHS in Rc::new()
 	if len(node.Lhs) == 1 && len(node.Rhs) == 1 && re.assignmentToken == "=" {
 		lhsType := re.pkg.TypesInfo.Types[node.Lhs[0]]
 		rhsType := re.pkg.TypesInfo.Types[node.Rhs[0]]
 		if lhsType.Type != nil && rhsType.Type != nil {
 			lhsTypeStr := lhsType.Type.String()
 			rhsTypeStr := rhsType.Type.String()
-			// If LHS is any/interface{} and RHS is a concrete type, wrap in Box::new()
+			// If LHS is any/interface{} and RHS is a concrete type, wrap in Rc::new()
 			if (lhsTypeStr == "interface{}" || lhsTypeStr == "any") &&
 				rhsTypeStr != "interface{}" && rhsTypeStr != "any" {
-				re.gir.emitToFileBuffer("Box::new(", EmptyVisitMethod)
+				re.gir.emitToFileBuffer("Rc::new(", EmptyVisitMethod)
 			}
 		}
 	}
@@ -3148,7 +3224,7 @@ func (re *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) 
 		if lhsType.Type != nil {
 			lhsTypeStr := lhsType.Type.String()
 
-			// Close Box::new() if we opened it for any/interface{} assignment
+			// Close Rc::new() if we opened it for any/interface{} assignment
 			if rhsType.Type != nil {
 				rhsTypeStr := rhsType.Type.String()
 				if (lhsTypeStr == "interface{}" || lhsTypeStr == "any") &&
@@ -3718,24 +3794,9 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 				return
 			}
 			// Check if underlying type is a struct
-			if underlyingStruct, isStruct := named.Underlying().(*types.Struct); isStruct {
-				// Check if any field has interface{} type (Box<dyn Any> doesn't implement Clone)
-				// Note: function fields now use Rc<dyn Fn> which implements Clone
-				hasNonClonableField := false
-				for i := 0; i < underlyingStruct.NumFields(); i++ {
-					field := underlyingStruct.Field(i)
-					fieldTypeStr := field.Type().String()
-					if strings.Contains(fieldTypeStr, "interface{}") || strings.Contains(fieldTypeStr, "interface {") {
-						hasNonClonableField = true
-						break
-					}
-				}
-				if hasNonClonableField {
-					// Don't clone structs with interface fields (Box<dyn Any> doesn't implement Clone)
-					re.inCallExprArg = false
-					return
-				}
+			if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 				// Clone structs unless the argument can be moved (consumed and reassigned)
+				// Note: structs with Rc<dyn Any> fields (interface{}) are now cloneable
 				if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
 					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
 				}
@@ -4734,7 +4795,7 @@ func (re *RustEmitter) PreVisitFuncLitTypeResults(node *ast.FieldList, indent in
 }
 
 func (re *RustEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {
-	str := re.emitAsString("Box<dyn Any>", indent)
+	str := re.emitAsString("Rc<dyn Any>", indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
 
@@ -5083,7 +5144,7 @@ func (re *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field,
 			fmt.Println("Error extracting name representation:", err)
 			return
 		}
-		// Only check name for whitespace - types can have spaces (e.g., Box<dyn Any>)
+		// Only check name for whitespace - types can have spaces (e.g., Rc<dyn Any>)
 		nameStr := strings.TrimSpace(strings.Join(tokensToStrings(nameStrRepr), ""))
 		if nameStr == "" || containsWhitespace(nameStr) {
 			// If name is empty or has whitespace, skip reordering
