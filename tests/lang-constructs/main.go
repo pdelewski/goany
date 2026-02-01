@@ -630,6 +630,28 @@ func testEmptyInterface() {
 	fmt.Println("interface{} test passed")
 }
 
+// Test type assertions on interface{}
+func testTypeAssertions() {
+	var a interface{}
+	a = 42
+	intVal := a.(int)
+	fmt.Println(intVal)
+
+	a = "world"
+	strVal := a.(string)
+	fmt.Println(strVal)
+
+	a = true
+	boolVal := a.(bool)
+	fmt.Println(boolVal)
+
+	a = 2.71
+	floatVal := a.(float64)
+	fmt.Println(floatVal)
+
+	fmt.Println("type assertions passed")
+}
+
 // Helper: sum all elements in a slice and print the result
 func printSliceSum(s []int) {
 	total := 0
@@ -726,6 +748,7 @@ func main() {
 	testNestedStructField()
 	testMultiPackageImport()
 	testEmptyInterface()
+	testTypeAssertions()
 	testNestedWhileLoops()
 	testInlineCompositeLitArg()
 
