@@ -437,6 +437,13 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 	case *ast.IfStmt:
 		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitIfStmt)
 		v.emitter.PreVisitIfStmt(stmt, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitIfStmtInit)
+		v.emitter.PreVisitIfStmtInit(stmt.Init, indent)
+		if stmt.Init != nil {
+			v.traverseStmt(stmt.Init, indent)
+		}
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitIfStmtInit)
+		v.emitter.PostVisitIfStmtInit(stmt.Init, indent)
 		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitIfStmtCond)
 		v.emitter.PreVisitIfStmtCond(stmt, indent)
 		v.traverseExpression(stmt.Cond, 0)

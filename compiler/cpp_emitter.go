@@ -93,6 +93,15 @@ type CPPEmitter struct {
 	mapCommaOkIsDecl      bool
 	mapCommaOkIndent      int
 	mapCommaOkKeyIsString bool
+	// Type assertion comma-ok: val, ok := x.(Type)
+	isTypeAssertCommaOk      bool
+	typeAssertCommaOkValName string
+	typeAssertCommaOkOkName  string
+	typeAssertCommaOkType    string
+	typeAssertCommaOkIsDecl  bool
+	typeAssertCommaOkIndent  int
+	// If-init scoping
+	ifInitScope bool
 }
 
 // collectCallArgIdentCounts counts how many times each base identifier
@@ -1014,11 +1023,19 @@ func (cppe *CPPEmitter) PreVisitFuncLitTypeResult(node *ast.Field, index int, in
 }
 
 func (cppe *CPPEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
+	if cppe.isTypeAssertCommaOk {
+		return
+	}
 	str := cppe.emitAsString("std::any_cast<", indent)
 	cppe.emitToFile(str)
 }
 
 func (cppe *CPPEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if cppe.isTypeAssertCommaOk {
+		cppe.captureMapKey = true
+		cppe.capturedMapKey = ""
+		return
+	}
 	// Check if the expression is already interface{} (std::any) - skip the std::any() wrapper
 	needsAnyWrap := true
 	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
@@ -1038,6 +1055,10 @@ func (cppe *CPPEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
 	}
 }
 func (cppe *CPPEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if cppe.isTypeAssertCommaOk {
+		cppe.captureMapKey = false
+		return
+	}
 	// Match the wrapper from PreVisitTypeAssertExprX
 	needsAnyWrap := true
 	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
@@ -1171,6 +1192,24 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
+	// Detect type assertion comma-ok: val, ok := x.(Type)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+				tv := cppe.pkg.TypesInfo.Types[typeAssert.Type]
+				if tv.Type != nil {
+					cppe.isTypeAssertCommaOk = true
+					cppe.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+					cppe.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+					cppe.typeAssertCommaOkType = getCppTypeName(tv.Type)
+					cppe.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
+					cppe.typeAssertCommaOkIndent = indent
+					cppe.suppressEmit = true
+					return
+				}
+			}
+		}
+	}
 	// Detect map assignment: m[k] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -1226,6 +1265,25 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	cppe.currentAssignLhsNames = nil
 	cppe.assignLhsIsInterface = false
+	if cppe.isTypeAssertCommaOk {
+		expr := cppe.capturedMapKey
+		typeName := cppe.typeAssertCommaOkType
+		decl := ""
+		if cppe.typeAssertCommaOkIsDecl {
+			decl = "auto "
+		}
+		indentStr := strings.Repeat("    ", cppe.typeAssertCommaOkIndent/4)
+		cppe.suppressEmit = false
+		cppe.emitToFile(fmt.Sprintf("%s%s%s = (std::any(%s)).type() == typeid(%s);\n",
+			indentStr, decl, cppe.typeAssertCommaOkOkName, expr, typeName))
+		cppe.emitToFile(fmt.Sprintf("%s%s%s = %s ? std::any_cast<%s>(std::any(%s)) : %s{};\n",
+			indentStr, decl, cppe.typeAssertCommaOkValName, cppe.typeAssertCommaOkOkName,
+			typeName, expr, typeName))
+		cppe.isTypeAssertCommaOk = false
+		cppe.capturedMapKey = ""
+		cppe.captureMapKey = false
+		return
+	}
 	if cppe.isMapCommaOk {
 		key := cppe.capturedMapKey
 		if cppe.mapCommaOkKeyIsString {
@@ -1396,6 +1454,22 @@ func (cppe *CPPEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, inde
 		str := cppe.emitAsString(")", 0)
 		cppe.emitToFile(str)
 		cppe.moveCurrentReturn = false
+	}
+}
+
+func (cppe *CPPEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
+	if node.Init != nil {
+		cppe.ifInitScope = true
+		str := cppe.emitAsString("{\n", indent)
+		cppe.emitToFile(str)
+	}
+}
+
+func (cppe *CPPEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+	if cppe.ifInitScope {
+		str := cppe.emitAsString("}\n", indent)
+		cppe.emitToFile(str)
+		cppe.ifInitScope = false
 	}
 }
 

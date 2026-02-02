@@ -103,8 +103,17 @@ type CSharpEmitter struct {
 	mapCommaOkValType string
 	mapCommaOkIsDecl  bool
 	mapCommaOkIndent  int
+	// Type assertion comma-ok: val, ok := x.(Type)
+	isTypeAssertCommaOk      bool
+	typeAssertCommaOkValName string
+	typeAssertCommaOkOkName  string
+	typeAssertCommaOkType    string
+	typeAssertCommaOkIsDecl  bool
+	typeAssertCommaOkIndent  int
+	// If-init scoping
+	ifInitScope bool
 	// Slice make support (for transpiled hashmap runtime)
-	isSliceMakeCall   bool
+	isSliceMakeCall bool
 	sliceMakeElemType string
 }
 
@@ -1387,6 +1396,24 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
+	// Detect type assertion comma-ok: val, ok := x.(Type)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+				tv := cse.pkg.TypesInfo.Types[typeAssert.Type]
+				if tv.Type != nil {
+					cse.isTypeAssertCommaOk = true
+					cse.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+					cse.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+					cse.typeAssertCommaOkType = getCsTypeName(tv.Type)
+					cse.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
+					cse.typeAssertCommaOkIndent = indent
+					cse.suppressMapEmit = true
+					return
+				}
+			}
+		}
+	}
 	// Detect map assignment: m[k] = v -> m = hmap.hashMapSet(m, k, v)
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -1418,6 +1445,29 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 	// Reset blank identifier suppression if it was set
 	if cse.suppressRangeEmit {
 		cse.suppressRangeEmit = false
+		return
+	}
+	// Handle type assertion comma-ok: val, ok := x.(Type)
+	if cse.isTypeAssertCommaOk {
+		cse.executeIfNotForwardDecls(func() {
+			expr := cse.capturedMapKey
+			typeName := cse.typeAssertCommaOkType
+			decl := ""
+			if cse.typeAssertCommaOkIsDecl {
+				decl = "var "
+			}
+			indentStr := cse.emitAsString("", cse.typeAssertCommaOkIndent)
+			cse.suppressMapEmit = false
+			cse.gir.emitToFileBuffer(fmt.Sprintf("%s%s%s = %s is %s;",
+				indentStr, decl, cse.typeAssertCommaOkOkName, expr, typeName), EmptyVisitMethod)
+			cse.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s = %s ? (%s)%s : default(%s);",
+				indentStr, decl, cse.typeAssertCommaOkValName, cse.typeAssertCommaOkOkName,
+				typeName, expr, typeName), EmptyVisitMethod)
+		})
+		cse.isTypeAssertCommaOk = false
+		cse.capturedMapKey = ""
+		cse.captureMapKey = false
+		cse.suppressMapEmit = false
 		return
 	}
 	// Handle comma-ok: val, ok := m[key]
@@ -1516,7 +1566,7 @@ func (cse *CSharpEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, i
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign || cse.isMapCommaOk {
+		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk {
 			return // Skip for map assignment or comma-ok
 		}
 		if index > 0 {
@@ -1528,7 +1578,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, in
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign || cse.isMapCommaOk {
+		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk {
 			return // Skip for map assignment or comma-ok
 		}
 		assignmentToken := node.Tok.String()
@@ -1553,7 +1603,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int
 
 func (cse *CSharpEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign || cse.isMapCommaOk {
+		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk {
 			return // Skip for map assignment or comma-ok
 		}
 		if node.Tok.String() == ":=" && len(node.Lhs) > 1 {
@@ -1681,6 +1731,26 @@ func (cse *CSharpEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		str := cse.emitAsString(";", 0)
 		cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+	})
+}
+
+func (cse *CSharpEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		if node.Init != nil {
+			cse.ifInitScope = true
+			str := cse.emitAsString("{\n", indent)
+			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		}
+	})
+}
+
+func (cse *CSharpEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		if cse.ifInitScope {
+			str := cse.emitAsString("}\n", indent)
+			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			cse.ifInitScope = false
+		}
 	})
 }
 
@@ -2157,15 +2227,38 @@ func (cse *CSharpEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, 
 }
 
 func (cse *CSharpEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
+	if cse.isTypeAssertCommaOk {
+		return
+	}
 	cse.executeIfNotForwardDecls(func() {
 		cse.emitToken("(", LeftParen, indent)
 	})
 }
 
 func (cse *CSharpEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
+	if cse.isTypeAssertCommaOk {
+		return
+	}
 	cse.executeIfNotForwardDecls(func() {
 		cse.emitToken(")", RightParen, indent)
 	})
+}
+
+func (cse *CSharpEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if cse.isTypeAssertCommaOk {
+		cse.suppressMapEmit = false
+		cse.captureMapKey = true
+		cse.capturedMapKey = ""
+		return
+	}
+}
+
+func (cse *CSharpEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if cse.isTypeAssertCommaOk {
+		cse.captureMapKey = false
+		cse.suppressMapEmit = true
+		return
+	}
 }
 
 func (cse *CSharpEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {

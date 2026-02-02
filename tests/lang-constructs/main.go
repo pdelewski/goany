@@ -824,6 +824,40 @@ func testMapCommaOk() {
 	fmt.Println(len(m))
 }
 
+func testTypeAssertCommaOk() {
+	fmt.Println("=== Type Assert Comma-Ok ===")
+	var x interface{}
+	x = 42
+	val, ok := x.(int)
+	fmt.Println(val)
+	fmt.Println(ok)
+
+	val2, ok2 := x.(string)
+	fmt.Println(val2)
+	fmt.Println(ok2)
+}
+
+func testIfInitCommaOk() {
+	fmt.Println("=== If-Init Comma-Ok ===")
+	m := make(map[string]int)
+	m["hello"] = 42
+
+	if val, ok := m["hello"]; ok {
+		fmt.Println(val)
+	}
+	if val, ok := m["missing"]; ok {
+		fmt.Println(val)
+	} else {
+		fmt.Println("not found")
+	}
+
+	var x interface{}
+	x = 10
+	if val, ok := x.(int); ok {
+		fmt.Println(val)
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -860,6 +894,8 @@ func main() {
 	testMapKeyTypes()
 	testMapStructValue()
 	testMapCommaOk()
+	testTypeAssertCommaOk()
+	testIfInitCommaOk()
 
 	fmt.Println("=== Done ===")
 }

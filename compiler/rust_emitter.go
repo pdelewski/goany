@@ -224,6 +224,15 @@ type RustEmitter struct {
 	mapCommaOkValType string
 	mapCommaOkIsDecl  bool
 	mapCommaOkIndent  int
+	// Type assertion comma-ok: val, ok := x.(Type)
+	isTypeAssertCommaOk      bool
+	typeAssertCommaOkValName string
+	typeAssertCommaOkOkName  string
+	typeAssertCommaOkType    string
+	typeAssertCommaOkIsDecl  bool
+	typeAssertCommaOkIndent  int
+	// If-init scoping
+	ifInitScope bool
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -3432,6 +3441,25 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
+	// Detect type assertion comma-ok: val, ok := x.(Type)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+			if re.pkg != nil && re.pkg.TypesInfo != nil {
+				tv := re.pkg.TypesInfo.Types[typeAssert.Type]
+				if tv.Type != nil {
+					re.isTypeAssertCommaOk = true
+					re.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+					re.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+					re.typeAssertCommaOkType = getRustValueTypeCast(tv.Type)
+					re.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
+					re.typeAssertCommaOkIndent = indent
+					re.suppressMapEmit = true
+					re.shouldGenerate = true
+					return
+				}
+			}
+		}
+	}
 	// Detect map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -3481,6 +3509,30 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
 func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Handle type assertion comma-ok: val, ok := x.(Type)
+	if re.isTypeAssertCommaOk {
+		expr := re.capturedMapKey
+		typeName := re.typeAssertCommaOkType
+		decl := ""
+		if re.typeAssertCommaOkIsDecl {
+			decl = "let mut "
+		}
+		indentStr := re.emitAsString("", re.typeAssertCommaOkIndent)
+		re.suppressMapEmit = false
+		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_expr = %s.clone();", indentStr, expr), EmptyVisitMethod)
+		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: bool = __ulang_expr.downcast_ref::<%s>().is_some();",
+			indentStr, decl, re.typeAssertCommaOkOkName, typeName), EmptyVisitMethod)
+		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: %s = if %s { __ulang_expr.downcast_ref::<%s>().unwrap().clone() } else { Default::default() };",
+			indentStr, decl, re.typeAssertCommaOkValName, typeName, re.typeAssertCommaOkOkName,
+			typeName), EmptyVisitMethod)
+		re.isTypeAssertCommaOk = false
+		re.capturedMapKey = ""
+		re.captureMapKey = false
+		re.suppressMapEmit = false
+		re.inAssignRhs = false
+		re.shouldGenerate = false
+		return
+	}
 	// Handle comma-ok: val, ok := m[key]
 	if re.isMapCommaOk {
 		key := re.capturedMapKey
@@ -3719,7 +3771,7 @@ func (re *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) 
 }
 
 func (re *RustEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	if re.isMapCommaOk {
+	if re.isMapCommaOk || re.isTypeAssertCommaOk {
 		return
 	}
 	if index > 0 {
@@ -3735,7 +3787,7 @@ func (re *RustEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, inden
 
 func (re *RustEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	// For map assignment or comma-ok, LHS is suppressed
-	if re.isMapAssign || re.isMapCommaOk {
+	if re.isMapAssign || re.isMapCommaOk || re.isTypeAssertCommaOk {
 		re.shouldGenerate = true
 		re.inAssignLhs = true
 		return
@@ -3823,7 +3875,7 @@ func (re *RustEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 
 func (re *RustEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	// For comma-ok, LHS is fully suppressed
-	if re.isMapCommaOk {
+	if re.isMapCommaOk || re.isTypeAssertCommaOk {
 		re.inAssignLhs = false
 		return
 	}
@@ -4442,12 +4494,23 @@ func (re *RustEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 
 func (re *RustEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	re.shouldGenerate = true
+	if node.Init != nil {
+		re.ifInitScope = true
+		str := re.emitAsString("{\n", indent)
+		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
+	}
 }
 func (re *RustEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+	if re.ifInitScope {
+		str := re.emitAsString("}\n", indent)
+		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		re.ifInitScope = false
+	}
 	re.shouldGenerate = false
 }
 
 func (re *RustEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
+	re.shouldGenerate = true
 	str := re.emitAsString("if ", 1)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 	re.emitToken("(", LeftParen, 0)
@@ -5526,26 +5589,47 @@ func (re *RustEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, ind
 }
 
 func (re *RustEmitter) PreVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
+	if re.isTypeAssertCommaOk {
+		return
+	}
 	re.gir.emitToFileBuffer("", "@PreVisitTypeAssertExpr")
 }
 
 func (re *RustEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
+	if re.isTypeAssertCommaOk {
+		return
+	}
 	re.gir.emitToFileBuffer("", "@PreVisitTypeAssertExprType")
 }
 
 func (re *RustEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
+	if re.isTypeAssertCommaOk {
+		return
+	}
 	re.gir.emitToFileBuffer("", "@PostVisitTypeAssertExprType")
 }
 
 func (re *RustEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if re.isTypeAssertCommaOk {
+		re.captureMapKey = true
+		re.capturedMapKey = ""
+		return
+	}
 	re.gir.emitToFileBuffer("", "@PreVisitTypeAssertExprX")
 }
 
 func (re *RustEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if re.isTypeAssertCommaOk {
+		re.captureMapKey = false
+		return
+	}
 	re.gir.emitToFileBuffer("", "@PostVisitTypeAssertExprX")
 }
 
 func (re *RustEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
+	if re.isTypeAssertCommaOk {
+		return
+	}
 	// Reorder type assertion from (Type)X to X.downcast_ref::<Type>().unwrap().clone()
 	p1 := SearchPointerIndexReverseString("@PreVisitTypeAssertExprType", re.gir.pointerAndIndexVec)
 	p2 := SearchPointerIndexReverseString("@PostVisitTypeAssertExprType", re.gir.pointerAndIndexVec)

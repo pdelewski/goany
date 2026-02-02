@@ -100,10 +100,18 @@ type JSEmitter struct {
 	mapCommaOkZeroVal string
 	mapCommaOkIsDecl  bool
 	mapCommaOkIndent  int
+	// Type assertion comma-ok: val, ok := x.(Type)
+	isTypeAssertCommaOk      bool
+	typeAssertCommaOkValName string
+	typeAssertCommaOkOkName  string
+	typeAssertCommaOkIsDecl  bool
+	typeAssertCommaOkIndent  int
+	// If-init scoping
+	ifInitScope bool
 	// Slice make support: make([]T, n) → new Array(n).fill(default)
-	isSliceMakeCall    bool   // Inside make([]T, n) call
-	sliceMakeDefault   string // Default fill value for the slice element type
-	suppressEmit       bool   // When true, emitToFile does nothing
+	isSliceMakeCall  bool   // Inside make([]T, n) call
+	sliceMakeDefault string // Default fill value for the slice element type
+	suppressEmit     bool   // When true, emitToFile does nothing
 }
 
 // getMapKeyTypeConst returns the key type constant for a map type AST node
@@ -781,6 +789,18 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
+	// Detect type assertion comma-ok: val, ok := x.(Type)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if _, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+			jse.isTypeAssertCommaOk = true
+			jse.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+			jse.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+			jse.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
+			jse.typeAssertCommaOkIndent = indent
+			jse.suppressEmit = true
+			return
+		}
+	}
 	// Check for map assignment: m[k] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -869,6 +889,22 @@ func (jse *JSEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (jse *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Handle type assertion comma-ok: val, ok := x.(Type)
+	if jse.isTypeAssertCommaOk {
+		expr := jse.capturedMapKey
+		decl := ""
+		if jse.typeAssertCommaOkIsDecl {
+			decl = "let "
+		}
+		indentStr := jse.emitAsString("", jse.typeAssertCommaOkIndent)
+		jse.suppressEmit = false
+		jse.emitToFile(fmt.Sprintf("%s%s%s = true;\n", indentStr, decl, jse.typeAssertCommaOkOkName))
+		jse.emitToFile(fmt.Sprintf("%s%s%s = %s;\n", indentStr, decl, jse.typeAssertCommaOkValName, expr))
+		jse.isTypeAssertCommaOk = false
+		jse.capturedMapKey = ""
+		jse.captureMapKey = false
+		return
+	}
 	// Handle comma-ok: val, ok := m[key]
 	if jse.isMapCommaOk {
 		key := jse.capturedMapKey
@@ -1292,8 +1328,35 @@ func (jse *JSEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	if jse.forwardDecl {
 		return
 	}
-	str := jse.emitAsString("if (", indent)
-	jse.emitToFile(str)
+	if node.Init != nil {
+		jse.ifInitScope = true
+		str := jse.emitAsString("{\n", indent)
+		jse.emitToFile(str)
+	} else {
+		str := jse.emitAsString("if (", indent)
+		jse.emitToFile(str)
+	}
+}
+
+func (jse *JSEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+	if jse.forwardDecl {
+		return
+	}
+	if jse.ifInitScope {
+		str := jse.emitAsString("}\n", indent)
+		jse.emitToFile(str)
+		jse.ifInitScope = false
+	}
+}
+
+func (jse *JSEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
+	if jse.forwardDecl {
+		return
+	}
+	if jse.ifInitScope {
+		str := jse.emitAsString("if (", indent)
+		jse.emitToFile(str)
+	}
 }
 
 func (jse *JSEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
@@ -2237,6 +2300,21 @@ func (jse *JSEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
 
 func (jse *JSEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
 	jse.suppressTypeEmit = false
+}
+
+func (jse *JSEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if jse.isTypeAssertCommaOk {
+		jse.captureMapKey = true
+		jse.capturedMapKey = ""
+		return
+	}
+}
+
+func (jse *JSEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
+	if jse.isTypeAssertCommaOk {
+		jse.captureMapKey = false
+		return
+	}
 }
 
 // Function literals (closures)

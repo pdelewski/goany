@@ -336,6 +336,10 @@ type Emitter interface {
 	PreVisitIfStmt(node *ast.IfStmt, indent int)
 	// PostVisitIfStmt is called after visiting an if statement.
 	PostVisitIfStmt(node *ast.IfStmt, indent int)
+	// PreVisitIfStmtInit is called before visiting the Init part of an if statement.
+	PreVisitIfStmtInit(node ast.Stmt, indent int)
+	// PostVisitIfStmtInit is called after visiting the Init part of an if statement.
+	PostVisitIfStmtInit(node ast.Stmt, indent int)
 	// PreVisitIfStmtCond is called before visiting the Cond part of an if statement.
 	PreVisitIfStmtCond(node *ast.IfStmt, indent int)
 	// PostVisitIfStmtCond is called after visiting the Cond part of an if statement.
