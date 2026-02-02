@@ -355,6 +355,11 @@ func getCsTypeName(t types.Type) string {
 	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
 		return "object"
 	}
+	if named, ok := t.(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			return named.Obj().Name()
+		}
+	}
 	return "object"
 }
 func (cse *CSharpEmitter) SetFile(file *os.File) {

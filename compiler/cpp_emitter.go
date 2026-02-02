@@ -283,6 +283,11 @@ func getCppTypeName(t types.Type) string {
 			return "std::int64_t"
 		}
 	}
+	if named, ok := t.(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			return named.Obj().Name()
+		}
+	}
 	return "std::any"
 }
 

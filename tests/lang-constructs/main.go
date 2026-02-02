@@ -795,6 +795,20 @@ func testMapKeyTypes() {
 	fmt.Println(len(m3))
 }
 
+type MapTestStruct struct {
+	Name  string
+	Value int
+}
+
+func testMapStructValue() {
+	m := make(map[string]MapTestStruct)
+	m["first"] = MapTestStruct{Name: "hello", Value: 42}
+	s := m["first"]
+	fmt.Println(s.Name)
+	fmt.Println(s.Value)
+	fmt.Println(len(m))
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -829,6 +843,7 @@ func main() {
 	testMapAsParameter()
 	testNilMap()
 	testMapKeyTypes()
+	testMapStructValue()
 
 	fmt.Println("=== Done ===")
 }

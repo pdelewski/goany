@@ -330,6 +330,11 @@ func getRustValueTypeCast(t types.Type) string {
 	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
 		return "Rc<dyn Any>"
 	}
+	if named, ok := t.(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			return named.Obj().Name()
+		}
+	}
 	return "Rc<dyn Any>"
 }
 
