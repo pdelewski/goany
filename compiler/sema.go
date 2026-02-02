@@ -140,20 +140,22 @@ func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	}
 }
 
-// PreVisitMapType validates map types - only string, int, bool keys are supported
+// PreVisitMapType validates map types - only supported key types allowed
 func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
-	// Validate key type - only string, int, bool are supported
 	if sema.pkg != nil && sema.pkg.TypesInfo != nil {
 		if tv, ok := sema.pkg.TypesInfo.Types[node.Key]; ok && tv.Type != nil {
 			if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
 				switch basic.Kind() {
-				case types.String, types.Int, types.Bool:
+				case types.String, types.Int, types.Bool,
+					types.Int8, types.Int16, types.Int32, types.Int64,
+					types.Uint8, types.Uint16, types.Uint32, types.Uint64,
+					types.Float32, types.Float64:
 					return // supported key types
 				}
 			}
 			fmt.Println("\033[31m\033[1mCompilation error: unsupported map key type\033[0m")
 			fmt.Printf("  Map key type '%s' is not supported.\n", tv.Type.String())
-			fmt.Println("  Only string, int, and bool keys are supported.")
+			fmt.Println("  Supported key types: string, int, bool, int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64.")
 			os.Exit(-1)
 		}
 	}

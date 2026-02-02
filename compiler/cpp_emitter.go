@@ -232,6 +232,26 @@ func (cppe *CPPEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 					return 2
 				case types.Bool:
 					return 3
+				case types.Int8:
+					return 4
+				case types.Int16:
+					return 5
+				case types.Int32:
+					return 6
+				case types.Int64:
+					return 7
+				case types.Uint8:
+					return 8
+				case types.Uint16:
+					return 9
+				case types.Uint32:
+					return 10
+				case types.Uint64:
+					return 11
+				case types.Float32:
+					return 12
+				case types.Float64:
+					return 13
 				}
 			}
 		}
