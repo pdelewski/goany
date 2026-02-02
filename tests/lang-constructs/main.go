@@ -769,6 +769,15 @@ func testMapOperations() {
 	fmt.Println(m3[false])
 }
 
+func testNilMap() {
+	var m map[string]int
+	fmt.Println(len(m))
+	m = make(map[string]int)
+	m["x"] = 10
+	fmt.Println(m["x"])
+	fmt.Println(len(m))
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -801,6 +810,7 @@ func main() {
 	testInlineCompositeLitArg()
 	testMapOperations()
 	testMapAsParameter()
+	testNilMap()
 
 	fmt.Println("=== Done ===")
 }

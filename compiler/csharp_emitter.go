@@ -91,6 +91,8 @@ type CSharpEmitter struct {
 	isDeleteCall      bool
 	deleteMapVarName  string
 	isMapLenCall      bool
+	pendingMapInit    bool
+	pendingMapKeyType int
 	// Slice make support (for transpiled hashmap runtime)
 	isSliceMakeCall   bool
 	sliceMakeElemType string
@@ -803,6 +805,19 @@ func (cse *CSharpEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, ind
 		cse.isArray = false
 		// Set type context flag - the variable type will be visited next
 		cse.inTypeContext = true
+		// Detect var m map[K]V declarations (no initialization value)
+		if len(node.Values) == 0 && node.Type != nil {
+			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+				if typeAndValue, ok := cse.pkg.TypesInfo.Types[node.Type]; ok {
+					if _, isMap := typeAndValue.Type.Underlying().(*types.Map); isMap {
+						if mapType, ok := node.Type.(*ast.MapType); ok {
+							cse.pendingMapInit = true
+							cse.pendingMapKeyType = cse.getMapKeyTypeConst(mapType)
+						}
+					}
+				}
+			}
+		}
 	})
 }
 
@@ -831,7 +846,11 @@ func (cse *CSharpEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index 
 func (cse *CSharpEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		var str string
-		if cse.isArray {
+		if cse.pendingMapInit {
+			str += fmt.Sprintf(" = hmap.newHashMap(%d);", cse.pendingMapKeyType)
+			cse.pendingMapInit = false
+			cse.pendingMapKeyType = 0
+		} else if cse.isArray {
 			str += " = new "
 			str += strings.TrimSpace(cse.arrayType)
 			str += "();"

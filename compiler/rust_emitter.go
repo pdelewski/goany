@@ -214,6 +214,8 @@ type RustEmitter struct {
 	isMapLenCall                 bool              // Inside len(m) on map
 	isSliceMakeCall              bool              // Inside make([]T, n) for runtime
 	sliceMakeElemType            string            // Element type for make([]T, n)
+	pendingMapInit               bool              // var m map[K]V needs default init
+	pendingMapKeyType            int               // Key type for pending map init
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -2195,6 +2197,19 @@ func (re *RustEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index 
 	if re.forwardDecls {
 		return
 	}
+	// Detect var m map[K]V declarations (no initialization value)
+	if len(node.Values) == 0 && node.Type != nil {
+		if re.pkg != nil && re.pkg.TypesInfo != nil {
+			if typeAndValue, ok := re.pkg.TypesInfo.Types[node.Type]; ok {
+				if _, isMap := typeAndValue.Type.Underlying().(*types.Map); isMap {
+					if mapType, ok := node.Type.(*ast.MapType); ok {
+						re.pendingMapInit = true
+						re.pendingMapKeyType = re.getMapKeyTypeConst(mapType)
+					}
+				}
+			}
+		}
+	}
 	// For second and subsequent names, start a new let statement
 	if index > 0 {
 		re.emitToken(";", Semicolon, 0)
@@ -2278,7 +2293,11 @@ func (re *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index in
 	}
 	re.gir.emitToFileBuffer("", "@PostVisitDeclStmtValueSpecNames")
 	var str string
-	if re.isArray {
+	if re.pendingMapInit {
+		str += fmt.Sprintf(" = hmap::newHashMap(%d)", re.pendingMapKeyType)
+		re.pendingMapInit = false
+		re.pendingMapKeyType = 0
+	} else if re.isArray {
 		str += " = Vec::new()"
 		re.isArray = false
 	} else {
