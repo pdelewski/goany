@@ -2963,15 +2963,32 @@ func (re *RustEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field
 	pointerAndPosition := SearchPointerIndexReverse("@PreVisitFuncDeclSignatureTypeResultsList", re.gir.pointerAndIndexVec)
 	if pointerAndPosition != nil {
 		typeInfo := re.pkg.TypesInfo.Types[node.Type]
-		// Only do alias replacement if the type is NOT already a named type (alias)
-		// If it's a named type like ast.AST, don't replace it with another alias
+		// Only do alias replacement if the AST node references a type alias by name.
+		// Check the AST (not just the type system) to distinguish between:
+		//   func f() ExprKind  → should emit ExprKind (alias)
+		//   func f() int       → should emit i32 (raw type, NOT alias)
 		if typeInfo.Type != nil {
 			if _, isNamed := typeInfo.Type.(*types.Named); !isNamed {
-				// Type is a basic/primitive type - check for alias replacement
-				for aliasName, alias := range re.aliases {
-					if alias.UnderlyingType == typeInfo.Type.Underlying().String() {
-						re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), []string{aliasName})
-						break
+				// Check if the AST node references an alias name (Ident or SelectorExpr)
+				isAliasRef := false
+				if ident, ok := node.Type.(*ast.Ident); ok {
+					if _, found := re.aliases[ident.Name]; found {
+						isAliasRef = true
+					}
+				} else if sel, ok := node.Type.(*ast.SelectorExpr); ok {
+					if xIdent, ok := sel.X.(*ast.Ident); ok {
+						qualName := xIdent.Name + "." + sel.Sel.Name
+						if _, found := re.aliases[qualName]; found {
+							isAliasRef = true
+						}
+					}
+				}
+				if isAliasRef {
+					for aliasName, alias := range re.aliases {
+						if alias.UnderlyingType == typeInfo.Type.Underlying().String() {
+							re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), []string{aliasName})
+							break
+						}
 					}
 				}
 			}

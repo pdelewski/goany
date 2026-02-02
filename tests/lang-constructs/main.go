@@ -721,6 +721,27 @@ func testInlineCompositeLitArg() {
 	printSliceSum([]int{1, 2, 3, 4, 5}) // sum: 15
 }
 
+// Helper: set a value in a map and return it (tests map as param + return)
+func setMapValue(m map[string]int, key string, value int) map[string]int {
+	m[key] = value
+	return m
+}
+
+// Helper: get map length (tests map as param with int return)
+func getMapLen(m map[string]int) int {
+	return len(m)
+}
+
+// Test map as function parameter and return value
+func testMapAsParameter() {
+	m := make(map[string]int)
+	m = setMapValue(m, "hello", 1)
+	m = setMapValue(m, "world", 2)
+	fmt.Println(getMapLen(m))
+	fmt.Println(m["hello"])
+	fmt.Println(m["world"])
+}
+
 // Test map operations: make, get, set, delete, len with string/int/bool keys
 func testMapOperations() {
 	// String keys
@@ -779,6 +800,7 @@ func main() {
 	testNestedWhileLoops()
 	testInlineCompositeLitArg()
 	testMapOperations()
+	testMapAsParameter()
 
 	fmt.Println("=== Done ===")
 }

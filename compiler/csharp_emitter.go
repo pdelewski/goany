@@ -976,6 +976,19 @@ func (cse *CSharpEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	})
 }
 
+func (cse *CSharpEmitter) PreVisitMapType(node *ast.MapType, indent int) {
+	// Skip when inside make(map[K]V) — already handled by make lowering
+	if cse.isMapMakeCall {
+		return
+	}
+	cse.executeIfNotForwardDecls(func() {
+		cse.gir.emitToFileBuffer("hmap.HashMap", EmptyVisitMethod)
+	})
+}
+
+func (cse *CSharpEmitter) PostVisitMapType(node *ast.MapType, indent int) {
+}
+
 func (cse *CSharpEmitter) PreVisitFuncType(node *ast.FuncType, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		// All types within FuncType are type references

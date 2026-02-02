@@ -83,6 +83,7 @@ type CPPEmitter struct {
 	suppressEmit           bool   // When true, emitToFile does nothing
 	isSliceMakeCall        bool   // Inside make([]T, n) call
 	sliceMakeCppType       string // C++ vector type, e.g. "std::vector<std::any>"
+	assignLhsIsInterface   bool   // LHS of assignment is interface{}/std::any type
 }
 
 // collectCallArgIdentCounts counts how many times each base identifier
@@ -469,6 +470,12 @@ func (cppe *CPPEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 
 func (cppe *CPPEmitter) PreVisitBasicLit(e *ast.BasicLit, indent int) {
 	if e.Kind == token.STRING {
+		// Wrap string literals in std::string() when assigned to interface{}/std::any
+		// to avoid const char* being stored in std::any instead of std::string
+		wrapStr := cppe.assignLhsIsInterface
+		if wrapStr {
+			cppe.emitToFile("std::string(")
+		}
 		// Use a local copy to avoid mutating the AST (which affects other emitters)
 		value := e.Value
 		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
@@ -481,6 +488,9 @@ func (cppe *CPPEmitter) PreVisitBasicLit(e *ast.BasicLit, indent int) {
 			cppe.emitToFile(cppe.emitAsString(fmt.Sprintf("R\"(%s)\"", value), 0))
 		} else {
 			cppe.emitToFile(cppe.emitAsString(fmt.Sprintf("\"%s\"", value), 0))
+		}
+		if wrapStr {
+			cppe.emitToFile(")")
 		}
 	} else {
 		cppe.emitToFile(cppe.emitAsString(e.Value, 0))
@@ -704,6 +714,17 @@ func (cppe *CPPEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 func (cppe *CPPEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	str := cppe.emitAsString(">", 0)
 	cppe.emitToFile(str)
+}
+
+func (cppe *CPPEmitter) PreVisitMapType(node *ast.MapType, indent int) {
+	// Skip when inside make(map[K]V) — already handled by make lowering
+	if cppe.isMapMakeCall {
+		return
+	}
+	cppe.emitToFile("hmap::HashMap")
+}
+
+func (cppe *CPPEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 }
 
 func (cppe *CPPEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
@@ -1109,6 +1130,17 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
+	// Detect if LHS is interface{}/std::any type (for string literal wrapping)
+	cppe.assignLhsIsInterface = false
+	if len(node.Lhs) == 1 && cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+		if ident, ok := node.Lhs[0].(*ast.Ident); ok {
+			if obj := cppe.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+				if iface, ok := obj.Type().Underlying().(*types.Interface); ok && iface.Empty() {
+					cppe.assignLhsIsInterface = true
+				}
+			}
+		}
+	}
 	// Capture LHS variable names for move optimization
 	cppe.currentAssignLhsNames = make(map[string]bool)
 	for _, lhs := range node.Lhs {
@@ -1122,6 +1154,7 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 
 func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	cppe.currentAssignLhsNames = nil
+	cppe.assignLhsIsInterface = false
 	if cppe.isMapAssign {
 		if cppe.mapAssignValueIsString {
 			cppe.emitToFile(")")
@@ -1632,7 +1665,7 @@ func (cppe *CPPEmitter) GenerateMakefile() error {
 	switch graphicsBackend {
 	case "sdl2":
 		makefile = fmt.Sprintf(`CXX = g++
-CXXFLAGS = -O3 -std=c++17 -I%s $(shell sdl2-config --cflags)
+CXXFLAGS = -O3 -fwrapv -std=c++17 -I%s $(shell sdl2-config --cflags)
 LDFLAGS = $(shell sdl2-config --libs)
 
 TARGET = %s
@@ -1651,7 +1684,7 @@ clean:
 
 	case "none":
 		makefile = fmt.Sprintf(`CXX = g++
-CXXFLAGS = -O3 -std=c++17 -I%s
+CXXFLAGS = -O3 -fwrapv -std=c++17 -I%s
 LDFLAGS =
 
 TARGET = %s
@@ -1671,7 +1704,7 @@ clean:
 	default: // tigr (default)
 		makefile = fmt.Sprintf(`CXX = g++
 CC = gcc
-CXXFLAGS = -O3 -std=c++17 -I%s
+CXXFLAGS = -O3 -fwrapv -std=c++17 -I%s
 CFLAGS = -O3
 
 TARGET = %s
