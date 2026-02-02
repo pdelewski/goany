@@ -100,8 +100,6 @@ type CPPEmitter struct {
 	typeAssertCommaOkType    string
 	typeAssertCommaOkIsDecl  bool
 	typeAssertCommaOkIndent  int
-	// If-init scoping
-	ifInitScope bool
 }
 
 // collectCallArgIdentCounts counts how many times each base identifier
@@ -1459,17 +1457,15 @@ func (cppe *CPPEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, inde
 
 func (cppe *CPPEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	if node.Init != nil {
-		cppe.ifInitScope = true
 		str := cppe.emitAsString("{\n", indent)
 		cppe.emitToFile(str)
 	}
 }
 
 func (cppe *CPPEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	if cppe.ifInitScope {
+	if node.Init != nil {
 		str := cppe.emitAsString("}\n", indent)
 		cppe.emitToFile(str)
-		cppe.ifInitScope = false
 	}
 }
 

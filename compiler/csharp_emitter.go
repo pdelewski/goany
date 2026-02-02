@@ -110,8 +110,6 @@ type CSharpEmitter struct {
 	typeAssertCommaOkType    string
 	typeAssertCommaOkIsDecl  bool
 	typeAssertCommaOkIndent  int
-	// If-init scoping
-	ifInitScope bool
 	// Slice make support (for transpiled hashmap runtime)
 	isSliceMakeCall bool
 	sliceMakeElemType string
@@ -1737,7 +1735,6 @@ func (cse *CSharpEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 func (cse *CSharpEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		if node.Init != nil {
-			cse.ifInitScope = true
 			str := cse.emitAsString("{\n", indent)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
 		}
@@ -1746,10 +1743,9 @@ func (cse *CSharpEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 
 func (cse *CSharpEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.ifInitScope {
+		if node.Init != nil {
 			str := cse.emitAsString("}\n", indent)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
-			cse.ifInitScope = false
 		}
 	})
 }

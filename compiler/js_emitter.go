@@ -106,8 +106,6 @@ type JSEmitter struct {
 	typeAssertCommaOkOkName  string
 	typeAssertCommaOkIsDecl  bool
 	typeAssertCommaOkIndent  int
-	// If-init scoping
-	ifInitScope bool
 	// Slice make support: make([]T, n) → new Array(n).fill(default)
 	isSliceMakeCall  bool   // Inside make([]T, n) call
 	sliceMakeDefault string // Default fill value for the slice element type
@@ -1329,7 +1327,6 @@ func (jse *JSEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 		return
 	}
 	if node.Init != nil {
-		jse.ifInitScope = true
 		str := jse.emitAsString("{\n", indent)
 		jse.emitToFile(str)
 	} else {
@@ -1342,10 +1339,9 @@ func (jse *JSEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 	if jse.forwardDecl {
 		return
 	}
-	if jse.ifInitScope {
+	if node.Init != nil {
 		str := jse.emitAsString("}\n", indent)
 		jse.emitToFile(str)
-		jse.ifInitScope = false
 	}
 }
 
@@ -1353,7 +1349,7 @@ func (jse *JSEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
 	if jse.forwardDecl {
 		return
 	}
-	if jse.ifInitScope {
+	if node.Init != nil {
 		str := jse.emitAsString("if (", indent)
 		jse.emitToFile(str)
 	}

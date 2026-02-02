@@ -231,8 +231,6 @@ type RustEmitter struct {
 	typeAssertCommaOkType    string
 	typeAssertCommaOkIsDecl  bool
 	typeAssertCommaOkIndent  int
-	// If-init scoping
-	ifInitScope bool
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -4495,16 +4493,14 @@ func (re *RustEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 func (re *RustEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	re.shouldGenerate = true
 	if node.Init != nil {
-		re.ifInitScope = true
 		str := re.emitAsString("{\n", indent)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 	}
 }
 func (re *RustEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	if re.ifInitScope {
+	if node.Init != nil {
 		str := re.emitAsString("}\n", indent)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		re.ifInitScope = false
 	}
 	re.shouldGenerate = false
 }
