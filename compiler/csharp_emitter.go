@@ -717,9 +717,7 @@ func (cse *CSharpEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 			// delete(m, k)
 			if ident.Name == "delete" && len(node.Args) >= 2 {
 				cse.isDeleteCall = true
-				if argIdent, ok := node.Args[0].(*ast.Ident); ok {
-					cse.deleteMapVarName = argIdent.Name
-				}
+				cse.deleteMapVarName = exprToString(node.Args[0])
 				csIsTypeConversion = false
 				return
 			}
@@ -910,7 +908,7 @@ func (cse *CSharpEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index
 
 func (cse *CSharpEmitter) PreVisitGenStructFieldType(node ast.Expr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		str := cse.emitAsString("public", indent+2)
+		str := cse.emitAsString("public ", indent+2)
 		cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
 	})
 }
@@ -1127,6 +1125,10 @@ func (cse *CSharpEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		// Skip emitting the dot if we're in a type alias selector
 		if cse.suppressTypeAliasSelectorX {
+			return
+		}
+		// Skip emitting the dot when map operations suppress emission
+		if cse.suppressMapEmit {
 			return
 		}
 		var str string
@@ -1381,9 +1383,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cse.isMapCommaOk = true
 						cse.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
 						cse.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							cse.mapCommaOkMapName = ident.Name
-						}
+						cse.mapCommaOkMapName = exprToString(indexExpr.X)
 						cse.mapCommaOkValType = getCsTypeName(mapType.Elem())
 						cse.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						cse.mapCommaOkIndent = indent
@@ -1423,9 +1423,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cse.mapAssignIndent = indent
 						cse.suppressMapEmit = true
 						cse.assignmentToken = "="
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							cse.mapAssignVarName = ident.Name
-						}
+						cse.mapAssignVarName = exprToString(indexExpr.X)
 						return // Skip normal indent emission
 					}
 				}

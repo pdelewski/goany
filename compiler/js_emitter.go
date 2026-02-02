@@ -761,9 +761,7 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						jse.isMapCommaOk = true
 						jse.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
 						jse.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							jse.mapCommaOkMapName = ident.Name
-						}
+						jse.mapCommaOkMapName = exprToString(indexExpr.X)
 						jse.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						jse.mapCommaOkIndent = indent
 						// Determine JS zero value for the map value type
@@ -808,9 +806,7 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if _, ok := tv.Type.Underlying().(*types.Map); ok {
 						jse.isMapAssign = true
 						jse.mapAssignIndent = indent
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							jse.mapAssignVarName = ident.Name
-						}
+						jse.mapAssignVarName = exprToString(indexExpr.X)
 						jse.suppressRangeEmit = true // Suppress LHS output
 						return
 					}
@@ -1201,10 +1197,8 @@ func (jse *JSEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 	// Detect delete(m, k) calls
 	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
 		if len(node.Args) >= 2 {
-			if mapIdent, ok := node.Args[0].(*ast.Ident); ok {
-				jse.isDeleteCall = true
-				jse.deleteMapVarName = mapIdent.Name
-			}
+			jse.isDeleteCall = true
+			jse.deleteMapVarName = exprToString(node.Args[0])
 		}
 	}
 	// Detect len(m) calls on maps

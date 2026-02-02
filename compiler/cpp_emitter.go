@@ -605,18 +605,16 @@ func (cppe *CPPEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 	// Detect delete(m, k) calls
 	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
 		if len(node.Args) >= 2 {
-			if mapIdent, ok := node.Args[0].(*ast.Ident); ok {
-				cppe.isDeleteCall = true
-				cppe.deleteMapVarName = mapIdent.Name
-				cppe.deleteKeyIsString = false
-				// Check if map key type is string
-				if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-					tv := cppe.pkg.TypesInfo.Types[node.Args[0]]
-					if tv.Type != nil {
-						if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-							if basic, isBasic := mapType.Key().Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
-								cppe.deleteKeyIsString = true
-							}
+			cppe.isDeleteCall = true
+			cppe.deleteMapVarName = exprToString(node.Args[0])
+			cppe.deleteKeyIsString = false
+			// Check if map key type is string
+			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+				tv := cppe.pkg.TypesInfo.Types[node.Args[0]]
+				if tv.Type != nil {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+						if basic, isBasic := mapType.Key().Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
+							cppe.deleteKeyIsString = true
 						}
 					}
 				}
@@ -789,8 +787,8 @@ func (cppe *CPPEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	if cppe.forwardDecl {
 		return
 	}
-	// Check if this is a map index (not a map assignment - that's handled separately)
-	if !cppe.isMapAssign && cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+	// Check if this is a map index (not a map assignment or comma-ok - those are handled separately)
+	if !cppe.isMapAssign && !cppe.isMapCommaOk && cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
 		tv := cppe.pkg.TypesInfo.Types[node.X]
 		if tv.Type != nil {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
@@ -1172,9 +1170,7 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cppe.isMapCommaOk = true
 						cppe.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
 						cppe.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							cppe.mapCommaOkMapName = ident.Name
-						}
+						cppe.mapCommaOkMapName = exprToString(indexExpr.X)
 						cppe.mapCommaOkValueType = getCppTypeName(mapType.Elem())
 						cppe.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						cppe.mapCommaOkIndent = indent
@@ -1219,9 +1215,7 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cppe.mapAssignIndent = indent
 						cppe.mapAssignKeyIsString = false
 						cppe.mapAssignValueIsString = false
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							cppe.mapAssignVarName = ident.Name
-						}
+						cppe.mapAssignVarName = exprToString(indexExpr.X)
 						keyType := mapType.Key()
 						if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
 							cppe.mapAssignKeyIsString = true

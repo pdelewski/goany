@@ -2681,6 +2681,10 @@ func (re *RustEmitter) structCanDeriveCopy(structName string) bool {
 										if strings.HasPrefix(typeStr, "func(") {
 											return false
 										}
+										// If field is a map type, can't derive Copy
+										if _, isMap := fieldType.Underlying().(*types.Map); isMap {
+											return false
+										}
 										// If field is a struct type, can't safely derive Copy
 										// (the nested struct might have non-Copy fields)
 										if named, ok := fieldType.(*types.Named); ok {
@@ -2941,6 +2945,10 @@ func (re *RustEmitter) PreVisitSelectorExprX(node ast.Expr, indent int) {
 
 func (re *RustEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
 	if re.forwardDecls {
+		return
+	}
+	// Skip emitting the dot when map operations suppress emission
+	if re.suppressMapEmit {
 		return
 	}
 	var str string
@@ -3344,10 +3352,8 @@ func (re *RustEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 	// Detect delete(m, k) calls
 	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
 		if len(node.Args) >= 2 {
-			if mapIdent, ok := node.Args[0].(*ast.Ident); ok {
-				re.isDeleteCall = true
-				re.deleteMapVarName = mapIdent.Name
-			}
+			re.isDeleteCall = true
+			re.deleteMapVarName = exprToString(node.Args[0])
 		}
 	}
 	// Detect len(m) calls on maps
@@ -3425,9 +3431,7 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						re.isMapCommaOk = true
 						re.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
 						re.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							re.mapCommaOkMapName = ident.Name
-						}
+						re.mapCommaOkMapName = exprToString(indexExpr.X)
 						re.mapCommaOkValType = getRustValueTypeCast(mapType.Elem())
 						re.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						re.mapCommaOkIndent = indent
@@ -3468,9 +3472,7 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						re.isMapAssign = true
 						re.mapAssignIndent = indent
 						// Extract map variable name
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							re.mapAssignVarName = ident.Name
-						}
+						re.mapAssignVarName = exprToString(indexExpr.X)
 						// Suppress normal LHS emission
 						re.suppressMapEmit = true
 						re.shouldGenerate = true

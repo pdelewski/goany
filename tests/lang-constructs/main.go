@@ -1067,6 +1067,48 @@ func testIfInitCommaOk() {
 	}
 }
 
+type MapFieldStruct struct {
+	Settings map[string]int
+}
+
+func testMapStructField() {
+	fmt.Println("=== Map Struct Field ===")
+	s := MapFieldStruct{}
+	s.Settings = make(map[string]int)
+	s.Settings["timeout"] = 30
+	s.Settings["retries"] = 3
+
+	// get + len
+	if s.Settings["timeout"] == 30 && len(s.Settings) == 2 {
+		fmt.Println("PASS: map struct field get/len")
+	} else {
+		fmt.Println("FAIL: map struct field get/len")
+	}
+
+	// delete
+	delete(s.Settings, "retries")
+	if len(s.Settings) == 1 {
+		fmt.Println("PASS: map struct field delete")
+	} else {
+		fmt.Println("FAIL: map struct field delete")
+	}
+
+	// comma-ok
+	val, ok := s.Settings["timeout"]
+	if val == 30 && ok {
+		fmt.Println("PASS: map struct field comma-ok")
+	} else {
+		fmt.Println("FAIL: map struct field comma-ok")
+	}
+
+	val2, ok2 := s.Settings["missing"]
+	if val2 == 0 && !ok2 {
+		fmt.Println("PASS: map struct field comma-ok missing")
+	} else {
+		fmt.Println("FAIL: map struct field comma-ok missing")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1105,6 +1147,7 @@ func main() {
 	testMapCommaOk()
 	testTypeAssertCommaOk()
 	testIfInitCommaOk()
+	testMapStructField()
 
 	fmt.Println("=== Done ===")
 }
