@@ -198,6 +198,22 @@ type RustEmitter struct {
 	returnTempReplacements       map[int]string    // return result index → replacement temp variable name
 	returnTempResultMarker       int               // token buffer position at start of a return result being replaced
 	returnTempReplacing          bool              // whether current return result is being replaced
+	// Map support
+	isMapMakeCall                bool              // Inside make(map[K]V) call
+	mapMakeKeyType               int               // Key type constant for make(map[K]V)
+	isMapIndex                   bool              // Inside m[k] read on a map
+	mapIndexValueType            string            // Value type for map index (for type assertion)
+	isMapAssign                  bool              // Inside m[k]=v assignment
+	mapAssignVarName             string            // Variable name for map assignment
+	mapAssignIndent              int               // Indent level for map assignment
+	captureMapKey                bool              // Redirect emit to capturedMapKey
+	capturedMapKey               string            // Captured key expression
+	suppressMapEmit              bool              // Suppress all token emission
+	isDeleteCall                 bool              // Inside delete(m, k) call
+	deleteMapVarName             string            // Variable name for delete
+	isMapLenCall                 bool              // Inside len(m) on map
+	isSliceMakeCall              bool              // Inside make([]T, n) for runtime
+	sliceMakeElemType            string            // Element type for make([]T, n)
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -242,6 +258,57 @@ func escapeRustKeyword(name string) string {
 		return "r#" + name
 	}
 	return name
+}
+
+// getMapKeyTypeConst returns the integer constant for a map's key type
+func (re *RustEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
+	if ident, ok := mapType.Key.(*ast.Ident); ok {
+		switch ident.Name {
+		case "string":
+			return 1 // KeyTypeString
+		case "int":
+			return 2 // KeyTypeInt
+		case "bool":
+			return 3 // KeyTypeBool
+		}
+	}
+	return 0
+}
+
+// getRustValueTypeCast returns the Rust downcast expression for a map value type
+func getRustValueTypeCast(t types.Type) string {
+	if basicType, ok := t.(*types.Basic); ok {
+		switch basicType.Kind() {
+		case types.Int, types.Int32:
+			return "i32"
+		case types.Int8:
+			return "i8"
+		case types.Int16:
+			return "i16"
+		case types.Int64:
+			return "i64"
+		case types.Uint8:
+			return "u8"
+		case types.Uint16:
+			return "u16"
+		case types.Uint32:
+			return "u32"
+		case types.Uint64:
+			return "u64"
+		case types.String:
+			return "String"
+		case types.Bool:
+			return "bool"
+		case types.Float32:
+			return "f32"
+		case types.Float64:
+			return "f64"
+		}
+	}
+	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
+		return "Rc<dyn Any>"
+	}
+	return "Rc<dyn Any>"
 }
 
 func (re *RustEmitter) emitAsString(s string, indent int) string {
@@ -304,6 +371,13 @@ func (re *RustEmitter) getTokenType(content string) TokenType {
 
 // Helper function to emit token
 func (re *RustEmitter) emitToken(content string, tokenType TokenType, indent int) {
+	if re.captureMapKey {
+		re.capturedMapKey += re.emitAsString(content, indent)
+		return
+	}
+	if re.suppressMapEmit {
+		return
+	}
 	token := CreateToken(tokenType, re.emitAsString(content, indent))
 	_ = re.gir.emitTokenToFileBuffer(token, EmptyVisitMethod)
 }
@@ -1621,6 +1695,15 @@ func (re *RustEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 	if re.suppressRangeEmit {
 		return
 	}
+	// Capture to buffer during map key capture (check before suppress)
+	if re.captureMapKey {
+		re.capturedMapKey += e.Name
+		return
+	}
+	// Skip emission during map assignment LHS suppression
+	if re.suppressMapEmit {
+		return
+	}
 	// Capture to buffer during range collection expression visit
 	if re.captureRangeExpr {
 		re.rangeCollectionExpr += e.Name
@@ -1630,12 +1713,30 @@ func (re *RustEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 
 	var str string
 	name := e.Name
-	name = re.lowerToBuiltins(name)
+
+	// Map-specific identifier rewriting
+	if re.isMapMakeCall && name == "make" {
+		name = "hmap::newHashMap"
+	} else if re.isSliceMakeCall && name == "make" {
+		// make([]T, n) is handled via token rewriting in PostVisitCallExprArgs
+		name = "vec_make_placeholder"
+	} else if re.isDeleteCall && name == "delete" {
+		name = re.deleteMapVarName + " = hmap::hashMapDelete"
+	} else if re.isMapLenCall && name == "len" {
+		name = "hmap::hashMapLen"
+	} else {
+		name = re.lowerToBuiltins(name)
+	}
+
 	if name == "nil" {
-		// In Go, nil for slices means empty slice - use Vec::new() in Rust
-		// For pointers/interfaces, None would be correct, but Vec::new() is safer
-		// for the common case of slice assignment
-		str = re.emitAsString("Vec::new()", indent)
+		if re.currentFuncReturnsAny || re.inReturnStmt {
+			// Check if current function returns interface{}/any - use Rc default
+			// For return statements in interface{}-returning functions
+			str = re.emitAsString("Rc::new(0_i32) as Rc<dyn Any>", indent)
+		} else {
+			// In Go, nil for slices means empty slice - use Vec::new() in Rust
+			str = re.emitAsString("Vec::new()", indent)
+		}
 	} else {
 		if n, ok := rustTypesMap[name]; ok {
 			str = re.emitAsString(n, indent)
@@ -1656,6 +1757,21 @@ func (re *RustEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 	// Push the args start position to the stack for nested call handling
 	re.callExprArgsMarkerStack = append(re.callExprArgsMarkerStack, len(re.gir.tokenSlice))
 	re.gir.emitToFileBuffer("", "@PreVisitCallExprArgs")
+
+	// For make(map[K]V), emit open paren and key type constant
+	if re.isMapMakeCall {
+		re.emitToken("(", LeftParen, 0)
+		re.gir.emitToFileBuffer(fmt.Sprintf("%d", re.mapMakeKeyType), EmptyVisitMethod)
+		// Push stacks but skip normal function name logic
+		re.currentCallArgIdentsStack = append(re.currentCallArgIdentsStack, re.collectCallArgIdentCounts(node))
+		re.currentCallIsAppend = false
+		re.currentCallIsLen = false
+		if re.OptimizeRefs {
+			re.refOptCalleeReadOnly = append(re.refOptCalleeReadOnly, nil)
+		}
+		return
+	}
+
 	re.emitToken("(", LeftParen, 0)
 	// Push call arg identifier counts for move optimization
 	re.currentCallArgIdentsStack = append(re.currentCallArgIdentsStack, re.collectCallArgIdentCounts(node))
@@ -1690,10 +1806,11 @@ func (re *RustEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 				re.refOptCalleeReadOnly[len(re.refOptCalleeReadOnly)-1] = flags
 			}
 		}
-		// Skip adding & for type conversions
+		// Skip adding & for type conversions and map-related calls
 		if isConversion, _ := re.isTypeConversion(funNameStr); !isConversion {
-			if strings.Contains(funNameStr, "len") {
+			if strings.Contains(funNameStr, "len") && (!re.isMapLenCall || re.OptimizeRefs) {
 				// add & before the first argument for len (but not append - it takes ownership)
+				// Skip & for map len calls unless ref-opt is enabled (hashMapLen takes &HashMap with ref-opt)
 				str := re.emitAsString("&", 0)
 				re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 			}
@@ -1761,6 +1878,61 @@ func (re *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 			re.refOptCalleeReadOnly = re.refOptCalleeReadOnly[:len(re.refOptCalleeReadOnly)-1]
 		}
 	}()
+
+	// Handle make(map[K]V) - all args were suppressed, just close the paren
+	if re.isMapMakeCall {
+		re.emitToken(")", RightParen, 0)
+		re.isMapMakeCall = false
+		return
+	}
+	// Handle make([]T, n) for transpiled runtime - rewrite to vec![default; n as usize]
+	if re.isSliceMakeCall {
+		pArgsIndex := re.callExprArgsMarkerStack[len(re.callExprArgsMarkerStack)-1]
+		// Extract all args tokens (arg 0 was suppressed, so we have just "(size")
+		argTokens, err := ExtractTokensBetween(pArgsIndex, len(re.gir.tokenSlice), re.gir.tokenSlice)
+		if err == nil {
+			argStr := strings.TrimSpace(strings.Join(tokensToStrings(argTokens), ""))
+			// Strip opening paren and any trailing content
+			argStr = strings.TrimLeft(argStr, "(")
+			argStr = strings.TrimRight(argStr, ")")
+			// If there's a comma (from normal arg separation), take just the last part
+			if commaIdx := strings.LastIndex(argStr, ","); commaIdx >= 0 {
+				argStr = strings.TrimSpace(argStr[commaIdx+1:])
+			}
+			sizeArg := strings.TrimSpace(argStr)
+			if sizeArg == "" {
+				sizeArg = "0"
+			}
+			p1Index := re.callExprFunMarkerStack[len(re.callExprFunMarkerStack)-1]
+			// Determine default value based on element type
+			var defaultVal string
+			if re.sliceMakeElemType == "bool" {
+				defaultVal = "false"
+			} else if re.sliceMakeElemType == "Rc<dyn Any>" {
+				defaultVal = "Rc::new(0_i32) as Rc<dyn Any>"
+			} else {
+				defaultVal = "Default::default()"
+			}
+			newTokens := []string{fmt.Sprintf("vec![%s; %s as usize]", defaultVal, sizeArg)}
+			re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
+		}
+		re.isSliceMakeCall = false
+		re.sliceMakeElemType = ""
+		return
+	}
+	// Reset map call flags
+	if re.isDeleteCall {
+		// Close Rc::new() for key, then close hashMapDelete()
+		re.gir.emitToFileBuffer("))", EmptyVisitMethod)
+		re.isDeleteCall = false
+		re.deleteMapVarName = ""
+		return
+	}
+	if re.isMapLenCall {
+		re.emitToken(")", RightParen, 0)
+		re.isMapLenCall = false
+		return
+	}
 
 	// Use stack indices for the current call (top of stacks)
 	if len(re.callExprFunMarkerStack) == 0 || len(re.callExprFunEndMarkerStack) == 0 || len(re.callExprArgsMarkerStack) == 0 {
@@ -2006,6 +2178,13 @@ func (re *RustEmitter) PostVisitBasicLit(e *ast.BasicLit, indent int) {
 	if e.Kind == token.STRING {
 		if re.inAssignRhs && re.assignmentToken == "+=" {
 			// Don't add .to_string() for += operations
+			return
+		}
+		if re.captureMapKey {
+			re.capturedMapKey += ".to_string()"
+			return
+		}
+		if re.suppressMapEmit {
 			return
 		}
 		re.gir.emitToFileBuffer(".to_string()", EmptyVisitMethod)
@@ -2541,14 +2720,14 @@ func (re *RustEmitter) rustDefaultValueForType(t types.Type) string {
 	}
 	typeStr := t.String()
 
+	// Check for slice types BEFORE interface{} (since []interface{} contains "interface{}")
+	if strings.HasPrefix(typeStr, "[]") {
+		return "Vec::new()"
+	}
+
 	// Check for interface{} / any
 	if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") || typeStr == "any" {
 		return "Rc::new(0_i32)"
-	}
-
-	// Check for slice types
-	if strings.HasPrefix(typeStr, "[]") {
-		return "Vec::new()"
 	}
 
 	// Check for function types
@@ -2586,6 +2765,22 @@ func (re *RustEmitter) rustDefaultValueForType(t types.Type) string {
 	return "Default::default()"
 }
 
+func (re *RustEmitter) PreVisitMapType(node *ast.MapType, indent int) {
+	if re.forwardDecls {
+		return
+	}
+	// Emit hmap::HashMap as the type, suppress the map type tokens
+	re.emitToken("hmap::HashMap", Identifier, 0)
+	re.suppressMapEmit = true
+}
+
+func (re *RustEmitter) PostVisitMapType(node *ast.MapType, indent int) {
+	if re.forwardDecls {
+		return
+	}
+	re.suppressMapEmit = false
+}
+
 func (re *RustEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 	if re.forwardDecls {
 		return
@@ -2595,6 +2790,10 @@ func (re *RustEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 }
 func (re *RustEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	if re.forwardDecls {
+		return
+	}
+	// Skip Vec rewriting for make([]T, n) - the whole call will be rewritten
+	if re.isSliceMakeCall {
 		return
 	}
 
@@ -3048,6 +3247,44 @@ func (re *RustEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 			}
 		}
 	}
+	// Detect make(map[K]V) and make([]T, n) calls
+	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "make" {
+		if len(node.Args) >= 1 {
+			if mapType, ok := node.Args[0].(*ast.MapType); ok {
+				re.isMapMakeCall = true
+				re.mapMakeKeyType = re.getMapKeyTypeConst(mapType)
+			} else if arrayType, ok := node.Args[0].(*ast.ArrayType); ok {
+				// make([]T, n) — used in transpiled runtime
+				re.isSliceMakeCall = true
+				re.sliceMakeElemType = "Rc<dyn Any>" // default for interface{}
+				if re.pkg != nil && re.pkg.TypesInfo != nil {
+					if tv, ok := re.pkg.TypesInfo.Types[arrayType.Elt]; ok && tv.Type != nil {
+						re.sliceMakeElemType = getRustValueTypeCast(tv.Type)
+					}
+				}
+			}
+		}
+	}
+	// Detect delete(m, k) calls
+	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
+		if len(node.Args) >= 2 {
+			if mapIdent, ok := node.Args[0].(*ast.Ident); ok {
+				re.isDeleteCall = true
+				re.deleteMapVarName = mapIdent.Name
+			}
+		}
+	}
+	// Detect len(m) calls on maps
+	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "len" {
+		if len(node.Args) >= 1 && re.pkg != nil && re.pkg.TypesInfo != nil {
+			tv := re.pkg.TypesInfo.Types[node.Args[0]]
+			if tv.Type != nil {
+				if _, ok := tv.Type.Underlying().(*types.Map); ok {
+					re.isMapLenCall = true
+				}
+			}
+		}
+	}
 }
 
 func (re *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
@@ -3102,6 +3339,28 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		re.suppressRangeEmit = true
 		return
 	}
+	// Detect map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
+	if len(node.Lhs) == 1 {
+		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
+			if re.pkg != nil && re.pkg.TypesInfo != nil {
+				tv := re.pkg.TypesInfo.Types[indexExpr.X]
+				if tv.Type != nil {
+					if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+						re.isMapAssign = true
+						re.mapAssignIndent = indent
+						// Extract map variable name
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							re.mapAssignVarName = ident.Name
+						}
+						// Suppress normal LHS emission
+						re.suppressMapEmit = true
+						re.shouldGenerate = true
+						return
+					}
+				}
+			}
+		}
+	}
 	re.shouldGenerate = true
 	// Capture LHS variable names for move optimization
 	re.currentAssignLhsNames = make(map[string]bool)
@@ -3129,6 +3388,19 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
 func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Handle map assignment: close the hashMapSet call with ));
+	if re.isMapAssign {
+		re.gir.emitToFileBuffer("));", EmptyVisitMethod)
+		re.isMapAssign = false
+		re.mapAssignVarName = ""
+		re.capturedMapKey = ""
+		re.captureMapKey = false
+		re.suppressMapEmit = false
+		re.inAssignRhs = false
+		re.shouldGenerate = false
+		return
+	}
+
 	// Save call extractions before cleanup resets them
 	callExts := re.moveOptCallExts
 	assignMarker := re.moveOptAssignStartMarker
@@ -3182,6 +3454,19 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	re.shouldGenerate = true
 	re.inAssignRhs = true
+
+	// For map assignment, emit: varName = hmap::hashMapSet(varName, capturedKey, Rc::new(
+	if re.isMapAssign {
+		re.suppressMapEmit = false
+		varName := re.mapAssignVarName
+		capturedKey := re.capturedMapKey
+		// Wrap string keys in Rc::new(key.to_string()) and other keys in Rc::new(key)
+		wrappedKey := "Rc::new(" + capturedKey + ")"
+		str := re.emitAsString(varName+" = hmap::hashMapSet("+varName+".clone(), "+wrappedKey+", Rc::new(", re.mapAssignIndent)
+		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		return
+	}
+
 	opTokenType := re.getTokenType(re.assignmentToken)
 	re.emitToken(re.assignmentToken, opTokenType, indent+1)
 	re.emitToken(" ", WhiteSpace, 0)
@@ -3322,6 +3607,12 @@ func (re *RustEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, inden
 }
 
 func (re *RustEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	// For map assignment, LHS is suppressed (we handle it in PreVisitAssignStmtRhs)
+	if re.isMapAssign {
+		re.shouldGenerate = true
+		re.inAssignLhs = true
+		return
+	}
 	re.shouldGenerate = true
 	re.inAssignLhs = true // Track that we're in LHS
 	assignmentToken := node.Tok.String()
@@ -3404,6 +3695,13 @@ func (re *RustEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 }
 
 func (re *RustEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	// For map assignment, stop suppression (key was captured by index expr)
+	if re.isMapAssign {
+		re.suppressMapEmit = false
+		re.inAssignLhs = false
+		re.shouldGenerate = false
+		return
+	}
 	// For local closure inlining, skip all emission - the assignment will be removed
 	if re.localClosureAssign && re.currentClosureName != "" {
 		re.shouldGenerate = false
@@ -3419,6 +3717,25 @@ func (re *RustEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) 
 }
 
 func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
+	// Check if this is a map index operation
+	if re.pkg != nil && re.pkg.TypesInfo != nil {
+		tv := re.pkg.TypesInfo.Types[node.X]
+		if tv.Type != nil {
+			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+				re.isMapIndex = true
+				re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
+				// For map assignment, don't emit hashMapGet — we're capturing the key
+				if !re.isMapAssign {
+					re.gir.emitToFileBuffer("hmap::hashMapGet(", EmptyVisitMethod)
+					// With ref-opt, hashMapGet takes &HashMap, so add & before the map variable
+					if re.OptimizeRefs {
+						re.gir.emitToFileBuffer("&", EmptyVisitMethod)
+					}
+				}
+				return
+			}
+		}
+	}
 	// For assignment RHS, check if the element type is a function (needs borrowing in Rust)
 	if re.inAssignRhs {
 		tv := re.pkg.TypesInfo.Types[node.X]
@@ -3433,8 +3750,28 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	}
 }
 
+func (re *RustEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
+	if re.isMapIndex && !re.isMapAssign {
+		if re.OptimizeRefs {
+			// With ref-opt, hashMapGet takes &HashMap (already prepended &), no clone needed
+			re.gir.emitToFileBuffer(", Rc::new(", EmptyVisitMethod)
+		} else {
+			// Emit .clone() for map variable (HashMap doesn't implement Copy), then comma and Rc::new( to wrap the key
+			re.gir.emitToFileBuffer(".clone(), Rc::new(", EmptyVisitMethod)
+		}
+	}
+}
+
 func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	re.shouldGenerate = true
+	// For map index, don't emit [ - instead start capturing key if in map assign
+	if re.isMapIndex {
+		if re.isMapAssign {
+			re.captureMapKey = true
+			re.capturedMapKey = ""
+		}
+		return
+	}
 	// If the base expression is a string, we need .as_bytes() for indexing
 	if node.X != nil {
 		tv := re.pkg.TypesInfo.Types[node.X]
@@ -3446,6 +3783,28 @@ func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 
 }
 func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
+	// Handle map index: emit ) + type assertion
+	if re.isMapIndex {
+		if re.isMapAssign {
+			// Stop capturing key
+			re.captureMapKey = false
+		} else {
+			// For map read: close Rc::new() for key, then close hashMapGet, add type assertion
+			re.gir.emitToFileBuffer("))", EmptyVisitMethod)
+			// Add type assertion (downcast)
+			valType := re.mapIndexValueType
+			if valType == "String" {
+				re.gir.emitToFileBuffer(".downcast_ref::<String>().unwrap().clone()", EmptyVisitMethod)
+			} else if valType == "bool" {
+				re.gir.emitToFileBuffer(".downcast_ref::<bool>().unwrap().clone()", EmptyVisitMethod)
+			} else {
+				re.gir.emitToFileBuffer(fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType), EmptyVisitMethod)
+			}
+		}
+		re.isMapIndex = false
+		re.mapIndexValueType = ""
+		return
+	}
 	// Check if the index type is an integer (not usize) - need to add "as usize"
 	if node.Index != nil {
 		tv := re.pkg.TypesInfo.Types[node.Index]
@@ -3484,6 +3843,13 @@ func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 						if re.inCallExprArg {
 							re.argAlreadyCloned = true
 						}
+					}
+				}
+				// Check if element type is interface{} (Rc<dyn Any> in Rust - not Copy)
+				if _, isInterface := elemType.Underlying().(*types.Interface); isInterface {
+					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					if re.inCallExprArg {
+						re.argAlreadyCloned = true
 					}
 				}
 			}
@@ -3653,6 +4019,36 @@ func (re *RustEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
 }
 
 func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
+	// For make(map[K]V), suppress all arguments (key type constant already emitted)
+	if re.isMapMakeCall {
+		re.suppressMapEmit = true
+		return
+	}
+	// For make([]T, n), suppress arg 0 (the array type) and emit size for arg 1
+	if re.isSliceMakeCall {
+		if index == 0 {
+			// Suppress the ArrayType argument
+			re.suppressMapEmit = true
+			return
+		} else if index == 1 {
+			// Allow the size argument to be emitted normally
+			re.suppressMapEmit = false
+			// Don't emit comma - the size will be picked up by PostVisitCallExprArgs
+		}
+		return
+	}
+	// For delete(m, k), suppress arg 0 emission but still pass map var and key to hashMapDelete
+	if re.isDeleteCall {
+		if index == 0 {
+			re.suppressMapEmit = true
+			return
+		} else if index == 1 {
+			re.suppressMapEmit = false
+			// Emit the map variable as first arg, then comma for the key
+			re.gir.emitToFileBuffer(re.deleteMapVarName+".clone(), Rc::new(", EmptyVisitMethod)
+		}
+		return
+	}
 	if index > 0 {
 		str := re.emitAsString(", ", 0)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
@@ -3698,6 +4094,11 @@ func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 }
 
 func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
+	// Handle map/slice make call arg suppression
+	if re.isMapMakeCall || re.isSliceMakeCall || re.isDeleteCall {
+		re.suppressMapEmit = false
+		return
+	}
 	// Replace arg tokens with temp var name if this arg was pre-extracted.
 	// Only at outermost call depth (stack depth == 1).
 	defer func() {
@@ -3812,6 +4213,27 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 			re.inCallExprArg = false
 			return
 		}
+		// Handle interface{} type (Rc<dyn Any> in Rust - not Copy)
+		if _, isInterface := tv.Type.Underlying().(*types.Interface); isInterface {
+			if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
+				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+			}
+			re.inCallExprArg = false
+			return
+		}
+		// Handle map type (HashMap in Rust - not Copy, used for hashMapLen/hashMapGet)
+		if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+			// With ref-opt, hashMapLen takes &HashMap (& already prepended), no clone needed
+			if re.isMapLenCall && re.OptimizeRefs {
+				re.inCallExprArg = false
+				return
+			}
+			if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
+				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+			}
+			re.inCallExprArg = false
+			return
+		}
 	}
 
 	// Liveness-based clone: if this identifier will be used in a later statement,
@@ -3856,6 +4278,23 @@ func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 						re.inCallExprArg = false
 						return
 					}
+				}
+				// Clone for interface{} types (Rc<dyn Any> in Rust)
+				if _, isInterface := tv.Type.Underlying().(*types.Interface); isInterface {
+					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					re.inCallExprArg = false
+					return
+				}
+				// Clone for map types (HashMap in Rust)
+				if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+					// With ref-opt, hashMapLen takes &HashMap (& already prepended), no clone needed
+					if re.isMapLenCall && re.OptimizeRefs {
+						re.inCallExprArg = false
+						return
+					}
+					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+					re.inCallExprArg = false
+					return
 				}
 			}
 		}
@@ -4795,6 +5234,16 @@ func (re *RustEmitter) PreVisitFuncLitTypeResults(node *ast.FieldList, indent in
 }
 
 func (re *RustEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {
+	if re.forwardDecls {
+		return
+	}
+	if re.captureMapKey {
+		re.capturedMapKey += re.emitAsString("Rc<dyn Any>", indent)
+		return
+	}
+	if re.suppressMapEmit {
+		return
+	}
 	str := re.emitAsString("Rc<dyn Any>", indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }

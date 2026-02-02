@@ -78,6 +78,43 @@ type JSEmitter struct {
 	intDivision           bool
 	// String indexing - use charCodeAt for string[i] to return number like Go
 	isStringIndex         bool
+	// Map support
+	isMapMakeCall    bool   // Inside make(map[K]V) call
+	mapMakeKeyType   int    // Key type constant for make call
+	isMapIndex       bool   // IndexExpr on a map (for read: m[k])
+	isMapAssign      bool   // Assignment to map index (m[k] = v)
+	mapAssignVarName string // Variable name for map assignment
+	mapAssignIndent  int    // Indent level for map assignment
+	captureMapKey    bool   // Capturing map key expression
+	capturedMapKey   string // Captured key expression text
+	isDeleteCall     bool   // Inside delete(m, k) call
+	deleteMapVarName string // Variable name for delete
+	isMapLenCall     bool   // len() call on a map
+	pendingMapInit   bool   // var m map[K]V needs default init
+	pendingMapKeyType int   // Key type for pending init
+	// Slice make support: make([]T, n) → new Array(n).fill(default)
+	isSliceMakeCall    bool   // Inside make([]T, n) call
+	sliceMakeDefault   string // Default fill value for the slice element type
+	suppressEmit       bool   // When true, emitToFile does nothing
+}
+
+// getMapKeyTypeConst returns the key type constant for a map type AST node
+func (jse *JSEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
+	if jse.pkg != nil && jse.pkg.TypesInfo != nil {
+		if tv, ok := jse.pkg.TypesInfo.Types[mapType.Key]; ok && tv.Type != nil {
+			if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
+				switch basic.Kind() {
+				case types.String:
+					return 1 // KEY_TYPE_STRING
+				case types.Int:
+					return 2 // KEY_TYPE_INT
+				case types.Bool:
+					return 3 // KEY_TYPE_BOOL
+				}
+			}
+		}
+	}
+	return 1 // Default to string
 }
 
 func (*JSEmitter) lowerToBuiltins(selector string) string {
@@ -101,6 +138,13 @@ func (*JSEmitter) lowerToBuiltins(selector string) string {
 func (jse *JSEmitter) emitToFile(s string) error {
 	if jse.captureRangeExpr {
 		jse.rangeCollectionExpr += s
+		return nil
+	}
+	if jse.captureMapKey {
+		jse.capturedMapKey += s
+		return nil
+	}
+	if jse.suppressEmit {
 		return nil
 	}
 	if jse.suppressRangeEmit {
@@ -673,6 +717,25 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if jse.forwardDecl {
 		return
 	}
+	// Check for map assignment: m[k] = v
+	if len(node.Lhs) == 1 {
+		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
+			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
+				tv := jse.pkg.TypesInfo.Types[indexExpr.X]
+				if tv.Type != nil {
+					if _, ok := tv.Type.Underlying().(*types.Map); ok {
+						jse.isMapAssign = true
+						jse.mapAssignIndent = indent
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							jse.mapAssignVarName = ident.Name
+						}
+						jse.suppressRangeEmit = true // Suppress LHS output
+						return
+					}
+				}
+			}
+		}
+	}
 	// Check if all LHS are blank identifiers - if so, suppress the statement
 	allBlank := true
 	for _, lhs := range node.Lhs {
@@ -731,10 +794,25 @@ func (jse *JSEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	if jse.forwardDecl {
 		return
 	}
+	if jse.isMapAssign {
+		// Turn off suppression and emit: m = hmap.hashMapSet(m, capturedKey,
+		jse.suppressRangeEmit = false
+		str := jse.emitAsString(jse.mapAssignVarName+" = hmap.hashMapSet("+jse.mapAssignVarName+", "+jse.capturedMapKey+", ", jse.mapAssignIndent)
+		jse.emitToFile(str)
+		return
+	}
 	jse.emitToFile(" " + jse.assignmentToken + " ")
 }
 
 func (jse *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Handle map assignment: close hashMapSet call
+	if jse.isMapAssign {
+		jse.emitToFile(");\n")
+		jse.isMapAssign = false
+		jse.mapAssignVarName = ""
+		jse.capturedMapKey = ""
+		return
+	}
 	// Check if this was a blank identifier assignment - reset suppression
 	allBlank := true
 	for _, lhs := range node.Lhs {
@@ -788,6 +866,23 @@ func (jse *JSEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 		return
 	}
 	name := node.Name
+	// Handle map operation identifier replacements
+	if jse.isMapMakeCall && name == "make" {
+		jse.emitToFile("hmap.newHashMap")
+		return
+	}
+	if jse.isSliceMakeCall && name == "make" {
+		jse.emitToFile("new Array")
+		return
+	}
+	if jse.isDeleteCall && name == "delete" {
+		jse.emitToFile(jse.deleteMapVarName + " = hmap.hashMapDelete")
+		return
+	}
+	if jse.isMapLenCall && name == "len" {
+		jse.emitToFile("hmap.hashMapLen")
+		return
+	}
 	// Apply builtin lowering
 	lowered := jse.lowerToBuiltins(name)
 	// If lowered to empty string, don't emit (e.g., "fmt" package)
@@ -956,6 +1051,54 @@ func (jse *JSEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 	if jse.forwardDecl {
 		return
 	}
+	// Detect make(map[K]V) and make([]T, n) calls
+	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "make" {
+		if len(node.Args) >= 1 {
+			if mapType, ok := node.Args[0].(*ast.MapType); ok {
+				jse.isMapMakeCall = true
+				jse.mapMakeKeyType = jse.getMapKeyTypeConst(mapType)
+			} else if arrayType, ok := node.Args[0].(*ast.ArrayType); ok {
+				// make([]T, n) → new Array(n).fill(default)
+				jse.isSliceMakeCall = true
+				jse.sliceMakeDefault = "null"
+				// Determine default based on element type
+				if jse.pkg != nil && jse.pkg.TypesInfo != nil {
+					if tv, ok := jse.pkg.TypesInfo.Types[arrayType.Elt]; ok && tv.Type != nil {
+						if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
+							info := basic.Info()
+							if info&types.IsInteger != 0 || info&types.IsFloat != 0 {
+								jse.sliceMakeDefault = "0"
+							} else if info&types.IsBoolean != 0 {
+								jse.sliceMakeDefault = "false"
+							} else if info&types.IsString != 0 {
+								jse.sliceMakeDefault = `""`
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// Detect delete(m, k) calls
+	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
+		if len(node.Args) >= 2 {
+			if mapIdent, ok := node.Args[0].(*ast.Ident); ok {
+				jse.isDeleteCall = true
+				jse.deleteMapVarName = mapIdent.Name
+			}
+		}
+	}
+	// Detect len(m) calls on maps
+	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "len" {
+		if len(node.Args) >= 1 && jse.pkg != nil && jse.pkg.TypesInfo != nil {
+			tv := jse.pkg.TypesInfo.Types[node.Args[0]]
+			if tv.Type != nil {
+				if _, ok := tv.Type.Underlying().(*types.Map); ok {
+					jse.isMapLenCall = true
+				}
+			}
+		}
+	}
 }
 
 func (jse *JSEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
@@ -970,9 +1113,30 @@ func (jse *JSEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 	jse.emitToFile("(")
 }
 
+func (jse *JSEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
+	if jse.forwardDecl {
+		return
+	}
+	// For make(map[K]V), emit the key type constant as the argument
+	if jse.isMapMakeCall {
+		jse.emitToFile(fmt.Sprintf("%d", jse.mapMakeKeyType))
+	}
+}
+
 func (jse *JSEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
 	if jse.forwardDecl {
 		return
+	}
+	if jse.isSliceMakeCall {
+		if index == 0 {
+			// Suppress the first argument (the ArrayType) for make([]T, n)
+			jse.suppressEmit = true
+			return
+		} else if index == 1 {
+			// Re-enable output for the length argument, no comma needed since arg 0 was suppressed
+			jse.suppressEmit = false
+			return
+		}
 	}
 	if index > 0 {
 		jse.emitToFile(", ")
@@ -984,6 +1148,24 @@ func (jse *JSEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		return
 	}
 	jse.emitToFile(")")
+	// For make([]T, n), append .fill(default)
+	if jse.isSliceMakeCall {
+		jse.emitToFile(fmt.Sprintf(".fill(%s)", jse.sliceMakeDefault))
+		jse.isSliceMakeCall = false
+		jse.sliceMakeDefault = ""
+		jse.suppressEmit = false // Safety reset
+	}
+	// Reset map call flags
+	if jse.isMapMakeCall {
+		jse.isMapMakeCall = false
+	}
+	if jse.isDeleteCall {
+		jse.isDeleteCall = false
+		jse.deleteMapVarName = ""
+	}
+	if jse.isMapLenCall {
+		jse.isMapLenCall = false
+	}
 }
 
 // Return statements
@@ -1243,10 +1425,32 @@ func (jse *JSEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	if jse.forwardDecl {
 		return
 	}
+	// Check if indexing a map (for read access: m[k])
+	if !jse.isMapAssign && jse.pkg != nil && jse.pkg.TypesInfo != nil {
+		tv := jse.pkg.TypesInfo.Types[node.X]
+		if tv.Type != nil {
+			if _, ok := tv.Type.Underlying().(*types.Map); ok {
+				jse.isMapIndex = true
+				jse.emitToFile("hmap.hashMapGet(")
+				return
+			}
+		}
+	}
 }
 
 func (jse *JSEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	if jse.forwardDecl {
+		return
+	}
+	// Map read: emit ", " between map expr and key
+	if jse.isMapIndex {
+		jse.emitToFile(", ")
+		return
+	}
+	// Map assignment: start capturing the key expression
+	if jse.isMapAssign {
+		jse.captureMapKey = true
+		jse.capturedMapKey = ""
 		return
 	}
 	// Check if indexing a string - need to use charCodeAt() to get byte value like Go
@@ -1266,6 +1470,15 @@ func (jse *JSEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 
 func (jse *JSEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	if jse.forwardDecl {
+		return
+	}
+	if jse.isMapIndex {
+		jse.emitToFile(")")
+		jse.isMapIndex = false
+		return
+	}
+	if jse.captureMapKey {
+		jse.captureMapKey = false
 		return
 	}
 	if jse.isStringIndex {
@@ -1549,6 +1762,13 @@ func (jse *JSEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index i
 		if jse.pkg != nil && jse.pkg.TypesInfo != nil {
 			if typeAndValue, ok := jse.pkg.TypesInfo.Types[node.Type]; ok {
 				underlying := typeAndValue.Type.Underlying()
+				if _, isMap := underlying.(*types.Map); isMap {
+					if mapType, ok := node.Type.(*ast.MapType); ok {
+						jse.pendingMapInit = true
+						jse.pendingMapKeyType = jse.getMapKeyTypeConst(mapType)
+					}
+					return
+				}
 				if _, isSlice := underlying.(*types.Slice); isSlice {
 					jse.pendingSliceInit = true
 					return
@@ -1594,7 +1814,11 @@ func (jse *JSEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int
 	if jse.forwardDecl {
 		return
 	}
-	if jse.pendingSliceInit {
+	if jse.pendingMapInit {
+		jse.emitToFile(fmt.Sprintf(" = hmap.newHashMap(%d)", jse.pendingMapKeyType))
+		jse.pendingMapInit = false
+		jse.pendingMapKeyType = 0
+	} else if jse.pendingSliceInit {
 		jse.emitToFile(" = []")
 		jse.pendingSliceInit = false
 	} else if jse.pendingStructInit {

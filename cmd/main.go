@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/ast"
 	"log"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"goany/compiler"
+	goanyrt "goany/runtime"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -56,6 +58,79 @@ func collectAllPackages(pkgs []*packages.Package) []*packages.Package {
 
 	compiler.DebugLogPrintf("Total packages to transpile: %d", len(result))
 	return result
+}
+
+// packagesUseMap checks if any package in the list uses Go map types
+func packagesUseMap(pkgs []*packages.Package) bool {
+	for _, pkg := range pkgs {
+		if pkg.TypesInfo == nil {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			found := false
+			ast.Inspect(file, func(n ast.Node) bool {
+				if found {
+					return false
+				}
+				switch n.(type) {
+				case *ast.MapType:
+					found = true
+					return false
+				}
+				return true
+			})
+			if found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// loadRuntimeHashmap loads the embedded runtime/std/hashmap.go as a *packages.Package
+// by writing it to a temp directory and using packages.Load
+func loadRuntimeHashmap() (*packages.Package, error) {
+	tmpDir, err := os.MkdirTemp("", "goany-runtime-*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Write go.mod
+	err = os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte("module runtime/hmap\n\ngo 1.21\n"), 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write go.mod: %v", err)
+	}
+
+	// Write hashmap.go from embedded source
+	err = os.WriteFile(filepath.Join(tmpDir, "hashmap.go"), []byte(goanyrt.HashmapGoSource), 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write hashmap.go: %v", err)
+	}
+
+	cfg := &packages.Config{
+		Mode:  packages.LoadSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports | packages.NeedModule,
+		Dir:   tmpDir,
+		Tests: false,
+	}
+
+	pkgs, err := packages.Load(cfg, "./...")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load runtime hashmap package: %v", err)
+	}
+
+	if len(pkgs) == 0 {
+		return nil, fmt.Errorf("no packages found in runtime hashmap")
+	}
+
+	// Check for errors
+	for _, pkg := range pkgs {
+		if len(pkg.Errors) > 0 {
+			return nil, fmt.Errorf("errors loading runtime hashmap: %v", pkg.Errors)
+		}
+	}
+
+	return pkgs[0], nil
 }
 
 func main() {
@@ -112,6 +187,18 @@ func main() {
 
 	// Collect all imported packages recursively (excluding standard library)
 	allPkgs := collectAllPackages(pkgs)
+
+	// If any package uses map types, load and prepend the runtime hashmap package
+	if packagesUseMap(allPkgs) {
+		compiler.DebugLogPrintf("Map usage detected, loading runtime hashmap package")
+		hashmapPkg, err := loadRuntimeHashmap()
+		if err != nil {
+			log.Fatalf("Failed to load runtime hashmap: %v", err)
+		}
+		// Prepend so hashmap functions are defined before user code
+		allPkgs = append([]*packages.Package{hashmapPkg}, allPkgs...)
+		compiler.DebugLogPrintf("Runtime hashmap package loaded: %s", hashmapPkg.Name)
+	}
 
 	// Parse backend selection
 	backends := strings.Split(strings.ToLower(backend), ",")
