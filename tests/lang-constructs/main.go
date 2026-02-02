@@ -778,6 +778,23 @@ func testNilMap() {
 	fmt.Println(len(m))
 }
 
+func testMapKeyTypes() {
+	m1 := make(map[int64]string)
+	m1[100] = "hundred"
+	fmt.Println(m1[100])
+	fmt.Println(len(m1))
+
+	m2 := make(map[float64]int)
+	m2[3.14] = 314
+	fmt.Println(m2[3.14])
+	fmt.Println(len(m2))
+
+	m3 := make(map[int32]string)
+	m3[42] = "answer"
+	fmt.Println(m3[42])
+	fmt.Println(len(m3))
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -811,6 +828,7 @@ func main() {
 	testMapOperations()
 	testMapAsParameter()
 	testNilMap()
+	testMapKeyTypes()
 
 	fmt.Println("=== Done ===")
 }

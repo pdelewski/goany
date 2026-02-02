@@ -272,6 +272,26 @@ func (re *RustEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 			return 2 // KeyTypeInt
 		case "bool":
 			return 3 // KeyTypeBool
+		case "int8":
+			return 4 // KeyTypeInt8
+		case "int16":
+			return 5 // KeyTypeInt16
+		case "int32":
+			return 6 // KeyTypeInt32
+		case "int64":
+			return 7 // KeyTypeInt64
+		case "uint8":
+			return 8 // KeyTypeUint8
+		case "uint16":
+			return 9 // KeyTypeUint16
+		case "uint32":
+			return 10 // KeyTypeUint32
+		case "uint64":
+			return 11 // KeyTypeUint64
+		case "float32":
+			return 12 // KeyTypeFloat32
+		case "float64":
+			return 13 // KeyTypeFloat64
 		}
 	}
 	return 0

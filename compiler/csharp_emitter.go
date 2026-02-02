@@ -13,7 +13,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-var destTypes = []string{"sbyte", "short", "int", "long", "byte", "ushort", "object", "string", "float", "double"}
+var destTypes = []string{"sbyte", "short", "int", "long", "byte", "ushort", "uint", "ulong", "object", "string", "float", "double"}
 
 var csTypesMap = map[string]string{
 	"int8":    destTypes[0],
@@ -22,10 +22,12 @@ var csTypesMap = map[string]string{
 	"int64":   destTypes[3],
 	"uint8":   destTypes[4],
 	"uint16":  destTypes[5],
-	"any":     destTypes[6],
-	"string":  destTypes[7],
-	"float32": destTypes[8],
-	"float64": destTypes[9],
+	"uint32":  destTypes[6],
+	"uint64":  destTypes[7],
+	"any":     destTypes[8],
+	"string":  destTypes[9],
+	"float32": destTypes[10],
+	"float64": destTypes[11],
 }
 
 type AliasRepr struct {
@@ -60,17 +62,17 @@ type CSharpEmitter struct {
 	isTuple           bool
 	isInfiniteLoop    bool // Track if current for loop is infinite (no init, cond, post)
 	// Key-value range loop support
-	isKeyValueRange         bool
-	rangeKeyName            string
-	rangeValueName          string
-	rangeCollectionExpr     string
-	captureRangeExpr        bool
-	suppressRangeEmit       bool
-	rangeStmtIndent         int
-	pendingRangeValueDecl   bool
-	pendingValueName        string
-	pendingCollectionExpr   string
-	pendingKeyName          string
+	isKeyValueRange            bool
+	rangeKeyName               string
+	rangeValueName             string
+	rangeCollectionExpr        string
+	captureRangeExpr           bool
+	suppressRangeEmit          bool
+	rangeStmtIndent            int
+	pendingRangeValueDecl      bool
+	pendingValueName           string
+	pendingCollectionExpr      string
+	pendingKeyName             string
 	inTypeContext              bool              // Track if we're in a type context (don't add .Api. for types)
 	apiClassOpened             bool              // Track if we've opened the Api class (for functions)
 	suppressTypeAliasEmit      bool              // Suppress emission during type alias handling
@@ -293,6 +295,26 @@ func (cse *CSharpEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 			return 2 // KeyTypeInt
 		case "bool":
 			return 3 // KeyTypeBool
+		case "int8":
+			return 4 // KeyTypeInt8
+		case "int16":
+			return 5 // KeyTypeInt16
+		case "int32":
+			return 6 // KeyTypeInt32
+		case "int64":
+			return 7 // KeyTypeInt64
+		case "uint8":
+			return 8 // KeyTypeUint8
+		case "uint16":
+			return 9 // KeyTypeUint16
+		case "uint32":
+			return 10 // KeyTypeUint32
+		case "uint64":
+			return 11 // KeyTypeUint64
+		case "float32":
+			return 12 // KeyTypeFloat32
+		case "float64":
+			return 13 // KeyTypeFloat64
 		}
 	}
 	return 0
@@ -314,6 +336,10 @@ func getCsTypeName(t types.Type) string {
 			return "byte"
 		case types.Uint16:
 			return "ushort"
+		case types.Uint32:
+			return "uint"
+		case types.Uint64:
+			return "ulong"
 		case types.String:
 			return "string"
 		case types.Bool:

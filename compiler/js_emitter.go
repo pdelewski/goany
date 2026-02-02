@@ -110,6 +110,26 @@ func (jse *JSEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 					return 2 // KEY_TYPE_INT
 				case types.Bool:
 					return 3 // KEY_TYPE_BOOL
+				case types.Int8:
+					return 4 // KEY_TYPE_INT8
+				case types.Int16:
+					return 5 // KEY_TYPE_INT16
+				case types.Int32:
+					return 6 // KEY_TYPE_INT32
+				case types.Int64:
+					return 7 // KEY_TYPE_INT64
+				case types.Uint8:
+					return 8 // KEY_TYPE_UINT8
+				case types.Uint16:
+					return 9 // KEY_TYPE_UINT16
+				case types.Uint32:
+					return 10 // KEY_TYPE_UINT32
+				case types.Uint64:
+					return 11 // KEY_TYPE_UINT64
+				case types.Float32:
+					return 12 // KEY_TYPE_FLOAT32
+				case types.Float64:
+					return 13 // KEY_TYPE_FLOAT64
 				}
 			}
 		}
