@@ -216,6 +216,14 @@ type RustEmitter struct {
 	sliceMakeElemType            string            // Element type for make([]T, n)
 	pendingMapInit               bool              // var m map[K]V needs default init
 	pendingMapKeyType            int               // Key type for pending map init
+	// Comma-ok idiom: val, ok := m[key]
+	isMapCommaOk      bool
+	mapCommaOkValName string
+	mapCommaOkOkName  string
+	mapCommaOkMapName string
+	mapCommaOkValType string
+	mapCommaOkIsDecl  bool
+	mapCommaOkIndent  int
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -3400,6 +3408,30 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		re.suppressRangeEmit = true
 		return
 	}
+	// Detect comma-ok: val, ok := m[key]
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
+			if re.pkg != nil && re.pkg.TypesInfo != nil {
+				tv := re.pkg.TypesInfo.Types[indexExpr.X]
+				if tv.Type != nil {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+						re.isMapCommaOk = true
+						re.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+						re.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							re.mapCommaOkMapName = ident.Name
+						}
+						re.mapCommaOkValType = getRustValueTypeCast(mapType.Elem())
+						re.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
+						re.mapCommaOkIndent = indent
+						re.suppressMapEmit = true
+						re.shouldGenerate = true
+						return
+					}
+				}
+			}
+		}
+	}
 	// Detect map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -3449,6 +3481,37 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 }
 func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Handle comma-ok: val, ok := m[key]
+	if re.isMapCommaOk {
+		key := re.capturedMapKey
+		decl := ""
+		if re.mapCommaOkIsDecl {
+			decl = "let mut "
+		}
+		indentStr := re.emitAsString("", re.mapCommaOkIndent)
+		re.suppressMapEmit = false
+		mapRef := re.mapCommaOkMapName
+		if re.OptimizeRefs {
+			mapRef = "&" + mapRef
+		} else {
+			mapRef = mapRef + ".clone()"
+		}
+		valType := re.mapCommaOkValType
+		// Use temp variable to avoid double evaluation/move of key
+		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_key = %s;", indentStr, key), EmptyVisitMethod)
+		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: bool = hmap::hashMapContains(%s, Rc::new(__ulang_key.clone()));",
+			indentStr, decl, re.mapCommaOkOkName, mapRef), EmptyVisitMethod)
+		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: %s = if %s { hmap::hashMapGet(%s, Rc::new(__ulang_key)).downcast_ref::<%s>().unwrap().clone() } else { Default::default() };",
+			indentStr, decl, re.mapCommaOkValName, valType, re.mapCommaOkOkName,
+			mapRef, valType), EmptyVisitMethod)
+		re.isMapCommaOk = false
+		re.capturedMapKey = ""
+		re.captureMapKey = false
+		re.suppressMapEmit = false
+		re.inAssignRhs = false
+		re.shouldGenerate = false
+		return
+	}
 	// Handle map assignment: close the hashMapSet call with ));
 	if re.isMapAssign {
 		re.gir.emitToFileBuffer("));", EmptyVisitMethod)
@@ -3656,6 +3719,9 @@ func (re *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) 
 }
 
 func (re *RustEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
+	if re.isMapCommaOk {
+		return
+	}
 	if index > 0 {
 		str := re.emitAsString(", ", indent)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
@@ -3668,8 +3734,8 @@ func (re *RustEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, inden
 }
 
 func (re *RustEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	// For map assignment, LHS is suppressed (we handle it in PreVisitAssignStmtRhs)
-	if re.isMapAssign {
+	// For map assignment or comma-ok, LHS is suppressed
+	if re.isMapAssign || re.isMapCommaOk {
 		re.shouldGenerate = true
 		re.inAssignLhs = true
 		return
@@ -3756,6 +3822,11 @@ func (re *RustEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 }
 
 func (re *RustEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	// For comma-ok, LHS is fully suppressed
+	if re.isMapCommaOk {
+		re.inAssignLhs = false
+		return
+	}
 	// For map assignment, stop suppression (key was captured by index expr)
 	if re.isMapAssign {
 		re.suppressMapEmit = false
@@ -3785,8 +3856,8 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
 				re.isMapIndex = true
 				re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
-				// For map assignment, don't emit hashMapGet — we're capturing the key
-				if !re.isMapAssign {
+				// For map assignment or comma-ok, don't emit hashMapGet — we're capturing the key
+				if !re.isMapAssign && !re.isMapCommaOk {
 					re.gir.emitToFileBuffer("hmap::hashMapGet(", EmptyVisitMethod)
 					// With ref-opt, hashMapGet takes &HashMap, so add & before the map variable
 					if re.OptimizeRefs {
@@ -3812,7 +3883,7 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 }
 
 func (re *RustEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	if re.isMapIndex && !re.isMapAssign {
+	if re.isMapIndex && !re.isMapAssign && !re.isMapCommaOk {
 		if re.OptimizeRefs {
 			// With ref-opt, hashMapGet takes &HashMap (already prepended &), no clone needed
 			re.gir.emitToFileBuffer(", Rc::new(", EmptyVisitMethod)
@@ -3825,9 +3896,9 @@ func (re *RustEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
 
 func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	re.shouldGenerate = true
-	// For map index, don't emit [ - instead start capturing key if in map assign
+	// For map index, don't emit [ - instead start capturing key if in map assign or comma-ok
 	if re.isMapIndex {
-		if re.isMapAssign {
+		if re.isMapAssign || re.isMapCommaOk {
 			re.captureMapKey = true
 			re.capturedMapKey = ""
 		}
@@ -3846,7 +3917,7 @@ func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	// Handle map index: emit ) + type assertion
 	if re.isMapIndex {
-		if re.isMapAssign {
+		if re.isMapAssign || re.isMapCommaOk {
 			// Stop capturing key
 			re.captureMapKey = false
 		} else {

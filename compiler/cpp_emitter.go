@@ -84,6 +84,15 @@ type CPPEmitter struct {
 	isSliceMakeCall        bool   // Inside make([]T, n) call
 	sliceMakeCppType       string // C++ vector type, e.g. "std::vector<std::any>"
 	assignLhsIsInterface   bool   // LHS of assignment is interface{}/std::any type
+	// Comma-ok idiom: val, ok := m[key]
+	isMapCommaOk          bool
+	mapCommaOkValName     string
+	mapCommaOkOkName      string
+	mapCommaOkMapName     string
+	mapCommaOkValueType   string
+	mapCommaOkIsDecl      bool
+	mapCommaOkIndent      int
+	mapCommaOkKeyIsString bool
 }
 
 // collectCallArgIdentCounts counts how many times each base identifier
@@ -792,6 +801,11 @@ func (cppe *CPPEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 }
 
 func (cppe *CPPEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
+	if cppe.isMapCommaOk {
+		cppe.captureMapKey = true
+		cppe.capturedMapKey = ""
+		return
+	}
 	if cppe.isMapIndex {
 		// Emit ", " (or ", std::string(" for string keys) instead of "["
 		if cppe.mapIndexKeyIsString {
@@ -811,6 +825,10 @@ func (cppe *CPPEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 	cppe.emitToFile(str)
 }
 func (cppe *CPPEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
+	if cppe.isMapCommaOk {
+		cppe.captureMapKey = false
+		return
+	}
 	if cppe.isMapIndex {
 		// Close std::string wrapper if needed, then close hashMapGet and any_cast
 		if cppe.mapIndexKeyIsString {
@@ -1125,6 +1143,34 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		cppe.suppressRangeEmit = true
 		return
 	}
+	// Detect comma-ok: val, ok := m[key]
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
+			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+				tv := cppe.pkg.TypesInfo.Types[indexExpr.X]
+				if tv.Type != nil {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+						cppe.isMapCommaOk = true
+						cppe.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+						cppe.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							cppe.mapCommaOkMapName = ident.Name
+						}
+						cppe.mapCommaOkValueType = getCppTypeName(mapType.Elem())
+						cppe.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
+						cppe.mapCommaOkIndent = indent
+						cppe.mapCommaOkKeyIsString = false
+						keyType := mapType.Key()
+						if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
+							cppe.mapCommaOkKeyIsString = true
+						}
+						cppe.suppressEmit = true
+						return
+					}
+				}
+			}
+		}
+	}
 	// Detect map assignment: m[k] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -1180,6 +1226,25 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	cppe.currentAssignLhsNames = nil
 	cppe.assignLhsIsInterface = false
+	if cppe.isMapCommaOk {
+		key := cppe.capturedMapKey
+		if cppe.mapCommaOkKeyIsString {
+			key = "std::string(" + key + ")"
+		}
+		decl := ""
+		if cppe.mapCommaOkIsDecl {
+			decl = "auto "
+		}
+		indentStr := strings.Repeat("    ", cppe.mapCommaOkIndent/4)
+		cppe.suppressEmit = false
+		cppe.emitToFile(fmt.Sprintf("%s%s%s = hmap::hashMapContains(%s, %s);\n",
+			indentStr, decl, cppe.mapCommaOkOkName, cppe.mapCommaOkMapName, key))
+		cppe.emitToFile(fmt.Sprintf("%s%s%s = %s ? std::any_cast<%s>(hmap::hashMapGet(%s, %s)) : %s{};\n",
+			indentStr, decl, cppe.mapCommaOkValName, cppe.mapCommaOkOkName,
+			cppe.mapCommaOkValueType, cppe.mapCommaOkMapName, key, cppe.mapCommaOkValueType))
+		cppe.isMapCommaOk = false
+		return
+	}
 	if cppe.isMapAssign {
 		if cppe.mapAssignValueIsString {
 			cppe.emitToFile(")")

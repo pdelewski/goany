@@ -92,6 +92,14 @@ type JSEmitter struct {
 	isMapLenCall     bool   // len() call on a map
 	pendingMapInit   bool   // var m map[K]V needs default init
 	pendingMapKeyType int   // Key type for pending init
+	// Comma-ok idiom: val, ok := m[key]
+	isMapCommaOk      bool
+	mapCommaOkValName string
+	mapCommaOkOkName  string
+	mapCommaOkMapName string
+	mapCommaOkZeroVal string
+	mapCommaOkIsDecl  bool
+	mapCommaOkIndent  int
 	// Slice make support: make([]T, n) → new Array(n).fill(default)
 	isSliceMakeCall    bool   // Inside make([]T, n) call
 	sliceMakeDefault   string // Default fill value for the slice element type
@@ -737,6 +745,42 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if jse.forwardDecl {
 		return
 	}
+	// Detect comma-ok: val, ok := m[key]
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
+			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
+				tv := jse.pkg.TypesInfo.Types[indexExpr.X]
+				if tv.Type != nil {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+						jse.isMapCommaOk = true
+						jse.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+						jse.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							jse.mapCommaOkMapName = ident.Name
+						}
+						jse.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
+						jse.mapCommaOkIndent = indent
+						// Determine JS zero value for the map value type
+						jse.mapCommaOkZeroVal = "null"
+						if basic, isBasic := mapType.Elem().Underlying().(*types.Basic); isBasic {
+							switch basic.Kind() {
+							case types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
+								types.Uint8, types.Uint16, types.Uint32, types.Uint64,
+								types.Float32, types.Float64:
+								jse.mapCommaOkZeroVal = "0"
+							case types.String:
+								jse.mapCommaOkZeroVal = "\"\""
+							case types.Bool:
+								jse.mapCommaOkZeroVal = "false"
+							}
+						}
+						jse.suppressEmit = true
+						return
+					}
+				}
+			}
+		}
+	}
 	// Check for map assignment: m[k] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -825,6 +869,27 @@ func (jse *JSEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (jse *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Handle comma-ok: val, ok := m[key]
+	if jse.isMapCommaOk {
+		key := jse.capturedMapKey
+		decl := ""
+		if jse.mapCommaOkIsDecl {
+			decl = "let "
+		}
+		indentStr := jse.emitAsString("", jse.mapCommaOkIndent)
+		jse.suppressEmit = false
+		mapName := jse.mapCommaOkMapName
+		zeroVal := jse.mapCommaOkZeroVal
+		jse.emitToFile(fmt.Sprintf("%s%s%s = hmap.hashMapContains(%s, %s);\n",
+			indentStr, decl, jse.mapCommaOkOkName, mapName, key))
+		jse.emitToFile(fmt.Sprintf("%s%s%s = %s ? hmap.hashMapGet(%s, %s) : %s;\n",
+			indentStr, decl, jse.mapCommaOkValName, jse.mapCommaOkOkName,
+			mapName, key, zeroVal))
+		jse.isMapCommaOk = false
+		jse.capturedMapKey = ""
+		jse.captureMapKey = false
+		return
+	}
 	// Handle map assignment: close hashMapSet call
 	if jse.isMapAssign {
 		jse.emitToFile(");\n")
@@ -1446,7 +1511,7 @@ func (jse *JSEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		return
 	}
 	// Check if indexing a map (for read access: m[k])
-	if !jse.isMapAssign && jse.pkg != nil && jse.pkg.TypesInfo != nil {
+	if !jse.isMapAssign && !jse.isMapCommaOk && jse.pkg != nil && jse.pkg.TypesInfo != nil {
 		tv := jse.pkg.TypesInfo.Types[node.X]
 		if tv.Type != nil {
 			if _, ok := tv.Type.Underlying().(*types.Map); ok {
@@ -1469,6 +1534,12 @@ func (jse *JSEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	}
 	// Map assignment: start capturing the key expression
 	if jse.isMapAssign {
+		jse.captureMapKey = true
+		jse.capturedMapKey = ""
+		return
+	}
+	// Comma-ok: start capturing the key expression
+	if jse.isMapCommaOk {
 		jse.captureMapKey = true
 		jse.capturedMapKey = ""
 		return

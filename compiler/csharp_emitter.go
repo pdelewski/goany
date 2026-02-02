@@ -95,6 +95,14 @@ type CSharpEmitter struct {
 	isMapLenCall      bool
 	pendingMapInit    bool
 	pendingMapKeyType int
+	// Comma-ok idiom: val, ok := m[key]
+	isMapCommaOk      bool
+	mapCommaOkValName string
+	mapCommaOkOkName  string
+	mapCommaOkMapName string
+	mapCommaOkValType string
+	mapCommaOkIsDecl  bool
+	mapCommaOkIndent  int
 	// Slice make support (for transpiled hashmap runtime)
 	isSliceMakeCall   bool
 	sliceMakeElemType string
@@ -1356,6 +1364,29 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		return
 	}
 
+	// Detect comma-ok: val, ok := m[key]
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
+			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+				tv := cse.pkg.TypesInfo.Types[indexExpr.X]
+				if tv.Type != nil {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+						cse.isMapCommaOk = true
+						cse.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
+						cse.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							cse.mapCommaOkMapName = ident.Name
+						}
+						cse.mapCommaOkValType = getCsTypeName(mapType.Elem())
+						cse.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
+						cse.mapCommaOkIndent = indent
+						cse.suppressMapEmit = true
+						return
+					}
+				}
+			}
+		}
+	}
 	// Detect map assignment: m[k] = v -> m = hmap.hashMapSet(m, k, v)
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -1387,6 +1418,30 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 	// Reset blank identifier suppression if it was set
 	if cse.suppressRangeEmit {
 		cse.suppressRangeEmit = false
+		return
+	}
+	// Handle comma-ok: val, ok := m[key]
+	if cse.isMapCommaOk {
+		cse.executeIfNotForwardDecls(func() {
+			key := cse.capturedMapKey
+			decl := ""
+			if cse.mapCommaOkIsDecl {
+				decl = "var "
+			}
+			indentStr := cse.emitAsString("", cse.mapCommaOkIndent)
+			cse.suppressMapEmit = false
+			valType := cse.mapCommaOkValType
+			mapName := cse.mapCommaOkMapName
+			cse.gir.emitToFileBuffer(fmt.Sprintf("%s%s%s = hmap.hashMapContains(%s, %s);",
+				indentStr, decl, cse.mapCommaOkOkName, mapName, key), EmptyVisitMethod)
+			cse.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s = %s ? (%s)hmap.hashMapGet(%s, %s) : default(%s);",
+				indentStr, decl, cse.mapCommaOkValName, cse.mapCommaOkOkName,
+				valType, mapName, key, valType), EmptyVisitMethod)
+		})
+		cse.isMapCommaOk = false
+		cse.capturedMapKey = ""
+		cse.captureMapKey = false
+		cse.suppressMapEmit = false
 		return
 	}
 	// Close hashMapSet call for map assignment
@@ -1461,8 +1516,8 @@ func (cse *CSharpEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, i
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign {
-			return // Skip for map assignment
+		if cse.isMapAssign || cse.isMapCommaOk {
+			return // Skip for map assignment or comma-ok
 		}
 		if index > 0 {
 			str := cse.emitAsString(", ", indent)
@@ -1473,8 +1528,8 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, in
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign {
-			return // Skip for map assignment - handled in PreVisitAssignStmtRhs
+		if cse.isMapAssign || cse.isMapCommaOk {
+			return // Skip for map assignment or comma-ok
 		}
 		assignmentToken := node.Tok.String()
 		if assignmentToken == ":=" && len(node.Lhs) == 1 {
@@ -1498,8 +1553,8 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int
 
 func (cse *CSharpEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign {
-			return // Skip for map assignment
+		if cse.isMapAssign || cse.isMapCommaOk {
+			return // Skip for map assignment or comma-ok
 		}
 		if node.Tok.String() == ":=" && len(node.Lhs) > 1 {
 			cse.emitToken(")", RightParen, indent)
@@ -1511,8 +1566,8 @@ func (cse *CSharpEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent in
 
 func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign {
-			return // Map assignment LHS - suppressed
+		if cse.isMapAssign || cse.isMapCommaOk {
+			return // Map assignment or comma-ok - suppressed
 		}
 		// Detect map index read: m[k] -> (ValueType)hmap.hashMapGet(m, k)
 		if cse.pkg != nil && cse.pkg.TypesInfo != nil {
@@ -1550,6 +1605,13 @@ func (cse *CSharpEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int
 			cse.capturedMapKey = ""
 			return
 		}
+		if cse.isMapCommaOk {
+			// Start capturing key expression for comma-ok
+			cse.suppressMapEmit = false
+			cse.captureMapKey = true
+			cse.capturedMapKey = ""
+			return
+		}
 		if cse.isMapIndex {
 			return // Don't emit "[" for map read
 		}
@@ -1561,6 +1623,12 @@ func (cse *CSharpEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent in
 		if cse.isMapAssign {
 			// Stop capturing key expression
 			cse.captureMapKey = false
+			return
+		}
+		if cse.isMapCommaOk {
+			// Stop capturing key expression, re-suppress
+			cse.captureMapKey = false
+			cse.suppressMapEmit = true
 			return
 		}
 		if cse.isMapIndex {

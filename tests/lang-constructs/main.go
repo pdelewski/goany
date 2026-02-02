@@ -809,6 +809,21 @@ func testMapStructValue() {
 	fmt.Println(len(m))
 }
 
+func testMapCommaOk() {
+	m := make(map[string]int)
+	m["hello"] = 42
+
+	val, ok := m["hello"]
+	fmt.Println(val)
+	fmt.Println(ok)
+
+	val2, ok2 := m["missing"]
+	fmt.Println(val2)
+	fmt.Println(ok2)
+
+	fmt.Println(len(m))
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -844,6 +859,7 @@ func main() {
 	testNilMap()
 	testMapKeyTypes()
 	testMapStructValue()
+	testMapCommaOk()
 
 	fmt.Println("=== Done ===")
 }
