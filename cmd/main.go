@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	goanyrt "goany/runtime"
 	"goany/compiler"
+	goanyrt "goany/runtime"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -90,7 +90,7 @@ func packagesUseMap(pkgs []*packages.Package) bool {
 // loadRuntimeHashmap loads the embedded runtime/std/hashmap.go as a *packages.Package
 // by writing it to a temp directory and using packages.Load
 func loadRuntimeHashmap() (*packages.Package, error) {
-	tmpDir, err := os.MkdirTemp("", "ulang-runtime-*")
+	tmpDir, err := os.MkdirTemp("", "goany-runtime-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %v", err)
 	}
