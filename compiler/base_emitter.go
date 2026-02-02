@@ -49,6 +49,8 @@ const (
 	PostVisitCompositeLitElt VisitMethod = "PostVisitCompositeLitElt"
 	PreVisitArrayType VisitMethod = "PreVisitArrayType"
 	PostVisitArrayType VisitMethod = "PostVisitArrayType"
+	PreVisitMapType VisitMethod = "PreVisitMapType"
+	PostVisitMapType VisitMethod = "PostVisitMapType"
 	PreVisitSelectorExpr VisitMethod = "PreVisitSelectorExpr"
 	PostVisitSelectorExpr VisitMethod = "PostVisitSelectorExpr"
 	PreVisitSelectorExprX VisitMethod = "PreVisitSelectorExprX"
@@ -264,6 +266,8 @@ func (v *BaseEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent i
 func (v *BaseEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {}
 func (v *BaseEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {}
 func (v *BaseEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {}
+func (v *BaseEmitter) PreVisitMapType(node *ast.MapType, indent int) {}
+func (v *BaseEmitter) PostVisitMapType(node *ast.MapType, indent int) {}
 func (v *BaseEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) {}
 func (v *BaseEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {}
 func (v *BaseEmitter) PreVisitSelectorExprX(node ast.Expr, indent int) {}

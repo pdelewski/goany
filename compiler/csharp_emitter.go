@@ -77,6 +77,23 @@ type CSharpEmitter struct {
 	currentAliasName           string            // Current type alias name being processed
 	typeAliasMap               map[string]string // Maps alias names to underlying type names
 	suppressTypeAliasSelectorX bool              // Suppress X part emission for type alias selectors
+	// Map support
+	isMapMakeCall     bool
+	mapMakeKeyType    int
+	isMapIndex        bool
+	mapIndexValueType string
+	isMapAssign       bool
+	mapAssignVarName  string
+	mapAssignIndent   int
+	captureMapKey     bool
+	capturedMapKey    string
+	suppressMapEmit   bool
+	isDeleteCall      bool
+	deleteMapVarName  string
+	isMapLenCall      bool
+	// Slice make support (for transpiled hashmap runtime)
+	isSliceMakeCall   bool
+	sliceMakeElemType string
 }
 
 func (*CSharpEmitter) lowerToBuiltins(selector string) string {
@@ -253,8 +270,64 @@ func (cse *CSharpEmitter) getTokenType(content string) TokenType {
 
 // Helper function to emit token
 func (cse *CSharpEmitter) emitToken(content string, tokenType TokenType, indent int) {
+	if cse.suppressMapEmit {
+		return
+	}
+	if cse.captureMapKey {
+		cse.capturedMapKey += cse.emitAsString(content, indent)
+		return
+	}
 	token := CreateToken(tokenType, cse.emitAsString(content, indent))
 	_ = cse.gir.emitTokenToFileBuffer(token, EmptyVisitMethod)
+}
+
+// getMapKeyTypeConst returns the hashmap key type constant for a MapType node
+func (cse *CSharpEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
+	if ident, ok := mapType.Key.(*ast.Ident); ok {
+		switch ident.Name {
+		case "string":
+			return 1 // KeyTypeString
+		case "int":
+			return 2 // KeyTypeInt
+		case "bool":
+			return 3 // KeyTypeBool
+		}
+	}
+	return 0
+}
+
+// getCsTypeName converts a Go type to its C# type name
+func getCsTypeName(t types.Type) string {
+	if basicType, ok := t.(*types.Basic); ok {
+		switch basicType.Kind() {
+		case types.Int, types.Int32:
+			return "int"
+		case types.Int8:
+			return "sbyte"
+		case types.Int16:
+			return "short"
+		case types.Int64:
+			return "long"
+		case types.Uint8:
+			return "byte"
+		case types.Uint16:
+			return "ushort"
+		case types.String:
+			return "string"
+		case types.Bool:
+			return "bool"
+		case types.Float32:
+			return "float"
+		case types.Float64:
+			return "double"
+		default:
+			return "object"
+		}
+	}
+	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
+		return "object"
+	}
+	return "object"
 }
 func (cse *CSharpEmitter) SetFile(file *os.File) {
 	cse.file = file
@@ -532,7 +605,18 @@ func (cse *CSharpEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 		}
 		var str string
 		name := e.Name
-		name = cse.lowerToBuiltins(name)
+		// Map operation identifier replacements
+		if cse.isMapMakeCall && name == "make" {
+			name = "hmap.newHashMap"
+		} else if cse.isSliceMakeCall && name == "make" {
+			name = "new "
+		} else if cse.isDeleteCall && name == "delete" {
+			name = cse.deleteMapVarName + " = hmap.hashMapDelete"
+		} else if cse.isMapLenCall && name == "len" {
+			name = "hmap.hashMapLen"
+		} else {
+			name = cse.lowerToBuiltins(name)
+		}
 		if name == "nil" {
 			str = cse.emitAsString("default", indent)
 		} else {
@@ -556,6 +640,57 @@ var csSuppressTypeCastIdent bool
 
 func (cse *CSharpEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		// Map operations
+		if ident, ok := node.Fun.(*ast.Ident); ok {
+			// make(map[K]V) or make([]T, n)
+			if ident.Name == "make" && len(node.Args) >= 1 {
+				if mapType, ok := node.Args[0].(*ast.MapType); ok {
+					cse.isMapMakeCall = true
+					cse.mapMakeKeyType = cse.getMapKeyTypeConst(mapType)
+					csIsTypeConversion = false
+					return
+				}
+				if _, ok := node.Args[0].(*ast.ArrayType); ok && len(node.Args) >= 2 {
+					cse.isSliceMakeCall = true
+					cse.sliceMakeElemType = "object" // default
+					if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+						tv := cse.pkg.TypesInfo.Types[node.Args[0]]
+						if tv.Type != nil {
+							if sliceType, ok := tv.Type.Underlying().(*types.Slice); ok {
+								cse.sliceMakeElemType = getCsTypeName(sliceType.Elem())
+							}
+						}
+					}
+					csIsTypeConversion = false
+					return
+				}
+			}
+
+			// delete(m, k)
+			if ident.Name == "delete" && len(node.Args) >= 2 {
+				cse.isDeleteCall = true
+				if argIdent, ok := node.Args[0].(*ast.Ident); ok {
+					cse.deleteMapVarName = argIdent.Name
+				}
+				csIsTypeConversion = false
+				return
+			}
+
+			// len(m) where m is a map
+			if ident.Name == "len" && len(node.Args) >= 1 {
+				if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+					tv := cse.pkg.TypesInfo.Types[node.Args[0]]
+					if tv.Type != nil {
+						if _, ok := tv.Type.Underlying().(*types.Map); ok {
+							cse.isMapLenCall = true
+							csIsTypeConversion = false
+							return
+						}
+					}
+				}
+			}
+		}
+
 		// Check if this is a type conversion (Fun is an Ident that's a type name)
 		if ident, ok := node.Fun.(*ast.Ident); ok {
 			// Check if it's a known type
@@ -604,13 +739,34 @@ func (cse *CSharpEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 
 func (cse *CSharpEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapMakeCall {
+			// Emit (keyTypeConst instead of just (
+			cse.emitToken(fmt.Sprintf("(%d", cse.mapMakeKeyType), LeftParen, 0)
+			return
+		}
+		if cse.isSliceMakeCall {
+			// Don't emit "(" - it will be emitted later in PreVisitCallExprArg
+			return
+		}
 		cse.emitToken("(", LeftParen, 0)
 	})
 }
 
 func (cse *CSharpEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isSliceMakeCall {
+			cse.emitToken("])", RightParen, 0)
+			cse.isSliceMakeCall = false
+			cse.sliceMakeElemType = ""
+			cse.isArray = false // Reset array flag set by ArrayType traversal
+			return
+		}
 		cse.emitToken(")", RightParen, 0)
+		// Reset map-related call flags
+		cse.isMapMakeCall = false
+		cse.isDeleteCall = false
+		cse.deleteMapVarName = ""
+		cse.isMapLenCall = false
 	})
 }
 
@@ -805,6 +961,11 @@ func (cse *CSharpEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 		}
 		str := cse.emitAsString(">", 0)
 		cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+
+		// Don't set isArray when inside a slice make call
+		if cse.isSliceMakeCall {
+			return
+		}
 
 		pointerAndPosition := SearchPointerIndexReverse(PreVisitArrayType, cse.gir.pointerAndIndexVec)
 		if pointerAndPosition != nil {
@@ -1131,6 +1292,28 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		cse.suppressRangeEmit = true
 		return
 	}
+
+	// Detect map assignment: m[k] = v -> m = hmap.hashMapSet(m, k, v)
+	if len(node.Lhs) == 1 {
+		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
+			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+				tv := cse.pkg.TypesInfo.Types[indexExpr.X]
+				if tv.Type != nil {
+					if _, ok := tv.Type.Underlying().(*types.Map); ok {
+						cse.isMapAssign = true
+						cse.mapAssignIndent = indent
+						cse.suppressMapEmit = true
+						cse.assignmentToken = "="
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							cse.mapAssignVarName = ident.Name
+						}
+						return // Skip normal indent emission
+					}
+				}
+			}
+		}
+	}
+
 	cse.executeIfNotForwardDecls(func() {
 		str := cse.emitAsString("", indent)
 		cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
@@ -1141,6 +1324,18 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 	// Reset blank identifier suppression if it was set
 	if cse.suppressRangeEmit {
 		cse.suppressRangeEmit = false
+		return
+	}
+	// Close hashMapSet call for map assignment
+	if cse.isMapAssign {
+		cse.executeIfNotForwardDecls(func() {
+			str := cse.emitAsString(");", 0)
+			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		})
+		cse.isMapAssign = false
+		cse.suppressMapEmit = false
+		cse.captureMapKey = false
+		cse.mapAssignVarName = ""
 		return
 	}
 	cse.executeIfNotForwardDecls(func() {
@@ -1154,6 +1349,13 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 
 func (cse *CSharpEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapAssign {
+			// Emit: varName = hmap.hashMapSet(varName, capturedKey,
+			key := strings.TrimSpace(cse.capturedMapKey)
+			str := cse.emitAsString(cse.mapAssignVarName+" = hmap.hashMapSet("+cse.mapAssignVarName+", "+key+", ", cse.mapAssignIndent)
+			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			return
+		}
 		opTokenType := cse.getTokenType(cse.assignmentToken)
 		cse.emitToken(cse.assignmentToken, opTokenType, indent+1)
 		cse.emitToken(" ", WhiteSpace, 0)
@@ -1196,6 +1398,9 @@ func (cse *CSharpEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, i
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapAssign {
+			return // Skip for map assignment
+		}
 		if index > 0 {
 			str := cse.emitAsString(", ", indent)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
@@ -1205,6 +1410,9 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, in
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapAssign {
+			return // Skip for map assignment - handled in PreVisitAssignStmtRhs
+		}
 		assignmentToken := node.Tok.String()
 		if assignmentToken == ":=" && len(node.Lhs) == 1 {
 			str := cse.emitAsString("var ", indent)
@@ -1227,6 +1435,9 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int
 
 func (cse *CSharpEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapAssign {
+			return // Skip for map assignment
+		}
 		if node.Tok.String() == ":=" && len(node.Lhs) > 1 {
 			cse.emitToken(")", RightParen, indent)
 		} else if node.Tok.String() == "=" && len(node.Lhs) > 1 {
@@ -1235,13 +1446,64 @@ func (cse *CSharpEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent in
 	})
 }
 
+func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapAssign {
+			return // Map assignment LHS - suppressed
+		}
+		// Detect map index read: m[k] -> (ValueType)hmap.hashMapGet(m, k)
+		if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+			tv := cse.pkg.TypesInfo.Types[node.X]
+			if tv.Type != nil {
+				if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+					cse.isMapIndex = true
+					cse.mapIndexValueType = getCsTypeName(mapType.Elem())
+					// Emit (ValueType)hmap.hashMapGet(
+					str := cse.emitAsString("("+cse.mapIndexValueType+")hmap.hashMapGet(", 0)
+					cse.emitToken(str, Identifier, 0)
+				}
+			}
+		}
+	})
+}
+func (cse *CSharpEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapIndex {
+			cse.emitToken(", ", Comma, 0)
+		}
+	})
+}
+func (cse *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		cse.isMapIndex = false
+	})
+}
 func (cse *CSharpEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapAssign {
+			// Start capturing key expression
+			cse.suppressMapEmit = false
+			cse.captureMapKey = true
+			cse.capturedMapKey = ""
+			return
+		}
+		if cse.isMapIndex {
+			return // Don't emit "[" for map read
+		}
 		cse.emitToken("[", LeftBracket, 0)
 	})
 }
 func (cse *CSharpEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMapAssign {
+			// Stop capturing key expression
+			cse.captureMapKey = false
+			return
+		}
+		if cse.isMapIndex {
+			cse.emitToken(")", RightParen, 0)
+			return
+		}
 		cse.emitToken("]", RightBracket, 0)
 	})
 }
@@ -1267,6 +1529,17 @@ func (cse *CSharpEmitter) PreVisitBinaryExprOperator(op token.Token, indent int)
 
 func (cse *CSharpEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		// For slice make: suppress first arg (ArrayType), emit "(new ElemType[" before second arg
+		if cse.isSliceMakeCall {
+			if index == 0 {
+				return // Suppress first arg separator
+			}
+			if index == 1 {
+				str := cse.emitAsString("(new "+cse.sliceMakeElemType+"[", 0)
+				cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+				return
+			}
+		}
 		if index > 0 {
 			str := cse.emitAsString(", ", 0)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)

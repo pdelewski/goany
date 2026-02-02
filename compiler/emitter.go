@@ -113,6 +113,11 @@ type Emitter interface {
 	// PostVisitArrayType is called after visiting an array type.
 	PostVisitArrayType(node ast.ArrayType, indent int)
 
+	// PreVisitMapType is called before visiting a map type.
+	PreVisitMapType(node *ast.MapType, indent int)
+	// PostVisitMapType is called after visiting a map type.
+	PostVisitMapType(node *ast.MapType, indent int)
+
 	// PreVisitSelectorExpr is called before visiting a selector expression.
 	PreVisitSelectorExpr(node *ast.SelectorExpr, indent int)
 	// PostVisitSelectorExpr is called after visiting a selector expression.

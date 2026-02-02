@@ -343,6 +343,11 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.emitter.PreVisitInterfaceType(e, indent)
 		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitInterfaceType)
 		v.emitter.PostVisitInterfaceType(e, indent)
+	case *ast.MapType:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitMapType)
+		v.emitter.PreVisitMapType(e, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitMapType)
+		v.emitter.PostVisitMapType(e, indent)
 	default:
 		panic(fmt.Sprintf("unsupported expression type: %T", e))
 	}
