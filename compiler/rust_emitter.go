@@ -211,6 +211,7 @@ type RustEmitter struct {
 	suppressMapEmit              bool              // Suppress all token emission
 	isDeleteCall                 bool              // Inside delete(m, k) call
 	deleteMapVarName             string            // Variable name for delete
+	mapKeyCastSuffix             string            // Rust cast suffix for map keys (e.g. " as i64")
 	isMapLenCall                 bool              // Inside len(m) on map
 	isSliceMakeCall              bool              // Inside make([]T, n) for runtime
 	sliceMakeElemType            string            // Element type for make([]T, n)
@@ -351,6 +352,32 @@ func getRustValueTypeCast(t types.Type) string {
 		}
 	}
 	return "Rc<dyn Any>"
+}
+
+// getRustKeyCast returns a suffix to cast a map key to the correct Rust type.
+// For types matching Rust defaults (i32, bool, f64), returns "".
+func getRustKeyCast(keyType types.Type) string {
+	if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic {
+		switch basic.Kind() {
+		case types.Int8:
+			return " as i8"
+		case types.Int16:
+			return " as i16"
+		case types.Int64:
+			return " as i64"
+		case types.Uint8:
+			return " as u8"
+		case types.Uint16:
+			return " as u16"
+		case types.Uint32:
+			return " as u32"
+		case types.Uint64:
+			return " as u64"
+		case types.Float32:
+			return " as f32"
+		}
+	}
+	return ""
 }
 
 func (re *RustEmitter) emitAsString(s string, indent int) string {
@@ -1964,10 +1991,11 @@ func (re *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 	}
 	// Reset map call flags
 	if re.isDeleteCall {
-		// Close Rc::new() for key, then close hashMapDelete()
-		re.gir.emitToFileBuffer("))", EmptyVisitMethod)
+		// Close Rc::new() for key (with cast if needed), then close hashMapDelete()
+		re.gir.emitToFileBuffer(re.mapKeyCastSuffix+"))", EmptyVisitMethod)
 		re.isDeleteCall = false
 		re.deleteMapVarName = ""
+		re.mapKeyCastSuffix = ""
 		return
 	}
 	if re.isMapLenCall {
@@ -3354,6 +3382,15 @@ func (re *RustEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		if len(node.Args) >= 2 {
 			re.isDeleteCall = true
 			re.deleteMapVarName = exprToString(node.Args[0])
+			re.mapKeyCastSuffix = ""
+			if re.pkg != nil && re.pkg.TypesInfo != nil {
+				tv := re.pkg.TypesInfo.Types[node.Args[0]]
+				if tv.Type != nil {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
+					}
+				}
+			}
 		}
 	}
 	// Detect len(m) calls on maps
@@ -3435,6 +3472,7 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						re.mapCommaOkValType = getRustValueTypeCast(mapType.Elem())
 						re.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						re.mapCommaOkIndent = indent
+						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
 						re.suppressMapEmit = true
 						re.shouldGenerate = true
 						return
@@ -3468,11 +3506,12 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			if re.pkg != nil && re.pkg.TypesInfo != nil {
 				tv := re.pkg.TypesInfo.Types[indexExpr.X]
 				if tv.Type != nil {
-					if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+					if mapType, isMap := tv.Type.Underlying().(*types.Map); isMap {
 						re.isMapAssign = true
 						re.mapAssignIndent = indent
 						// Extract map variable name
 						re.mapAssignVarName = exprToString(indexExpr.X)
+						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
 						// Suppress normal LHS emission
 						re.suppressMapEmit = true
 						re.shouldGenerate = true
@@ -3549,8 +3588,8 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			mapRef = mapRef + ".clone()"
 		}
 		valType := re.mapCommaOkValType
-		// Use temp variable to avoid double evaluation/move of key
-		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_key = %s;", indentStr, key), EmptyVisitMethod)
+		// Use temp variable to avoid double evaluation/move of key (with cast if needed)
+		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_key = %s%s;", indentStr, key, re.mapKeyCastSuffix), EmptyVisitMethod)
 		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: bool = hmap::hashMapContains(%s, Rc::new(__ulang_key.clone()));",
 			indentStr, decl, re.mapCommaOkOkName, mapRef), EmptyVisitMethod)
 		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: %s = if %s { hmap::hashMapGet(%s, Rc::new(__ulang_key)).downcast_ref::<%s>().unwrap().clone() } else { Default::default() };",
@@ -3560,6 +3599,7 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		re.capturedMapKey = ""
 		re.captureMapKey = false
 		re.suppressMapEmit = false
+		re.mapKeyCastSuffix = ""
 		re.inAssignRhs = false
 		re.shouldGenerate = false
 		return
@@ -3572,6 +3612,7 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		re.capturedMapKey = ""
 		re.captureMapKey = false
 		re.suppressMapEmit = false
+		re.mapKeyCastSuffix = ""
 		re.inAssignRhs = false
 		re.shouldGenerate = false
 		return
@@ -3636,8 +3677,8 @@ func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 		re.suppressMapEmit = false
 		varName := re.mapAssignVarName
 		capturedKey := re.capturedMapKey
-		// Wrap string keys in Rc::new(key.to_string()) and other keys in Rc::new(key)
-		wrappedKey := "Rc::new(" + capturedKey + ")"
+		// Wrap keys in Rc::new(key) with cast if needed
+		wrappedKey := "Rc::new(" + capturedKey + re.mapKeyCastSuffix + ")"
 		str := re.emitAsString(varName+" = hmap::hashMapSet("+varName+".clone(), "+wrappedKey+", Rc::new(", re.mapAssignIndent)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 		return
@@ -3908,6 +3949,7 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
 				re.isMapIndex = true
 				re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
+				re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
 				// For map assignment or comma-ok, don't emit hashMapGet — we're capturing the key
 				if !re.isMapAssign && !re.isMapCommaOk {
 					re.gir.emitToFileBuffer("hmap::hashMapGet(", EmptyVisitMethod)
@@ -3970,11 +4012,11 @@ func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 	// Handle map index: emit ) + type assertion
 	if re.isMapIndex {
 		if re.isMapAssign || re.isMapCommaOk {
-			// Stop capturing key
+			// Stop capturing key - cast suffix will be used in PreVisitAssignStmtRhs or PostVisitAssignStmt
 			re.captureMapKey = false
 		} else {
-			// For map read: close Rc::new() for key, then close hashMapGet, add type assertion
-			re.gir.emitToFileBuffer("))", EmptyVisitMethod)
+			// For map read: close Rc::new() for key (with cast if needed), then close hashMapGet, add type assertion
+			re.gir.emitToFileBuffer(re.mapKeyCastSuffix+"))", EmptyVisitMethod)
 			// Add type assertion (downcast)
 			valType := re.mapIndexValueType
 			if valType == "String" {
@@ -3984,6 +4026,7 @@ func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 			} else {
 				re.gir.emitToFileBuffer(fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType), EmptyVisitMethod)
 			}
+			re.mapKeyCastSuffix = ""
 		}
 		re.isMapIndex = false
 		re.mapIndexValueType = ""

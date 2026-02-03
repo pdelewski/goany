@@ -92,6 +92,8 @@ type CSharpEmitter struct {
 	suppressMapEmit   bool
 	isDeleteCall      bool
 	deleteMapVarName  string
+	mapKeyCastPrefix  string // C# cast prefix for map keys (e.g. "(long)(")
+	mapKeyCastSuffix  string // C# cast suffix for map keys (e.g. ")")
 	isMapLenCall      bool
 	pendingMapInit    bool
 	pendingMapKeyType int
@@ -377,6 +379,34 @@ func getCsTypeName(t types.Type) string {
 	}
 	return "object"
 }
+
+// getCsKeyCast returns prefix/suffix to cast a map key expression to the correct C# type.
+func getCsKeyCast(keyType types.Type) (string, string) {
+	if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic {
+		switch basic.Kind() {
+		case types.Int8:
+			return "(sbyte)(", ")"
+		case types.Int16:
+			return "(short)(", ")"
+		case types.Int32:
+			return "(int)(", ")"
+		case types.Int64:
+			return "(long)(", ")"
+		case types.Uint8:
+			return "(byte)(", ")"
+		case types.Uint16:
+			return "(ushort)(", ")"
+		case types.Uint32:
+			return "(uint)(", ")"
+		case types.Uint64:
+			return "(ulong)(", ")"
+		case types.Float32:
+			return "(float)(", ")"
+		}
+	}
+	return "", ""
+}
+
 func (cse *CSharpEmitter) SetFile(file *os.File) {
 	cse.file = file
 }
@@ -718,6 +748,16 @@ func (cse *CSharpEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 			if ident.Name == "delete" && len(node.Args) >= 2 {
 				cse.isDeleteCall = true
 				cse.deleteMapVarName = exprToString(node.Args[0])
+				cse.mapKeyCastPrefix = ""
+				cse.mapKeyCastSuffix = ""
+				if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+					tv := cse.pkg.TypesInfo.Types[node.Args[0]]
+					if tv.Type != nil {
+						if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+							cse.mapKeyCastPrefix, cse.mapKeyCastSuffix = getCsKeyCast(mapType.Key())
+						}
+					}
+				}
 				csIsTypeConversion = false
 				return
 			}
@@ -810,6 +850,10 @@ func (cse *CSharpEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		cse.emitToken(")", RightParen, 0)
 		// Reset map-related call flags
 		cse.isMapMakeCall = false
+		if cse.isDeleteCall {
+			cse.mapKeyCastPrefix = ""
+			cse.mapKeyCastSuffix = ""
+		}
 		cse.isDeleteCall = false
 		cse.deleteMapVarName = ""
 		cse.isMapLenCall = false
@@ -1387,6 +1431,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cse.mapCommaOkValType = getCsTypeName(mapType.Elem())
 						cse.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						cse.mapCommaOkIndent = indent
+						cse.mapKeyCastPrefix, cse.mapKeyCastSuffix = getCsKeyCast(mapType.Key())
 						cse.suppressMapEmit = true
 						return
 					}
@@ -1418,12 +1463,13 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
 				tv := cse.pkg.TypesInfo.Types[indexExpr.X]
 				if tv.Type != nil {
-					if _, ok := tv.Type.Underlying().(*types.Map); ok {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
 						cse.isMapAssign = true
 						cse.mapAssignIndent = indent
 						cse.suppressMapEmit = true
 						cse.assignmentToken = "="
 						cse.mapAssignVarName = exprToString(indexExpr.X)
+						cse.mapKeyCastPrefix, cse.mapKeyCastSuffix = getCsKeyCast(mapType.Key())
 						return // Skip normal indent emission
 					}
 				}
@@ -1469,7 +1515,7 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 	// Handle comma-ok: val, ok := m[key]
 	if cse.isMapCommaOk {
 		cse.executeIfNotForwardDecls(func() {
-			key := cse.capturedMapKey
+			key := cse.mapKeyCastPrefix + cse.capturedMapKey + cse.mapKeyCastSuffix
 			decl := ""
 			if cse.mapCommaOkIsDecl {
 				decl = "var "
@@ -1488,6 +1534,8 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 		cse.capturedMapKey = ""
 		cse.captureMapKey = false
 		cse.suppressMapEmit = false
+		cse.mapKeyCastPrefix = ""
+		cse.mapKeyCastSuffix = ""
 		return
 	}
 	// Close hashMapSet call for map assignment
@@ -1500,6 +1548,8 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 		cse.suppressMapEmit = false
 		cse.captureMapKey = false
 		cse.mapAssignVarName = ""
+		cse.mapKeyCastPrefix = ""
+		cse.mapKeyCastSuffix = ""
 		return
 	}
 	cse.executeIfNotForwardDecls(func() {
@@ -1515,7 +1565,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int
 	cse.executeIfNotForwardDecls(func() {
 		if cse.isMapAssign {
 			// Emit: varName = hmap.hashMapSet(varName, capturedKey,
-			key := strings.TrimSpace(cse.capturedMapKey)
+			key := cse.mapKeyCastPrefix + strings.TrimSpace(cse.capturedMapKey) + cse.mapKeyCastSuffix
 			str := cse.emitAsString(cse.mapAssignVarName+" = hmap.hashMapSet("+cse.mapAssignVarName+", "+key+", ", cse.mapAssignIndent)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
 			return
@@ -1622,6 +1672,7 @@ func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 				if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
 					cse.isMapIndex = true
 					cse.mapIndexValueType = getCsTypeName(mapType.Elem())
+					cse.mapKeyCastPrefix, cse.mapKeyCastSuffix = getCsKeyCast(mapType.Key())
 					// Emit (ValueType)hmap.hashMapGet(
 					str := cse.emitAsString("("+cse.mapIndexValueType+")hmap.hashMapGet(", 0)
 					cse.emitToken(str, Identifier, 0)
@@ -1633,13 +1684,22 @@ func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 func (cse *CSharpEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		if cse.isMapIndex {
-			cse.emitToken(", ", Comma, 0)
+			if cse.mapKeyCastPrefix != "" {
+				cse.emitToken(", "+cse.mapKeyCastPrefix, Comma, 0)
+			} else {
+				cse.emitToken(", ", Comma, 0)
+			}
 		}
 	})
 }
 func (cse *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		cse.isMapIndex = false
+		// Don't reset cast fields if isMapAssign - they're used in PreVisitAssignStmtRhs
+		if !cse.isMapAssign && !cse.isMapCommaOk {
+			cse.mapKeyCastPrefix = ""
+			cse.mapKeyCastSuffix = ""
+		}
 	})
 }
 func (cse *CSharpEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
@@ -1678,6 +1738,9 @@ func (cse *CSharpEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent in
 			return
 		}
 		if cse.isMapIndex {
+			if cse.mapKeyCastSuffix != "" {
+				cse.emitToken(cse.mapKeyCastSuffix, RightParen, 0)
+			}
 			cse.emitToken(")", RightParen, 0)
 			return
 		}
@@ -1721,8 +1784,23 @@ func (cse *CSharpEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent i
 			str := cse.emitAsString(", ", 0)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
 		}
+		// Wrap delete key argument with appropriate cast
+		if cse.isDeleteCall && cse.mapKeyCastPrefix != "" && index == 1 {
+			str := cse.emitAsString(cse.mapKeyCastPrefix, 0)
+			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		}
 	})
 }
+
+func (cse *CSharpEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		if cse.isDeleteCall && cse.mapKeyCastSuffix != "" && index == 1 {
+			str := cse.emitAsString(cse.mapKeyCastSuffix, 0)
+			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		}
+	})
+}
+
 func (cse *CSharpEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		str := cse.emitAsString(";", 0)

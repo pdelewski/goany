@@ -66,17 +66,20 @@ type CPPEmitter struct {
 	mapMakeKeyType         int    // Key type constant for make call
 	isMapIndex             bool   // IndexExpr on a map (for read: m[k])
 	mapIndexValueCppType   string // C++ type name for std::any_cast on hashMapGet result
-	mapIndexKeyIsString    bool   // Map key type is string (needs std::string wrap)
+	mapIndexKeyCastPrefix  string // Cast prefix for map key (e.g. "std::string(" or "(std::int64_t)(")
+	mapIndexKeyCastSuffix  string // Cast suffix for map key (e.g. ")")
 	isMapAssign            bool   // Assignment to map index (m[k] = v)
 	mapAssignVarName       string // Variable name for map assignment
 	mapAssignIndent        int    // Indent level for map assignment
-	mapAssignKeyIsString   bool   // Key is string type
+	mapAssignKeyCastPrefix string // Cast prefix for map assign key
+	mapAssignKeyCastSuffix string // Cast suffix for map assign key
 	mapAssignValueIsString bool   // Value is string type
 	captureMapKey          bool   // Capturing map key expression
 	capturedMapKey         string // Captured key expression text
 	isDeleteCall           bool   // Inside delete(m, k) call
 	deleteMapVarName       string // Variable name for delete
-	deleteKeyIsString      bool   // Delete key is string type
+	deleteKeyCastPrefix    string // Cast prefix for delete key
+	deleteKeyCastSuffix    string // Cast suffix for delete key
 	isMapLenCall           bool   // len() call on a map
 	pendingMapInit         bool   // var m map[K]V needs default init
 	pendingMapKeyType      int    // Key type for pending init
@@ -92,7 +95,8 @@ type CPPEmitter struct {
 	mapCommaOkValueType   string
 	mapCommaOkIsDecl      bool
 	mapCommaOkIndent      int
-	mapCommaOkKeyIsString bool
+	mapCommaOkKeyCastPrefix string
+	mapCommaOkKeyCastSuffix string
 	// Type assertion comma-ok: val, ok := x.(Type)
 	isTypeAssertCommaOk      bool
 	typeAssertCommaOkValName string
@@ -305,6 +309,35 @@ func getCppTypeName(t types.Type) string {
 		}
 	}
 	return "std::any"
+}
+
+// getCppKeyCast returns prefix/suffix to cast a map key expression to the correct C++ type.
+func getCppKeyCast(keyType types.Type) (string, string) {
+	if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic {
+		switch basic.Kind() {
+		case types.String:
+			return "std::string(", ")"
+		case types.Int8:
+			return "(std::int8_t)(", ")"
+		case types.Int16:
+			return "(std::int16_t)(", ")"
+		case types.Int32:
+			return "(std::int32_t)(", ")"
+		case types.Int64:
+			return "(std::int64_t)(", ")"
+		case types.Uint8:
+			return "(uint8_t)(", ")"
+		case types.Uint16:
+			return "(uint16_t)(", ")"
+		case types.Uint32:
+			return "(uint32_t)(", ")"
+		case types.Uint64:
+			return "(uint64_t)(", ")"
+		case types.Float32:
+			return "(float)(", ")"
+		}
+	}
+	return "", ""
 }
 
 func (cppe *CPPEmitter) emitToFile(s string) error {
@@ -607,15 +640,13 @@ func (cppe *CPPEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		if len(node.Args) >= 2 {
 			cppe.isDeleteCall = true
 			cppe.deleteMapVarName = exprToString(node.Args[0])
-			cppe.deleteKeyIsString = false
-			// Check if map key type is string
+			cppe.deleteKeyCastPrefix = ""
+			cppe.deleteKeyCastSuffix = ""
 			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
 				tv := cppe.pkg.TypesInfo.Types[node.Args[0]]
 				if tv.Type != nil {
 					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						if basic, isBasic := mapType.Key().Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
-							cppe.deleteKeyIsString = true
-						}
+						cppe.deleteKeyCastPrefix, cppe.deleteKeyCastSuffix = getCppKeyCast(mapType.Key())
 					}
 				}
 			}
@@ -662,7 +693,8 @@ func (cppe *CPPEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 	if cppe.isDeleteCall {
 		cppe.isDeleteCall = false
 		cppe.deleteMapVarName = ""
-		cppe.deleteKeyIsString = false
+		cppe.deleteKeyCastPrefix = ""
+		cppe.deleteKeyCastSuffix = ""
 	}
 	if cppe.isMapLenCall {
 		cppe.isMapLenCall = false
@@ -685,9 +717,9 @@ func (cppe *CPPEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int
 		str := cppe.emitAsString(", ", 0)
 		cppe.emitToFile(str)
 	}
-	// Wrap delete key argument with std::string() for string-key maps
-	if cppe.isDeleteCall && cppe.deleteKeyIsString && index == 1 {
-		cppe.emitToFile("std::string(")
+	// Wrap delete key argument with appropriate cast
+	if cppe.isDeleteCall && cppe.deleteKeyCastPrefix != "" && index == 1 {
+		cppe.emitToFile(cppe.deleteKeyCastPrefix)
 	}
 	// Check if this argument is a struct that can be moved
 	cppe.moveCurrentArg = false
@@ -710,8 +742,8 @@ func (cppe *CPPEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int
 }
 
 func (cppe *CPPEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	if cppe.isDeleteCall && cppe.deleteKeyIsString && index == 1 {
-		cppe.emitToFile(")")
+	if cppe.isDeleteCall && cppe.deleteKeyCastSuffix != "" && index == 1 {
+		cppe.emitToFile(cppe.deleteKeyCastSuffix)
 	}
 	if cppe.moveCurrentArg {
 		str := cppe.emitAsString(")", 0)
@@ -794,10 +826,7 @@ func (cppe *CPPEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
 				cppe.isMapIndex = true
 				cppe.mapIndexValueCppType = getCppTypeName(mapType.Elem())
-				keyType := mapType.Key()
-				if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
-					cppe.mapIndexKeyIsString = true
-				}
+				cppe.mapIndexKeyCastPrefix, cppe.mapIndexKeyCastSuffix = getCppKeyCast(mapType.Key())
 				// Emit: std::any_cast<ValueType>(hmap::hashMapGet(
 				cppe.emitToFile("std::any_cast<" + cppe.mapIndexValueCppType + ">(hmap::hashMapGet(")
 			}
@@ -812,9 +841,8 @@ func (cppe *CPPEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 		return
 	}
 	if cppe.isMapIndex {
-		// Emit ", " (or ", std::string(" for string keys) instead of "["
-		if cppe.mapIndexKeyIsString {
-			cppe.emitToFile(", std::string(")
+		if cppe.mapIndexKeyCastPrefix != "" {
+			cppe.emitToFile(", " + cppe.mapIndexKeyCastPrefix)
 		} else {
 			cppe.emitToFile(", ")
 		}
@@ -835,14 +863,14 @@ func (cppe *CPPEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int)
 		return
 	}
 	if cppe.isMapIndex {
-		// Close std::string wrapper if needed, then close hashMapGet and any_cast
-		if cppe.mapIndexKeyIsString {
-			cppe.emitToFile(")")
+		if cppe.mapIndexKeyCastSuffix != "" {
+			cppe.emitToFile(cppe.mapIndexKeyCastSuffix)
 		}
 		cppe.emitToFile("))")
 		cppe.isMapIndex = false
 		cppe.mapIndexValueCppType = ""
-		cppe.mapIndexKeyIsString = false
+		cppe.mapIndexKeyCastPrefix = ""
+		cppe.mapIndexKeyCastSuffix = ""
 		return
 	}
 	if cppe.captureMapKey {
@@ -1174,11 +1202,7 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cppe.mapCommaOkValueType = getCppTypeName(mapType.Elem())
 						cppe.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						cppe.mapCommaOkIndent = indent
-						cppe.mapCommaOkKeyIsString = false
-						keyType := mapType.Key()
-						if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
-							cppe.mapCommaOkKeyIsString = true
-						}
+						cppe.mapCommaOkKeyCastPrefix, cppe.mapCommaOkKeyCastSuffix = getCppKeyCast(mapType.Key())
 						cppe.suppressEmit = true
 						return
 					}
@@ -1213,13 +1237,9 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
 						cppe.isMapAssign = true
 						cppe.mapAssignIndent = indent
-						cppe.mapAssignKeyIsString = false
 						cppe.mapAssignValueIsString = false
 						cppe.mapAssignVarName = exprToString(indexExpr.X)
-						keyType := mapType.Key()
-						if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
-							cppe.mapAssignKeyIsString = true
-						}
+						cppe.mapAssignKeyCastPrefix, cppe.mapAssignKeyCastSuffix = getCppKeyCast(mapType.Key())
 						valType := mapType.Elem()
 						if basic, isBasic := valType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
 							cppe.mapAssignValueIsString = true
@@ -1278,8 +1298,8 @@ func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 	if cppe.isMapCommaOk {
 		key := cppe.capturedMapKey
-		if cppe.mapCommaOkKeyIsString {
-			key = "std::string(" + key + ")"
+		if cppe.mapCommaOkKeyCastPrefix != "" {
+			key = cppe.mapCommaOkKeyCastPrefix + key + cppe.mapCommaOkKeyCastSuffix
 		}
 		decl := ""
 		if cppe.mapCommaOkIsDecl {
@@ -1303,7 +1323,8 @@ func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		cppe.isMapAssign = false
 		cppe.mapAssignVarName = ""
 		cppe.capturedMapKey = ""
-		cppe.mapAssignKeyIsString = false
+		cppe.mapAssignKeyCastPrefix = ""
+		cppe.mapAssignKeyCastSuffix = ""
 		cppe.mapAssignValueIsString = false
 		return
 	}
@@ -1365,8 +1386,8 @@ func (cppe *CPPEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) 
 		// Turn off suppression and emit: m = hmap::hashMapSet(m, key, value)
 		cppe.suppressEmit = false
 		key := cppe.capturedMapKey
-		if cppe.mapAssignKeyIsString {
-			key = "std::string(" + key + ")"
+		if cppe.mapAssignKeyCastPrefix != "" {
+			key = cppe.mapAssignKeyCastPrefix + key + cppe.mapAssignKeyCastSuffix
 		}
 		str := cppe.emitAsString(cppe.mapAssignVarName+" = hmap::hashMapSet("+cppe.mapAssignVarName+", "+key+", ", cppe.mapAssignIndent)
 		cppe.emitToFile(str)
