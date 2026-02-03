@@ -36,11 +36,7 @@ func channelError() {
 	_ = ch
 }
 
-// ERROR: Map types are not supported
-func mapError() {
-	m := make(map[string]int) // error: map type not allowed
-	_ = m
-}
+// NOTE: Maps ARE supported with limitations (see MAP LIMITATIONS section below)
 
 // ERROR: Select statements are not supported
 func selectError() {
@@ -249,30 +245,45 @@ func variableShadowingIfError() {
 	_ = x
 }
 
-// CORRECT: Use different variable names
-func variableShadowingFixed() {
-	col := 0
-	for {
-		if col >= 10 {
-			break
-		}
-		innerCol := 1 // different name - OK
-		_ = innerCol
-		col = col + 1
-	}
-	_ = col
+// ============================================
+// MAP LIMITATIONS
+// ============================================
+// Maps ARE supported but with the following limitations.
+
+// ERROR: Nested maps are not supported
+// Map values cannot themselves be maps.
+func nestedMapError() {
+	m := make(map[string]map[string]int) // error: nested maps not allowed
+	_ = m
 }
 
-// CORRECT: Reassignment (not redeclaration) is allowed
-func variableReassignmentOk() {
-	col := 0
-	for {
-		if col >= 10 {
-			break
-		}
-		col = col + 1 // reassignment with = is OK
+// ERROR: Map literals are not supported
+// Inline map initialization is not allowed.
+func mapLiteralError() {
+	m := map[string]int{"a": 1, "b": 2} // error: map literals not allowed
+	_ = m
+}
+
+// ERROR: Range over maps is not supported
+// Map iteration order is undefined and varies across languages.
+func rangeMapError() {
+	m := make(map[string]int)
+	m["a"] = 1
+	for k, v := range m { // error: range over maps not allowed
+		_ = k
+		_ = v
 	}
-	_ = col
+}
+
+// ERROR: Structs as map keys are not supported
+// Only primitive types (string, int, bool, etc.) can be map keys.
+type Point struct {
+	X, Y int
+}
+
+func structKeyError() {
+	m := make(map[Point]string) // error: struct key type not allowed
+	_ = m
 }
 
 func main() {

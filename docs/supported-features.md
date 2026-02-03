@@ -47,11 +47,37 @@ Some Go features are not supported due to differences in target platforms:
 ### Not Supported
 - Goroutines and channels (concurrency)
 - Interfaces (partial support)
-- Maps
 - Pointers (limited support)
 - Reflection
 - `defer` statements
 - `panic`/`recover`
+
+### Maps (Partial Support)
+
+Maps are supported with the following limitations:
+
+**Supported:**
+- `make(map[K]V)` - map creation
+- `m[key] = value` - map set
+- `value := m[key]` - map get
+- `delete(m, key)` - map delete
+- `len(m)` - map length
+- `value, ok := m[key]` - comma-ok idiom
+- Maps as struct fields
+- Maps as function parameters
+- Maps as function return values
+- Key types: `string`, `int`, `int8`-`int64`, `uint8`-`uint64`, `float32`, `float64`, `bool`
+
+**Not Supported:**
+- Nested maps (`map[string]map[string]int`)
+- Map literals (`map[string]int{"a": 1, "b": 2}`)
+- Range over maps (`for k, v := range m`)
+- Structs as map keys
+- Map comparison
+
+**Known Issues:**
+- Assigning to a nil map doesn't panic (undefined behavior)
+- Rust debug builds may overflow in string hash function (use release builds)
 
 ### Backend-Specific Notes
 

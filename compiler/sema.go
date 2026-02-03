@@ -140,24 +140,44 @@ func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	}
 }
 
-// PreVisitMapType validates map types - only supported key types allowed
+// PreVisitMapType validates map types - only supported key types allowed, no nested maps
 func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
-	if sema.pkg != nil && sema.pkg.TypesInfo != nil {
-		if tv, ok := sema.pkg.TypesInfo.Types[node.Key]; ok && tv.Type != nil {
-			if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
-				switch basic.Kind() {
-				case types.String, types.Int, types.Bool,
-					types.Int8, types.Int16, types.Int32, types.Int64,
-					types.Uint8, types.Uint16, types.Uint32, types.Uint64,
-					types.Float32, types.Float64:
-					return // supported key types
-				}
-			}
-			fmt.Println("\033[31m\033[1mCompilation error: unsupported map key type\033[0m")
-			fmt.Printf("  Map key type '%s' is not supported.\n", tv.Type.String())
-			fmt.Println("  Supported key types: string, int, bool, int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64.")
+	if sema.pkg == nil || sema.pkg.TypesInfo == nil {
+		return
+	}
+
+	// Check for nested maps (map value is another map)
+	if valueTv, ok := sema.pkg.TypesInfo.Types[node.Value]; ok && valueTv.Type != nil {
+		if _, isMap := valueTv.Type.Underlying().(*types.Map); isMap {
+			fmt.Println("\033[31m\033[1mCompilation error: nested maps are not supported\033[0m")
+			fmt.Println("  Map values cannot be maps (e.g., map[K]map[K2]V2).")
+			fmt.Println("  Nested maps have complex semantics across target languages.")
+			fmt.Println()
+			fmt.Println("  \033[32mUse a struct with a map field, or flatten the structure:\033[0m")
+			fmt.Println("    type Entry struct { innerMap map[K2]V2 }")
+			fmt.Println("    outerMap := make(map[K]Entry)")
 			os.Exit(-1)
 		}
+	}
+
+	// Check for unsupported key types
+	if tv, ok := sema.pkg.TypesInfo.Types[node.Key]; ok && tv.Type != nil {
+		if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
+			switch basic.Kind() {
+			case types.String, types.Int, types.Bool,
+				types.Int8, types.Int16, types.Int32, types.Int64,
+				types.Uint8, types.Uint16, types.Uint32, types.Uint64,
+				types.Float32, types.Float64:
+				return // supported key types
+			}
+		}
+		// If not a basic type or unsupported basic type, error
+		fmt.Println("\033[31m\033[1mCompilation error: unsupported map key type\033[0m")
+		fmt.Printf("  Map key type '%s' is not supported.\n", tv.Type.String())
+		fmt.Println("  Supported key types: string, int, bool, int8-int64, uint8-uint64, float32, float64.")
+		fmt.Println()
+		fmt.Println("  \033[32mUse a supported primitive type as the key.\033[0m")
+		os.Exit(-1)
 	}
 }
 
@@ -415,6 +435,25 @@ func (sema *SemaChecker) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		sema.scopeStack = append(sema.scopeStack, make(map[string]token.Pos))
 	}
 
+	// Check for range over maps - not supported
+	if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+		if tv, ok := sema.pkg.TypesInfo.Types[node.X]; ok && tv.Type != nil {
+			if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+				fmt.Println("\033[31m\033[1mCompilation error: range over maps is not supported\033[0m")
+				fmt.Println("  Iterating over maps with 'for k, v := range m' is not allowed.")
+				fmt.Println("  Map iteration order is undefined and implementation varies across languages.")
+				fmt.Println()
+				fmt.Println("  \033[32mMaintain a separate slice of keys if iteration order matters:\033[0m")
+				fmt.Println("    keys := []KeyType{...}")
+				fmt.Println("    for _, k := range keys {")
+				fmt.Println("        v := m[k]")
+				fmt.Println("        // use k, v")
+				fmt.Println("    }")
+				os.Exit(-1)
+			}
+		}
+	}
+
 	// Handle for _, v := range (value-only): set Key to nil so emitters work correctly
 	// for i, v := range (key-value) is now allowed and handled by emitters
 	// for i := range (index-only) is allowed (Value is nil)
@@ -501,6 +540,40 @@ func (sema *SemaChecker) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		if isNilIdent(node.Y) || isNilIdent(node.X) {
 			fmt.Println("\033[31m\033[1mCompilation error : nil comparison (== nil or != nil) is not allowed for now\033[0m")
 			os.Exit(-1)
+		}
+
+		// Check for map comparisons (maps can only be compared to nil in Go, not to each other)
+		if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+			// Check left operand
+			if tvX, ok := sema.pkg.TypesInfo.Types[node.X]; ok && tvX.Type != nil {
+				if _, isMap := tvX.Type.Underlying().(*types.Map); isMap {
+					fmt.Println("\033[31m\033[1mCompilation error: map comparison is not supported\033[0m")
+					fmt.Println("  Maps cannot be compared with == or !=.")
+					fmt.Println("  In Go, maps can only be compared to nil, not to each other.")
+					fmt.Println()
+					fmt.Println("  \033[32mCompare map contents manually if needed:\033[0m")
+					fmt.Println("    func mapsEqual(a, b map[K]V) bool {")
+					fmt.Println("        if len(a) != len(b) { return false }")
+					fmt.Println("        // compare each key-value pair")
+					fmt.Println("    }")
+					os.Exit(-1)
+				}
+			}
+			// Check right operand
+			if tvY, ok := sema.pkg.TypesInfo.Types[node.Y]; ok && tvY.Type != nil {
+				if _, isMap := tvY.Type.Underlying().(*types.Map); isMap {
+					fmt.Println("\033[31m\033[1mCompilation error: map comparison is not supported\033[0m")
+					fmt.Println("  Maps cannot be compared with == or !=.")
+					fmt.Println("  In Go, maps can only be compared to nil, not to each other.")
+					fmt.Println()
+					fmt.Println("  \033[32mCompare map contents manually if needed:\033[0m")
+					fmt.Println("    func mapsEqual(a, b map[K]V) bool {")
+					fmt.Println("        if len(a) != len(b) { return false }")
+					fmt.Println("        // compare each key-value pair")
+					fmt.Println("    }")
+					os.Exit(-1)
+				}
+			}
 		}
 	}
 
@@ -743,8 +816,9 @@ func isNilIdent(expr ast.Expr) bool {
 	return false
 }
 
-// PreVisitCompositeLit checks for struct field initialization order
+// PreVisitCompositeLit checks for struct field initialization order and map literals
 // C++ designated initializers require fields to be in declaration order
+// Map literals are not supported
 func (sema *SemaChecker) PreVisitCompositeLit(node *ast.CompositeLit, indent int) {
 	if sema.pkg == nil || sema.pkg.TypesInfo == nil {
 		return
@@ -754,6 +828,21 @@ func (sema *SemaChecker) PreVisitCompositeLit(node *ast.CompositeLit, indent int
 	tv, ok := sema.pkg.TypesInfo.Types[node]
 	if !ok || tv.Type == nil {
 		return
+	}
+
+	// Check for map literals - not supported
+	if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+		fmt.Println("\033[31m\033[1mCompilation error: map literals are not supported\033[0m")
+		fmt.Println("  Inline map initialization (e.g., map[K]V{k1: v1, k2: v2}) is not allowed.")
+		fmt.Println()
+		fmt.Println("  \033[33mInstead of:\033[0m")
+		fmt.Println("    m := map[string]int{\"a\": 1, \"b\": 2}")
+		fmt.Println()
+		fmt.Println("  \033[32mUse make and assignment:\033[0m")
+		fmt.Println("    m := make(map[string]int)")
+		fmt.Println("    m[\"a\"] = 1")
+		fmt.Println("    m[\"b\"] = 2")
+		os.Exit(-1)
 	}
 
 	// Check if it's a struct type

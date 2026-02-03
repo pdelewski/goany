@@ -62,7 +62,11 @@ func testSliceOperations() {
 
 	// Slice literal with int type (from slice test)
 	intSlice := []int{1, 2, 3}
-	fmt.Println(len(intSlice))
+	if len(intSlice) == 3 {
+		fmt.Println("PASS: slice literal len")
+	} else {
+		fmt.Println("FAIL: slice literal len")
+	}
 
 	if len(a) == 0 {
 	} else {
@@ -107,7 +111,11 @@ func testLoopConstructs() {
 	for counter < 5 {
 		counter++
 	}
-	fmt.Println(counter)
+	if counter == 5 {
+		fmt.Println("PASS: while loop")
+	} else {
+		fmt.Println("FAIL: while loop")
+	}
 
 	// Infinite loop with break
 	// @test cpp="for (;;)" cs="for (;;)" rust="loop"
@@ -118,7 +126,11 @@ func testLoopConstructs() {
 			break
 		}
 	}
-	fmt.Println(counter2)
+	if counter2 == 3 {
+		fmt.Println("PASS: infinite loop break")
+	} else {
+		fmt.Println("FAIL: infinite loop break")
+	}
 
 	// Continue statement
 	sum := 0
@@ -128,7 +140,11 @@ func testLoopConstructs() {
 		}
 		sum += i
 	}
-	fmt.Println(sum)
+	if sum == 25 {
+		fmt.Println("PASS: continue statement")
+	} else {
+		fmt.Println("FAIL: continue statement")
+	}
 
 	// Index-only range loop
 	nums := []int{10, 20, 30}
@@ -142,7 +158,11 @@ func testLoopConstructs() {
 	for i := 0; i < 10; i += 2 {
 		sumStep += i // 0 + 2 + 4 + 6 + 8 = 20
 	}
-	fmt.Println(sumStep)
+	if sumStep == 20 {
+		fmt.Println("PASS: step by 2")
+	} else {
+		fmt.Println("FAIL: step by 2")
+	}
 
 	// Decrement loop: i--
 	// @test cpp="for (auto i = 5; i > 0; i--)" cs="for (var i = 5; (i > 0 ); i--)" rust="for i in ((0 + 1)..=5).rev()"
@@ -150,7 +170,11 @@ func testLoopConstructs() {
 	for i := 5; i > 0; i-- {
 		sumDecr += i // 5 + 4 + 3 + 2 + 1 = 15
 	}
-	fmt.Println(sumDecr)
+	if sumDecr == 15 {
+		fmt.Println("PASS: decrement loop")
+	} else {
+		fmt.Println("FAIL: decrement loop")
+	}
 
 	// Inclusive range: i <= n
 	// @test cpp="for (auto i = 1; i <= 5; i++)" cs="for (var i = 1; (i <= 5 ); i++)" rust="for i in 1..=5"
@@ -158,7 +182,11 @@ func testLoopConstructs() {
 	for i := 1; i <= 5; i++ {
 		sumIncl += i // 1 + 2 + 3 + 4 + 5 = 15
 	}
-	fmt.Println(sumIncl)
+	if sumIncl == 15 {
+		fmt.Println("PASS: inclusive range")
+	} else {
+		fmt.Println("FAIL: inclusive range")
+	}
 
 	// Decrement with inclusive: i >= 0
 	// @test cpp="for (auto i = 3; i >= 0; i--)" cs="for (var i = 3; (i >= 0 ); i--)" rust="for i in (0..=3).rev()"
@@ -166,7 +194,11 @@ func testLoopConstructs() {
 	for i := 3; i >= 0; i-- {
 		sumDecrIncl += i // 3 + 2 + 1 + 0 = 6
 	}
-	fmt.Println(sumDecrIncl)
+	if sumDecrIncl == 6 {
+		fmt.Println("PASS: decrement inclusive")
+	} else {
+		fmt.Println("FAIL: decrement inclusive")
+	}
 
 	// Step by 3 decrement: i -= 3
 	// @test cpp="for (auto i = 9; i > 0; i -= 3)" cs="for (var i = 9; (i > 0 ); i -= 3)" rust="for i in ((0 + 1)..=9).rev().step_by(3)"
@@ -174,7 +206,11 @@ func testLoopConstructs() {
 	for i := 9; i > 0; i -= 3 {
 		sumDecrStep += i // 9 + 6 + 3 = 18
 	}
-	fmt.Println(sumDecrStep)
+	if sumDecrStep == 18 {
+		fmt.Println("PASS: decrement step 3")
+	} else {
+		fmt.Println("FAIL: decrement step 3")
+	}
 
 	// Compound condition with && (cannot be converted to simple range)
 	// @test rust="while ((i < 10) && (i < limit))"
@@ -183,7 +219,11 @@ func testLoopConstructs() {
 	for i := 0; i < 10 && i < limit; i++ {
 		sumCompound += i // 0 + 1 + 2 + 3 + 4 = 10
 	}
-	fmt.Println(sumCompound)
+	if sumCompound == 10 {
+		fmt.Println("PASS: compound condition")
+	} else {
+		fmt.Println("FAIL: compound condition")
+	}
 
 	// Compound condition with || (cannot be converted to simple range)
 	// @test rust="while ((i < 3) || flag)"
@@ -195,7 +235,11 @@ func testLoopConstructs() {
 			flag = false
 		}
 	}
-	fmt.Println(sumOr)
+	if sumOr == 3 {
+		fmt.Println("PASS: compound or condition")
+	} else {
+		fmt.Println("FAIL: compound or condition")
+	}
 
 	// Compound condition with slice length check (common pattern)
 	// @test rust="while ((i < maxItems) && (i < len(&items.clone())))"
@@ -205,7 +249,11 @@ func testLoopConstructs() {
 	for i := 0; i < maxItems && i < len(items); i++ {
 		sumItems += items[i] // 10 + 20 + 30 = 60
 	}
-	fmt.Println(sumItems)
+	if sumItems == 60 {
+		fmt.Println("PASS: slice length check")
+	} else {
+		fmt.Println("FAIL: slice length check")
+	}
 
 	// Multiple compound conditions
 	// @test rust="while (((i < 10) && (i < limit2)) && (sumMulti < 20))"
@@ -214,7 +262,11 @@ func testLoopConstructs() {
 	for i := 0; i < 10 && i < limit2 && sumMulti < 20; i++ {
 		sumMulti += i // stops when sumMulti >= 20
 	}
-	fmt.Println(sumMulti)
+	if sumMulti == 21 {
+		fmt.Println("PASS: multiple compound conditions")
+	} else {
+		fmt.Println("FAIL: multiple compound conditions")
+	}
 }
 
 // Boolean logic: not operator, boolean literals
@@ -311,11 +363,31 @@ func testArithmeticOperators() {
 	quot := a / b
 	rem := a % b
 
-	fmt.Println(sum)
-	fmt.Println(diff)
-	fmt.Println(prod)
-	fmt.Println(quot)
-	fmt.Println(rem)
+	if sum == 13 {
+		fmt.Println("PASS: arithmetic sum")
+	} else {
+		fmt.Println("FAIL: arithmetic sum")
+	}
+	if diff == 7 {
+		fmt.Println("PASS: arithmetic diff")
+	} else {
+		fmt.Println("FAIL: arithmetic diff")
+	}
+	if prod == 30 {
+		fmt.Println("PASS: arithmetic prod")
+	} else {
+		fmt.Println("FAIL: arithmetic prod")
+	}
+	if quot == 3 {
+		fmt.Println("PASS: arithmetic quot")
+	} else {
+		fmt.Println("FAIL: arithmetic quot")
+	}
+	if rem == 1 {
+		fmt.Println("PASS: arithmetic rem")
+	} else {
+		fmt.Println("FAIL: arithmetic rem")
+	}
 }
 
 // Comparison operators
@@ -357,7 +429,11 @@ func testAssignmentOperators() {
 	a += 5
 	a -= 3
 
-	fmt.Println(a)
+	if a == 22 {
+		fmt.Println("PASS: assignment operators")
+	} else {
+		fmt.Println("FAIL: assignment operators")
+	}
 }
 
 // Increment and decrement
@@ -365,13 +441,21 @@ func testIncrementDecrement() {
 	a := 0
 	a++
 	a--
-	fmt.Println(a)
+	if a == 0 {
+		fmt.Println("PASS: increment decrement")
+	} else {
+		fmt.Println("FAIL: increment decrement")
+	}
 }
 
 // String operations
 func testStringOperations() {
 	s := "hello"
-	fmt.Println(s)
+	if s == "hello" {
+		fmt.Println("PASS: string operations")
+	} else {
+		fmt.Println("FAIL: string operations")
+	}
 }
 
 // Print functions
@@ -403,7 +487,11 @@ func testAppend() {
 	a = append(a, 1)
 	a = append(a, 2)
 	a = append(a, 3)
-	fmt.Println(len(a))
+	if len(a) == 3 {
+		fmt.Println("PASS: append len")
+	} else {
+		fmt.Println("FAIL: append len")
+	}
 }
 
 // Struct initialization
@@ -415,8 +503,11 @@ func testStructInitialization() {
 
 	// Struct with field values
 	p := Person{name: "Alice", age: 30}
-	fmt.Println(p.name)
-	fmt.Println(p.age)
+	if p.name == "Alice" && p.age == 30 {
+		fmt.Println("PASS: struct init")
+	} else {
+		fmt.Println("FAIL: struct init")
+	}
 }
 
 // Nested if statements
@@ -426,8 +517,12 @@ func testNestedIf() {
 
 	if a == 10 {
 		if b == 20 {
-			fmt.Println("nested")
+			fmt.Println("PASS: nested if")
+		} else {
+			fmt.Println("FAIL: nested if inner")
 		}
+	} else {
+		fmt.Println("FAIL: nested if outer")
 	}
 }
 
@@ -439,8 +534,11 @@ func testInt32Int64Types() {
 	a = 100
 	b = 200
 
-	fmt.Println(a)
-	fmt.Println(b)
+	if a == 100 && b == 200 {
+		fmt.Println("PASS: int32 int64 values")
+	} else {
+		fmt.Println("FAIL: int32 int64 values")
+	}
 
 	// Struct with int32/int64 fields
 	record := types.DataRecord{
@@ -449,8 +547,11 @@ func testInt32Int64Types() {
 		Count:       10,
 		SequenceNum: 999,
 	}
-	fmt.Println(record.ID)
-	fmt.Println(record.Size)
+	if record.ID == 1 && record.Size == 1024 {
+		fmt.Println("PASS: int32 int64 struct fields")
+	} else {
+		fmt.Println("FAIL: int32 int64 struct fields")
+	}
 }
 
 // Test type aliases (from substrait)
@@ -483,8 +584,11 @@ func testZeroValueStruct() {
 	var plan types.Plan
 	plan.Literals = []string{}
 	plan.Root = 0
-	fmt.Println(plan.Root)
-	fmt.Println(len(plan.Literals))
+	if plan.Root == 0 && len(plan.Literals) == 0 {
+		fmt.Println("PASS: zero value struct")
+	} else {
+		fmt.Println("FAIL: zero value struct")
+	}
 }
 
 // Test function returning modified struct
@@ -496,8 +600,11 @@ func testReturnModifiedStruct() {
 	plan, idx = types.AddLiteralToPlan(plan, "first")
 	plan, idx = types.AddLiteralToPlan(plan, "second")
 
-	fmt.Println(idx)
-	fmt.Println(len(plan.Literals))
+	if idx == 1 && len(plan.Literals) == 2 {
+		fmt.Println("PASS: return modified struct")
+	} else {
+		fmt.Println("FAIL: return modified struct")
+	}
 }
 
 // Test bool field in struct (from iceberg)
@@ -507,10 +614,10 @@ func testBoolFieldInStruct() {
 		Name:     "column1",
 		Required: true,
 	}
-	fmt.Println(f.ID)
-	fmt.Println(f.Name)
-	if f.Required {
-		fmt.Println("required")
+	if f.ID == 1 && f.Name == "column1" && f.Required {
+		fmt.Println("PASS: bool field struct required")
+	} else {
+		fmt.Println("FAIL: bool field struct required")
 	}
 
 	f2 := types.Field{
@@ -518,8 +625,10 @@ func testBoolFieldInStruct() {
 		Name:     "column2",
 		Required: false,
 	}
-	if !f2.Required {
-		fmt.Println("optional")
+	if f2.ID == 2 && !f2.Required {
+		fmt.Println("PASS: bool field struct optional")
+	} else {
+		fmt.Println("FAIL: bool field struct optional")
 	}
 }
 
@@ -536,10 +645,16 @@ func testNestedStructField() {
 		DataFileF: dataFile,
 	}
 
-	fmt.Println(entry.Status)
-	fmt.Println(entry.DataFileF.FilePath)
-	fmt.Println(entry.DataFileF.RecordCount)
-	fmt.Println(entry.DataFileF.Stats.NullCount)
+	if entry.Status == 1 && entry.DataFileF.RecordCount == 1000 && entry.DataFileF.Stats.NullCount == 100 {
+		fmt.Println("PASS: nested struct fields")
+	} else {
+		fmt.Println("FAIL: nested struct fields")
+	}
+	if entry.DataFileF.FilePath == "/path/to/file" {
+		fmt.Println("PASS: nested struct string field")
+	} else {
+		fmt.Println("FAIL: nested struct string field")
+	}
 }
 
 // Test multi-package import (from iceberg pattern)
@@ -559,12 +674,17 @@ func testMultiPackageImport() {
 	idx := 0
 	plan, idx = types.AddLiteralToPlan(plan, "value1")
 	plan, idx = types.AddLiteralToPlan(plan, "value2")
-	fmt.Println(idx)
-	fmt.Println(len(plan.Literals))
+	if idx == 1 && len(plan.Literals) == 2 {
+		fmt.Println("PASS: multi-package plan")
+	} else {
+		fmt.Println("FAIL: multi-package plan")
+	}
 
 	// Use constants from types package
 	if types.ExprLiteral == 0 {
-		fmt.Println("literal is 0")
+		fmt.Println("PASS: multi-package constant")
+	} else {
+		fmt.Println("FAIL: multi-package constant")
 	}
 
 	// Use nested struct from types package
@@ -576,7 +696,11 @@ func testMultiPackageImport() {
 			Stats:       types.ColumnStats{NullCount: 10},
 		},
 	}
-	fmt.Println(entry.DataFileF.FilePath)
+	if entry.DataFileF.FilePath == "/data/file.parquet" && entry.DataFileF.RecordCount == 500 {
+		fmt.Println("PASS: multi-package nested struct")
+	} else {
+		fmt.Println("FAIL: multi-package nested struct")
+	}
 }
 
 // Complete language feature test
@@ -635,32 +759,46 @@ func testTypeAssertions() {
 	var a interface{}
 	a = 42
 	intVal := a.(int)
-	fmt.Println(intVal)
+	if intVal == 42 {
+		fmt.Println("PASS: type assert int")
+	} else {
+		fmt.Println("FAIL: type assert int")
+	}
 
 	a = "world"
 	strVal := a.(string)
-	fmt.Println(strVal)
+	if strVal == "world" {
+		fmt.Println("PASS: type assert string")
+	} else {
+		fmt.Println("FAIL: type assert string")
+	}
 
 	a = true
 	boolVal := a.(bool)
-	fmt.Println(boolVal)
+	if boolVal {
+		fmt.Println("PASS: type assert bool")
+	} else {
+		fmt.Println("FAIL: type assert bool")
+	}
 
 	a = 2.71
 	floatVal := a.(float64)
 	fmt.Println(floatVal)
-
-	fmt.Println("type assertions passed")
 }
 
-// Helper: sum all elements in a slice and print the result
-func printSliceSum(s []int) {
+// Helper: sum all elements in a slice and check against expected
+func checkSliceSum(s []int, expected int) {
 	total := 0
 	i := 0
 	for i < len(s) {
 		total = total + s[i]
 		i = i + 1
 	}
-	fmt.Printf("sum: %d\n", total)
+	if total == expected {
+		fmt.Println("PASS: slice sum")
+	} else {
+		fmt.Println("FAIL: slice sum")
+	}
 }
 
 // Nested condition-only for loops (while-style)
@@ -677,7 +815,11 @@ func testNestedWhileLoops() {
 		}
 		outer = outer + 1
 	}
-	fmt.Printf("nested while: %d\n", innerTotal) // 3 * 4 = 12
+	if innerTotal == 12 {
+		fmt.Println("PASS: nested while")
+	} else {
+		fmt.Println("FAIL: nested while")
+	}
 
 	// Condition-only loop nested inside traditional for loop
 	sum2 := 0
@@ -688,7 +830,11 @@ func testNestedWhileLoops() {
 			k = k + 1
 		}
 	}
-	fmt.Printf("traditional outer, while inner: %d\n", sum2) // 3 * 2 = 6
+	if sum2 == 6 {
+		fmt.Println("PASS: traditional outer while inner")
+	} else {
+		fmt.Println("FAIL: traditional outer while inner")
+	}
 
 	// Three levels of nesting: while > while > while
 	total3 := 0
@@ -705,20 +851,24 @@ func testNestedWhileLoops() {
 		}
 		a = a + 1
 	}
-	fmt.Printf("triple nested while: %d\n", total3) // 2 * 2 * 2 = 8
+	if total3 == 8 {
+		fmt.Println("PASS: triple nested while")
+	} else {
+		fmt.Println("FAIL: triple nested while")
+	}
 }
 
 // Inline composite literal as function argument
 // Tests that func([]int{1,2,3}) generates correct Rust
 func testInlineCompositeLitArg() {
 	// Pass inline composite literal to a function
-	printSliceSum([]int{10, 20, 30}) // sum: 60
+	checkSliceSum([]int{10, 20, 30}, 60)
 
 	// Pass inline composite literal with single element
-	printSliceSum([]int{42}) // sum: 42
+	checkSliceSum([]int{42}, 42)
 
 	// Pass inline composite literal with many elements
-	printSliceSum([]int{1, 2, 3, 4, 5}) // sum: 15
+	checkSliceSum([]int{1, 2, 3, 4, 5}, 15)
 }
 
 // Helper: set a value in a map and return it (tests map as param + return)
@@ -737,9 +887,11 @@ func testMapAsParameter() {
 	m := make(map[string]int)
 	m = setMapValue(m, "hello", 1)
 	m = setMapValue(m, "world", 2)
-	fmt.Println(getMapLen(m))
-	fmt.Println(m["hello"])
-	fmt.Println(m["world"])
+	if getMapLen(m) == 2 && m["hello"] == 1 && m["world"] == 2 {
+		fmt.Println("PASS: map as parameter")
+	} else {
+		fmt.Println("FAIL: map as parameter")
+	}
 }
 
 // Test map operations: make, get, set, delete, len with string/int/bool keys
@@ -748,51 +900,271 @@ func testMapOperations() {
 	m := make(map[string]int)
 	m["hello"] = 1
 	m["world"] = 2
-	fmt.Println(m["hello"])
-	fmt.Println(m["world"])
-	fmt.Println(len(m))
+	if m["hello"] == 1 && m["world"] == 2 && len(m) == 2 {
+		fmt.Println("PASS: map string keys")
+	} else {
+		fmt.Println("FAIL: map string keys")
+	}
 	delete(m, "hello")
-	fmt.Println(len(m))
+	if len(m) == 1 {
+		fmt.Println("PASS: map delete")
+	} else {
+		fmt.Println("FAIL: map delete")
+	}
 
 	// Int keys
 	m2 := make(map[int]string)
 	m2[42] = "answer"
 	m2[7] = "lucky"
-	fmt.Println(m2[42])
-	fmt.Println(len(m2))
+	if m2[42] == "answer" && len(m2) == 2 {
+		fmt.Println("PASS: map int keys")
+	} else {
+		fmt.Println("FAIL: map int keys")
+	}
 
 	// Bool keys
 	m3 := make(map[bool]int)
 	m3[true] = 1
 	m3[false] = 0
-	fmt.Println(m3[true])
-	fmt.Println(m3[false])
+	if m3[true] == 1 && m3[false] == 0 {
+		fmt.Println("PASS: map bool keys")
+	} else {
+		fmt.Println("FAIL: map bool keys")
+	}
 }
 
 func testNilMap() {
 	var m map[string]int
-	fmt.Println(len(m))
+	if len(m) == 0 {
+		fmt.Println("PASS: nil map len")
+	} else {
+		fmt.Println("FAIL: nil map len")
+	}
 	m = make(map[string]int)
 	m["x"] = 10
-	fmt.Println(m["x"])
-	fmt.Println(len(m))
+	if m["x"] == 10 && len(m) == 1 {
+		fmt.Println("PASS: nil map after make")
+	} else {
+		fmt.Println("FAIL: nil map after make")
+	}
 }
 
 func testMapKeyTypes() {
 	m1 := make(map[int64]string)
 	m1[100] = "hundred"
-	fmt.Println(m1[100])
-	fmt.Println(len(m1))
+	if m1[100] == "hundred" && len(m1) == 1 {
+		fmt.Println("PASS: map int64 key")
+	} else {
+		fmt.Println("FAIL: map int64 key")
+	}
 
 	m2 := make(map[float64]int)
 	m2[3.14] = 314
-	fmt.Println(m2[3.14])
-	fmt.Println(len(m2))
+	if m2[3.14] == 314 && len(m2) == 1 {
+		fmt.Println("PASS: map float64 key")
+	} else {
+		fmt.Println("FAIL: map float64 key")
+	}
 
 	m3 := make(map[int32]string)
 	m3[42] = "answer"
-	fmt.Println(m3[42])
-	fmt.Println(len(m3))
+	if m3[42] == "answer" && len(m3) == 1 {
+		fmt.Println("PASS: map int32 key")
+	} else {
+		fmt.Println("FAIL: map int32 key")
+	}
+}
+
+type MapTestStruct struct {
+	Name  string
+	Value int
+}
+
+func testMapStructValue() {
+	m := make(map[string]MapTestStruct)
+	m["first"] = MapTestStruct{Name: "hello", Value: 42}
+	s := m["first"]
+	if s.Name == "hello" && s.Value == 42 && len(m) == 1 {
+		fmt.Println("PASS: map struct value")
+	} else {
+		fmt.Println("FAIL: map struct value")
+	}
+}
+
+func testMapCommaOk() {
+	fmt.Println("=== Map Comma-Ok ===")
+	m := make(map[string]int)
+	m["hello"] = 42
+
+	val, ok := m["hello"]
+	if val == 42 && ok {
+		fmt.Println("PASS: map comma-ok found")
+	} else {
+		fmt.Println("FAIL: map comma-ok found")
+	}
+
+	val2, ok2 := m["missing"]
+	if val2 == 0 && !ok2 {
+		fmt.Println("PASS: map comma-ok missing")
+	} else {
+		fmt.Println("FAIL: map comma-ok missing")
+	}
+
+	if len(m) == 1 {
+		fmt.Println("PASS: map comma-ok len")
+	} else {
+		fmt.Println("FAIL: map comma-ok len")
+	}
+}
+
+func testTypeAssertCommaOk() {
+	fmt.Println("=== Type Assert Comma-Ok ===")
+	var x interface{}
+	x = 42
+	val, ok := x.(int)
+	if val == 42 && ok {
+		fmt.Println("PASS: type assert comma-ok int")
+	} else {
+		fmt.Println("FAIL: type assert comma-ok int")
+	}
+
+	val2, ok2 := x.(string)
+	fmt.Println(val2)
+	fmt.Println(ok2)
+}
+
+func testIfInitCommaOk() {
+	fmt.Println("=== If-Init Comma-Ok ===")
+	m := make(map[string]int)
+	m["hello"] = 42
+
+	if val, ok := m["hello"]; ok {
+		if val == 42 {
+			fmt.Println("PASS: if-init map found")
+		} else {
+			fmt.Println("FAIL: if-init map found wrong val")
+		}
+	} else {
+		fmt.Println("FAIL: if-init map found not entered")
+	}
+	if val, ok := m["missing"]; ok {
+		fmt.Println(val)
+		fmt.Println("FAIL: if-init map missing entered")
+	} else {
+		fmt.Println("PASS: if-init map missing")
+	}
+
+	var x interface{}
+	x = 10
+	if val, ok := x.(int); ok {
+		if val == 10 {
+			fmt.Println("PASS: if-init type assert")
+		} else {
+			fmt.Println("FAIL: if-init type assert wrong val")
+		}
+	} else {
+		fmt.Println("FAIL: if-init type assert not entered")
+	}
+}
+
+type MapFieldStruct struct {
+	Settings map[string]int
+}
+
+func testMapStructField() {
+	fmt.Println("=== Map Struct Field ===")
+	s := MapFieldStruct{}
+	s.Settings = make(map[string]int)
+	s.Settings["timeout"] = 30
+	s.Settings["retries"] = 3
+
+	// get + len
+	if s.Settings["timeout"] == 30 && len(s.Settings) == 2 {
+		fmt.Println("PASS: map struct field get/len")
+	} else {
+		fmt.Println("FAIL: map struct field get/len")
+	}
+
+	// delete
+	delete(s.Settings, "retries")
+	if len(s.Settings) == 1 {
+		fmt.Println("PASS: map struct field delete")
+	} else {
+		fmt.Println("FAIL: map struct field delete")
+	}
+
+	// comma-ok
+	val, ok := s.Settings["timeout"]
+	if val == 30 && ok {
+		fmt.Println("PASS: map struct field comma-ok")
+	} else {
+		fmt.Println("FAIL: map struct field comma-ok")
+	}
+
+	val2, ok2 := s.Settings["missing"]
+	if val2 == 0 && !ok2 {
+		fmt.Println("PASS: map struct field comma-ok missing")
+	} else {
+		fmt.Println("FAIL: map struct field comma-ok missing")
+	}
+}
+
+// Helper function that returns a map
+func createStringIntMap() map[string]int {
+	m := make(map[string]int)
+	m["one"] = 1
+	m["two"] = 2
+	m["three"] = 3
+	return m
+}
+
+// Helper function that returns an empty map
+func createEmptyMap() map[string]int {
+	return make(map[string]int)
+}
+
+// Helper function that modifies and returns a map
+func addToMap(m map[string]int, key string, value int) map[string]int {
+	m[key] = value
+	return m
+}
+
+func testMapReturnValue() {
+	fmt.Println("=== Map Return Value ===")
+
+	// Test 1: Basic map return
+	m1 := createStringIntMap()
+	if m1["one"] == 1 && m1["two"] == 2 && m1["three"] == 3 && len(m1) == 3 {
+		fmt.Println("PASS: map return value basic")
+	} else {
+		fmt.Println("FAIL: map return value basic")
+	}
+
+	// Test 2: Empty map return
+	m2 := createEmptyMap()
+	if len(m2) == 0 {
+		fmt.Println("PASS: map return value empty")
+	} else {
+		fmt.Println("FAIL: map return value empty")
+	}
+
+	// Test 3: Map passed and returned
+	m3 := make(map[string]int)
+	m3["start"] = 100
+	m3 = addToMap(m3, "added", 200)
+	if m3["start"] == 100 && m3["added"] == 200 && len(m3) == 2 {
+		fmt.Println("PASS: map return value modified")
+	} else {
+		fmt.Println("FAIL: map return value modified")
+	}
+
+	// Test 4: Chained map operations with return
+	m4 := addToMap(createEmptyMap(), "chained", 42)
+	if m4["chained"] == 42 && len(m4) == 1 {
+		fmt.Println("PASS: map return value chained")
+	} else {
+		fmt.Println("FAIL: map return value chained")
+	}
 }
 
 func main() {
@@ -829,6 +1201,12 @@ func main() {
 	testMapAsParameter()
 	testNilMap()
 	testMapKeyTypes()
+	testMapStructValue()
+	testMapCommaOk()
+	testTypeAssertCommaOk()
+	testIfInitCommaOk()
+	testMapStructField()
+	testMapReturnValue()
 
 	fmt.Println("=== Done ===")
 }

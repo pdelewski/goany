@@ -268,6 +268,25 @@ func hashMapDelete(m HashMap, key interface{}) HashMap {
 	return m
 }
 
+func hashMapContains(m HashMap, key interface{}) bool {
+	if m.Capacity == 0 {
+		return false
+	}
+	idx := hashMapHash(key, m.KeyType, m.Capacity)
+	i := 0
+	for i < m.Capacity {
+		pos := (idx + i) % m.Capacity
+		if !m.Occupied[pos] {
+			return false
+		}
+		if keysEqual(m.Keys[pos], key, m.KeyType) {
+			return true
+		}
+		i = i + 1
+	}
+	return false
+}
+
 func hashMapLen(m HashMap) int {
 	return m.Size
 }

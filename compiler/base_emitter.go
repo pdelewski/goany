@@ -155,6 +155,8 @@ const (
 	PostVisitReturnStmtResult VisitMethod = "PostVisitReturnStmtResult"
 	PreVisitIfStmt VisitMethod = "PreVisitIfStmt"
 	PostVisitIfStmt VisitMethod = "PostVisitIfStmt"
+	PreVisitIfStmtInit VisitMethod = "PreVisitIfStmtInit"
+	PostVisitIfStmtInit VisitMethod = "PostVisitIfStmtInit"
 	PreVisitIfStmtCond VisitMethod = "PreVisitIfStmtCond"
 	PostVisitIfStmtCond VisitMethod = "PostVisitIfStmtCond"
 	PreVisitIfStmtBody VisitMethod = "PreVisitIfStmtBody"
@@ -372,6 +374,8 @@ func (v *BaseEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent 
 func (v *BaseEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {}
 func (v *BaseEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {}
 func (v *BaseEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {}
+func (v *BaseEmitter) PreVisitIfStmtInit(node ast.Stmt, indent int) {}
+func (v *BaseEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {}
 func (v *BaseEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {}
 func (v *BaseEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {}
 func (v *BaseEmitter) PreVisitIfStmtBody(node *ast.IfStmt, indent int) {}

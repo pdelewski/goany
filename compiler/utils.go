@@ -3,10 +3,24 @@ package compiler
 import (
 	"errors"
 	"fmt"
+	"go/ast"
 	"os"
 	"strings"
 	"unicode"
 )
+
+// exprToString converts an ast.Expr to its string representation.
+// Handles *ast.Ident (e.g., "m") and *ast.SelectorExpr (e.g., "s.Settings").
+func exprToString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.SelectorExpr:
+		return exprToString(e.X) + "." + e.Sel.Name
+	default:
+		return ""
+	}
+}
 
 // TopologicalSort performs a topological sort on the given graph.
 // The input graph is a map where keys are nodes and values are slices of their dependencies.
