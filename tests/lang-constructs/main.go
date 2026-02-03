@@ -1109,6 +1109,64 @@ func testMapStructField() {
 	}
 }
 
+// Helper function that returns a map
+func createStringIntMap() map[string]int {
+	m := make(map[string]int)
+	m["one"] = 1
+	m["two"] = 2
+	m["three"] = 3
+	return m
+}
+
+// Helper function that returns an empty map
+func createEmptyMap() map[string]int {
+	return make(map[string]int)
+}
+
+// Helper function that modifies and returns a map
+func addToMap(m map[string]int, key string, value int) map[string]int {
+	m[key] = value
+	return m
+}
+
+func testMapReturnValue() {
+	fmt.Println("=== Map Return Value ===")
+
+	// Test 1: Basic map return
+	m1 := createStringIntMap()
+	if m1["one"] == 1 && m1["two"] == 2 && m1["three"] == 3 && len(m1) == 3 {
+		fmt.Println("PASS: map return value basic")
+	} else {
+		fmt.Println("FAIL: map return value basic")
+	}
+
+	// Test 2: Empty map return
+	m2 := createEmptyMap()
+	if len(m2) == 0 {
+		fmt.Println("PASS: map return value empty")
+	} else {
+		fmt.Println("FAIL: map return value empty")
+	}
+
+	// Test 3: Map passed and returned
+	m3 := make(map[string]int)
+	m3["start"] = 100
+	m3 = addToMap(m3, "added", 200)
+	if m3["start"] == 100 && m3["added"] == 200 && len(m3) == 2 {
+		fmt.Println("PASS: map return value modified")
+	} else {
+		fmt.Println("FAIL: map return value modified")
+	}
+
+	// Test 4: Chained map operations with return
+	m4 := addToMap(createEmptyMap(), "chained", 42)
+	if m4["chained"] == 42 && len(m4) == 1 {
+		fmt.Println("PASS: map return value chained")
+	} else {
+		fmt.Println("FAIL: map return value chained")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1148,6 +1206,7 @@ func main() {
 	testTypeAssertCommaOk()
 	testIfInitCommaOk()
 	testMapStructField()
+	testMapReturnValue()
 
 	fmt.Println("=== Done ===")
 }
