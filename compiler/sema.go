@@ -265,6 +265,19 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 					"  outerMap := make(map[K]Entry)",
 				})
 		}
+		// Check for nested slices in map value (e.g., map[K][][]V)
+		if sliceType, isSlice := valueTv.Type.Underlying().(*types.Slice); isSlice {
+			if _, isNestedSlice := sliceType.Elem().Underlying().(*types.Slice); isNestedSlice {
+				sema.reportSemaError(node.Pos(),
+					"nested slices in map value are not supported",
+					"Map values cannot be nested slices (e.g., map[K][][]V).\n  Nested slices generate incorrect code in target languages.",
+					[]string{
+						"Use a single-dimensional slice as the map value:",
+						"  // Instead of: map[string][][]int",
+						"  // Use:        map[string][]int",
+					})
+			}
+		}
 	}
 
 	// Check for unsupported key types
@@ -283,6 +296,32 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 			"unsupported map key type",
 			fmt.Sprintf("Map key type '%s' is not supported.\n  Supported key types: string, int, bool, int8-int64, uint8-uint64, float32, float64.", tv.Type.String()),
 			[]string{"Use a supported primitive type as the key."})
+	}
+}
+
+// PreVisitArrayType checks for nested slices ([][]T) which are not supported
+// The pattern system cannot express recursive type depth constraints, and nested
+// slices generate broken code in target languages.
+func (sema *SemaChecker) PreVisitArrayType(node ast.ArrayType, indent int) {
+	// Only check slices (arrays have a length expression)
+	if node.Len != nil {
+		return // This is an array, not a slice
+	}
+
+	// Check if element type is also a slice (nested slice)
+	if _, isArrayType := node.Elt.(*ast.ArrayType); isArrayType {
+		// Check if inner is also a slice
+		if innerArray, ok := node.Elt.(*ast.ArrayType); ok && innerArray.Len == nil {
+			sema.reportSemaError(node.Pos(),
+				"nested slices are not supported",
+				"Multi-dimensional slices like [][]T or [][][]T are not supported.\n  Nested slices generate incorrect code in target languages.",
+				[]string{
+					"Use a single-dimensional slice with manual indexing:",
+					"  // Instead of: var m [][]int",
+					"  // Use:        var m []int with width * height elements",
+					"  //             Access: m[y*width + x]",
+				})
+		}
 	}
 }
 

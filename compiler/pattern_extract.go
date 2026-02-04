@@ -482,6 +482,12 @@ func ExtractArrayTypePattern(n *ast.ArrayType, pkg *packages.Package) Pattern {
 	if pkg != nil && pkg.TypesInfo != nil {
 		if tv, ok := pkg.TypesInfo.Types[n.Elt]; ok && tv.Type != nil {
 			attrs["elt_type"] = typeCategory(tv.Type)
+			// Add structural attribute for composite element types
+			// This allows patterns to distinguish []int from [][]int
+			switch tv.Type.Underlying().(type) {
+			case *types.Slice, *types.Array, *types.Map:
+				attrs["elt_is_composite"] = "true"
+			}
 		}
 	}
 

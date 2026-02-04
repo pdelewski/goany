@@ -39,28 +39,25 @@ func (p Pattern) Key() string {
 	return strings.Join(parts, ":")
 }
 
-// typeSignificantAttrs defines which attributes matter for each construct kind.
+// TypeSignificantAttrs defines which STRUCTURAL attributes matter for each construct kind.
 // Attributes not listed here will be stripped during normalized matching.
-// This implements two-level matching: structural match first, type check only where it matters.
-var typeSignificantAttrs = map[string]map[string]bool{
-	// RangeStmt: collection_type matters (slice/string ok, map not ok)
+// Type-related checks (map key types, range over maps, etc.) are handled by the semantic checker.
+// IMPORTANT: This is the single source of truth - genrules imports this to ensure consistency.
+var TypeSignificantAttrs = map[string]map[string]bool{
+	// RangeStmt: structural attrs only (type checks in sema.go)
 	"RangeStmt": {
-		"collection_type": true,
-		"tok":             true,
-		"key":             true,
-		"value":           true,
+		"tok":   true,
+		"key":   true,
+		"value": true,
+		// collection_type moved to sema - checks range over maps
 	},
-	// MapType: key_type matters (basic ok, struct not), nested matters
+	// MapType: structural only - type checks (key_type, nested) handled by sema.go
 	"MapType": {
-		"key_type":   true,
-		"nested":     true,
-		"nested_ast": true,
-		// value_type intentionally omitted - we don't care if value is int vs string
+		// key_type, nested, nested_ast moved to sema
 	},
-	// IndexExpr: collection_type matters (map vs slice have different semantics)
+	// IndexExpr: structural only - all collection types (slice, map, array) are valid
 	"IndexExpr": {
-		"collection_type": true,
-		// index_type intentionally omitted
+		// collection_type removed - slices, maps, arrays all supported
 	},
 	// AssignStmt: structural attrs matter, but not rhs_type (except comma_ok)
 	"AssignStmt": {
@@ -132,11 +129,11 @@ var typeSignificantAttrs = map[string]map[string]bool{
 		"tok":       true,
 		"has_label": true,
 	},
-	// CompositeLit: type matters (to catch map literals), keyed matters
+	// CompositeLit: structural attrs only - map literal check moved to sema.go
 	"CompositeLit": {
-		"type":     true,
-		"ast_type": true,
-		"keyed":    true,
+		"ast_type": true, // structural: AST node type (array_or_slice, map, named, etc.)
+		"keyed":    true, // structural: whether using key-value syntax
+		// type (runtime type category) moved to sema - checks map literals
 		// elt_count intentionally omitted
 	},
 	// SliceExpr: structural attrs matter
@@ -147,10 +144,11 @@ var typeSignificantAttrs = map[string]map[string]bool{
 		"slice3":   true,
 		// collection_type intentionally omitted
 	},
-	// ArrayType: is_slice matters
+	// ArrayType: is_slice and elt_is_composite matter
 	"ArrayType": {
-		"is_slice": true,
-		// elt_type intentionally omitted
+		"is_slice":         true,
+		"elt_is_composite": true, // structural: whether element is slice/array/map
+		// elt_type intentionally omitted (specific type doesn't matter)
 	},
 	// TypeAssertExpr: type_switch matters
 	"TypeAssertExpr": {
@@ -170,7 +168,7 @@ var typeSignificantAttrs = map[string]map[string]bool{
 // This allows matching constructs regardless of specific types used,
 // except where types actually matter for correctness.
 func (p Pattern) NormalizedKey() string {
-	significant, hasConfig := typeSignificantAttrs[p.Kind]
+	significant, hasConfig := TypeSignificantAttrs[p.Kind]
 
 	var parts []string
 	parts = append(parts, p.Kind)
