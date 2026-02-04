@@ -146,9 +146,11 @@ func main() {
 	flag.StringVar(&graphicsRuntime, "graphics-runtime", "tigr", "Graphics runtime: tigr (default), sdl2, none")
 	var optimizeMoves bool
 	var optimizeRefs bool
+	var checkSyntax bool
 	flag.BoolVar(&compiler.DebugMode, "debug", false, "Enable debug output")
 	flag.BoolVar(&optimizeMoves, "optimize-moves", false, "Enable move optimizations to reduce struct cloning")
 	flag.BoolVar(&optimizeRefs, "optimize-refs", false, "Enable reference optimization for read-only parameters")
+	flag.BoolVar(&checkSyntax, "check-syntax", true, "Enable GoAny syntax validation (default: true)")
 	flag.Parse()
 	if sourceDir == "" {
 		fmt.Println("Please provide a source directory")
@@ -213,8 +215,22 @@ func main() {
 	useJs := backendSet["js"] // JS is opt-in, not included in "all"
 
 	// Build passes list
-	sema := &compiler.BasePass{PassName: "Sema", Emitter: &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}}
-	passes := []compiler.Pass{sema}
+	var passes []compiler.Pass
+
+	// Pass 1: Syntax checking (validates constructs against GoAny syntax rules)
+	if checkSyntax {
+		syntaxDB := compiler.GetBuiltinPatternDatabase()
+		syntaxChecker := &compiler.SyntaxChecker{Emitter: &compiler.BaseEmitter{}}
+		syntaxChecker.SetPatternDatabase(syntaxDB)
+		syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
+		passes = append(passes, syntaxPass)
+		compiler.DebugLogPrintf("Syntax rules loaded with %d patterns", len(syntaxDB.Patterns))
+	}
+
+	// Pass 2: Semantic analysis (always runs)
+	semaChecker := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
+	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
+	passes = append(passes, sema)
 	var programFiles []string
 
 	if useCpp {

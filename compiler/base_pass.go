@@ -343,11 +343,26 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.emitter.PreVisitInterfaceType(e, indent)
 		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitInterfaceType)
 		v.emitter.PostVisitInterfaceType(e, indent)
+	case *ast.StructType:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitStructType)
+		v.emitter.PreVisitStructType(e, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitStructType)
+		v.emitter.PostVisitStructType(e, indent)
 	case *ast.MapType:
 		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitMapType)
 		v.emitter.PreVisitMapType(e, indent)
 		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitMapType)
 		v.emitter.PostVisitMapType(e, indent)
+	case *ast.ChanType:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitChanType)
+		v.emitter.PreVisitChanType(e, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitChanType)
+		v.emitter.PostVisitChanType(e, indent)
+	case *ast.Ellipsis:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitEllipsis)
+		v.emitter.PreVisitEllipsis(e, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitEllipsis)
+		v.emitter.PostVisitEllipsis(e, indent)
 	default:
 		panic(fmt.Sprintf("unsupported expression type: %T", e))
 	}
@@ -536,6 +551,11 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitSwitchStmt)
 		v.emitter.PostVisitSwitchStmt(stmt, indent)
+	case *ast.TypeSwitchStmt:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitTypeSwitchStmt)
+		v.emitter.PreVisitTypeSwitchStmt(stmt, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitTypeSwitchStmt)
+		v.emitter.PostVisitTypeSwitchStmt(stmt, indent)
 	case *ast.BranchStmt:
 		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitBranchStmt)
 		v.emitter.PreVisitBranchStmt(stmt, indent)
@@ -578,6 +598,33 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitBlockStmt)
 		v.emitter.PostVisitBlockStmt(stmt, indent)
+	case *ast.DeferStmt:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitDeferStmt)
+		v.emitter.PreVisitDeferStmt(stmt, indent)
+		v.traverseExpression(stmt.Call, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitDeferStmt)
+		v.emitter.PostVisitDeferStmt(stmt, indent)
+	case *ast.GoStmt:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitGoStmt)
+		v.emitter.PreVisitGoStmt(stmt, indent)
+		v.traverseExpression(stmt.Call, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitGoStmt)
+		v.emitter.PostVisitGoStmt(stmt, indent)
+	case *ast.SendStmt:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitSendStmt)
+		v.emitter.PreVisitSendStmt(stmt, indent)
+		v.traverseExpression(stmt.Chan, indent)
+		v.traverseExpression(stmt.Value, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitSendStmt)
+		v.emitter.PostVisitSendStmt(stmt, indent)
+	case *ast.SelectStmt:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitSelectStmt)
+		v.emitter.PreVisitSelectStmt(stmt, indent)
+		if stmt.Body != nil {
+			v.traverseStmt(stmt.Body, indent)
+		}
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitSelectStmt)
+		v.emitter.PostVisitSelectStmt(stmt, indent)
 	default:
 		DebugPrintf("<Other statement type>\n")
 	}

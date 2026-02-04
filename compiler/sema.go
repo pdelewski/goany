@@ -46,8 +46,8 @@ import (
 // ============================================
 // SECTION 3: Supported with Limitations
 // ============================================
-// - interface{} / any - maps to std::any (C++), Box<dyn Any> (Rust), object (C#)
-//   Note: type assertions x.(T) supported in C++ only for now
+//   - interface{} / any - maps to std::any (C++), Box<dyn Any> (Rust), object (C#)
+//     Note: type assertions x.(T) supported in C++ only for now
 type SemaChecker struct {
 	Emitter
 	pkg      *packages.Package
@@ -66,6 +66,10 @@ type SemaChecker struct {
 	// Track variable declarations per scope for shadowing detection
 	// Each map in the slice represents a scope level (index 0 = outermost)
 	scopeStack []map[string]token.Pos
+	// Track closure depth to allow mutations inside closures
+	insideClosureDepth int
+	// Track loop depth to allow mutations in loop patterns
+	insideLoopDepth int
 }
 
 func (sema *SemaChecker) PreVisitPackage(pkg *packages.Package, indent int) {
@@ -181,53 +185,9 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 	}
 }
 
-// PreVisitDeferStmt checks for defer statements which are not supported
-func (sema *SemaChecker) PreVisitDeferStmt(node *ast.DeferStmt, indent int) {
-	fmt.Println("\033[31m\033[1mCompilation error: defer statements are not supported\033[0m")
-	fmt.Println("  The defer keyword is not allowed.")
-	fmt.Println("  Defer has no direct equivalent in C++, Rust, or JavaScript.")
-	fmt.Println()
-	fmt.Println("  \033[32mCall cleanup code explicitly at each return point.\033[0m")
-	os.Exit(-1)
-}
-
-// PreVisitGoStmt checks for go statements (goroutines) which are not supported
-func (sema *SemaChecker) PreVisitGoStmt(node *ast.GoStmt, indent int) {
-	fmt.Println("\033[31m\033[1mCompilation error: goroutines are not supported\033[0m")
-	fmt.Println("  The go keyword for launching goroutines is not allowed.")
-	fmt.Println("  Concurrency models differ significantly across target languages.")
-	fmt.Println()
-	fmt.Println("  \033[32mUse sequential code or platform-specific concurrency.\033[0m")
-	os.Exit(-1)
-}
-
-// PreVisitChanType checks for channel types which are not supported
-func (sema *SemaChecker) PreVisitChanType(node *ast.ChanType, indent int) {
-	fmt.Println("\033[31m\033[1mCompilation error: channel types are not supported\033[0m")
-	fmt.Println("  Channel types (chan T) are not allowed.")
-	fmt.Println("  Channels are Go-specific and have no direct equivalent in target languages.")
-	fmt.Println()
-	fmt.Println("  \033[32mUse other communication patterns suitable for your target.\033[0m")
-	os.Exit(-1)
-}
-
-// PreVisitSelectStmt checks for select statements which are not supported
-func (sema *SemaChecker) PreVisitSelectStmt(node *ast.SelectStmt, indent int) {
-	fmt.Println("\033[31m\033[1mCompilation error: select statements are not supported\033[0m")
-	fmt.Println("  Select statements for channel operations are not allowed.")
-	fmt.Println("  Select is Go-specific and has no direct equivalent in target languages.")
-	os.Exit(-1)
-}
-
-// PreVisitLabeledStmt checks for labeled statements which are not supported
-func (sema *SemaChecker) PreVisitLabeledStmt(node *ast.LabeledStmt, indent int) {
-	fmt.Println("\033[31m\033[1mCompilation error: labeled statements are not supported\033[0m")
-	fmt.Printf("  Label '%s:' is not allowed.\n", node.Label.Name)
-	fmt.Println("  Labels and goto have limited support in target languages.")
-	fmt.Println()
-	fmt.Println("  \033[32mUse structured control flow (functions, loops with break).\033[0m")
-	os.Exit(-1)
-}
+// Note: Structural checks for DeferStmt, GoStmt, ChanType, SelectStmt, LabeledStmt
+// are now handled by the PatternChecker (whitelist approach).
+// These constructs are rejected because no patterns exist for them in tests/examples.
 
 // PreVisitBranchStmt checks for goto statements which are not supported
 func (sema *SemaChecker) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
@@ -416,10 +376,113 @@ func (sema *SemaChecker) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 
 // PreVisitForStmt pushes a scope for the for loop (to contain the init variable)
 // In Go, `for i := 0; ...` creates an implicit scope containing both Init and Body
+// Also checks for mutation during iteration (e.g., for i := 0; i < len(items); i++ { items = append(...) })
 func (sema *SemaChecker) PreVisitForStmt(node *ast.ForStmt, indent int) {
 	if sema.scopeStack != nil {
 		sema.scopeStack = append(sema.scopeStack, make(map[string]token.Pos))
 	}
+
+	// Track loop depth for closure capture mutation check
+	sema.insideLoopDepth++
+
+	// Check for mutation during iteration pattern:
+	// for i := 0; i < len(slice); i++ { slice = ... }
+	if node.Cond != nil && node.Body != nil {
+		// Extract slice name from condition if it contains len(slice)
+		sliceName := sema.extractLenTarget(node.Cond)
+		if sliceName != "" {
+			// Check if the slice is mutated in the loop body
+			sema.checkForBodyMutation(node.Body, sliceName)
+		}
+	}
+}
+
+// extractLenTarget extracts the variable name from an index-based loop condition
+// e.g., from "i < len(items)" returns "items"
+// Only triggers for index-based patterns like "i < len(slice)" or "len(slice) > i"
+// Does NOT trigger for stack-based patterns like "len(stk) > 0"
+func (sema *SemaChecker) extractLenTarget(cond ast.Expr) string {
+	// Only check binary expressions (comparisons)
+	binExpr, ok := cond.(*ast.BinaryExpr)
+	if !ok {
+		return ""
+	}
+
+	// Only for comparison operators
+	if binExpr.Op != token.LSS && binExpr.Op != token.LEQ &&
+		binExpr.Op != token.GTR && binExpr.Op != token.GEQ {
+		return ""
+	}
+
+	// Check if this is an index-based pattern:
+	// Either: i < len(slice) OR len(slice) > i
+	// We need both a len() call and a variable (the index) on opposite sides
+	var lenCall *ast.CallExpr
+	var hasIndexVar bool
+
+	// Check left side
+	if call, ok := binExpr.X.(*ast.CallExpr); ok {
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "len" {
+			lenCall = call
+		}
+	} else if _, ok := binExpr.X.(*ast.Ident); ok {
+		hasIndexVar = true
+	}
+
+	// Check right side
+	if call, ok := binExpr.Y.(*ast.CallExpr); ok {
+		if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "len" {
+			lenCall = call
+		}
+	} else if _, ok := binExpr.Y.(*ast.Ident); ok {
+		hasIndexVar = true
+	}
+
+	// Only trigger if we have both len() and an index variable (not just len() > 0)
+	if lenCall == nil || !hasIndexVar {
+		return ""
+	}
+
+	// Extract the slice name from len(slice)
+	if len(lenCall.Args) == 1 {
+		if arg, ok := lenCall.Args[0].(*ast.Ident); ok {
+			return arg.Name
+		}
+	}
+	return ""
+}
+
+// checkForBodyMutation checks if a variable is mutated inside a for loop body
+func (sema *SemaChecker) checkForBodyMutation(body *ast.BlockStmt, targetName string) {
+	if body == nil {
+		return
+	}
+
+	ast.Inspect(body, func(n ast.Node) bool {
+		if stmt, ok := n.(*ast.AssignStmt); ok {
+			for _, lhs := range stmt.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == targetName {
+					fmt.Println("\033[31m\033[1mCompilation error: collection mutation during iteration\033[0m")
+					fmt.Printf("  Variable '%s' is modified while being iterated over.\n", targetName)
+					fmt.Println("  This pattern fails in Rust due to borrow checker rules.")
+					fmt.Println()
+					fmt.Println("  \033[33mInstead of:\033[0m")
+					fmt.Printf("    for i := 0; i < len(%s); i++ {\n", targetName)
+					fmt.Printf("        %s = append(%s, ...)  // mutation during iteration\n", targetName, targetName)
+					fmt.Println("    }")
+					fmt.Println()
+					fmt.Println("  \033[32mCollect changes and apply after loop:\033[0m")
+					fmt.Println("    var toAdd []T")
+					fmt.Printf("    for i := 0; i < len(%s); i++ {\n", targetName)
+					fmt.Println("        toAdd = append(toAdd, ...)")
+					fmt.Println("    }")
+					fmt.Printf("    %s = append(%s, toAdd...)\n", targetName, targetName)
+					os.Exit(-1)
+				}
+			}
+		}
+		return true
+	})
 }
 
 // PostVisitForStmt pops the for loop scope
@@ -427,6 +490,8 @@ func (sema *SemaChecker) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	if sema.scopeStack != nil && len(sema.scopeStack) > 0 {
 		sema.scopeStack = sema.scopeStack[:len(sema.scopeStack)-1]
 	}
+	// Decrement loop depth
+	sema.insideLoopDepth--
 }
 
 func (sema *SemaChecker) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
@@ -434,6 +499,9 @@ func (sema *SemaChecker) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	if sema.scopeStack != nil {
 		sema.scopeStack = append(sema.scopeStack, make(map[string]token.Pos))
 	}
+
+	// Track loop depth for closure capture mutation check
+	sema.insideLoopDepth++
 
 	// Check for range over maps - not supported
 	if sema.pkg != nil && sema.pkg.TypesInfo != nil {
@@ -494,6 +562,8 @@ func (sema *SemaChecker) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	if sema.scopeStack != nil && len(sema.scopeStack) > 0 {
 		sema.scopeStack = sema.scopeStack[:len(sema.scopeStack)-1]
 	}
+	// Decrement loop depth
+	sema.insideLoopDepth--
 }
 
 // checkRangeBodyMutation checks if the range target is mutated inside the loop body
@@ -624,10 +694,6 @@ func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Check for variable shadowing (C# does not allow shadowing within the same function)
 	sema.checkVariableShadowing(node)
 
-	// Note: Closure capture mutation check (checkClosureCaptureMutation) was too aggressive.
-	// The Rust emitter uses .clone() automatically for struct values, so mutation after
-	// capture is safe in practice. Disabled to avoid false positives.
-
 	// Check for slice self-assignment pattern
 	sema.checkSliceSelfAssignment(node)
 
@@ -664,9 +730,8 @@ func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		sema.checkBinaryExprWithSameVar(rhs)
 	}
 
-	// Note: Nested function call sharing check (f(x, g(x))) was too aggressive
-	// and caused false positives. The Rust emitter handles borrowing correctly
-	// in most cases, so this check is disabled for now.
+	// Check for mutation of variable after closure capture
+	sema.checkClosureCaptureMutation(node)
 }
 
 // rhsContainsStringConcatWithVar checks if an expression contains a binary + with varName on the left
@@ -772,8 +837,23 @@ func (sema *SemaChecker) PreVisitInterfaceType(node *ast.InterfaceType, indent i
 	}
 }
 
+// PreVisitGenStructInfo checks struct type declarations for embedding (anonymous fields)
+// This is called during struct generation to validate type declarations
+func (sema *SemaChecker) PreVisitGenStructInfo(info GenTypeInfo, indent int) {
+	if info.Struct == nil {
+		return
+	}
+	sema.checkStructEmbedding(info.Struct)
+}
+
 // PreVisitStructType checks for struct embedding (anonymous fields) which is not supported
+// This handles struct types that appear in expressions (e.g., composite literals)
 func (sema *SemaChecker) PreVisitStructType(node *ast.StructType, indent int) {
+	sema.checkStructEmbedding(node)
+}
+
+// checkStructEmbedding validates that a struct has no embedded (anonymous) fields
+func (sema *SemaChecker) checkStructEmbedding(node *ast.StructType) {
 	if node.Fields == nil {
 		return
 	}
@@ -910,21 +990,23 @@ func (sema *SemaChecker) isNonCopyType(t types.Type) bool {
 	if t == nil {
 		return false
 	}
+
 	typeStr := t.String()
 	// Strings are non-Copy
 	if typeStr == "string" {
 		return true
 	}
-	// Slices are non-Copy
+	// Slices are non-Copy (direct slice types only)
 	if _, ok := t.Underlying().(*types.Slice); ok {
 		return true
 	}
-	// Named struct types are non-Copy
-	if named, ok := t.(*types.Named); ok {
-		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-			return true
-		}
+	// Maps are non-Copy
+	if _, ok := t.Underlying().(*types.Map); ok {
+		return true
 	}
+	// Note: Structs are NOT flagged here, even if they contain non-Copy fields.
+	// The transpiler handles structs by reference passing, so nested calls with
+	// struct arguments are safe. Only direct slice/string/map usage is problematic.
 	return false
 }
 
@@ -1097,10 +1179,10 @@ func (sema *SemaChecker) checkNestedCallArgSharing(node ast.Node) {
 			}
 		}
 
-		// Check if any nested call uses the same variable
+		// Check if any nested call uses the same variable (direct argument, not field access)
 		for _, arg := range call.Args {
 			if nestedCall, ok := arg.(*ast.CallExpr); ok {
-				nestedArgs := sema.collectAllIdentsInExpr(nestedCall)
+				nestedArgs := sema.collectDirectCallArgIdents(nestedCall)
 				for _, nestedIdent := range nestedArgs {
 					if topIdent, exists := topLevelArgs[nestedIdent.Name]; exists {
 						// Check if it's a non-Copy type
@@ -1131,12 +1213,18 @@ func (sema *SemaChecker) checkNestedCallArgSharing(node ast.Node) {
 	})
 }
 
-// collectAllIdentsInExpr collects all identifiers in an expression
-func (sema *SemaChecker) collectAllIdentsInExpr(expr ast.Expr) []*ast.Ident {
+// collectDirectCallArgIdents collects identifiers that are passed directly as arguments
+// to function calls within an expression (not field accesses like ctx.Field)
+func (sema *SemaChecker) collectDirectCallArgIdents(expr ast.Expr) []*ast.Ident {
 	var idents []*ast.Ident
 	ast.Inspect(expr, func(n ast.Node) bool {
-		if ident, ok := n.(*ast.Ident); ok {
-			idents = append(idents, ident)
+		if call, ok := n.(*ast.CallExpr); ok {
+			for _, arg := range call.Args {
+				// Only collect direct identifiers, not selector expressions
+				if ident, ok := arg.(*ast.Ident); ok {
+					idents = append(idents, ident)
+				}
+			}
 		}
 		return true
 	})
@@ -1145,6 +1233,15 @@ func (sema *SemaChecker) collectAllIdentsInExpr(expr ast.Expr) []*ast.Ident {
 
 // checkClosureCaptureMutation checks if a variable captured by a closure is mutated after capture
 func (sema *SemaChecker) checkClosureCaptureMutation(node *ast.AssignStmt) {
+	// Skip check if we're inside a closure - mutations inside closures are allowed
+	if sema.insideClosureDepth > 0 {
+		return
+	}
+	// Skip check if we're inside a loop - loop patterns typically call closure before mutation
+	// within each iteration, which is safe
+	if sema.insideLoopDepth > 0 {
+		return
+	}
 	if sema.closureCaptures == nil || len(sema.closureCaptures) == 0 {
 		return
 	}
@@ -1155,7 +1252,7 @@ func (sema *SemaChecker) checkClosureCaptureMutation(node *ast.AssignStmt) {
 	for _, lhs := range node.Lhs {
 		if ident, ok := lhs.(*ast.Ident); ok {
 			if capturePos, captured := sema.closureCaptures[ident.Name]; captured {
-				// Check if this assignment is after the closure capture
+				// Check if this assignment is after the closure capture (in outer scope)
 				if node.Pos() > capturePos {
 					// Check if it's a non-Copy type
 					if obj := sema.pkg.TypesInfo.Uses[ident]; obj != nil {
@@ -1184,11 +1281,76 @@ func (sema *SemaChecker) checkClosureCaptureMutation(node *ast.AssignStmt) {
 // - slice[i] = slice[j] (direct self-assignment)
 // - slice[i] = slice[i] + slice[j] (self-reference in expression)
 // - slice[i] = f(slice[i]) (self-reference through function call)
+// - slice = append(slice, slice[i]) (append with self-reference)
 // Note: This only applies to slices of non-Copy types (strings, structs, slices).
 // For Copy types (int, bool, etc.), self-reference is safe.
 func (sema *SemaChecker) checkSliceSelfAssignment(node *ast.AssignStmt) {
 	if sema.pkg == nil || sema.pkg.TypesInfo == nil {
 		return
+	}
+
+	// Check for slice = append(slice, slice[i]) pattern
+	// LHS is a plain identifier, RHS is append call with self-reference
+	// Note: This applies to ALL slice element types, not just non-Copy types,
+	// because in Rust the borrow checker prevents simultaneous mutable (&mut for append)
+	// and immutable (&slice[i]) borrows regardless of element type.
+	for i, lhs := range node.Lhs {
+		lhsIdent, ok := lhs.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		// Check if LHS is a slice type
+		tv, exists := sema.pkg.TypesInfo.Types[lhs]
+		if !exists {
+			continue
+		}
+		_, isSlice := tv.Type.Underlying().(*types.Slice)
+		if !isSlice {
+			continue
+		}
+
+		// Get the corresponding RHS
+		if i >= len(node.Rhs) {
+			continue
+		}
+		rhs := node.Rhs[i]
+
+		// Check if RHS is an append call
+		callExpr, ok := rhs.(*ast.CallExpr)
+		if !ok {
+			continue
+		}
+		funIdent, ok := callExpr.Fun.(*ast.Ident)
+		if !ok || funIdent.Name != "append" {
+			continue
+		}
+
+		// Check if first arg is the same slice as LHS
+		if len(callExpr.Args) < 2 {
+			continue
+		}
+		firstArg, ok := callExpr.Args[0].(*ast.Ident)
+		if !ok || firstArg.Name != lhsIdent.Name {
+			continue
+		}
+
+		// Check if any other argument contains an access to the same slice
+		for j := 1; j < len(callExpr.Args); j++ {
+			if sema.exprContainsSliceAccess(callExpr.Args[j], lhsIdent.Name) {
+				fmt.Println("\033[31m\033[1mCompilation error: slice self-reference in append\033[0m")
+				fmt.Printf("  Slice '%s' is both mutated (via append) and read from in the same statement.\n", lhsIdent.Name)
+				fmt.Println("  This causes Rust borrow checker issues (simultaneous mutable and immutable borrow).")
+				fmt.Println()
+				fmt.Println("  \033[33mProblematic pattern:\033[0m")
+				fmt.Printf("    %s = append(%s, %s[i])\n", lhsIdent.Name, lhsIdent.Name, lhsIdent.Name)
+				fmt.Println()
+				fmt.Println("  \033[32mUse a temporary variable:\033[0m")
+				fmt.Printf("    tmp := %s[i]\n", lhsIdent.Name)
+				fmt.Printf("    %s = append(%s, tmp)\n", lhsIdent.Name, lhsIdent.Name)
+				os.Exit(-1)
+			}
+		}
 	}
 
 	// Check if LHS is an index expression on a slice
@@ -1285,6 +1447,9 @@ func (sema *SemaChecker) isCopyType(t types.Type) bool {
 
 // PreVisitFuncLit checks for multiple closures capturing the same non-Copy variable
 func (sema *SemaChecker) PreVisitFuncLit(node *ast.FuncLit, indent int) {
+	// Track that we're inside a closure (for mutation-after-capture check)
+	sema.insideClosureDepth++
+
 	if sema.pkg == nil || sema.pkg.TypesInfo == nil {
 		return
 	}
@@ -1354,3 +1519,65 @@ func (sema *SemaChecker) PreVisitFuncLit(node *ast.FuncLit, indent int) {
 	}
 }
 
+// PostVisitFuncLit decrements the closure depth counter
+func (sema *SemaChecker) PostVisitFuncLit(node *ast.FuncLit, indent int) {
+	sema.insideClosureDepth--
+}
+
+// PreVisitCallExpr checks for same non-Copy variable passed multiple times to a function
+// Pattern: f(x, x) where x is a non-Copy type (slice, string, struct)
+func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
+	if sema.pkg == nil || sema.pkg.TypesInfo == nil {
+		return
+	}
+
+	// Skip built-in functions - they handle arguments specially
+	if ident, ok := node.Fun.(*ast.Ident); ok {
+		builtins := map[string]bool{
+			"len": true, "cap": true, "append": true, "copy": true,
+			"make": true, "new": true, "delete": true, "close": true,
+			"panic": true, "recover": true, "print": true, "println": true,
+			"complex": true, "real": true, "imag": true,
+		}
+		if builtins[ident.Name] {
+			return
+		}
+	}
+
+	// Collect identifiers that are direct arguments (not nested in expressions)
+	argIdents := make(map[string]*ast.Ident)
+	for _, arg := range node.Args {
+		if ident, ok := arg.(*ast.Ident); ok {
+			// Check if we've already seen this identifier
+			if prevIdent, exists := argIdents[ident.Name]; exists {
+				// Check if it's a non-Copy type
+				if obj := sema.pkg.TypesInfo.Uses[ident]; obj != nil {
+					if _, isConst := obj.(*types.Const); !isConst {
+						if _, isFunc := obj.(*types.Func); !isFunc {
+							if sema.isNonCopyType(obj.Type()) {
+								fmt.Println("\033[31m\033[1mCompilation error: same variable used multiple times as function argument\033[0m")
+								fmt.Printf("  Variable '%s' (non-Copy type) is passed multiple times to the same function call.\n", ident.Name)
+								fmt.Println("  This pattern fails in Rust due to move semantics - the variable is moved on first use.")
+								fmt.Println()
+								fmt.Println("  \033[33mInstead of:\033[0m")
+								fmt.Printf("    f(%s, %s)\n", ident.Name, ident.Name)
+								fmt.Println()
+								fmt.Println("  \033[32mClone the variable for the second use:\033[0m")
+								fmt.Printf("    f(%s, %s.clone())\n", ident.Name, ident.Name)
+								fmt.Println("  Or use separate variables:")
+								fmt.Printf("    %s2 := %s  // explicit copy\n", ident.Name, ident.Name)
+								fmt.Printf("    f(%s, %s2)\n", ident.Name, ident.Name)
+								_ = prevIdent // suppress unused variable warning
+								os.Exit(-1)
+							}
+						}
+					}
+				}
+			}
+			argIdents[ident.Name] = ident
+		}
+	}
+
+	// Check for nested function calls sharing non-Copy variable: outer(inner(data))
+	sema.checkNestedCallArgSharing(node)
+}

@@ -118,6 +118,16 @@ type Emitter interface {
 	// PostVisitMapType is called after visiting a map type.
 	PostVisitMapType(node *ast.MapType, indent int)
 
+	// PreVisitChanType is called before visiting a channel type.
+	PreVisitChanType(node *ast.ChanType, indent int)
+	// PostVisitChanType is called after visiting a channel type.
+	PostVisitChanType(node *ast.ChanType, indent int)
+
+	// PreVisitEllipsis is called before visiting an ellipsis (variadic).
+	PreVisitEllipsis(node *ast.Ellipsis, indent int)
+	// PostVisitEllipsis is called after visiting an ellipsis (variadic).
+	PostVisitEllipsis(node *ast.Ellipsis, indent int)
+
 	// PreVisitSelectorExpr is called before visiting a selector expression.
 	PreVisitSelectorExpr(node *ast.SelectorExpr, indent int)
 	// PostVisitSelectorExpr is called after visiting a selector expression.
@@ -260,6 +270,16 @@ type Emitter interface {
 	// PostVisitInterfaceType is called after visiting an interface type.
 	PostVisitInterfaceType(node *ast.InterfaceType, indent int)
 
+	// PreVisitStructType is called before visiting a struct type.
+	PreVisitStructType(node *ast.StructType, indent int)
+	// PostVisitStructType is called after visiting a struct type.
+	PostVisitStructType(node *ast.StructType, indent int)
+
+	// PreVisitTypeSwitchStmt is called before visiting a type switch statement.
+	PreVisitTypeSwitchStmt(node *ast.TypeSwitchStmt, indent int)
+	// PostVisitTypeSwitchStmt is called after visiting a type switch statement.
+	PostVisitTypeSwitchStmt(node *ast.TypeSwitchStmt, indent int)
+
 	// PreVisitExprStmt is called before visiting an expression statement.
 	PreVisitExprStmt(node *ast.ExprStmt, indent int)
 	// PostVisitExprStmt is called after visiting an expression statement.
@@ -284,6 +304,22 @@ type Emitter interface {
 	PreVisitBranchStmt(node *ast.BranchStmt, indent int)
 	// PostVisitBranchStmt is called after visiting a branch statement (break, continue, goto).
 	PostVisitBranchStmt(node *ast.BranchStmt, indent int)
+	// PreVisitDeferStmt is called before visiting a defer statement.
+	PreVisitDeferStmt(node *ast.DeferStmt, indent int)
+	// PostVisitDeferStmt is called after visiting a defer statement.
+	PostVisitDeferStmt(node *ast.DeferStmt, indent int)
+	// PreVisitGoStmt is called before visiting a go statement.
+	PreVisitGoStmt(node *ast.GoStmt, indent int)
+	// PostVisitGoStmt is called after visiting a go statement.
+	PostVisitGoStmt(node *ast.GoStmt, indent int)
+	// PreVisitSendStmt is called before visiting a send statement.
+	PreVisitSendStmt(node *ast.SendStmt, indent int)
+	// PostVisitSendStmt is called after visiting a send statement.
+	PostVisitSendStmt(node *ast.SendStmt, indent int)
+	// PreVisitSelectStmt is called before visiting a select statement.
+	PreVisitSelectStmt(node *ast.SelectStmt, indent int)
+	// PostVisitSelectStmt is called after visiting a select statement.
+	PostVisitSelectStmt(node *ast.SelectStmt, indent int)
 	// PreVisitIncDecStmt is called before visiting an increment/decrement statement.
 	PreVisitIncDecStmt(node *ast.IncDecStmt, indent int)
 	// PostVisitIncDecStmt is called after visiting an increment/decrement statement.

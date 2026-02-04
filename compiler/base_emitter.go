@@ -51,6 +51,10 @@ const (
 	PostVisitArrayType VisitMethod = "PostVisitArrayType"
 	PreVisitMapType VisitMethod = "PreVisitMapType"
 	PostVisitMapType VisitMethod = "PostVisitMapType"
+	PreVisitChanType VisitMethod = "PreVisitChanType"
+	PostVisitChanType VisitMethod = "PostVisitChanType"
+	PreVisitEllipsis VisitMethod = "PreVisitEllipsis"
+	PostVisitEllipsis VisitMethod = "PostVisitEllipsis"
 	PreVisitSelectorExpr VisitMethod = "PreVisitSelectorExpr"
 	PostVisitSelectorExpr VisitMethod = "PostVisitSelectorExpr"
 	PreVisitSelectorExprX VisitMethod = "PreVisitSelectorExprX"
@@ -117,6 +121,10 @@ const (
 	PostVisitStarExprX VisitMethod = "PostVisitStarExprX"
 	PreVisitInterfaceType VisitMethod = "PreVisitInterfaceType"
 	PostVisitInterfaceType VisitMethod = "PostVisitInterfaceType"
+	PreVisitStructType VisitMethod = "PreVisitStructType"
+	PostVisitStructType VisitMethod = "PostVisitStructType"
+	PreVisitTypeSwitchStmt VisitMethod = "PreVisitTypeSwitchStmt"
+	PostVisitTypeSwitchStmt VisitMethod = "PostVisitTypeSwitchStmt"
 	PreVisitExprStmt VisitMethod = "PreVisitExprStmt"
 	PostVisitExprStmt VisitMethod = "PostVisitExprStmt"
 	PreVisitExprStmtX VisitMethod = "PreVisitExprStmtX"
@@ -129,6 +137,14 @@ const (
 	PostVisitDeclStmtValueSpecNames VisitMethod = "PostVisitDeclStmtValueSpecNames"
 	PreVisitBranchStmt VisitMethod = "PreVisitBranchStmt"
 	PostVisitBranchStmt VisitMethod = "PostVisitBranchStmt"
+	PreVisitDeferStmt VisitMethod = "PreVisitDeferStmt"
+	PostVisitDeferStmt VisitMethod = "PostVisitDeferStmt"
+	PreVisitGoStmt VisitMethod = "PreVisitGoStmt"
+	PostVisitGoStmt VisitMethod = "PostVisitGoStmt"
+	PreVisitSendStmt VisitMethod = "PreVisitSendStmt"
+	PostVisitSendStmt VisitMethod = "PostVisitSendStmt"
+	PreVisitSelectStmt VisitMethod = "PreVisitSelectStmt"
+	PostVisitSelectStmt VisitMethod = "PostVisitSelectStmt"
 	PreVisitIncDecStmt VisitMethod = "PreVisitIncDecStmt"
 	PostVisitIncDecStmt VisitMethod = "PostVisitIncDecStmt"
 	PreVisitAssignStmt VisitMethod = "PreVisitAssignStmt"
@@ -270,6 +286,10 @@ func (v *BaseEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {}
 func (v *BaseEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {}
 func (v *BaseEmitter) PreVisitMapType(node *ast.MapType, indent int) {}
 func (v *BaseEmitter) PostVisitMapType(node *ast.MapType, indent int) {}
+func (v *BaseEmitter) PreVisitChanType(node *ast.ChanType, indent int) {}
+func (v *BaseEmitter) PostVisitChanType(node *ast.ChanType, indent int) {}
+func (v *BaseEmitter) PreVisitEllipsis(node *ast.Ellipsis, indent int) {}
+func (v *BaseEmitter) PostVisitEllipsis(node *ast.Ellipsis, indent int) {}
 func (v *BaseEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) {}
 func (v *BaseEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {}
 func (v *BaseEmitter) PreVisitSelectorExprX(node ast.Expr, indent int) {}
@@ -336,6 +356,10 @@ func (v *BaseEmitter) PreVisitStarExprX(node ast.Expr, indent int) {}
 func (v *BaseEmitter) PostVisitStarExprX(node ast.Expr, indent int) {}
 func (v *BaseEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {}
 func (v *BaseEmitter) PostVisitInterfaceType(node *ast.InterfaceType, indent int) {}
+func (v *BaseEmitter) PreVisitStructType(node *ast.StructType, indent int) {}
+func (v *BaseEmitter) PostVisitStructType(node *ast.StructType, indent int) {}
+func (v *BaseEmitter) PreVisitTypeSwitchStmt(node *ast.TypeSwitchStmt, indent int) {}
+func (v *BaseEmitter) PostVisitTypeSwitchStmt(node *ast.TypeSwitchStmt, indent int) {}
 func (v *BaseEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {}
 func (v *BaseEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {}
 func (v *BaseEmitter) PreVisitExprStmtX(node ast.Expr, indent int) {}
@@ -348,6 +372,14 @@ func (v *BaseEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int,
 func (v *BaseEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {}
 func (v *BaseEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {}
 func (v *BaseEmitter) PostVisitBranchStmt(node *ast.BranchStmt, indent int) {}
+func (v *BaseEmitter) PreVisitDeferStmt(node *ast.DeferStmt, indent int) {}
+func (v *BaseEmitter) PostVisitDeferStmt(node *ast.DeferStmt, indent int) {}
+func (v *BaseEmitter) PreVisitGoStmt(node *ast.GoStmt, indent int) {}
+func (v *BaseEmitter) PostVisitGoStmt(node *ast.GoStmt, indent int) {}
+func (v *BaseEmitter) PreVisitSendStmt(node *ast.SendStmt, indent int) {}
+func (v *BaseEmitter) PostVisitSendStmt(node *ast.SendStmt, indent int) {}
+func (v *BaseEmitter) PreVisitSelectStmt(node *ast.SelectStmt, indent int) {}
+func (v *BaseEmitter) PostVisitSelectStmt(node *ast.SelectStmt, indent int) {}
 func (v *BaseEmitter) PreVisitIncDecStmt(node *ast.IncDecStmt, indent int) {}
 func (v *BaseEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {}
 func (v *BaseEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {}
