@@ -254,6 +254,7 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 	}
 
 	// Check for nested maps (map value is another map)
+	// Note: nested slices in map values are caught by syntax checker via map type traversal
 	if valueTv, ok := sema.pkg.TypesInfo.Types[node.Value]; ok && valueTv.Type != nil {
 		if _, isMap := valueTv.Type.Underlying().(*types.Map); isMap {
 			sema.reportSemaError(node.Pos(),
@@ -264,19 +265,6 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 					"  type Entry struct { innerMap map[K2]V2 }",
 					"  outerMap := make(map[K]Entry)",
 				})
-		}
-		// Check for nested slices in map value (e.g., map[K][][]V)
-		if sliceType, isSlice := valueTv.Type.Underlying().(*types.Slice); isSlice {
-			if _, isNestedSlice := sliceType.Elem().Underlying().(*types.Slice); isNestedSlice {
-				sema.reportSemaError(node.Pos(),
-					"nested slices in map value are not supported",
-					"Map values cannot be nested slices (e.g., map[K][][]V).\n  Nested slices generate incorrect code in target languages.",
-					[]string{
-						"Use a single-dimensional slice as the map value:",
-						"  // Instead of: map[string][][]int",
-						"  // Use:        map[string][]int",
-					})
-			}
 		}
 	}
 
