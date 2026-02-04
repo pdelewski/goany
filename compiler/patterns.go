@@ -1,4 +1,4 @@
-//go:generate go run ../genrules -collect -root .. -output-go patterns_data.go
+//go:generate go run ../genrules/main.go -collect -root .. -output-go patterns_data.go
 
 // patterns.go provides pattern matching infrastructure for semantic checking.
 // Patterns are collected from tests/examples using genrules and used to validate
