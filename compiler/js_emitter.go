@@ -82,6 +82,7 @@ type JSEmitter struct {
 	isMapMakeCall    bool   // Inside make(map[K]V) call
 	mapMakeKeyType   int    // Key type constant for make call
 	isMapIndex       bool   // IndexExpr on a map (for read: m[k])
+	mapIndexDepth    int    // Depth of nested map reads (0 = not nested, 1+ = nested)
 	isMapAssign      bool   // Assignment to map index (m[k] = v)
 	mapAssignVarName string // Variable name for map assignment
 	mapAssignIndent  int    // Indent level for map assignment
@@ -90,6 +91,12 @@ type JSEmitter struct {
 	isDeleteCall     bool   // Inside delete(m, k) call
 	deleteMapVarName string // Variable name for delete
 	isMapLenCall     bool   // len() call on a map
+	// Nested map assignment: m["outer"]["inner"] = v
+	isNestedMapAssign     bool
+	nestedMapOuterVarName string
+	nestedMapOuterKey     string
+	nestedMapCounter      int
+	nestedMapVarName      string
 	pendingMapInit   bool   // var m map[K]V needs default init
 	pendingMapKeyType int   // Key type for pending init
 	// Comma-ok idiom: val, ok := m[key]
@@ -110,6 +117,18 @@ type JSEmitter struct {
 	isSliceMakeCall  bool   // Inside make([]T, n) call
 	sliceMakeDefault string // Default fill value for the slice element type
 	suppressEmit     bool   // When true, emitToFile does nothing
+}
+
+// exprToJsString converts a simple expression (BasicLit, Ident) to its JS string representation
+func exprToJsString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return e.Value
+	case *ast.Ident:
+		return e.Name
+	default:
+		return ""
+	}
 }
 
 // getMapKeyTypeConst returns the key type constant for a map type AST node
@@ -797,6 +816,33 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			return
 		}
 	}
+	// Check for nested map assignment: m["outer"]["inner"] = v
+	if len(node.Lhs) == 1 {
+		if outerIndexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
+			// Check if X is also an IndexExpr (nested map access)
+			if innerIndexExpr, ok := outerIndexExpr.X.(*ast.IndexExpr); ok {
+				if jse.pkg != nil && jse.pkg.TypesInfo != nil {
+					tv := jse.pkg.TypesInfo.Types[innerIndexExpr.X]
+					if tv.Type != nil {
+						if _, ok := tv.Type.Underlying().(*types.Map); ok {
+							jse.isNestedMapAssign = true
+							jse.isMapAssign = true
+							jse.mapAssignIndent = indent
+							// Get outer variable name (e.g., "m")
+							jse.nestedMapOuterVarName = exprToJsString(innerIndexExpr.X)
+							// Get outer key (e.g., "outer")
+							jse.nestedMapOuterKey = exprToJsString(innerIndexExpr.Index)
+							jse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", jse.nestedMapCounter)
+							jse.nestedMapCounter++
+							jse.mapAssignVarName = jse.nestedMapVarName
+							jse.suppressRangeEmit = true
+							return
+						}
+					}
+				}
+			}
+		}
+	}
 	// Check for map assignment: m[k] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
@@ -873,8 +919,14 @@ func (jse *JSEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 		return
 	}
 	if jse.isMapAssign {
-		// Turn off suppression and emit: m = hmap.hashMapSet(m, capturedKey,
+		// Turn off suppression
 		jse.suppressRangeEmit = false
+		// Handle nested map assignment: emit preamble to extract inner map
+		if jse.isNestedMapAssign {
+			preamble := jse.emitAsString("let "+jse.nestedMapVarName+" = hmap.hashMapGet("+
+				jse.nestedMapOuterVarName+", "+jse.nestedMapOuterKey+");\n", jse.mapAssignIndent)
+			jse.emitToFile(preamble)
+		}
 		str := jse.emitAsString(jse.mapAssignVarName+" = hmap.hashMapSet("+jse.mapAssignVarName+", "+jse.capturedMapKey+", ", jse.mapAssignIndent)
 		jse.emitToFile(str)
 		return
@@ -923,6 +975,15 @@ func (jse *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Handle map assignment: close hashMapSet call
 	if jse.isMapAssign {
 		jse.emitToFile(");\n")
+		// Handle nested map: emit epilogue to store inner map back to outer
+		if jse.isNestedMapAssign {
+			epilogue := jse.emitAsString(jse.nestedMapOuterVarName+" = hmap.hashMapSet("+
+				jse.nestedMapOuterVarName+", "+jse.nestedMapOuterKey+", "+jse.nestedMapVarName+");\n", jse.mapAssignIndent)
+			jse.emitToFile(epilogue)
+			jse.isNestedMapAssign = false
+			jse.nestedMapOuterVarName = ""
+			jse.nestedMapOuterKey = ""
+		}
 		jse.isMapAssign = false
 		jse.mapAssignVarName = ""
 		jse.capturedMapKey = ""
@@ -1589,6 +1650,7 @@ func (jse *JSEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		if tv.Type != nil {
 			if _, ok := tv.Type.Underlying().(*types.Map); ok {
 				jse.isMapIndex = true
+				jse.mapIndexDepth++
 				jse.emitToFile("hmap.hashMapGet(")
 				return
 			}
@@ -1607,6 +1669,15 @@ func (jse *JSEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	}
 	// Map assignment: start capturing the key expression
 	if jse.isMapAssign {
+		// For nested maps: skip capture for the nested index (outer key)
+		// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
+		// node.X IS an IndexExpr means this is the root index (for inner key m["outer"]["inner"])
+		if jse.isNestedMapAssign {
+			if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+				// This is the nested index (outer key) - don't capture, we have it already
+				return
+			}
+		}
 		jse.captureMapKey = true
 		jse.capturedMapKey = ""
 		return
@@ -1638,12 +1709,23 @@ func (jse *JSEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	}
 	if jse.isMapIndex {
 		jse.emitToFile(")")
-		jse.isMapIndex = false
+		jse.mapIndexDepth--
+		if jse.mapIndexDepth <= 0 {
+			jse.isMapIndex = false
+			jse.mapIndexDepth = 0
+		}
 		return
 	}
 	if jse.captureMapKey {
 		jse.captureMapKey = false
 		return
+	}
+	// For nested maps: don't reset isMapIndex when processing the nested index
+	if jse.isNestedMapAssign {
+		if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+			// This is the nested index - keep isMapIndex true so root index can capture
+			return
+		}
 	}
 	if jse.isStringIndex {
 		jse.emitToFile(")")

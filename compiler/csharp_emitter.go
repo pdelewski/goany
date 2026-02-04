@@ -41,6 +41,13 @@ type Alias struct {
 	UnderlyingType string      // Underlying type of the alias as string for now  It's type to what the alias points to
 }
 
+// csKeyCastState holds key cast values for nested map reads
+type csKeyCastState struct {
+	prefix    string
+	suffix    string
+	valueType string
+}
+
 type CSharpEmitter struct {
 	Output          string
 	OutputDir       string
@@ -87,13 +94,20 @@ type CSharpEmitter struct {
 	isMapAssign       bool
 	mapAssignVarName  string
 	mapAssignIndent   int
-	captureMapKey     bool
+	// Nested map assignment: m["outer"]["inner"] = v
+	isNestedMapAssign     bool
+	nestedMapOuterVarName string
+	nestedMapOuterKey     string
+	nestedMapCounter      int
+	nestedMapVarName      string
+	captureMapKey         bool
 	capturedMapKey    string
 	suppressMapEmit   bool
 	isDeleteCall      bool
 	deleteMapVarName  string
 	mapKeyCastPrefix  string // C# cast prefix for map keys (e.g. "(long)(")
 	mapKeyCastSuffix  string // C# cast suffix for map keys (e.g. ")")
+	mapKeyCastStack   []csKeyCastState // Stack to save/restore key cast values for nested reads
 	isMapLenCall      bool
 	pendingMapInit    bool
 	pendingMapKeyType int
@@ -410,6 +424,18 @@ func getCsKeyCast(keyType types.Type) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// exprToCsString converts a simple expression (BasicLit, Ident) to its C# string representation
+func exprToCsString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return e.Value // Keep quotes for strings
+	case *ast.Ident:
+		return e.Name
+	default:
+		return ""
+	}
 }
 
 func (cse *CSharpEmitter) SetFile(file *os.File) {
@@ -1485,6 +1511,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 	}
 	// Detect map assignment: m[k] = v -> m = hmap.hashMapSet(m, k, v)
+	// Also handles nested: m[k1][k2] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
@@ -1495,8 +1522,20 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cse.mapAssignIndent = indent
 						cse.suppressMapEmit = true
 						cse.assignmentToken = "="
-						cse.mapAssignVarName = exprToString(indexExpr.X)
 						cse.mapKeyCastPrefix, cse.mapKeyCastSuffix = getCsKeyCast(mapType.Key())
+
+						// Check for nested map assignment: m[k1][k2] = v
+						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
+							cse.isNestedMapAssign = true
+							cse.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
+							cse.nestedMapOuterKey = exprToCsString(outerIndexExpr.Index)
+							cse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cse.nestedMapCounter)
+							cse.nestedMapCounter++
+							cse.mapAssignVarName = cse.nestedMapVarName
+						} else {
+							cse.isNestedMapAssign = false
+							cse.mapAssignVarName = exprToString(indexExpr.X)
+						}
 						return // Skip normal indent emission
 					}
 				}
@@ -1568,8 +1607,18 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 	// Close hashMapSet call for map assignment
 	if cse.isMapAssign {
 		cse.executeIfNotForwardDecls(func() {
-			str := cse.emitAsString(");", 0)
+			str := cse.emitAsString(");\n", 0)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+
+			// For nested map assignment, emit epilogue to set updated inner map back to outer
+			if cse.isNestedMapAssign {
+				epilogue := cse.emitAsString(cse.nestedMapOuterVarName+" = hmap.hashMapSet("+
+					cse.nestedMapOuterVarName+", "+cse.nestedMapOuterKey+", "+cse.nestedMapVarName+");", cse.mapAssignIndent)
+				cse.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
+				cse.isNestedMapAssign = false
+				cse.nestedMapOuterVarName = ""
+				cse.nestedMapOuterKey = ""
+			}
 		})
 		cse.isMapAssign = false
 		cse.suppressMapEmit = false
@@ -1591,8 +1640,19 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 func (cse *CSharpEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		if cse.isMapAssign {
-			// Emit: varName = hmap.hashMapSet(varName, capturedKey,
 			key := cse.mapKeyCastPrefix + strings.TrimSpace(cse.capturedMapKey) + cse.mapKeyCastSuffix
+
+			if cse.isNestedMapAssign {
+				// For nested map: m["outer"]["inner"] = v
+				// Generate:
+				//   var __nested_inner_N = (hmap.HashMap)hmap.hashMapGet(m, outerKey);
+				//   __nested_inner_N = hmap.hashMapSet(__nested_inner_N, innerKey, value)
+				preamble := cse.emitAsString("var "+cse.nestedMapVarName+" = (hmap.HashMap)hmap.hashMapGet("+
+					cse.nestedMapOuterVarName+", "+cse.nestedMapOuterKey+");\n", cse.mapAssignIndent)
+				cse.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
+			}
+
+			// Emit: varName = hmap.hashMapSet(varName, capturedKey,
 			str := cse.emitAsString(cse.mapAssignVarName+" = hmap.hashMapSet("+cse.mapAssignVarName+", "+key+", ", cse.mapAssignIndent)
 			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
 			return
@@ -1697,9 +1757,25 @@ func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			tv := cse.pkg.TypesInfo.Types[node.X]
 			if tv.Type != nil {
 				if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+					// If already in a map index (nested read), save current state
+					if cse.isMapIndex {
+						cse.mapKeyCastStack = append(cse.mapKeyCastStack, csKeyCastState{
+							prefix:    cse.mapKeyCastPrefix,
+							suffix:    cse.mapKeyCastSuffix,
+							valueType: cse.mapIndexValueType,
+						})
+					}
 					cse.isMapIndex = true
-					cse.mapIndexValueType = getCsTypeName(mapType.Elem())
 					cse.mapKeyCastPrefix, cse.mapKeyCastSuffix = getCsKeyCast(mapType.Key())
+
+					// Check if the value type is also a map (nested map read)
+					// If so, cast to hmap.HashMap instead of the map type
+					if _, isNestedMap := mapType.Elem().Underlying().(*types.Map); isNestedMap {
+						cse.mapIndexValueType = "hmap.HashMap"
+					} else {
+						cse.mapIndexValueType = getCsTypeName(mapType.Elem())
+					}
+
 					// Emit (ValueType)hmap.hashMapGet(
 					str := cse.emitAsString("("+cse.mapIndexValueType+")hmap.hashMapGet(", 0)
 					cse.emitToken(str, Identifier, 0)
@@ -1721,11 +1797,21 @@ func (cse *CSharpEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
 }
 func (cse *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		cse.isMapIndex = false
-		// Don't reset cast fields if isMapAssign - they're used in PreVisitAssignStmtRhs
-		if !cse.isMapAssign && !cse.isMapCommaOk {
-			cse.mapKeyCastPrefix = ""
-			cse.mapKeyCastSuffix = ""
+		// Restore previous key cast state if we have saved state (nested reads)
+		if len(cse.mapKeyCastStack) > 0 {
+			state := cse.mapKeyCastStack[len(cse.mapKeyCastStack)-1]
+			cse.mapKeyCastStack = cse.mapKeyCastStack[:len(cse.mapKeyCastStack)-1]
+			cse.mapKeyCastPrefix = state.prefix
+			cse.mapKeyCastSuffix = state.suffix
+			cse.mapIndexValueType = state.valueType
+			// Keep isMapIndex true for the outer map read
+		} else {
+			cse.isMapIndex = false
+			// Don't reset cast fields if isMapAssign - they're used in PreVisitAssignStmtRhs
+			if !cse.isMapAssign && !cse.isMapCommaOk {
+				cse.mapKeyCastPrefix = ""
+				cse.mapKeyCastSuffix = ""
+			}
 		}
 	})
 }

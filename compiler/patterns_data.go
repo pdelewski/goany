@@ -1138,7 +1138,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testAppend",
 				"func_type": "ident",
 			},
-			Example: "main.go:1225",
+			Example: "main.go:1251",
 		},
 		"CallExpr:arg_count=0:func_name=testArithmeticOperators:func_type=ident": {
 			Kind: "CallExpr",
@@ -1147,7 +1147,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testArithmeticOperators",
 				"func_type": "ident",
 			},
-			Example: "main.go:1217",
+			Example: "main.go:1243",
 		},
 		"CallExpr:arg_count=0:func_name=testArrayInitialization:func_type=ident": {
 			Kind: "CallExpr",
@@ -1156,7 +1156,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testArrayInitialization",
 				"func_type": "ident",
 			},
-			Example: "main.go:1214",
+			Example: "main.go:1240",
 		},
 		"CallExpr:arg_count=0:func_name=testAssignmentOperators:func_type=ident": {
 			Kind: "CallExpr",
@@ -1165,7 +1165,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testAssignmentOperators",
 				"func_type": "ident",
 			},
-			Example: "main.go:1220",
+			Example: "main.go:1246",
 		},
 		"CallExpr:arg_count=0:func_name=testBasicConstructs:func_type=ident": {
 			Kind: "CallExpr",
@@ -1183,7 +1183,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testBoolFieldInStruct",
 				"func_type": "ident",
 			},
-			Example: "main.go:1233",
+			Example: "main.go:1259",
 		},
 		"CallExpr:arg_count=0:func_name=testBooleanLogic:func_type=ident": {
 			Kind: "CallExpr",
@@ -1201,7 +1201,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testComparisonOperators",
 				"func_type": "ident",
 			},
-			Example: "main.go:1218",
+			Example: "main.go:1244",
 		},
 		"CallExpr:arg_count=0:func_name=testCompleteLanguageFeatures:func_type=ident": {
 			Kind: "CallExpr",
@@ -1210,7 +1210,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testCompleteLanguageFeatures",
 				"func_type": "ident",
 			},
-			Example: "main.go:1213",
+			Example: "main.go:1239",
 		},
 		"CallExpr:arg_count=0:func_name=testEmptyInterface:func_type=ident": {
 			Kind: "CallExpr",
@@ -1219,7 +1219,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testEmptyInterface",
 				"func_type": "ident",
 			},
-			Example: "main.go:1236",
+			Example: "main.go:1262",
 		},
 		"CallExpr:arg_count=0:func_name=testFunctionCalls:func_type=ident": {
 			Kind: "CallExpr",
@@ -1246,7 +1246,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testIfInitCommaOk",
 				"func_type": "ident",
 			},
-			Example: "main.go:1247",
+			Example: "main.go:1273",
 		},
 		"CallExpr:arg_count=0:func_name=testIncrementDecrement:func_type=ident": {
 			Kind: "CallExpr",
@@ -1255,7 +1255,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testIncrementDecrement",
 				"func_type": "ident",
 			},
-			Example: "main.go:1221",
+			Example: "main.go:1247",
 		},
 		"CallExpr:arg_count=0:func_name=testInlineCompositeLitArg:func_type=ident": {
 			Kind: "CallExpr",
@@ -1264,7 +1264,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testInlineCompositeLitArg",
 				"func_type": "ident",
 			},
-			Example: "main.go:1239",
+			Example: "main.go:1265",
 		},
 		"CallExpr:arg_count=0:func_name=testInt32Int64Types:func_type=ident": {
 			Kind: "CallExpr",
@@ -1273,7 +1273,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testInt32Int64Types",
 				"func_type": "ident",
 			},
-			Example: "main.go:1228",
+			Example: "main.go:1254",
 		},
 		"CallExpr:arg_count=0:func_name=testLogicalOperators:func_type=ident": {
 			Kind: "CallExpr",
@@ -1282,7 +1282,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testLogicalOperators",
 				"func_type": "ident",
 			},
-			Example: "main.go:1219",
+			Example: "main.go:1245",
 		},
 		"CallExpr:arg_count=0:func_name=testLoopConstructs:func_type=ident": {
 			Kind: "CallExpr",
@@ -1300,7 +1300,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMapAsParameter",
 				"func_type": "ident",
 			},
-			Example: "main.go:1241",
+			Example: "main.go:1267",
 		},
 		"CallExpr:arg_count=0:func_name=testMapCommaOk:func_type=ident": {
 			Kind: "CallExpr",
@@ -1309,7 +1309,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMapCommaOk",
 				"func_type": "ident",
 			},
-			Example: "main.go:1245",
+			Example: "main.go:1271",
 		},
 		"CallExpr:arg_count=0:func_name=testMapKeyTypes:func_type=ident": {
 			Kind: "CallExpr",
@@ -1318,7 +1318,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMapKeyTypes",
 				"func_type": "ident",
 			},
-			Example: "main.go:1243",
+			Example: "main.go:1269",
 		},
 		"CallExpr:arg_count=0:func_name=testMapOperations:func_type=ident": {
 			Kind: "CallExpr",
@@ -1327,7 +1327,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMapOperations",
 				"func_type": "ident",
 			},
-			Example: "main.go:1240",
+			Example: "main.go:1266",
 		},
 		"CallExpr:arg_count=0:func_name=testMapReturnValue:func_type=ident": {
 			Kind: "CallExpr",
@@ -1336,7 +1336,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMapReturnValue",
 				"func_type": "ident",
 			},
-			Example: "main.go:1249",
+			Example: "main.go:1275",
 		},
 		"CallExpr:arg_count=0:func_name=testMapStructField:func_type=ident": {
 			Kind: "CallExpr",
@@ -1345,7 +1345,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMapStructField",
 				"func_type": "ident",
 			},
-			Example: "main.go:1248",
+			Example: "main.go:1274",
 		},
 		"CallExpr:arg_count=0:func_name=testMapStructValue:func_type=ident": {
 			Kind: "CallExpr",
@@ -1354,7 +1354,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMapStructValue",
 				"func_type": "ident",
 			},
-			Example: "main.go:1244",
+			Example: "main.go:1270",
 		},
 		"CallExpr:arg_count=0:func_name=testMultiPackageImport:func_type=ident": {
 			Kind: "CallExpr",
@@ -1363,7 +1363,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testMultiPackageImport",
 				"func_type": "ident",
 			},
-			Example: "main.go:1235",
+			Example: "main.go:1261",
 		},
 		"CallExpr:arg_count=0:func_name=testNestedIf:func_type=ident": {
 			Kind: "CallExpr",
@@ -1372,7 +1372,16 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testNestedIf",
 				"func_type": "ident",
 			},
-			Example: "main.go:1227",
+			Example: "main.go:1253",
+		},
+		"CallExpr:arg_count=0:func_name=testNestedMaps:func_type=ident": {
+			Kind: "CallExpr",
+			Attrs: map[string]string{
+				"arg_count": "0",
+				"func_name": "testNestedMaps",
+				"func_type": "ident",
+			},
+			Example: "main.go:1277",
 		},
 		"CallExpr:arg_count=0:func_name=testNestedSlices:func_type=ident": {
 			Kind: "CallExpr",
@@ -1381,7 +1390,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testNestedSlices",
 				"func_type": "ident",
 			},
-			Example: "main.go:1250",
+			Example: "main.go:1276",
 		},
 		"CallExpr:arg_count=0:func_name=testNestedStructField:func_type=ident": {
 			Kind: "CallExpr",
@@ -1390,7 +1399,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testNestedStructField",
 				"func_type": "ident",
 			},
-			Example: "main.go:1234",
+			Example: "main.go:1260",
 		},
 		"CallExpr:arg_count=0:func_name=testNestedWhileLoops:func_type=ident": {
 			Kind: "CallExpr",
@@ -1399,7 +1408,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testNestedWhileLoops",
 				"func_type": "ident",
 			},
-			Example: "main.go:1238",
+			Example: "main.go:1264",
 		},
 		"CallExpr:arg_count=0:func_name=testNilMap:func_type=ident": {
 			Kind: "CallExpr",
@@ -1408,7 +1417,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testNilMap",
 				"func_type": "ident",
 			},
-			Example: "main.go:1242",
+			Example: "main.go:1268",
 		},
 		"CallExpr:arg_count=0:func_name=testPrintFunctions:func_type=ident": {
 			Kind: "CallExpr",
@@ -1417,7 +1426,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testPrintFunctions",
 				"func_type": "ident",
 			},
-			Example: "main.go:1223",
+			Example: "main.go:1249",
 		},
 		"CallExpr:arg_count=0:func_name=testPrintfMultipleArgs:func_type=ident": {
 			Kind: "CallExpr",
@@ -1426,7 +1435,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testPrintfMultipleArgs",
 				"func_type": "ident",
 			},
-			Example: "main.go:1230",
+			Example: "main.go:1256",
 		},
 		"CallExpr:arg_count=0:func_name=testReturnModifiedStruct:func_type=ident": {
 			Kind: "CallExpr",
@@ -1435,7 +1444,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testReturnModifiedStruct",
 				"func_type": "ident",
 			},
-			Example: "main.go:1232",
+			Example: "main.go:1258",
 		},
 		"CallExpr:arg_count=0:func_name=testSliceExpressions:func_type=ident": {
 			Kind: "CallExpr",
@@ -1444,7 +1453,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testSliceExpressions",
 				"func_type": "ident",
 			},
-			Example: "main.go:1215",
+			Example: "main.go:1241",
 		},
 		"CallExpr:arg_count=0:func_name=testSliceOperations:func_type=ident": {
 			Kind: "CallExpr",
@@ -1462,7 +1471,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testStringOperations",
 				"func_type": "ident",
 			},
-			Example: "main.go:1222",
+			Example: "main.go:1248",
 		},
 		"CallExpr:arg_count=0:func_name=testStructInitialization:func_type=ident": {
 			Kind: "CallExpr",
@@ -1471,7 +1480,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testStructInitialization",
 				"func_type": "ident",
 			},
-			Example: "main.go:1226",
+			Example: "main.go:1252",
 		},
 		"CallExpr:arg_count=0:func_name=testTypeAliases:func_type=ident": {
 			Kind: "CallExpr",
@@ -1480,7 +1489,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testTypeAliases",
 				"func_type": "ident",
 			},
-			Example: "main.go:1229",
+			Example: "main.go:1255",
 		},
 		"CallExpr:arg_count=0:func_name=testTypeAssertCommaOk:func_type=ident": {
 			Kind: "CallExpr",
@@ -1489,7 +1498,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testTypeAssertCommaOk",
 				"func_type": "ident",
 			},
-			Example: "main.go:1246",
+			Example: "main.go:1272",
 		},
 		"CallExpr:arg_count=0:func_name=testTypeAssertions:func_type=ident": {
 			Kind: "CallExpr",
@@ -1498,7 +1507,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testTypeAssertions",
 				"func_type": "ident",
 			},
-			Example: "main.go:1237",
+			Example: "main.go:1263",
 		},
 		"CallExpr:arg_count=0:func_name=testTypeConversions:func_type=ident": {
 			Kind: "CallExpr",
@@ -1507,7 +1516,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testTypeConversions",
 				"func_type": "ident",
 			},
-			Example: "main.go:1224",
+			Example: "main.go:1250",
 		},
 		"CallExpr:arg_count=0:func_name=testVariableDeclarations:func_type=ident": {
 			Kind: "CallExpr",
@@ -1516,7 +1525,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testVariableDeclarations",
 				"func_type": "ident",
 			},
-			Example: "main.go:1216",
+			Example: "main.go:1242",
 		},
 		"CallExpr:arg_count=0:func_name=testZeroValueStruct:func_type=ident": {
 			Kind: "CallExpr",
@@ -1525,7 +1534,7 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"func_name": "testZeroValueStruct",
 				"func_type": "ident",
 			},
-			Example: "main.go:1231",
+			Example: "main.go:1257",
 		},
 		"CallExpr:arg_count=0:func_type=selector:method=Blue:receiver=graphics": {
 			Kind: "CallExpr",
@@ -5853,6 +5862,16 @@ func GetBuiltinPatterns() map[string]Pattern {
 				"value_type": "string",
 			},
 			Example: "main.go:916",
+		},
+		"MapType:key_type=string:nested=true:nested_ast=true:value_type=map": {
+			Kind: "MapType",
+			Attrs: map[string]string{
+				"key_type": "string",
+				"nested": "true",
+				"nested_ast": "true",
+				"value_type": "map",
+			},
+			Example: "main.go:1214",
 		},
 		"MapType:key_type=string:value_type=int": {
 			Kind: "MapType",

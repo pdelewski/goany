@@ -28,6 +28,13 @@ var cppTypesMap = map[string]string{
 	"string":  "std::string",
 }
 
+// keyCastState holds key cast values for nested map reads
+type keyCastState struct {
+	prefix    string
+	suffix    string
+	valueType string
+}
+
 type CPPEmitter struct {
 	Output          string
 	OutputDir       string
@@ -74,6 +81,20 @@ type CPPEmitter struct {
 	mapAssignKeyCastPrefix string // Cast prefix for map assign key
 	mapAssignKeyCastSuffix string // Cast suffix for map assign key
 	mapAssignValueIsString bool   // Value is string type
+	// Nested map assignment: m["outer"]["inner"] = v
+	isNestedMapAssign           bool   // Assignment to nested map index
+	nestedMapOuterVarName       string // Outer map variable name (e.g., "m")
+	nestedMapOuterKey           string // Outer map key expression (captured)
+	nestedMapOuterKeyCastPrefix string // Cast prefix for outer key
+	nestedMapOuterKeyCastSuffix string // Cast suffix for outer key
+	captureOuterMapKey          bool   // Capturing outer map key expression
+	capturedOuterMapKey         string // Captured outer key expression text
+	nestedMapCounter            int    // Counter for unique nested map variable names
+	nestedMapVarName            string // Generated variable name (e.g., "__nested_inner_0")
+	// Nested map read: m["outer"]["inner"] (read context)
+	nestedMapReadDepth          int    // Depth of nested map reads (0 = not nested, 1+ = nested)
+	nestedMapReadOuterKeyType   types.Type // Key type of the outer map for casting
+	mapIndexKeyCastStack        []keyCastState // Stack to save/restore key cast values for nested reads
 	captureMapKey          bool   // Capturing map key expression
 	capturedMapKey         string // Captured key expression text
 	isDeleteCall           bool   // Inside delete(m, k) call
@@ -343,6 +364,23 @@ func getCppKeyCast(keyType types.Type) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// exprToCppString converts a simple expression (BasicLit, Ident) to its C++ string representation
+// Used for extracting map key expressions from AST nodes
+func exprToCppString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING {
+			// Go string literal to C++ - keep the quotes
+			return e.Value
+		}
+		return e.Value
+	case *ast.Ident:
+		return e.Name
+	default:
+		return ""
+	}
 }
 
 func (cppe *CPPEmitter) emitToFile(s string) error {
@@ -849,9 +887,26 @@ func (cppe *CPPEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		tv := cppe.pkg.TypesInfo.Types[node.X]
 		if tv.Type != nil {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+				// If already in a map index (nested read), save current state
+				if cppe.isMapIndex {
+					cppe.mapIndexKeyCastStack = append(cppe.mapIndexKeyCastStack, keyCastState{
+						prefix:    cppe.mapIndexKeyCastPrefix,
+						suffix:    cppe.mapIndexKeyCastSuffix,
+						valueType: cppe.mapIndexValueCppType,
+					})
+				}
 				cppe.isMapIndex = true
-				cppe.mapIndexValueCppType = getCppTypeName(mapType.Elem())
 				cppe.mapIndexKeyCastPrefix, cppe.mapIndexKeyCastSuffix = getCppKeyCast(mapType.Key())
+
+				// Check if the value type is also a map (nested map read)
+				// If so, cast to hmap::HashMap instead of the map type
+				if _, isNestedMap := mapType.Elem().Underlying().(*types.Map); isNestedMap {
+					cppe.mapIndexValueCppType = "hmap::HashMap"
+					cppe.nestedMapReadDepth++
+				} else {
+					cppe.mapIndexValueCppType = getCppTypeName(mapType.Elem())
+				}
+
 				// Emit: std::any_cast<ValueType>(hmap::hashMapGet(
 				cppe.emitToFile("std::any_cast<" + cppe.mapIndexValueCppType + ">(hmap::hashMapGet(")
 			}
@@ -892,10 +947,23 @@ func (cppe *CPPEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int)
 			cppe.emitToFile(cppe.mapIndexKeyCastSuffix)
 		}
 		cppe.emitToFile("))")
-		cppe.isMapIndex = false
-		cppe.mapIndexValueCppType = ""
-		cppe.mapIndexKeyCastPrefix = ""
-		cppe.mapIndexKeyCastSuffix = ""
+		// Restore previous key cast state if we have saved state (nested reads)
+		if len(cppe.mapIndexKeyCastStack) > 0 {
+			state := cppe.mapIndexKeyCastStack[len(cppe.mapIndexKeyCastStack)-1]
+			cppe.mapIndexKeyCastStack = cppe.mapIndexKeyCastStack[:len(cppe.mapIndexKeyCastStack)-1]
+			cppe.mapIndexKeyCastPrefix = state.prefix
+			cppe.mapIndexKeyCastSuffix = state.suffix
+			cppe.mapIndexValueCppType = state.valueType
+			// Keep isMapIndex true for the outer map read
+			if cppe.nestedMapReadDepth > 0 {
+				cppe.nestedMapReadDepth--
+			}
+		} else {
+			cppe.isMapIndex = false
+			cppe.mapIndexValueCppType = ""
+			cppe.mapIndexKeyCastPrefix = ""
+			cppe.mapIndexKeyCastSuffix = ""
+		}
 		return
 	}
 	if cppe.captureMapKey {
@@ -1253,7 +1321,7 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
-	// Detect map assignment: m[k] = v
+	// Detect map assignment: m[k] = v or nested m[k1][k2] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
@@ -1263,11 +1331,33 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cppe.isMapAssign = true
 						cppe.mapAssignIndent = indent
 						cppe.mapAssignValueIsString = false
-						cppe.mapAssignVarName = exprToString(indexExpr.X)
 						cppe.mapAssignKeyCastPrefix, cppe.mapAssignKeyCastSuffix = getCppKeyCast(mapType.Key())
 						valType := mapType.Elem()
 						if basic, isBasic := valType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
 							cppe.mapAssignValueIsString = true
+						}
+
+						// Check for nested map assignment: m[k1][k2] = v
+						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
+							// This is a nested map assignment
+							cppe.isNestedMapAssign = true
+							cppe.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
+							// Extract outer key directly from AST
+							cppe.nestedMapOuterKey = exprToCppString(outerIndexExpr.Index)
+							// Get the outer map type for key casting
+							outerTv := cppe.pkg.TypesInfo.Types[outerIndexExpr.X]
+							if outerTv.Type != nil {
+								if outerMapType, ok := outerTv.Type.Underlying().(*types.Map); ok {
+									cppe.nestedMapOuterKeyCastPrefix, cppe.nestedMapOuterKeyCastSuffix = getCppKeyCast(outerMapType.Key())
+								}
+							}
+							// Use temp variable for inner map with unique name
+							cppe.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cppe.nestedMapCounter)
+							cppe.nestedMapCounter++
+							cppe.mapAssignVarName = cppe.nestedMapVarName
+						} else {
+							cppe.isNestedMapAssign = false
+							cppe.mapAssignVarName = exprToString(indexExpr.X)
 						}
 						// Suppress normal LHS output (the m[k] part will be captured)
 						cppe.suppressEmit = true
@@ -1345,6 +1435,23 @@ func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			cppe.emitToFile(")")
 		}
 		cppe.emitToFile(");\n")
+
+		// For nested map assignment, emit epilogue to set updated inner map back to outer
+		if cppe.isNestedMapAssign {
+			outerKey := cppe.nestedMapOuterKey
+			if cppe.nestedMapOuterKeyCastPrefix != "" {
+				outerKey = cppe.nestedMapOuterKeyCastPrefix + outerKey + cppe.nestedMapOuterKeyCastSuffix
+			}
+			epilogue := cppe.emitAsString(cppe.nestedMapOuterVarName+" = hmap::hashMapSet("+
+				cppe.nestedMapOuterVarName+", "+outerKey+", "+cppe.nestedMapVarName+");\n", cppe.mapAssignIndent)
+			cppe.emitToFile(epilogue)
+			cppe.isNestedMapAssign = false
+			cppe.nestedMapOuterVarName = ""
+			cppe.nestedMapOuterKey = ""
+			cppe.nestedMapOuterKeyCastPrefix = ""
+			cppe.nestedMapOuterKeyCastSuffix = ""
+		}
+
 		cppe.isMapAssign = false
 		cppe.mapAssignVarName = ""
 		cppe.capturedMapKey = ""
@@ -1408,12 +1515,29 @@ func (cppe *CPPEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int)
 
 func (cppe *CPPEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	if cppe.isMapAssign {
-		// Turn off suppression and emit: m = hmap::hashMapSet(m, key, value)
+		// Turn off suppression and emit the assignment
 		cppe.suppressEmit = false
 		key := cppe.capturedMapKey
 		if cppe.mapAssignKeyCastPrefix != "" {
 			key = cppe.mapAssignKeyCastPrefix + key + cppe.mapAssignKeyCastSuffix
 		}
+
+		if cppe.isNestedMapAssign {
+			// For nested map: m["outer"]["inner"] = v
+			// Generate:
+			//   auto __nested_inner = std::any_cast<hmap::HashMap>(hmap::hashMapGet(m, outerKey));
+			//   __nested_inner = hmap::hashMapSet(__nested_inner, innerKey, value)
+			// (The epilogue in PostVisitAssignStmt will add the outer set)
+			outerKey := cppe.nestedMapOuterKey
+			if cppe.nestedMapOuterKeyCastPrefix != "" {
+				outerKey = cppe.nestedMapOuterKeyCastPrefix + outerKey + cppe.nestedMapOuterKeyCastSuffix
+			}
+			// Emit preamble: extract inner map
+			preamble := cppe.emitAsString("auto "+cppe.nestedMapVarName+" = std::any_cast<hmap::HashMap>(hmap::hashMapGet("+
+				cppe.nestedMapOuterVarName+", "+outerKey+"));\n", cppe.mapAssignIndent)
+			cppe.emitToFile(preamble)
+		}
+
 		str := cppe.emitAsString(cppe.mapAssignVarName+" = hmap::hashMapSet("+cppe.mapAssignVarName+", "+key+", ", cppe.mapAssignIndent)
 		cppe.emitToFile(str)
 		if cppe.mapAssignValueIsString {

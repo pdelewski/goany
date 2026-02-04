@@ -69,6 +69,12 @@ type forLoopState struct {
 	loopIncrementVal     string
 }
 
+// rustKeyCastState holds key cast values for nested map reads
+type rustKeyCastState struct {
+	keyCastSuffix string
+	valueType     string
+}
+
 type RustEmitter struct {
 	Output          string
 	OutputDir       string
@@ -206,12 +212,19 @@ type RustEmitter struct {
 	isMapAssign                  bool              // Inside m[k]=v assignment
 	mapAssignVarName             string            // Variable name for map assignment
 	mapAssignIndent              int               // Indent level for map assignment
-	captureMapKey                bool              // Redirect emit to capturedMapKey
+	// Nested map assignment: m["outer"]["inner"] = v
+	isNestedMapAssign     bool
+	nestedMapOuterVarName string
+	nestedMapOuterKey     string
+	nestedMapCounter      int
+	nestedMapVarName      string
+	captureMapKey         bool // Redirect emit to capturedMapKey
 	capturedMapKey               string            // Captured key expression
 	suppressMapEmit              bool              // Suppress all token emission
 	isDeleteCall                 bool              // Inside delete(m, k) call
 	deleteMapVarName             string            // Variable name for delete
 	mapKeyCastSuffix             string            // Rust cast suffix for map keys (e.g. " as i64")
+	mapKeyCastStack              []rustKeyCastState // Stack to save/restore key cast values for nested reads
 	isMapLenCall                 bool              // Inside len(m) on map
 	isSliceMakeCall              bool              // Inside make([]T, n) for runtime
 	sliceMakeElemType            string            // Element type for make([]T, n)
@@ -383,6 +396,23 @@ func getRustKeyCast(keyType types.Type) string {
 		}
 	}
 	return ""
+}
+
+// exprToRustString converts a simple expression (BasicLit, Ident) to its Rust string representation
+func exprToRustString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING {
+			// Go string literal to Rust: "foo" -> "foo".to_string() wrapped in Rc
+			// But for map keys we just need the raw value for now
+			return e.Value
+		}
+		return e.Value
+	case *ast.Ident:
+		return e.Name
+	default:
+		return ""
+	}
 }
 
 func (re *RustEmitter) emitAsString(s string, indent int) string {
@@ -3508,6 +3538,7 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 	}
 	// Detect map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
+	// Also handles nested: m[k1][k2] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			if re.pkg != nil && re.pkg.TypesInfo != nil {
@@ -3516,9 +3547,20 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if mapType, isMap := tv.Type.Underlying().(*types.Map); isMap {
 						re.isMapAssign = true
 						re.mapAssignIndent = indent
-						// Extract map variable name
-						re.mapAssignVarName = exprToString(indexExpr.X)
 						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
+
+						// Check for nested map assignment: m[k1][k2] = v
+						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
+							re.isNestedMapAssign = true
+							re.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
+							re.nestedMapOuterKey = exprToRustString(outerIndexExpr.Index)
+							re.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", re.nestedMapCounter)
+							re.nestedMapCounter++
+							re.mapAssignVarName = re.nestedMapVarName
+						} else {
+							re.isNestedMapAssign = false
+							re.mapAssignVarName = exprToString(indexExpr.X)
+						}
 						// Suppress normal LHS emission
 						re.suppressMapEmit = true
 						re.shouldGenerate = true
@@ -3613,7 +3655,20 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 	// Handle map assignment: close the hashMapSet call with ));
 	if re.isMapAssign {
-		re.gir.emitToFileBuffer("));", EmptyVisitMethod)
+		re.gir.emitToFileBuffer("));\n", EmptyVisitMethod)
+
+		// For nested map assignment, emit epilogue to set updated inner map back to outer
+		if re.isNestedMapAssign {
+			outerKey := re.nestedMapOuterKey
+			wrappedOuterKey := "Rc::new(" + outerKey + ".to_string())"
+			epilogue := re.emitAsString(re.nestedMapOuterVarName+" = hmap::hashMapSet("+
+				re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+", Rc::new("+re.nestedMapVarName+"));", re.mapAssignIndent)
+			re.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
+			re.isNestedMapAssign = false
+			re.nestedMapOuterVarName = ""
+			re.nestedMapOuterKey = ""
+		}
+
 		re.isMapAssign = false
 		re.mapAssignVarName = ""
 		re.capturedMapKey = ""
@@ -3690,6 +3745,20 @@ func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 		capturedKey := re.capturedMapKey
 		// Wrap keys in Rc::new(key) with cast if needed
 		wrappedKey := "Rc::new(" + capturedKey + re.mapKeyCastSuffix + ")"
+
+		if re.isNestedMapAssign {
+			// For nested map: m["outer"]["inner"] = v
+			// Generate:
+			//   let mut __nested_inner_N = hmap::hashMapGet(m.clone(), Rc::new(outerKey)).downcast_ref::<hmap::HashMap>().unwrap().clone();
+			//   __nested_inner_N = hmap::hashMapSet(__nested_inner_N.clone(), Rc::new(innerKey), Rc::new(value));
+			outerKey := re.nestedMapOuterKey
+			wrappedOuterKey := "Rc::new(" + outerKey + ".to_string())"
+			preamble := re.emitAsString("let mut "+re.nestedMapVarName+" = hmap::hashMapGet(&"+
+				re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+
+				").downcast_ref::<hmap::HashMap>().unwrap().clone();\n", re.mapAssignIndent)
+			re.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
+		}
+
 		str := re.emitAsString(varName+" = hmap::hashMapSet("+varName+".clone(), "+wrappedKey+", Rc::new(", re.mapAssignIndent)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 		return
@@ -3962,9 +4031,24 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		tv := re.pkg.TypesInfo.Types[node.X]
 		if tv.Type != nil {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+				// If already in a map index (nested read), save current state
+				if re.isMapIndex {
+					re.mapKeyCastStack = append(re.mapKeyCastStack, rustKeyCastState{
+						keyCastSuffix: re.mapKeyCastSuffix,
+						valueType:     re.mapIndexValueType,
+					})
+				}
 				re.isMapIndex = true
-				re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
 				re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
+
+				// Check if the value type is also a map (nested map read)
+				// If so, cast to hmap::HashMap instead of the map type
+				if _, isNestedMap := mapType.Elem().Underlying().(*types.Map); isNestedMap {
+					re.mapIndexValueType = "hmap::HashMap"
+				} else {
+					re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
+				}
+
 				// For map assignment or comma-ok, don't emit hashMapGet — we're capturing the key
 				if !re.isMapAssign && !re.isMapCommaOk {
 					re.gir.emitToFileBuffer("hmap::hashMapGet(", EmptyVisitMethod)
@@ -4008,6 +4092,16 @@ func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	// For map index, don't emit [ - instead start capturing key if in map assign or comma-ok
 	if re.isMapIndex {
 		if re.isMapAssign || re.isMapCommaOk {
+			// For nested map assignment, only capture the inner key (the second/root index)
+			// Skip capture if this is the nested map's index (outer key) - we already have it from AST
+			if re.isNestedMapAssign {
+				// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
+				// node.X IS an IndexExpr means this is the root index (for inner key m["outer"]["inner"])
+				if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+					// This is the nested index (outer key) - don't capture, we have it already
+					return
+				}
+			}
 			re.captureMapKey = true
 			re.capturedMapKey = ""
 		}
@@ -4028,6 +4122,15 @@ func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 	if re.isMapIndex {
 		if re.isMapAssign || re.isMapCommaOk {
 			// Stop capturing key - cast suffix will be used in PreVisitAssignStmtRhs or PostVisitAssignStmt
+			// For nested map assignment, don't stop things for the nested index - we need to process root index next
+			if re.isNestedMapAssign {
+				// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
+				if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+					// This is the nested index - keep isMapIndex true so root index can capture
+					// Don't reset isMapIndex or captureMapKey - let root index use them
+					return
+				}
+			}
 			re.captureMapKey = false
 		} else {
 			// For map read: close Rc::new() for key (with cast if needed), then close hashMapGet, add type assertion
@@ -4040,6 +4143,15 @@ func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 				re.gir.emitToFileBuffer(".downcast_ref::<bool>().unwrap().clone()", EmptyVisitMethod)
 			} else {
 				re.gir.emitToFileBuffer(fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType), EmptyVisitMethod)
+			}
+			// Restore previous key cast state if we have saved state (nested reads)
+			if len(re.mapKeyCastStack) > 0 {
+				state := re.mapKeyCastStack[len(re.mapKeyCastStack)-1]
+				re.mapKeyCastStack = re.mapKeyCastStack[:len(re.mapKeyCastStack)-1]
+				re.mapKeyCastSuffix = state.keyCastSuffix
+				re.mapIndexValueType = state.valueType
+				// Keep isMapIndex true for the outer map read
+				return
 			}
 			re.mapKeyCastSuffix = ""
 		}

@@ -1207,6 +1207,32 @@ func testMapReturnValue() {
 	}
 }
 
+func testNestedMaps() {
+	fmt.Println("=== Nested Maps ===")
+
+	// Basic nested map assignment: map[string]map[string]int
+	m := make(map[string]map[string]int)
+	m["outer"] = make(map[string]int)
+	m["outer"]["inner"] = 42
+	m["outer"]["second"] = 100
+
+	// Test nested map read: m["outer"]["inner"]
+	val := m["outer"]["inner"]
+	if val == 42 {
+		fmt.Println("PASS: nested map read")
+	} else {
+		fmt.Println("FAIL: nested map read")
+	}
+
+	// Test nested map read with multiple keys
+	val2 := m["outer"]["second"]
+	if val2 == 100 {
+		fmt.Println("PASS: nested map read second key")
+	} else {
+		fmt.Println("FAIL: nested map read second key")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1248,6 +1274,7 @@ func main() {
 	testMapStructField()
 	testMapReturnValue()
 	testNestedSlices()
+	testNestedMaps()
 
 	fmt.Println("=== Done ===")
 }
