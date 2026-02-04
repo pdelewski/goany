@@ -351,6 +351,17 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 	case *ast.MapType:
 		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitMapType)
 		v.emitter.PreVisitMapType(e, indent)
+		// Traverse key and value types to check nested type patterns
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitMapKeyType)
+		v.emitter.PreVisitMapKeyType(e.Key, indent)
+		v.traverseExpression(e.Key, 0)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitMapKeyType)
+		v.emitter.PostVisitMapKeyType(e.Key, indent)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitMapValueType)
+		v.emitter.PreVisitMapValueType(e.Value, indent)
+		v.traverseExpression(e.Value, 0)
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitMapValueType)
+		v.emitter.PostVisitMapValueType(e.Value, indent)
 		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitMapType)
 		v.emitter.PostVisitMapType(e, indent)
 	case *ast.ChanType:

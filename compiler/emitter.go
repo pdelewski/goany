@@ -118,6 +118,15 @@ type Emitter interface {
 	// PostVisitMapType is called after visiting a map type.
 	PostVisitMapType(node *ast.MapType, indent int)
 
+	// PreVisitMapKeyType is called before visiting a map's key type.
+	PreVisitMapKeyType(node ast.Expr, indent int)
+	// PostVisitMapKeyType is called after visiting a map's key type.
+	PostVisitMapKeyType(node ast.Expr, indent int)
+	// PreVisitMapValueType is called before visiting a map's value type.
+	PreVisitMapValueType(node ast.Expr, indent int)
+	// PostVisitMapValueType is called after visiting a map's value type.
+	PostVisitMapValueType(node ast.Expr, indent int)
+
 	// PreVisitChanType is called before visiting a channel type.
 	PreVisitChanType(node *ast.ChanType, indent int)
 	// PostVisitChanType is called after visiting a channel type.

@@ -798,6 +798,26 @@ func (cppe *CPPEmitter) PreVisitMapType(node *ast.MapType, indent int) {
 func (cppe *CPPEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 }
 
+// PreVisitMapKeyType suppresses output during map key type traversal
+func (cppe *CPPEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
+	cppe.suppressEmit = true
+}
+
+// PostVisitMapKeyType re-enables output after map key type traversal
+func (cppe *CPPEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	cppe.suppressEmit = false
+}
+
+// PreVisitMapValueType suppresses output during map value type traversal
+func (cppe *CPPEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
+	cppe.suppressEmit = true
+}
+
+// PostVisitMapValueType re-enables output after map value type traversal
+func (cppe *CPPEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	cppe.suppressEmit = false
+}
+
 func (cppe *CPPEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
 	if ident, ok := node.(*ast.Ident); ok {
 		if cppe.lowerToBuiltins(ident.Name) == "" {

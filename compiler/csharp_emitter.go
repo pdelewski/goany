@@ -1096,6 +1096,26 @@ func (cse *CSharpEmitter) PreVisitMapType(node *ast.MapType, indent int) {
 func (cse *CSharpEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 }
 
+// PreVisitMapKeyType suppresses output during map key type traversal
+func (cse *CSharpEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
+	cse.suppressMapEmit = true
+}
+
+// PostVisitMapKeyType re-enables output after map key type traversal
+func (cse *CSharpEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	cse.suppressMapEmit = false
+}
+
+// PreVisitMapValueType suppresses output during map value type traversal
+func (cse *CSharpEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
+	cse.suppressMapEmit = true
+}
+
+// PostVisitMapValueType re-enables output after map value type traversal
+func (cse *CSharpEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	cse.suppressMapEmit = false
+}
+
 func (cse *CSharpEmitter) PreVisitFuncType(node *ast.FuncType, indent int) {
 	cse.executeIfNotForwardDecls(func() {
 		// All types within FuncType are type references

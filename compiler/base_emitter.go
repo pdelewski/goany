@@ -51,6 +51,10 @@ const (
 	PostVisitArrayType VisitMethod = "PostVisitArrayType"
 	PreVisitMapType VisitMethod = "PreVisitMapType"
 	PostVisitMapType VisitMethod = "PostVisitMapType"
+	PreVisitMapKeyType VisitMethod = "PreVisitMapKeyType"
+	PostVisitMapKeyType VisitMethod = "PostVisitMapKeyType"
+	PreVisitMapValueType VisitMethod = "PreVisitMapValueType"
+	PostVisitMapValueType VisitMethod = "PostVisitMapValueType"
 	PreVisitChanType VisitMethod = "PreVisitChanType"
 	PostVisitChanType VisitMethod = "PostVisitChanType"
 	PreVisitEllipsis VisitMethod = "PreVisitEllipsis"
@@ -286,6 +290,10 @@ func (v *BaseEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {}
 func (v *BaseEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {}
 func (v *BaseEmitter) PreVisitMapType(node *ast.MapType, indent int) {}
 func (v *BaseEmitter) PostVisitMapType(node *ast.MapType, indent int) {}
+func (v *BaseEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {}
+func (v *BaseEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {}
+func (v *BaseEmitter) PreVisitMapValueType(node ast.Expr, indent int) {}
+func (v *BaseEmitter) PostVisitMapValueType(node ast.Expr, indent int) {}
 func (v *BaseEmitter) PreVisitChanType(node *ast.ChanType, indent int) {}
 func (v *BaseEmitter) PostVisitChanType(node *ast.ChanType, indent int) {}
 func (v *BaseEmitter) PreVisitEllipsis(node *ast.Ellipsis, indent int) {}

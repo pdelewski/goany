@@ -1043,6 +1043,26 @@ func (jse *JSEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 	}
 }
 
+// PreVisitMapKeyType suppresses output during map key type traversal
+func (jse *JSEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
+	jse.suppressTypeEmit = true
+}
+
+// PostVisitMapKeyType re-enables output after map key type traversal
+func (jse *JSEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	jse.suppressTypeEmit = false
+}
+
+// PreVisitMapValueType suppresses output during map value type traversal
+func (jse *JSEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
+	jse.suppressTypeEmit = true
+}
+
+// PostVisitMapValueType re-enables output after map value type traversal
+func (jse *JSEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	jse.suppressTypeEmit = false
+}
+
 // Basic literals
 func (jse *JSEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
 	if jse.forwardDecl {
