@@ -187,6 +187,21 @@ func main() {
 		return
 	}
 
+	// Verify that source packages have a go.mod file (Module != nil)
+	// Without go.mod, packages would be silently skipped as "stdlib"
+	for _, pkg := range pkgs {
+		if pkg.Module == nil {
+			fmt.Printf("\033[31m\033[1mError: go.mod file required\033[0m\n")
+			fmt.Printf("  \033[36m-->\033[0m %s\n", sourceDir)
+			fmt.Printf("  The source directory must be a Go module (contain go.mod).\n")
+			fmt.Printf("  Without go.mod, packages cannot be properly validated.\n")
+			fmt.Println()
+			fmt.Printf("  \033[32mTo fix:\033[0m Run 'go mod init <module-name>' in the source directory.\n")
+			fmt.Println()
+			os.Exit(1)
+		}
+	}
+
 	// Collect all imported packages recursively (excluding standard library)
 	allPkgs := collectAllPackages(pkgs)
 
