@@ -157,6 +157,16 @@ func RemovePointerEntryReverse(pointerAndIndexVec []PointerAndIndex, target Visi
 	return pointerAndIndexVec
 }
 
+// RemovePointerEntryReverseString removes the last entry matching the target string and returns the new slice
+func RemovePointerEntryReverseString(pointerAndIndexVec []PointerAndIndex, target string) []PointerAndIndex {
+	for i := len(pointerAndIndexVec) - 1; i >= 0; i-- {
+		if pointerAndIndexVec[i].Pointer == target {
+			return append(pointerAndIndexVec[:i], pointerAndIndexVec[i+1:]...)
+		}
+	}
+	return pointerAndIndexVec
+}
+
 // New token-based functions
 func ExtractTokensNew(position int, tokenSlice []Token) ([]Token, error) {
 	if position < 0 || position >= len(tokenSlice) {

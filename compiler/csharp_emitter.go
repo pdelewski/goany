@@ -339,6 +339,11 @@ func (cse *CSharpEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 
 // getCsTypeName converts a Go type to its C# type name
 func getCsTypeName(t types.Type) string {
+	// Handle slice types - recursively get element type
+	if slice, ok := t.(*types.Slice); ok {
+		elemType := getCsTypeName(slice.Elem())
+		return "List<" + elemType + ">"
+	}
 	if basicType, ok := t.(*types.Basic); ok {
 		switch basicType.Kind() {
 		case types.Int, types.Int32:
@@ -1079,6 +1084,8 @@ func (cse *CSharpEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 			tokens, _ := ExtractTokens(pointerAndPosition.Index, cse.gir.tokenSlice)
 			cse.isArray = true
 			cse.arrayType = strings.Join(tokens, "")
+			// Remove the processed marker so nested arrays work correctly
+			cse.gir.pointerAndIndexVec = RemovePointerEntryReverse(cse.gir.pointerAndIndexVec, PreVisitArrayType)
 		}
 	})
 }

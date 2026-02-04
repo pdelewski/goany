@@ -303,6 +303,11 @@ func getCppTypeName(t types.Type) string {
 			return "std::int64_t"
 		}
 	}
+	// Handle slice types - recursively get element type
+	if slice, ok := t.(*types.Slice); ok {
+		elemType := getCppTypeName(slice.Elem())
+		return "std::vector<" + elemType + ">"
+	}
 	if named, ok := t.(*types.Named); ok {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()

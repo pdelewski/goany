@@ -346,6 +346,11 @@ func getRustValueTypeCast(t types.Type) string {
 	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
 		return "Rc<dyn Any>"
 	}
+	// Handle slice types - recursively get element type
+	if slice, ok := t.(*types.Slice); ok {
+		elemType := getRustValueTypeCast(slice.Elem())
+		return "Vec<" + elemType + ">"
+	}
 	if named, ok := t.(*types.Named); ok {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()
@@ -2897,6 +2902,8 @@ func (re *RustEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 		re.arrayType = strings.Join(tokens, "")
 		// Prepend "Vec" before the array type tokens
 		re.gir.tokenSlice, _ = RewriteTokens(re.gir.tokenSlice, pointerAndPosition.Index, []string{}, []string{"Vec"})
+		// Remove the processed marker so nested arrays work correctly
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverseString(re.gir.pointerAndIndexVec, "@@PreVisitArrayType")
 	}
 }
 
@@ -3669,6 +3676,10 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 }
 
 func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	// Skip if all LHS are blank identifiers
+	if re.suppressRangeEmit {
+		return
+	}
 	re.shouldGenerate = true
 	re.inAssignRhs = true
 
@@ -3717,6 +3728,10 @@ func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (re *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	// Skip if all LHS are blank identifiers
+	if re.suppressRangeEmit {
+		return
+	}
 	// Check if we need to add a type cast for constant assignments
 	// This handles untyped int constants assigned to i8 variables
 	if len(node.Lhs) == 1 && len(node.Rhs) == 1 {

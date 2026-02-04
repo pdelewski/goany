@@ -1129,6 +1129,46 @@ func addToMap(m map[string]int, key string, value int) map[string]int {
 	return m
 }
 
+func testNestedSlices() {
+	fmt.Println("=== Nested Slices ===")
+
+	// 2D slice: [][]int
+	var m [][]int
+	m = make([][]int, 2)
+	m[0] = make([]int, 3)
+	m[1] = make([]int, 2)
+	m[0][0] = 1
+	m[0][1] = 2
+	m[0][2] = 3
+	m[1][0] = 4
+	m[1][1] = 5
+
+	if len(m) == 2 && len(m[0]) == 3 && len(m[1]) == 2 {
+		fmt.Println("PASS: nested slice dimensions")
+	} else {
+		fmt.Println("FAIL: nested slice dimensions")
+	}
+
+	if m[0][0] == 1 && m[0][1] == 2 && m[0][2] == 3 && m[1][0] == 4 && m[1][1] == 5 {
+		fmt.Println("PASS: nested slice values")
+	} else {
+		fmt.Println("FAIL: nested slice values")
+	}
+
+	// Sum all elements
+	sum := 0
+	for i := 0; i < len(m); i++ {
+		for j := 0; j < len(m[i]); j++ {
+			sum = sum + m[i][j]
+		}
+	}
+	if sum == 15 {
+		fmt.Println("PASS: nested slice sum")
+	} else {
+		fmt.Println("FAIL: nested slice sum")
+	}
+}
+
 func testMapReturnValue() {
 	fmt.Println("=== Map Return Value ===")
 
@@ -1207,6 +1247,7 @@ func main() {
 	testIfInitCommaOk()
 	testMapStructField()
 	testMapReturnValue()
+	testNestedSlices()
 
 	fmt.Println("=== Done ===")
 }

@@ -686,6 +686,12 @@ func (pc *PatternCollector) collectArrayType(n *ast.ArrayType) {
 	if pc.typesInfo != nil {
 		if tv, ok := pc.typesInfo.Types[n.Elt]; ok && tv.Type != nil {
 			attrs["elt_type"] = pc.typeCategory(tv.Type)
+			// Add structural attribute for composite element types
+			// This allows patterns to distinguish []int from [][]int
+			switch tv.Type.Underlying().(type) {
+			case *types.Slice, *types.Array, *types.Map:
+				attrs["elt_is_composite"] = "true"
+			}
 		}
 	}
 
