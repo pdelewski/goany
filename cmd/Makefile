@@ -14,17 +14,17 @@ GO_GENERATE_FLAGS =
 .PHONY: all
 all: build
 
-# Generate code (runs go generate)
-.PHONY: generate
-generate:
-	@echo "Generating code..."
-	cd .. && go generate $(GO_GENERATE_FLAGS) ./...
-
 # Build astyle static library
 .PHONY: astyle
 astyle:
 	@echo "Building astyle static library..."
 	$(MAKE) -C $(ASTYLE_DIR) -f Makefile.cgo
+
+# Generate code (runs go generate)
+.PHONY: generate
+generate:
+	@echo "Generating code..."
+	cd .. && go generate $(GO_GENERATE_FLAGS) ./...
 
 # Clean astyle
 .PHONY: clean-astyle
@@ -34,7 +34,7 @@ clean-astyle:
 
 # Build the main binary
 .PHONY: build
-build: generate astyle
+build: astyle generate
 	@echo "Building goany..."
 	go build $(GO_BUILD_FLAGS) -o $(BINARY_NAME) .
 	@echo "Build completed successfully!"
