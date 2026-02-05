@@ -3,6 +3,8 @@
 
 #include <string>
 #include <tuple>
+#include <map>
+#include <functional>
 #include "../httplib.h"
 
 namespace http {
@@ -12,6 +14,16 @@ struct Response {
     std::string Status;
     std::string Body;
 };
+
+struct Request {
+    std::string Method;
+    std::string Path;
+    std::string Body;
+};
+
+// Handler storage for server
+static std::map<std::string, std::function<Response(Request)>> handlers;
+static httplib::Server* serverPtr = nullptr;
 
 // Parse a URL into scheme, host (with port), and path
 // e.g. "http://example.com:8080/api/data" -> ("http", "example.com:8080", "/api/data")
@@ -81,6 +93,62 @@ static std::tuple<Response, std::string> Post(const std::string& url, const std:
     resp.Status = std::to_string(result->status);
     resp.Body = result->body;
     return std::make_tuple(resp, std::string(""));
+}
+
+// HandleFunc registers a handler function for the given pattern
+static void HandleFunc(const std::string& pattern, std::function<Response(Request)> handler) {
+    handlers[pattern] = handler;
+}
+
+// ListenAndServe starts the HTTP server on the given address
+static std::string ListenAndServe(const std::string& addr) {
+    httplib::Server svr;
+    serverPtr = &svr;
+
+    // Register all handlers
+    for (const auto& pair : handlers) {
+        const std::string& pattern = pair.first;
+        const auto& handler = pair.second;
+
+        // Register for all HTTP methods
+        svr.Get(pattern, [handler](const httplib::Request& req, httplib::Response& res) {
+            Request r;
+            r.Method = req.method;
+            r.Path = req.path;
+            r.Body = req.body;
+            Response resp = handler(r);
+            res.status = resp.StatusCode;
+            res.set_content(resp.Body, "text/plain");
+        });
+        svr.Post(pattern, [handler](const httplib::Request& req, httplib::Response& res) {
+            Request r;
+            r.Method = req.method;
+            r.Path = req.path;
+            r.Body = req.body;
+            Response resp = handler(r);
+            res.status = resp.StatusCode;
+            res.set_content(resp.Body, "text/plain");
+        });
+    }
+
+    // Parse address (e.g., ":8080" or "localhost:8080")
+    std::string host = "0.0.0.0";
+    int port = 8080;
+    size_t colonPos = addr.rfind(':');
+    if (colonPos != std::string::npos) {
+        std::string hostPart = addr.substr(0, colonPos);
+        std::string portPart = addr.substr(colonPos + 1);
+        if (!hostPart.empty()) {
+            host = hostPart;
+        }
+        port = std::stoi(portPart);
+    }
+
+    // Start server (blocks until error)
+    if (!svr.listen(host, port)) {
+        return "Failed to start server";
+    }
+    return "";
 }
 
 } // namespace http

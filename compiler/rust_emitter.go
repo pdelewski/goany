@@ -6682,10 +6682,10 @@ sdl2 = "0.36"
 `, re.OutputName)
 	}
 
-	// Add ureq dependency if HTTP runtime is used
+	// Add HTTP runtime dependencies (ureq for client, tiny_http for server, lazy_static for handler storage)
 	if _, hasHTTP := re.RuntimePackages["http"]; hasHTTP {
-		// Insert ureq after [dependencies]
-		cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nureq = \"2\"", 1)
+		// Insert dependencies after [dependencies]
+		cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nureq = \"2\"\ntiny_http = \"0.12\"\nlazy_static = \"1.4\"", 1)
 	}
 
 	_, err = file.WriteString(cargoToml)

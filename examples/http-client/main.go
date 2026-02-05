@@ -6,7 +6,7 @@ import (
 )
 
 func main() {
-	resp, err := http.Get("http://httpbin.org/get")
+	resp, err := http.Get("http://localhost:8089/hello")
 	if err != "" {
 		panic(err)
 	}
