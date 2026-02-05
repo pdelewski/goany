@@ -2,7 +2,7 @@ package runtime
 
 import _ "embed"
 
-//go:embed hmap/hashmap.go
+//go:embed std/hashmap.go
 var HashmapGoSource string
 
 //go:embed std/cpp/goany_panic.hpp
