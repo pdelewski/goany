@@ -94,6 +94,7 @@ type RustEmitter struct {
 	OutputName      string
 	LinkRuntime     string // Path to runtime directory (empty = disabled)
 	GraphicsRuntime string // Graphics backend: tigr (default), sdl2, none
+	HTTPRuntime     bool   // Enable HTTP runtime
 	OptimizeMoves   bool   // Enable move optimizations to reduce struct cloning
 	MoveOptCount    int    // Count of clones removed by move optimizations
 	OptimizeRefs    bool   // Enable reference optimization for read-only parameters
@@ -1758,6 +1759,14 @@ use graphics::*;
 `
 		re.gir.emitToFileBuffer(runtimeInclude, EmptyVisitMethod)
 	}
+	// Include HTTP runtime module if enabled
+	if re.HTTPRuntime && re.LinkRuntime != "" {
+		httpInclude := `
+// HTTP runtime
+mod http;
+`
+		re.gir.emitToFileBuffer(httpInclude, EmptyVisitMethod)
+	}
 
 	re.insideForPostCond = false
 }
@@ -1775,6 +1784,9 @@ func (re *RustEmitter) PostVisitProgram(indent int) {
 			log.Printf("Warning: %v", err)
 		}
 		if err := re.GenerateBuildRs(); err != nil {
+			log.Printf("Warning: %v", err)
+		}
+		if err := re.GenerateHTTPMod(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
 	}
@@ -6681,6 +6693,12 @@ sdl2 = "0.36"
 `, re.OutputName)
 	}
 
+	// Add ureq dependency if HTTP runtime is used
+	if re.HTTPRuntime {
+		// Insert ureq after [dependencies]
+		cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nureq = \"2\"", 1)
+	}
+
 	_, err = file.WriteString(cargoToml)
 	if err != nil {
 		return fmt.Errorf("failed to write Cargo.toml: %w", err)
@@ -6774,6 +6792,36 @@ func (re *RustEmitter) GenerateGraphicsMod() error {
 		DebugLogPrintf("Copied screen_helper.c to %s", shDst)
 	}
 
+	return nil
+}
+
+// GenerateHTTPMod creates the http.rs module file by copying from runtime
+func (re *RustEmitter) GenerateHTTPMod() error {
+	if re.LinkRuntime == "" {
+		return nil
+	}
+	if !re.HTTPRuntime {
+		return nil
+	}
+
+	// Create src directory if needed (Cargo convention)
+	srcDir := filepath.Join(re.OutputDir, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		return fmt.Errorf("failed to create src directory: %w", err)
+	}
+
+	runtimeSrcPath := filepath.Join(re.LinkRuntime, "http", "rust", "http_runtime.rs")
+	httpRs, err := os.ReadFile(runtimeSrcPath)
+	if err != nil {
+		return fmt.Errorf("failed to read HTTP runtime from %s: %w", runtimeSrcPath, err)
+	}
+
+	httpPath := filepath.Join(srcDir, "http.rs")
+	if err := os.WriteFile(httpPath, httpRs, 0644); err != nil {
+		return fmt.Errorf("failed to write http.rs: %w", err)
+	}
+
+	DebugLogPrintf("Copied http.rs from %s to %s", runtimeSrcPath, httpPath)
 	return nil
 }
 

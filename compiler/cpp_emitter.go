@@ -54,6 +54,7 @@ type CPPEmitter struct {
 	OutputName      string
 	LinkRuntime     string // Path to runtime directory (empty = disabled)
 	GraphicsRuntime string // Graphics backend: tigr (default), sdl2, none
+	HTTPRuntime     bool   // Enable HTTP runtime
 	OptimizeMoves   bool   // Enable move optimizations to reduce struct cloning
 	MoveOptCount    int    // Count of copies replaced by std::move()
 	file            *os.File
@@ -542,6 +543,10 @@ func (cppe *CPPEmitter) PreVisitProgram(indent int) {
 		case "none":
 			// No graphics runtime
 		}
+	}
+	// Include HTTP runtime if enabled
+	if cppe.HTTPRuntime && cppe.LinkRuntime != "" {
+		cppe.file.WriteString("#include \"http/cpp/http_runtime.hpp\"\n")
 	}
 	// Include panic runtime
 	cppe.file.WriteString("\n// GoAny panic runtime\n")
@@ -2320,6 +2325,15 @@ clean:
 
 .PHONY: all clean
 `, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath, absRuntimePath)
+	}
+
+	// Add -pthread to LDFLAGS if HTTP runtime is used (httplib.h needs threads)
+	if cppe.HTTPRuntime {
+		makefile = strings.Replace(makefile, "LDFLAGS =", "LDFLAGS = -pthread", 1)
+		// For cases where LDFLAGS already has values, append -pthread
+		if !strings.Contains(makefile, "-pthread") {
+			makefile = strings.Replace(makefile, "$(LDFLAGS)", "$(LDFLAGS) -pthread", 1)
+		}
 	}
 
 	_, err = file.WriteString(makefile)

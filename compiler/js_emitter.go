@@ -37,6 +37,7 @@ type JSEmitter struct {
 	OutputName      string
 	LinkRuntime     string // Path to runtime directory (empty = disabled)
 	GraphicsRuntime string // Graphics backend for browser
+	HTTPRuntime     bool   // Enable HTTP runtime
 	file            *os.File
 	Emitter
 	pkg                   *packages.Package
@@ -661,6 +662,18 @@ const graphics = {
 };
 
 `)
+	}
+	// Include HTTP runtime if enabled
+	if jse.HTTPRuntime && jse.LinkRuntime != "" {
+		httpRuntimePath := filepath.Join(jse.LinkRuntime, "http", "js", "http_runtime.js")
+		httpRuntimeContent, err := os.ReadFile(httpRuntimePath)
+		if err != nil {
+			fmt.Printf("Warning: failed to read HTTP runtime from %s: %v\n", httpRuntimePath, err)
+		} else {
+			jse.file.WriteString("// HTTP runtime\n")
+			jse.file.Write(httpRuntimeContent)
+			jse.file.WriteString("\n")
+		}
 	}
 }
 

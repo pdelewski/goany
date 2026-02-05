@@ -61,6 +61,19 @@ func collectAllPackages(pkgs []*packages.Package) []*packages.Package {
 }
 
 // packagesUseMap checks if any package in the list uses Go map types
+func packagesUseHTTP(pkgs []*packages.Package) bool {
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Syntax {
+			for _, imp := range file.Imports {
+				if imp.Path != nil && imp.Path.Value == `"runtime/http"` {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func packagesUseMap(pkgs []*packages.Package) bool {
 	for _, pkg := range pkgs {
 		if pkg.TypesInfo == nil {
@@ -217,6 +230,12 @@ func main() {
 		compiler.DebugLogPrintf("Runtime hashmap package loaded: %s", hashmapPkg.Name)
 	}
 
+	// Detect HTTP runtime usage
+	useHTTP := packagesUseHTTP(pkgs)
+	if useHTTP {
+		compiler.DebugLogPrintf("HTTP runtime usage detected")
+	}
+
 	// Parse backend selection
 	backends := strings.Split(strings.ToLower(backend), ",")
 	backendSet := make(map[string]bool)
@@ -251,6 +270,7 @@ func main() {
 			Output:          output + ".cpp",
 			LinkRuntime:     linkRuntime,
 			GraphicsRuntime: graphicsRuntime,
+			HTTPRuntime:     useHTTP,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 			OptimizeMoves:   optimizeMoves,
@@ -264,6 +284,7 @@ func main() {
 			Output:          output + ".cs",
 			LinkRuntime:     linkRuntime,
 			GraphicsRuntime: graphicsRuntime,
+			HTTPRuntime:     useHTTP,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 		}}
@@ -276,6 +297,7 @@ func main() {
 			Output:          output + ".rs",
 			LinkRuntime:     linkRuntime,
 			GraphicsRuntime: graphicsRuntime,
+			HTTPRuntime:     useHTTP,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 			OptimizeMoves:   optimizeMoves,
@@ -290,6 +312,7 @@ func main() {
 			Output:          output + ".js",
 			LinkRuntime:     linkRuntime,
 			GraphicsRuntime: graphicsRuntime,
+			HTTPRuntime:     useHTTP,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 		}}

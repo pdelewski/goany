@@ -66,6 +66,7 @@ type CSharpEmitter struct {
 	OutputName      string
 	LinkRuntime     string // Path to runtime directory (empty = disabled)
 	GraphicsRuntime string // Graphics backend: tigr (default), sdl2, none
+	HTTPRuntime     bool   // Enable HTTP runtime
 	file            *os.File
 	BaseEmitter
 	pkg               *packages.Package
@@ -716,6 +717,9 @@ func (cse *CSharpEmitter) PostVisitProgram(indent int) {
 			log.Printf("Warning: %v", err)
 		}
 		if err := cse.CopyGraphicsRuntime(); err != nil {
+			log.Printf("Warning: %v", err)
+		}
+		if err := cse.CopyHTTPRuntime(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
 	}
@@ -2960,5 +2964,29 @@ func (cse *CSharpEmitter) CopyGraphicsRuntime() error {
 		DebugLogPrintf("Copied screen_helper.c to %s", shDst)
 	}
 
+	return nil
+}
+
+// CopyHTTPRuntime copies the HTTP runtime file from the runtime directory
+func (cse *CSharpEmitter) CopyHTTPRuntime() error {
+	if cse.LinkRuntime == "" {
+		return nil
+	}
+	if !cse.HTTPRuntime {
+		return nil
+	}
+
+	runtimeSrcPath := filepath.Join(cse.LinkRuntime, "http", "csharp", "HttpRuntime.cs")
+	httpCs, err := os.ReadFile(runtimeSrcPath)
+	if err != nil {
+		return fmt.Errorf("failed to read HTTP runtime from %s: %w", runtimeSrcPath, err)
+	}
+
+	httpPath := filepath.Join(cse.OutputDir, "HttpRuntime.cs")
+	if err := os.WriteFile(httpPath, httpCs, 0644); err != nil {
+		return fmt.Errorf("failed to write HttpRuntime.cs: %w", err)
+	}
+
+	DebugLogPrintf("Copied HttpRuntime.cs from %s to %s", runtimeSrcPath, httpPath)
 	return nil
 }
