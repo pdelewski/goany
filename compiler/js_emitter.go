@@ -35,9 +35,9 @@ type JSEmitter struct {
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string // Path to runtime directory (empty = disabled)
-	GraphicsRuntime string // Graphics backend for browser
-	HTTPRuntime     bool   // Enable HTTP runtime
+	LinkRuntime     string          // Path to runtime directory (empty = disabled)
+	GraphicsRuntime string          // Graphics backend for browser
+	RuntimePackages map[string]bool // Detected runtime packages (e.g. "http", "json")
 	file            *os.File
 	Emitter
 	pkg                   *packages.Package
@@ -663,15 +663,20 @@ const graphics = {
 
 `)
 	}
-	// Include HTTP runtime if enabled
-	if jse.HTTPRuntime && jse.LinkRuntime != "" {
-		httpRuntimePath := filepath.Join(jse.LinkRuntime, "http", "js", "http_runtime.js")
-		httpRuntimeContent, err := os.ReadFile(httpRuntimePath)
-		if err != nil {
-			fmt.Printf("Warning: failed to read HTTP runtime from %s: %v\n", httpRuntimePath, err)
-		} else {
-			jse.file.WriteString("// HTTP runtime\n")
-			jse.file.Write(httpRuntimeContent)
+	// Include runtime packages (convention: X/js/X_runtime.js)
+	if jse.LinkRuntime != "" {
+		for name := range jse.RuntimePackages {
+			if name == "graphics" {
+				continue // graphics has its own inline code above
+			}
+			runtimePath := filepath.Join(jse.LinkRuntime, name, "js", name+"_runtime.js")
+			content, err := os.ReadFile(runtimePath)
+			if err != nil {
+				DebugLogPrintf("Skipping JS runtime for %s: %v", name, err)
+				continue
+			}
+			jse.file.WriteString(fmt.Sprintf("// %s runtime\n", name))
+			jse.file.Write(content)
 			jse.file.WriteString("\n")
 		}
 	}

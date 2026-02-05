@@ -92,10 +92,10 @@ type RustEmitter struct {
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string // Path to runtime directory (empty = disabled)
-	GraphicsRuntime string // Graphics backend: tigr (default), sdl2, none
-	HTTPRuntime     bool   // Enable HTTP runtime
-	OptimizeMoves   bool   // Enable move optimizations to reduce struct cloning
+	LinkRuntime     string          // Path to runtime directory (empty = disabled)
+	GraphicsRuntime string          // Graphics backend: tigr (default), sdl2, none
+	RuntimePackages map[string]bool // Detected runtime packages (e.g. "http", "json")
+	OptimizeMoves   bool            // Enable move optimizations to reduce struct cloning
 	MoveOptCount    int    // Count of clones removed by move optimizations
 	OptimizeRefs    bool   // Enable reference optimization for read-only parameters
 	RefOptCount     int    // Count of clones removed by reference optimization
@@ -1759,13 +1759,15 @@ use graphics::*;
 `
 		re.gir.emitToFileBuffer(runtimeInclude, EmptyVisitMethod)
 	}
-	// Include HTTP runtime module if enabled
-	if re.HTTPRuntime && re.LinkRuntime != "" {
-		httpInclude := `
-// HTTP runtime
-mod http;
-`
-		re.gir.emitToFileBuffer(httpInclude, EmptyVisitMethod)
+	// Include runtime package modules (convention: mod X;)
+	if re.LinkRuntime != "" {
+		for name := range re.RuntimePackages {
+			if name == "graphics" {
+				continue // graphics has its own mod declaration above
+			}
+			modInclude := fmt.Sprintf("\n// %s runtime\nmod %s;\n", name, name)
+			re.gir.emitToFileBuffer(modInclude, EmptyVisitMethod)
+		}
 	}
 
 	re.insideForPostCond = false
@@ -1786,7 +1788,7 @@ func (re *RustEmitter) PostVisitProgram(indent int) {
 		if err := re.GenerateBuildRs(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
-		if err := re.GenerateHTTPMod(); err != nil {
+		if err := re.CopyRuntimeMods(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
 	}
@@ -6694,7 +6696,7 @@ sdl2 = "0.36"
 	}
 
 	// Add ureq dependency if HTTP runtime is used
-	if re.HTTPRuntime {
+	if re.RuntimePackages["http"] {
 		// Insert ureq after [dependencies]
 		cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nureq = \"2\"", 1)
 	}
@@ -6795,33 +6797,32 @@ func (re *RustEmitter) GenerateGraphicsMod() error {
 	return nil
 }
 
-// GenerateHTTPMod creates the http.rs module file by copying from runtime
-func (re *RustEmitter) GenerateHTTPMod() error {
+// CopyRuntimeMods copies runtime .rs module files for detected runtime packages.
+// Convention: runtime/X/rust/X_runtime.rs -> src/X.rs
+func (re *RustEmitter) CopyRuntimeMods() error {
 	if re.LinkRuntime == "" {
 		return nil
 	}
-	if !re.HTTPRuntime {
-		return nil
-	}
-
-	// Create src directory if needed (Cargo convention)
 	srcDir := filepath.Join(re.OutputDir, "src")
 	if err := os.MkdirAll(srcDir, 0755); err != nil {
 		return fmt.Errorf("failed to create src directory: %w", err)
 	}
-
-	runtimeSrcPath := filepath.Join(re.LinkRuntime, "http", "rust", "http_runtime.rs")
-	httpRs, err := os.ReadFile(runtimeSrcPath)
-	if err != nil {
-		return fmt.Errorf("failed to read HTTP runtime from %s: %w", runtimeSrcPath, err)
+	for name := range re.RuntimePackages {
+		if name == "graphics" {
+			continue // graphics has its own copy method with backend selection
+		}
+		runtimeSrcPath := filepath.Join(re.LinkRuntime, name, "rust", name+"_runtime.rs")
+		content, err := os.ReadFile(runtimeSrcPath)
+		if err != nil {
+			DebugLogPrintf("Skipping Rust runtime for %s: %v", name, err)
+			continue
+		}
+		dstPath := filepath.Join(srcDir, name+".rs")
+		if err := os.WriteFile(dstPath, content, 0644); err != nil {
+			return fmt.Errorf("failed to write %s.rs: %w", name, err)
+		}
+		DebugLogPrintf("Copied %s.rs from %s to %s", name, runtimeSrcPath, dstPath)
 	}
-
-	httpPath := filepath.Join(srcDir, "http.rs")
-	if err := os.WriteFile(httpPath, httpRs, 0644); err != nil {
-		return fmt.Errorf("failed to write http.rs: %w", err)
-	}
-
-	DebugLogPrintf("Copied http.rs from %s to %s", runtimeSrcPath, httpPath)
 	return nil
 }
 
