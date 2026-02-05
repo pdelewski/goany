@@ -117,18 +117,96 @@ type JSEmitter struct {
 	isSliceMakeCall  bool   // Inside make([]T, n) call
 	sliceMakeDefault string // Default fill value for the slice element type
 	suppressEmit     bool   // When true, emitToFile does nothing
+	// Mixed nested composites: []map[string]int, map[string][]int, etc.
+	indexAccessTypeStack   []string          // Stack of access types: "map" or "slice" for each IndexExpr level
+	isMixedIndexAssign     bool              // Assignment involves intermediate map access on LHS
+	mixedIndexAssignOps    []jsMixedIndexOp  // Chain of operations from root to outermost
+	mixedAssignIndent      int               // Indent level
+	mixedAssignFinalTarget string            // Final assignment target expression
+	mixedTempCounter       int               // Global counter for unique temp variable names
 }
 
-// exprToJsString converts a simple expression (BasicLit, Ident) to its JS string representation
+// jsMixedIndexOp represents a single index operation in a mixed chain
+type jsMixedIndexOp struct {
+	accessType  string // "map" or "slice"
+	keyExpr     string // Key/index expression
+	tempVarName string // Temp variable name (only for map access)
+	mapVarExpr  string // The expression to call hashMapGet on
+}
+
+// exprToJsString converts a simple expression (BasicLit, Ident, IndexExpr, SelectorExpr) to its JS string representation
 func exprToJsString(expr ast.Expr) string {
 	switch e := expr.(type) {
 	case *ast.BasicLit:
 		return e.Value
 	case *ast.Ident:
 		return e.Name
+	case *ast.IndexExpr:
+		xStr := exprToJsString(e.X)
+		indexStr := exprToJsString(e.Index)
+		if xStr != "" && indexStr != "" {
+			return xStr + "[" + indexStr + "]"
+		}
+		return ""
+	case *ast.SelectorExpr:
+		xStr := exprToJsString(e.X)
+		if xStr != "" {
+			return xStr + "." + e.Sel.Name
+		}
+		return ""
 	default:
 		return ""
 	}
+}
+
+// analyzeLhsIndexChainJs walks an IndexExpr chain and returns operations from root to outermost.
+// Returns true if any intermediate map access was found (requiring temp var extraction).
+func (jse *JSEmitter) analyzeLhsIndexChainJs(expr ast.Expr) (ops []jsMixedIndexOp, hasIntermediateMap bool) {
+	// Collect the chain from outermost to root
+	var chain []ast.Expr
+	current := expr
+	for {
+		indexExpr, ok := current.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append(chain, indexExpr)
+		current = indexExpr.X
+	}
+	// chain[0] is outermost, chain[len-1] is innermost (closest to root variable)
+	// Reverse to get root to outermost order
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	// Now chain[0] is innermost (root[k1]), chain[len-1] is outermost ([kN])
+	hasIntermediateMap = false
+	for i, node := range chain {
+		ie := node.(*ast.IndexExpr)
+		tv := jse.pkg.TypesInfo.Types[ie.X]
+		if tv.Type == nil {
+			continue
+		}
+		isLast := (i == len(chain)-1)
+		if _, ok := tv.Type.Underlying().(*types.Map); ok {
+			keyExpr := exprToJsString(ie.Index)
+			op := jsMixedIndexOp{
+				accessType: "map",
+				keyExpr:    keyExpr,
+			}
+			if !isLast {
+				hasIntermediateMap = true
+			}
+			ops = append(ops, op)
+		} else {
+			// Slice or array access
+			op := jsMixedIndexOp{
+				accessType: "slice",
+				keyExpr:    exprToJsString(ie.Index),
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops, hasIntermediateMap
 }
 
 // getMapKeyTypeConst returns the key type constant for a map type AST node
@@ -825,25 +903,87 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					tv := jse.pkg.TypesInfo.Types[innerIndexExpr.X]
 					if tv.Type != nil {
 						if _, ok := tv.Type.Underlying().(*types.Map); ok {
-							jse.isNestedMapAssign = true
-							jse.isMapAssign = true
-							jse.mapAssignIndent = indent
-							// Get outer variable name (e.g., "m")
-							jse.nestedMapOuterVarName = exprToJsString(innerIndexExpr.X)
-							// Get outer key (e.g., "outer")
-							jse.nestedMapOuterKey = exprToJsString(innerIndexExpr.Index)
-							jse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", jse.nestedMapCounter)
-							jse.nestedMapCounter++
-							jse.mapAssignVarName = jse.nestedMapVarName
-							jse.suppressRangeEmit = true
-							return
+							// Also check outermost access type: only handle as nested map
+							// if the outermost is also a map access
+							tvOuter := jse.pkg.TypesInfo.Types[outerIndexExpr.X]
+							if tvOuter.Type != nil {
+								if _, ok := tvOuter.Type.Underlying().(*types.Map); ok {
+									// Map-then-map: m["outer"]["inner"] = v
+									jse.isNestedMapAssign = true
+									jse.isMapAssign = true
+									jse.mapAssignIndent = indent
+									jse.nestedMapOuterVarName = exprToJsString(innerIndexExpr.X)
+									jse.nestedMapOuterKey = exprToJsString(innerIndexExpr.Index)
+									jse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", jse.nestedMapCounter)
+									jse.nestedMapCounter++
+									jse.mapAssignVarName = jse.nestedMapVarName
+									jse.suppressRangeEmit = true
+									return
+								}
+							}
+							// If outermost is slice, fall through to mixed index check
 						}
 					}
 				}
 			}
 		}
 	}
-	// Check for map assignment: m[k] = v
+	// Detect mixed index assignment: any combination with intermediate map access on LHS
+	// This handles patterns like: map[k][i] = v, map[k1][k2][i] = v, map[k][i][k2] = v, etc.
+	if len(node.Lhs) == 1 {
+		if _, ok := node.Lhs[0].(*ast.IndexExpr); ok {
+			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
+				ops, hasIntermediateMap := jse.analyzeLhsIndexChainJs(node.Lhs[0])
+				if hasIntermediateMap && len(ops) > 0 {
+					jse.isMixedIndexAssign = true
+					jse.mixedAssignIndent = indent
+					jse.suppressRangeEmit = true
+
+					// Find the root variable name
+					rootExpr := node.Lhs[0]
+					for {
+						if ie, ok := rootExpr.(*ast.IndexExpr); ok {
+							rootExpr = ie.X
+						} else {
+							break
+						}
+					}
+					rootName := exprToJsString(rootExpr)
+
+					// Build map var expressions and temp var names
+					currentExpr := rootName
+					for i := 0; i < len(ops); i++ {
+						op := &ops[i]
+						isLast := (i == len(ops)-1)
+						if op.accessType == "map" {
+							op.mapVarExpr = currentExpr
+							if !isLast {
+								// Only create temp variable for intermediate map accesses
+								op.tempVarName = fmt.Sprintf("__temp_%d", jse.mixedTempCounter)
+								jse.mixedTempCounter++
+								currentExpr = op.tempVarName
+							}
+							// For last map access, mapVarExpr is the assignment target
+						} else {
+							// For slice access, append the index
+							currentExpr = currentExpr + "[" + op.keyExpr + "]"
+						}
+					}
+
+					// The final target
+					if ops[len(ops)-1].accessType == "map" {
+						jse.mixedAssignFinalTarget = ops[len(ops)-1].mapVarExpr
+					} else {
+						jse.mixedAssignFinalTarget = currentExpr
+					}
+
+					jse.mixedIndexAssignOps = ops
+					return
+				}
+			}
+		}
+	}
+	// Check for map assignment: m[k] = v (includes slice-then-map like slice[i][k] = v)
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
@@ -852,7 +992,7 @@ func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if _, ok := tv.Type.Underlying().(*types.Map); ok {
 						jse.isMapAssign = true
 						jse.mapAssignIndent = indent
-						jse.mapAssignVarName = exprToString(indexExpr.X)
+						jse.mapAssignVarName = exprToJsString(indexExpr.X)
 						jse.suppressRangeEmit = true // Suppress LHS output
 						return
 					}
@@ -918,6 +1058,35 @@ func (jse *JSEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	if jse.forwardDecl {
 		return
 	}
+	// Handle mixed index assignment preamble
+	if jse.isMixedIndexAssign {
+		jse.suppressRangeEmit = false
+		indentStr := jse.emitAsString("", jse.mixedAssignIndent)
+
+		// Emit preamble: extract temp variables for each intermediate map access
+		for i, op := range jse.mixedIndexAssignOps {
+			if op.accessType == "map" && i < len(jse.mixedIndexAssignOps)-1 {
+				// Intermediate map access: extract to temp variable
+				preamble := indentStr + "let " + op.tempVarName + " = hmap.hashMapGet(" +
+					op.mapVarExpr + ", " + op.keyExpr + ");\n"
+				jse.emitToFile(preamble)
+			}
+		}
+
+		// Emit the final assignment target
+		lastOp := jse.mixedIndexAssignOps[len(jse.mixedIndexAssignOps)-1]
+		if lastOp.accessType == "map" {
+			// Last is map: emit hashMapSet, assign back to parent expression (mapVarExpr)
+			assignStart := indentStr + lastOp.mapVarExpr + " = hmap.hashMapSet(" +
+				lastOp.mapVarExpr + ", " + lastOp.keyExpr + ", "
+			jse.emitToFile(assignStart)
+		} else {
+			// Last is slice: emit direct assignment
+			assignStart := indentStr + jse.mixedAssignFinalTarget + " = "
+			jse.emitToFile(assignStart)
+		}
+		return
+	}
 	if jse.isMapAssign {
 		// Turn off suppression
 		jse.suppressRangeEmit = false
@@ -935,6 +1104,36 @@ func (jse *JSEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (jse *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Handle mixed index assignment epilogue
+	if jse.isMixedIndexAssign {
+		lastOp := jse.mixedIndexAssignOps[len(jse.mixedIndexAssignOps)-1]
+		indentStr := jse.emitAsString("", jse.mixedAssignIndent)
+
+		if lastOp.accessType == "map" {
+			// Close hashMapSet call
+			jse.emitToFile(");\n")
+		} else {
+			// Close direct assignment
+			jse.emitToFile(";\n")
+		}
+
+		// Emit epilogue: set back temp variables in reverse order
+		for i := len(jse.mixedIndexAssignOps) - 1; i >= 0; i-- {
+			op := jse.mixedIndexAssignOps[i]
+			if op.accessType == "map" && i < len(jse.mixedIndexAssignOps)-1 {
+				// Set the updated temp var back into its parent map
+				epilogue := indentStr + op.mapVarExpr + " = hmap.hashMapSet(" +
+					op.mapVarExpr + ", " + op.keyExpr + ", " + op.tempVarName + ");\n"
+				jse.emitToFile(epilogue)
+			}
+		}
+
+		jse.isMixedIndexAssign = false
+		jse.mixedIndexAssignOps = nil
+		jse.mixedAssignFinalTarget = ""
+		jse.suppressRangeEmit = false
+		return
+	}
 	// Handle type assertion comma-ok: val, ok := x.(Type)
 	if jse.isTypeAssertCommaOk {
 		expr := jse.capturedMapKey
@@ -1645,14 +1844,20 @@ func (jse *JSEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		return
 	}
 	// Check if indexing a map (for read access: m[k])
-	if !jse.isMapAssign && !jse.isMapCommaOk && jse.pkg != nil && jse.pkg.TypesInfo != nil {
+	if !jse.isMapAssign && !jse.isMapCommaOk && !jse.isMixedIndexAssign && jse.pkg != nil && jse.pkg.TypesInfo != nil {
 		tv := jse.pkg.TypesInfo.Types[node.X]
 		if tv.Type != nil {
 			if _, ok := tv.Type.Underlying().(*types.Map); ok {
+				jse.indexAccessTypeStack = append(jse.indexAccessTypeStack, "map")
 				jse.isMapIndex = true
 				jse.mapIndexDepth++
 				jse.emitToFile("hmap.hashMapGet(")
 				return
+			}
+			// Check for slice/array access
+			switch tv.Type.Underlying().(type) {
+			case *types.Slice, *types.Array:
+				jse.indexAccessTypeStack = append(jse.indexAccessTypeStack, "slice")
 			}
 		}
 	}
@@ -1662,19 +1867,36 @@ func (jse *JSEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	if jse.forwardDecl {
 		return
 	}
-	// Map read: emit ", " between map expr and key
-	if jse.isMapIndex {
-		jse.emitToFile(", ")
-		return
+	// Use the stack to determine access type
+	if len(jse.indexAccessTypeStack) > 0 {
+		accessType := jse.indexAccessTypeStack[len(jse.indexAccessTypeStack)-1]
+		if accessType == "map" {
+			// Map read: emit ", " between map expr and key
+			jse.emitToFile(", ")
+			return
+		} else if accessType == "slice" {
+			// Slice access: emit [
+			// Check for string indexing
+			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
+				tv := jse.pkg.TypesInfo.Types[node.X]
+				if tv.Type != nil {
+					if basic, ok := tv.Type.(*types.Basic); ok && basic.Kind() == types.String {
+						jse.isStringIndex = true
+						jse.emitToFile(".charCodeAt(")
+						return
+					}
+				}
+			}
+			jse.emitToFile("[")
+			return
+		}
 	}
+	// Fallback: map assignment, comma-ok, or no stack
 	// Map assignment: start capturing the key expression
 	if jse.isMapAssign {
 		// For nested maps: skip capture for the nested index (outer key)
-		// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
-		// node.X IS an IndexExpr means this is the root index (for inner key m["outer"]["inner"])
 		if jse.isNestedMapAssign {
 			if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
-				// This is the nested index (outer key) - don't capture, we have it already
 				return
 			}
 		}
@@ -1707,6 +1929,29 @@ func (jse *JSEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	if jse.forwardDecl {
 		return
 	}
+	// Use the stack to determine access type
+	if len(jse.indexAccessTypeStack) > 0 {
+		accessType := jse.indexAccessTypeStack[len(jse.indexAccessTypeStack)-1]
+		jse.indexAccessTypeStack = jse.indexAccessTypeStack[:len(jse.indexAccessTypeStack)-1]
+		if accessType == "map" {
+			jse.emitToFile(")")
+			jse.mapIndexDepth--
+			if jse.mapIndexDepth <= 0 {
+				jse.isMapIndex = false
+				jse.mapIndexDepth = 0
+			}
+			return
+		} else if accessType == "slice" {
+			if jse.isStringIndex {
+				jse.emitToFile(")")
+				jse.isStringIndex = false
+			} else {
+				jse.emitToFile("]")
+			}
+			return
+		}
+	}
+	// Fallback: map assignment, comma-ok, or no stack
 	if jse.isMapIndex {
 		jse.emitToFile(")")
 		jse.mapIndexDepth--
@@ -1723,7 +1968,6 @@ func (jse *JSEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	// For nested maps: don't reset isMapIndex when processing the nested index
 	if jse.isNestedMapAssign {
 		if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
-			// This is the nested index - keep isMapIndex true so root index can capture
 			return
 		}
 	}

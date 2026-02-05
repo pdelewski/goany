@@ -48,6 +48,16 @@ type csKeyCastState struct {
 	valueType string
 }
 
+type csMixedIndexOp struct {
+	accessType   string // "map" or "slice"
+	keyExpr      string // Key/index expression
+	keyCastPfx   string // Cast prefix for map key
+	keyCastSfx   string // Cast suffix for map key
+	valueCsType  string // C# type of the value at this level
+	tempVarName  string // Temp variable name (only for map access)
+	mapVarExpr   string // The expression to call hashMapGet on
+}
+
 type CSharpEmitter struct {
 	Output          string
 	OutputDir       string
@@ -95,11 +105,14 @@ type CSharpEmitter struct {
 	mapAssignVarName  string
 	mapAssignIndent   int
 	// Nested map assignment: m["outer"]["inner"] = v
-	isNestedMapAssign     bool
-	nestedMapOuterVarName string
-	nestedMapOuterKey     string
-	nestedMapCounter      int
-	nestedMapVarName      string
+	isNestedMapAssign           bool
+	nestedMapOuterVarName       string
+	nestedMapOuterKey           string
+	nestedMapOuterKeyCastPrefix string
+	nestedMapOuterKeyCastSuffix string
+	nestedMapCounter            int
+	nestedMapVarName            string
+	nestedMapValueCsType        string
 	captureMapKey         bool
 	capturedMapKey    string
 	suppressMapEmit   bool
@@ -129,6 +142,14 @@ type CSharpEmitter struct {
 	// Slice make support (for transpiled hashmap runtime)
 	isSliceMakeCall bool
 	sliceMakeElemType string
+	// Mixed nested composites: []map[string]int, map[string][]int, etc.
+	indexAccessTypeStack    []string // Stack of access types: "map" or "slice"
+	suppressMapEmitStack   []bool   // Save/restore stack for suppressMapEmit
+	// General mixed index assignment
+	isMixedIndexAssign     bool
+	mixedIndexAssignOps    []csMixedIndexOp
+	mixedAssignIndent      int
+	mixedAssignFinalTarget string
 }
 
 func (*CSharpEmitter) lowerToBuiltins(selector string) string {
@@ -391,6 +412,10 @@ func getCsTypeName(t types.Type) string {
 	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
 		return "object"
 	}
+	// Handle map types
+	if _, ok := t.Underlying().(*types.Map); ok {
+		return "hmap.HashMap"
+	}
 	if named, ok := t.(*types.Named); ok {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()
@@ -426,16 +451,79 @@ func getCsKeyCast(keyType types.Type) (string, string) {
 	return "", ""
 }
 
-// exprToCsString converts a simple expression (BasicLit, Ident) to its C# string representation
+// exprToCsString converts a simple expression (BasicLit, Ident, IndexExpr, SelectorExpr) to its C# string representation
 func exprToCsString(expr ast.Expr) string {
 	switch e := expr.(type) {
 	case *ast.BasicLit:
 		return e.Value // Keep quotes for strings
 	case *ast.Ident:
 		return e.Name
+	case *ast.IndexExpr:
+		xStr := exprToCsString(e.X)
+		indexStr := exprToCsString(e.Index)
+		if xStr != "" && indexStr != "" {
+			return xStr + "[" + indexStr + "]"
+		}
+		return ""
+	case *ast.SelectorExpr:
+		xStr := exprToCsString(e.X)
+		if xStr != "" {
+			return xStr + "." + e.Sel.Name
+		}
+		return ""
 	default:
 		return ""
 	}
+}
+
+// analyzeLhsIndexChainCs walks an IndexExpr chain and returns operations from root to outermost.
+// Returns true if any intermediate map access was found (requiring temp var extraction).
+func (cse *CSharpEmitter) analyzeLhsIndexChainCs(expr ast.Expr) (ops []csMixedIndexOp, hasIntermediateMap bool) {
+	// Collect the chain from outermost to root
+	var chain []ast.Expr
+	current := expr
+	for {
+		indexExpr, ok := current.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append(chain, indexExpr)
+		current = indexExpr.X
+	}
+	// chain[0] is outermost, chain[len-1] is innermost (closest to root variable)
+	// Reverse to get root to outermost order
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	// Now chain[0] is innermost (root[k1]), chain[len-1] is outermost ([kN])
+	hasIntermediateMap = false
+	for i, node := range chain {
+		ie := node.(*ast.IndexExpr)
+		tv := cse.pkg.TypesInfo.Types[ie.X]
+		if tv.Type == nil {
+			continue
+		}
+		isLast := (i == len(chain)-1)
+		if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+			op := csMixedIndexOp{
+				accessType:  "map",
+				keyExpr:     exprToCsString(ie.Index),
+				valueCsType: getCsTypeName(mapType.Elem()),
+			}
+			op.keyCastPfx, op.keyCastSfx = getCsKeyCast(mapType.Key())
+			if !isLast {
+				hasIntermediateMap = true
+			}
+			ops = append(ops, op)
+		} else {
+			op := csMixedIndexOp{
+				accessType: "slice",
+				keyExpr:    exprToCsString(ie.Index),
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops, hasIntermediateMap
 }
 
 func (cse *CSharpEmitter) SetFile(file *os.File) {
@@ -1081,8 +1169,8 @@ func (cse *CSharpEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 
 func (cse *CSharpEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		// Skip emission during type alias handling
-		if cse.suppressTypeAliasEmit {
+		// Skip emission during type alias handling or map type traversal
+		if cse.suppressTypeAliasEmit || cse.suppressMapEmit {
 			return
 		}
 		str := cse.emitAsString("List", indent)
@@ -1093,8 +1181,8 @@ func (cse *CSharpEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 }
 func (cse *CSharpEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		// Skip emission during type alias handling
-		if cse.suppressTypeAliasEmit {
+		// Skip emission during type alias handling or map type traversal
+		if cse.suppressTypeAliasEmit || cse.suppressMapEmit {
 			return
 		}
 		str := cse.emitAsString(">", 0)
@@ -1122,6 +1210,10 @@ func (cse *CSharpEmitter) PreVisitMapType(node *ast.MapType, indent int) {
 		return
 	}
 	cse.executeIfNotForwardDecls(func() {
+		// Skip emission during map type traversal (nested map types in value positions)
+		if cse.suppressMapEmit {
+			return
+		}
 		cse.gir.emitToFileBuffer("hmap.HashMap", EmptyVisitMethod)
 	})
 }
@@ -1131,22 +1223,34 @@ func (cse *CSharpEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 
 // PreVisitMapKeyType suppresses output during map key type traversal
 func (cse *CSharpEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
+	cse.suppressMapEmitStack = append(cse.suppressMapEmitStack, cse.suppressMapEmit)
 	cse.suppressMapEmit = true
 }
 
-// PostVisitMapKeyType re-enables output after map key type traversal
+// PostVisitMapKeyType restores output state after map key type traversal
 func (cse *CSharpEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
-	cse.suppressMapEmit = false
+	if len(cse.suppressMapEmitStack) > 0 {
+		cse.suppressMapEmit = cse.suppressMapEmitStack[len(cse.suppressMapEmitStack)-1]
+		cse.suppressMapEmitStack = cse.suppressMapEmitStack[:len(cse.suppressMapEmitStack)-1]
+	} else {
+		cse.suppressMapEmit = false
+	}
 }
 
 // PreVisitMapValueType suppresses output during map value type traversal
 func (cse *CSharpEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
+	cse.suppressMapEmitStack = append(cse.suppressMapEmitStack, cse.suppressMapEmit)
 	cse.suppressMapEmit = true
 }
 
-// PostVisitMapValueType re-enables output after map value type traversal
+// PostVisitMapValueType restores output state after map value type traversal
 func (cse *CSharpEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
-	cse.suppressMapEmit = false
+	if len(cse.suppressMapEmitStack) > 0 {
+		cse.suppressMapEmit = cse.suppressMapEmitStack[len(cse.suppressMapEmitStack)-1]
+		cse.suppressMapEmitStack = cse.suppressMapEmitStack[:len(cse.suppressMapEmitStack)-1]
+	} else {
+		cse.suppressMapEmit = false
+	}
 }
 
 func (cse *CSharpEmitter) PreVisitFuncType(node *ast.FuncType, indent int) {
@@ -1511,7 +1615,7 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 	}
 	// Detect map assignment: m[k] = v -> m = hmap.hashMapSet(m, k, v)
-	// Also handles nested: m[k1][k2] = v
+	// Also handles nested: m[k1][k2] = v, sliceOfMaps[0]["key"] = v, etc.
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
@@ -1524,19 +1628,98 @@ func (cse *CSharpEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cse.assignmentToken = "="
 						cse.mapKeyCastPrefix, cse.mapKeyCastSuffix = getCsKeyCast(mapType.Key())
 
-						// Check for nested map assignment: m[k1][k2] = v
+						// Check for nested index: m[k1][k2] = v or sliceOfMaps[0]["key"] = v
 						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
-							cse.isNestedMapAssign = true
-							cse.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
-							cse.nestedMapOuterKey = exprToCsString(outerIndexExpr.Index)
-							cse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cse.nestedMapCounter)
-							cse.nestedMapCounter++
-							cse.mapAssignVarName = cse.nestedMapVarName
+							// Check if outer expression is a map or a slice
+							outerTv := cse.pkg.TypesInfo.Types[outerIndexExpr.X]
+							if outerTv.Type != nil {
+								if outerMapType, ok := outerTv.Type.Underlying().(*types.Map); ok {
+									// Nested map assignment: m[k1][k2] = v
+									cse.isNestedMapAssign = true
+									cse.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
+									cse.nestedMapOuterKey = exprToCsString(outerIndexExpr.Index)
+									cse.nestedMapOuterKeyCastPrefix, cse.nestedMapOuterKeyCastSuffix = getCsKeyCast(outerMapType.Key())
+									cse.nestedMapValueCsType = "hmap.HashMap"
+									cse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cse.nestedMapCounter)
+									cse.nestedMapCounter++
+									cse.mapAssignVarName = cse.nestedMapVarName
+								} else {
+									// Check if the slice is accessed from a map further up
+									if deeperIndexExpr, isDeeper := outerIndexExpr.X.(*ast.IndexExpr); isDeeper {
+										deeperTv := cse.pkg.TypesInfo.Types[deeperIndexExpr.X]
+										if deeperTv.Type != nil {
+											if deeperMapType, ok := deeperTv.Type.Underlying().(*types.Map); ok {
+												// map-slice-map assignment pattern
+												cse.isNestedMapAssign = true
+												cse.nestedMapOuterVarName = exprToString(deeperIndexExpr.X)
+												cse.nestedMapOuterKey = exprToCsString(deeperIndexExpr.Index)
+												cse.nestedMapOuterKeyCastPrefix, cse.nestedMapOuterKeyCastSuffix = getCsKeyCast(deeperMapType.Key())
+												cse.nestedMapValueCsType = getCsTypeName(deeperMapType.Elem())
+												cse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cse.nestedMapCounter)
+												cse.nestedMapCounter++
+												sliceIdx := exprToCsString(outerIndexExpr.Index)
+												cse.mapAssignVarName = cse.nestedMapVarName + "[" + sliceIdx + "]"
+											} else {
+												cse.isNestedMapAssign = false
+												cse.mapAssignVarName = exprToCsString(indexExpr.X)
+											}
+										} else {
+											cse.isNestedMapAssign = false
+											cse.mapAssignVarName = exprToCsString(indexExpr.X)
+										}
+									} else {
+										// Simple slice-then-map: sliceOfMaps[0]["key"] = v
+										cse.isNestedMapAssign = false
+										cse.mapAssignVarName = exprToCsString(indexExpr.X)
+									}
+								}
+							} else {
+								// Fallback: treat as non-nested
+								cse.isNestedMapAssign = false
+								cse.mapAssignVarName = exprToCsString(indexExpr.X)
+							}
 						} else {
 							cse.isNestedMapAssign = false
 							cse.mapAssignVarName = exprToString(indexExpr.X)
 						}
 						return // Skip normal indent emission
+					}
+					// Detect mixed index assignment: any pattern where intermediate map
+					// accesses exist below a non-map outermost access
+					ops, hasIntermediateMap := cse.analyzeLhsIndexChainCs(node.Lhs[0])
+					if hasIntermediateMap && len(ops) > 0 {
+						// Get root variable name
+						rootExpr := node.Lhs[0]
+						for {
+							if ie, ok := rootExpr.(*ast.IndexExpr); ok {
+								rootExpr = ie.X
+							} else {
+								break
+							}
+						}
+						rootVar := exprToString(rootExpr)
+
+						// Assign temp var names to map accesses and build the chain
+						currentVar := rootVar
+						for i := range ops {
+							if ops[i].accessType == "map" {
+								ops[i].mapVarExpr = currentVar
+								ops[i].tempVarName = fmt.Sprintf("__nested_inner_%d", cse.nestedMapCounter)
+								cse.nestedMapCounter++
+								currentVar = ops[i].tempVarName
+							} else {
+								// Slice access on current variable
+								ops[i].mapVarExpr = currentVar
+								currentVar = currentVar + "[" + ops[i].keyExpr + "]"
+							}
+						}
+
+						cse.isMixedIndexAssign = true
+						cse.mixedIndexAssignOps = ops
+						cse.mixedAssignIndent = indent
+						cse.mixedAssignFinalTarget = currentVar
+						cse.suppressMapEmit = true
+						return
 					}
 				}
 			}
@@ -1604,6 +1787,32 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 		cse.mapKeyCastSuffix = ""
 		return
 	}
+	// Handle mixed index assignment epilogue
+	if cse.isMixedIndexAssign {
+		cse.executeIfNotForwardDecls(func() {
+			// Finish the value assignment
+			cse.gir.emitToFileBuffer(";\n", EmptyVisitMethod)
+			// Emit epilogue: set-back chain in reverse order for map accesses
+			for i := len(cse.mixedIndexAssignOps) - 1; i >= 0; i-- {
+				op := cse.mixedIndexAssignOps[i]
+				if op.accessType == "map" {
+					key := op.keyExpr
+					if op.keyCastPfx != "" {
+						key = op.keyCastPfx + key + op.keyCastSfx
+					}
+					epilogue := cse.emitAsString(op.mapVarExpr+" = hmap.hashMapSet("+
+						op.mapVarExpr+", "+key+", "+op.tempVarName+");\n", cse.mixedAssignIndent)
+					cse.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
+				}
+			}
+		})
+		// Reset state
+		cse.isMixedIndexAssign = false
+		cse.mixedIndexAssignOps = nil
+		cse.mixedAssignFinalTarget = ""
+		cse.suppressMapEmit = false
+		return
+	}
 	// Close hashMapSet call for map assignment
 	if cse.isMapAssign {
 		cse.executeIfNotForwardDecls(func() {
@@ -1612,12 +1821,18 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 
 			// For nested map assignment, emit epilogue to set updated inner map back to outer
 			if cse.isNestedMapAssign {
+				outerKey := cse.nestedMapOuterKey
+				if cse.nestedMapOuterKeyCastPrefix != "" {
+					outerKey = cse.nestedMapOuterKeyCastPrefix + outerKey + cse.nestedMapOuterKeyCastSuffix
+				}
 				epilogue := cse.emitAsString(cse.nestedMapOuterVarName+" = hmap.hashMapSet("+
-					cse.nestedMapOuterVarName+", "+cse.nestedMapOuterKey+", "+cse.nestedMapVarName+");", cse.mapAssignIndent)
+					cse.nestedMapOuterVarName+", "+outerKey+", "+cse.nestedMapVarName+");", cse.mapAssignIndent)
 				cse.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
 				cse.isNestedMapAssign = false
 				cse.nestedMapOuterVarName = ""
 				cse.nestedMapOuterKey = ""
+				cse.nestedMapOuterKeyCastPrefix = ""
+				cse.nestedMapOuterKeyCastSuffix = ""
 			}
 		})
 		cse.isMapAssign = false
@@ -1639,16 +1854,45 @@ func (cse *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 
 func (cse *CSharpEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		if cse.isMixedIndexAssign {
+			// Turn off suppression and emit the preamble + assignment
+			cse.suppressMapEmit = false
+			// Emit preamble: extract temp variables for each map access
+			for _, op := range cse.mixedIndexAssignOps {
+				if op.accessType == "map" {
+					key := op.keyExpr
+					if op.keyCastPfx != "" {
+						key = op.keyCastPfx + key + op.keyCastSfx
+					}
+					preamble := cse.emitAsString("var "+op.tempVarName+" = ("+
+						op.valueCsType+")hmap.hashMapGet("+
+						op.mapVarExpr+", "+key+");\n", cse.mixedAssignIndent)
+					cse.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
+				}
+			}
+			// Emit assignment: finalTarget = value
+			str := cse.emitAsString(cse.mixedAssignFinalTarget+" = ", cse.mixedAssignIndent)
+			cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			return
+		}
 		if cse.isMapAssign {
 			key := cse.mapKeyCastPrefix + strings.TrimSpace(cse.capturedMapKey) + cse.mapKeyCastSuffix
 
 			if cse.isNestedMapAssign {
 				// For nested map: m["outer"]["inner"] = v
 				// Generate:
-				//   var __nested_inner_N = (hmap.HashMap)hmap.hashMapGet(m, outerKey);
+				//   var __nested_inner_N = (CastType)hmap.hashMapGet(m, outerKey);
 				//   __nested_inner_N = hmap.hashMapSet(__nested_inner_N, innerKey, value)
-				preamble := cse.emitAsString("var "+cse.nestedMapVarName+" = (hmap.HashMap)hmap.hashMapGet("+
-					cse.nestedMapOuterVarName+", "+cse.nestedMapOuterKey+");\n", cse.mapAssignIndent)
+				outerKey := cse.nestedMapOuterKey
+				if cse.nestedMapOuterKeyCastPrefix != "" {
+					outerKey = cse.nestedMapOuterKeyCastPrefix + outerKey + cse.nestedMapOuterKeyCastSuffix
+				}
+				castType := cse.nestedMapValueCsType
+				if castType == "" {
+					castType = "hmap.HashMap"
+				}
+				preamble := cse.emitAsString("var "+cse.nestedMapVarName+" = ("+castType+")hmap.hashMapGet("+
+					cse.nestedMapOuterVarName+", "+outerKey+");\n", cse.mapAssignIndent)
 				cse.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
 			}
 
@@ -1699,8 +1943,8 @@ func (cse *CSharpEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, i
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk {
-			return // Skip for map assignment or comma-ok
+		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk || cse.isMixedIndexAssign {
+			return // Skip for map assignment, comma-ok, or mixed index assign
 		}
 		if index > 0 {
 			str := cse.emitAsString(", ", indent)
@@ -1711,8 +1955,8 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, in
 
 func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk {
-			return // Skip for map assignment or comma-ok
+		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk || cse.isMixedIndexAssign {
+			return // Skip for map assignment, comma-ok, or mixed index assign
 		}
 		assignmentToken := node.Tok.String()
 		if assignmentToken == ":=" && len(node.Lhs) == 1 {
@@ -1736,8 +1980,8 @@ func (cse *CSharpEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int
 
 func (cse *CSharpEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk {
-			return // Skip for map assignment or comma-ok
+		if cse.isMapAssign || cse.isMapCommaOk || cse.isTypeAssertCommaOk || cse.isMixedIndexAssign {
+			return // Skip for map assignment, comma-ok, or mixed index assign
 		}
 		if node.Tok.String() == ":=" && len(node.Lhs) > 1 {
 			cse.emitToken(")", RightParen, indent)
@@ -1749,14 +1993,17 @@ func (cse *CSharpEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent in
 
 func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
-		if cse.isMapAssign || cse.isMapCommaOk {
-			return // Map assignment or comma-ok - suppressed
+		if cse.isMapAssign || cse.isMapCommaOk || cse.isMixedIndexAssign {
+			return // Map assignment, comma-ok, or mixed index assign - suppressed
 		}
 		// Detect map index read: m[k] -> (ValueType)hmap.hashMapGet(m, k)
 		if cse.pkg != nil && cse.pkg.TypesInfo != nil {
 			tv := cse.pkg.TypesInfo.Types[node.X]
 			if tv.Type != nil {
 				if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+					// Push "map" onto the access type stack
+					cse.indexAccessTypeStack = append(cse.indexAccessTypeStack, "map")
+
 					// If already in a map index (nested read), save current state
 					if cse.isMapIndex {
 						cse.mapKeyCastStack = append(cse.mapKeyCastStack, csKeyCastState{
@@ -1779,6 +2026,25 @@ func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 					// Emit (ValueType)hmap.hashMapGet(
 					str := cse.emitAsString("("+cse.mapIndexValueType+")hmap.hashMapGet(", 0)
 					cse.emitToken(str, Identifier, 0)
+				} else {
+					// Slice or array access - check if inner expression is a map read
+					// In C#, (T)hmap.hashMapGet(...)[i] is parsed as (T)(hmap.hashMapGet(...)[i])
+					// so we need wrapping parens: ((T)hmap.hashMapGet(...))[i]
+					needsWrap := false
+					if innerIdx, ok := node.X.(*ast.IndexExpr); ok {
+						innerTv := cse.pkg.TypesInfo.Types[innerIdx.X]
+						if innerTv.Type != nil {
+							if _, isMap := innerTv.Type.Underlying().(*types.Map); isMap {
+								needsWrap = true
+							}
+						}
+					}
+					if needsWrap {
+						cse.indexAccessTypeStack = append(cse.indexAccessTypeStack, "slice_after_map")
+						cse.emitToken("(", LeftParen, 0)
+					} else {
+						cse.indexAccessTypeStack = append(cse.indexAccessTypeStack, "slice")
+					}
 				}
 			}
 		}
@@ -1786,6 +2052,26 @@ func (cse *CSharpEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 }
 func (cse *CSharpEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		// Check the access type stack to determine what to emit after X
+		if len(cse.indexAccessTypeStack) > 0 {
+			accessType := cse.indexAccessTypeStack[len(cse.indexAccessTypeStack)-1]
+			if accessType == "map" {
+				if cse.mapKeyCastPrefix != "" {
+					cse.emitToken(", "+cse.mapKeyCastPrefix, Comma, 0)
+				} else {
+					cse.emitToken(", ", Comma, 0)
+				}
+				return
+			}
+			if accessType == "slice_after_map" {
+				// Close the wrapping paren around the map read result
+				cse.emitToken(")", RightParen, 0)
+				return
+			}
+			// "slice" - nothing to emit after X
+			return
+		}
+		// Fallback for when stack isn't being used (map assign, comma-ok)
 		if cse.isMapIndex {
 			if cse.mapKeyCastPrefix != "" {
 				cse.emitToken(", "+cse.mapKeyCastPrefix, Comma, 0)
@@ -1796,24 +2082,7 @@ func (cse *CSharpEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
 	})
 }
 func (cse *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	cse.executeIfNotForwardDecls(func() {
-		// Restore previous key cast state if we have saved state (nested reads)
-		if len(cse.mapKeyCastStack) > 0 {
-			state := cse.mapKeyCastStack[len(cse.mapKeyCastStack)-1]
-			cse.mapKeyCastStack = cse.mapKeyCastStack[:len(cse.mapKeyCastStack)-1]
-			cse.mapKeyCastPrefix = state.prefix
-			cse.mapKeyCastSuffix = state.suffix
-			cse.mapIndexValueType = state.valueType
-			// Keep isMapIndex true for the outer map read
-		} else {
-			cse.isMapIndex = false
-			// Don't reset cast fields if isMapAssign - they're used in PreVisitAssignStmtRhs
-			if !cse.isMapAssign && !cse.isMapCommaOk {
-				cse.mapKeyCastPrefix = ""
-				cse.mapKeyCastSuffix = ""
-			}
-		}
-	})
+	// Cleanup is handled in PostVisitIndexExprIndex now
 }
 func (cse *CSharpEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	cse.executeIfNotForwardDecls(func() {
@@ -1831,8 +2100,19 @@ func (cse *CSharpEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int
 			cse.capturedMapKey = ""
 			return
 		}
+		// Check the access type stack
+		if len(cse.indexAccessTypeStack) > 0 {
+			accessType := cse.indexAccessTypeStack[len(cse.indexAccessTypeStack)-1]
+			if accessType == "map" {
+				return // Don't emit "[" for map read (comma already emitted in PostVisitIndexExprX)
+			}
+			// "slice" or "slice_after_map" - emit [
+			cse.emitToken("[", LeftBracket, 0)
+			return
+		}
+		// Fallback
 		if cse.isMapIndex {
-			return // Don't emit "[" for map read
+			return
 		}
 		cse.emitToken("[", LeftBracket, 0)
 	})
@@ -1850,6 +2130,37 @@ func (cse *CSharpEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent in
 			cse.suppressMapEmit = true
 			return
 		}
+		// Check the access type stack
+		if len(cse.indexAccessTypeStack) > 0 {
+			accessType := cse.indexAccessTypeStack[len(cse.indexAccessTypeStack)-1]
+			// Pop from the stack
+			cse.indexAccessTypeStack = cse.indexAccessTypeStack[:len(cse.indexAccessTypeStack)-1]
+
+			if accessType == "map" {
+				if cse.mapKeyCastSuffix != "" {
+					cse.emitToken(cse.mapKeyCastSuffix, RightParen, 0)
+				}
+				cse.emitToken(")", RightParen, 0)
+				// Restore previous key cast state if we have saved state (nested reads)
+				if len(cse.mapKeyCastStack) > 0 {
+					state := cse.mapKeyCastStack[len(cse.mapKeyCastStack)-1]
+					cse.mapKeyCastStack = cse.mapKeyCastStack[:len(cse.mapKeyCastStack)-1]
+					cse.mapKeyCastPrefix = state.prefix
+					cse.mapKeyCastSuffix = state.suffix
+					cse.mapIndexValueType = state.valueType
+				} else {
+					cse.isMapIndex = false
+					cse.mapIndexValueType = ""
+					cse.mapKeyCastPrefix = ""
+					cse.mapKeyCastSuffix = ""
+				}
+				return
+			}
+			// "slice" or "slice_after_map" - emit ]
+			cse.emitToken("]", RightBracket, 0)
+			return
+		}
+		// Fallback for when stack isn't being used
 		if cse.isMapIndex {
 			if cse.mapKeyCastSuffix != "" {
 				cse.emitToken(cse.mapKeyCastSuffix, RightParen, 0)
