@@ -232,14 +232,11 @@ func main() {
 	// Build passes list
 	var passes []compiler.Pass
 
-	// Pass 1: Syntax checking (validates constructs against GoAny syntax rules)
+	// Pass 1: Syntax checking (rejects unsupported Go constructs)
 	if checkSyntax {
-		syntaxDB := compiler.GetBuiltinPatternDatabase()
 		syntaxChecker := &compiler.SyntaxChecker{Emitter: &compiler.BaseEmitter{}}
-		syntaxChecker.SetPatternDatabase(syntaxDB)
 		syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
 		passes = append(passes, syntaxPass)
-		compiler.DebugLogPrintf("Syntax rules loaded with %d patterns", len(syntaxDB.Patterns))
 	}
 
 	// Pass 2: Semantic analysis (always runs)

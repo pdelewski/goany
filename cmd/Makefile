@@ -8,11 +8,16 @@ ASTYLE_LIB = $(ASTYLE_DIR)/libastyle.a
 
 # Go build flags
 GO_BUILD_FLAGS = -v
-GO_GENERATE_FLAGS =
 
 # Default target
 .PHONY: all
 all: build
+
+# Generate code (runs go generate for emitter.go)
+.PHONY: generate
+generate:
+	@echo "Generating code..."
+	cd .. && go generate ./...
 
 # Build astyle static library
 .PHONY: astyle
@@ -20,21 +25,15 @@ astyle:
 	@echo "Building astyle static library..."
 	$(MAKE) -C $(ASTYLE_DIR) -f Makefile.cgo
 
-# Generate code (runs go generate)
-.PHONY: generate
-generate:
-	@echo "Generating code..."
-	cd .. && go generate $(GO_GENERATE_FLAGS) ./...
-
 # Clean astyle
 .PHONY: clean-astyle
 clean-astyle:
 	@echo "Cleaning astyle..."
 	$(MAKE) -C $(ASTYLE_DIR) -f Makefile.cgo clean
 
-# Build the main binary (uses pre-committed patterns_data.go)
+# Build the main binary
 .PHONY: build
-build: astyle
+build: generate astyle
 	@echo "Building goany..."
 	go build $(GO_BUILD_FLAGS) -o $(BINARY_NAME) .
 	@echo "Build completed successfully!"
@@ -73,13 +72,13 @@ deps:
 
 # Development build (no optimizations, with debug info)
 .PHONY: dev
-dev: astyle
+dev: generate astyle
 	@echo "Building goany (development)..."
 	go build $(GO_BUILD_FLAGS) -gcflags="all=-N -l" -o $(BINARY_NAME) .
 
 # Production build (optimizations enabled)
 .PHONY: prod
-prod: astyle
+prod: generate astyle
 	@echo "Building goany (production)..."
 	go build $(GO_BUILD_FLAGS) -ldflags="-w -s" -o $(BINARY_NAME) .
 

@@ -273,8 +273,7 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 }
 
 // Note: Structural checks for DeferStmt, GoStmt, ChanType, SelectStmt, LabeledStmt
-// are now handled by the PatternChecker (whitelist approach).
-// These constructs are rejected because no patterns exist for them in tests/examples.
+// are handled by the SyntaxChecker (handwritten rules in syntax_checker.go).
 
 // PreVisitBranchStmt checks for goto statements which are not supported
 func (sema *SemaChecker) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
