@@ -69,6 +69,23 @@ type forLoopState struct {
 	loopIncrementVal     string
 }
 
+// rustKeyCastState holds key cast values for nested map reads
+type rustKeyCastState struct {
+	keyCastSuffix string
+	valueType     string
+}
+
+// rustMixedIndexOp represents a single index operation in a chain
+type rustMixedIndexOp struct {
+	accessType     string // "map" or "slice"
+	keyExpr        string // Key/index expression
+	keyCastSuffix  string // Cast suffix for map key (e.g. " as i64")
+	isStringKey    bool   // True if the map key type is string
+	valueRustType  string // Rust type of the value at this level
+	tempVarName    string // Temp variable name (only for map access)
+	mapVarExpr     string // The expression to call hashMapGet on
+}
+
 type RustEmitter struct {
 	Output          string
 	OutputDir       string
@@ -206,12 +223,32 @@ type RustEmitter struct {
 	isMapAssign                  bool              // Inside m[k]=v assignment
 	mapAssignVarName             string            // Variable name for map assignment
 	mapAssignIndent              int               // Indent level for map assignment
-	captureMapKey                bool              // Redirect emit to capturedMapKey
+	// Nested map assignment: m["outer"]["inner"] = v
+	isNestedMapAssign     bool
+	nestedMapOuterVarName string
+	nestedMapOuterKey     string
+	nestedMapCounter      int
+	nestedMapVarName      string
+	captureMapKey         bool // Redirect emit to capturedMapKey
 	capturedMapKey               string            // Captured key expression
 	suppressMapEmit              bool              // Suppress all token emission
+	// Mixed nested composites: []map[string]int, map[string][]int, etc.
+	indexAccessTypeStack         []string          // Stack of access types: "map" or "slice" for each IndexExpr level
+	suppressMapEmitStack         []bool            // Save/restore stack for suppressMapEmit
+	// General mixed index assignment: any combination of map[k] and slice[i] on LHS
+	isMixedIndexAssign           bool              // Assignment involves map access below outermost level
+	mixedIndexAssignOps          []rustMixedIndexOp // Chain of operations from root to outermost
+	mixedAssignIndent            int               // Indent level
+	mixedAssignFinalTarget       string            // Final assignment target expression
+	// Nested map assign dynamic cast type and outer key cast
+	nestedMapValueRustType       string            // Rust type for nested map value extraction
+	nestedMapOuterKeyCastSuffix  string            // Cast suffix for outer key in nested map assign
+	nestedMapOuterKeyIsString    bool              // True if outer key type is string in nested map assign
 	isDeleteCall                 bool              // Inside delete(m, k) call
 	deleteMapVarName             string            // Variable name for delete
 	mapKeyCastSuffix             string            // Rust cast suffix for map keys (e.g. " as i64")
+	mapKeyIsString               bool              // True if the map key type is string
+	mapKeyCastStack              []rustKeyCastState // Stack to save/restore key cast values for nested reads
 	isMapLenCall                 bool              // Inside len(m) on map
 	isSliceMakeCall              bool              // Inside make([]T, n) for runtime
 	sliceMakeElemType            string            // Element type for make([]T, n)
@@ -346,6 +383,15 @@ func getRustValueTypeCast(t types.Type) string {
 	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
 		return "Rc<dyn Any>"
 	}
+	// Handle slice types - recursively get element type
+	if slice, ok := t.(*types.Slice); ok {
+		elemType := getRustValueTypeCast(slice.Elem())
+		return "Vec<" + elemType + ">"
+	}
+	// Handle map types
+	if _, ok := t.Underlying().(*types.Map); ok {
+		return "hmap::HashMap"
+	}
 	if named, ok := t.(*types.Named); ok {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()
@@ -378,6 +424,106 @@ func getRustKeyCast(keyType types.Type) string {
 		}
 	}
 	return ""
+}
+
+// isRustStringKey returns true if the map key type is string.
+func isRustStringKey(keyType types.Type) bool {
+	if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic {
+		return basic.Kind() == types.String
+	}
+	return false
+}
+
+// exprToRustString converts a simple expression (BasicLit, Ident, IndexExpr, SelectorExpr) to its Rust string representation
+func exprToRustString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING {
+			// Go string literal to Rust: "foo" -> "foo".to_string() wrapped in Rc
+			// But for map keys we just need the raw value for now
+			return e.Value
+		}
+		return e.Value
+	case *ast.Ident:
+		return e.Name
+	case *ast.IndexExpr:
+		// Handle slice/array access like sliceOfMaps[0]
+		xStr := exprToRustString(e.X)
+		indexStr := exprToRustString(e.Index)
+		if xStr != "" && indexStr != "" {
+			return xStr + "[" + indexStr + "]"
+		}
+		return ""
+	case *ast.SelectorExpr:
+		xStr := exprToRustString(e.X)
+		if xStr != "" {
+			return xStr + "." + e.Sel.Name
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+// analyzeLhsIndexChainRust walks an IndexExpr chain and returns operations from root to outermost.
+// Returns true if this is a mixed access pattern (combining slice and map accesses).
+func (re *RustEmitter) analyzeLhsIndexChainRust(expr ast.Expr) (ops []rustMixedIndexOp, isMixed bool) {
+	// Collect the chain from outermost to root
+	var chain []ast.Expr
+	current := expr
+	for {
+		indexExpr, ok := current.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append(chain, indexExpr)
+		current = indexExpr.X
+	}
+	// chain[0] is outermost, chain[len-1] is innermost (closest to root variable)
+	// Reverse to get root to outermost order
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	// Now chain[0] is innermost (root[k1]), chain[len-1] is outermost ([kN])
+	hasMap := false
+	hasSlice := false
+	hasIntermediateMap := false
+	for i, node := range chain {
+		ie := node.(*ast.IndexExpr)
+		tv := re.pkg.TypesInfo.Types[ie.X]
+		if tv.Type == nil {
+			continue
+		}
+		isLast := (i == len(chain)-1)
+		if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+			keyExpr := exprToRustString(ie.Index)
+			keyCastSuffix := getRustKeyCast(mapType.Key())
+			valueRustType := getRustValueTypeCast(mapType.Elem())
+			op := rustMixedIndexOp{
+				accessType:    "map",
+				keyExpr:       keyExpr,
+				keyCastSuffix: keyCastSuffix,
+				isStringKey:   isRustStringKey(mapType.Key()),
+				valueRustType: valueRustType,
+			}
+			hasMap = true
+			if !isLast {
+				hasIntermediateMap = true
+			}
+			ops = append(ops, op)
+		} else {
+			// Slice or array access
+			op := rustMixedIndexOp{
+				accessType: "slice",
+				keyExpr:    exprToRustString(ie.Index),
+			}
+			hasSlice = true
+			ops = append(ops, op)
+		}
+	}
+	// Mixed if we have both slice and map, OR if we have an intermediate map
+	isMixed = (hasMap && hasSlice) || hasIntermediateMap
+	return ops, isMixed
 }
 
 func (re *RustEmitter) emitAsString(s string, indent int) string {
@@ -1973,14 +2119,46 @@ func (re *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 				sizeArg = "0"
 			}
 			p1Index := re.callExprFunMarkerStack[len(re.callExprFunMarkerStack)-1]
-			// Determine default value based on element type
+			// Determine default value based on element type.
+			// Use typed defaults to ensure type inference works even inside Rc::new().
 			var defaultVal string
-			if re.sliceMakeElemType == "bool" {
+			switch re.sliceMakeElemType {
+			case "bool":
 				defaultVal = "false"
-			} else if re.sliceMakeElemType == "Rc<dyn Any>" {
+			case "Rc<dyn Any>":
 				defaultVal = "Rc::new(0_i32) as Rc<dyn Any>"
-			} else {
-				defaultVal = "Default::default()"
+			case "i32":
+				defaultVal = "0_i32"
+			case "i8":
+				defaultVal = "0_i8"
+			case "i16":
+				defaultVal = "0_i16"
+			case "i64":
+				defaultVal = "0_i64"
+			case "u8":
+				defaultVal = "0_u8"
+			case "u16":
+				defaultVal = "0_u16"
+			case "u32":
+				defaultVal = "0_u32"
+			case "u64":
+				defaultVal = "0_u64"
+			case "f32":
+				defaultVal = "0.0_f32"
+			case "f64":
+				defaultVal = "0.0_f64"
+			case "String":
+				defaultVal = "String::new()"
+			case "hmap::HashMap":
+				defaultVal = "hmap::newHashMap(1)"
+			default:
+				if strings.HasPrefix(re.sliceMakeElemType, "Vec<") {
+					// Extract inner type: Vec<i32> -> i32
+					inner := re.sliceMakeElemType[4 : len(re.sliceMakeElemType)-1]
+					defaultVal = fmt.Sprintf("Vec::<%s>::new()", inner)
+				} else {
+					defaultVal = "Default::default()"
+				}
 			}
 			newTokens := []string{fmt.Sprintf("vec![%s; %s as usize]", defaultVal, sizeArg)}
 			re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
@@ -1996,6 +2174,7 @@ func (re *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		re.isDeleteCall = false
 		re.deleteMapVarName = ""
 		re.mapKeyCastSuffix = ""
+		re.mapKeyIsString = false
 		return
 	}
 	if re.isMapLenCall {
@@ -2860,6 +3039,13 @@ func (re *RustEmitter) PreVisitMapType(node *ast.MapType, indent int) {
 	if re.forwardDecls {
 		return
 	}
+	// Save current suppress state so PostVisitMapType can restore it.
+	// This prevents nested map types (e.g. map[int][]map[string]int)
+	// from prematurely clearing suppressMapEmit.
+	re.suppressMapEmitStack = append(re.suppressMapEmitStack, re.suppressMapEmit)
+	if re.suppressMapEmit {
+		return
+	}
 	// Emit hmap::HashMap as the type, suppress the map type tokens
 	re.emitToken("hmap::HashMap", Identifier, 0)
 	re.suppressMapEmit = true
@@ -2869,11 +3055,48 @@ func (re *RustEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 	if re.forwardDecls {
 		return
 	}
-	re.suppressMapEmit = false
+	// Restore previous suppress state from stack
+	if len(re.suppressMapEmitStack) > 0 {
+		re.suppressMapEmit = re.suppressMapEmitStack[len(re.suppressMapEmitStack)-1]
+		re.suppressMapEmitStack = re.suppressMapEmitStack[:len(re.suppressMapEmitStack)-1]
+	} else {
+		re.suppressMapEmit = false
+	}
+}
+
+func (re *RustEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
+	re.suppressMapEmitStack = append(re.suppressMapEmitStack, re.suppressMapEmit)
+	re.suppressMapEmit = true
+}
+
+func (re *RustEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	if len(re.suppressMapEmitStack) > 0 {
+		re.suppressMapEmit = re.suppressMapEmitStack[len(re.suppressMapEmitStack)-1]
+		re.suppressMapEmitStack = re.suppressMapEmitStack[:len(re.suppressMapEmitStack)-1]
+	} else {
+		re.suppressMapEmit = false
+	}
+}
+
+func (re *RustEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
+	re.suppressMapEmitStack = append(re.suppressMapEmitStack, re.suppressMapEmit)
+	re.suppressMapEmit = true
+}
+
+func (re *RustEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	if len(re.suppressMapEmitStack) > 0 {
+		re.suppressMapEmit = re.suppressMapEmitStack[len(re.suppressMapEmitStack)-1]
+		re.suppressMapEmitStack = re.suppressMapEmitStack[:len(re.suppressMapEmitStack)-1]
+	} else {
+		re.suppressMapEmit = false
+	}
 }
 
 func (re *RustEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 	if re.forwardDecls {
+		return
+	}
+	if re.suppressMapEmit {
 		return
 	}
 	re.gir.emitToFileBuffer("", "@@PreVisitArrayType")
@@ -2881,6 +3104,9 @@ func (re *RustEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 }
 func (re *RustEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	if re.forwardDecls {
+		return
+	}
+	if re.suppressMapEmit {
 		return
 	}
 	// Skip Vec rewriting for make([]T, n) - the whole call will be rewritten
@@ -2897,6 +3123,8 @@ func (re *RustEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 		re.arrayType = strings.Join(tokens, "")
 		// Prepend "Vec" before the array type tokens
 		re.gir.tokenSlice, _ = RewriteTokens(re.gir.tokenSlice, pointerAndPosition.Index, []string{}, []string{"Vec"})
+		// Remove the processed marker so nested arrays work correctly
+		re.gir.pointerAndIndexVec = RemovePointerEntryReverseString(re.gir.pointerAndIndexVec, "@@PreVisitArrayType")
 	}
 }
 
@@ -3383,11 +3611,13 @@ func (re *RustEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 			re.isDeleteCall = true
 			re.deleteMapVarName = exprToString(node.Args[0])
 			re.mapKeyCastSuffix = ""
+			re.mapKeyIsString = false
 			if re.pkg != nil && re.pkg.TypesInfo != nil {
 				tv := re.pkg.TypesInfo.Types[node.Args[0]]
 				if tv.Type != nil {
 					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
 						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
+						re.mapKeyIsString = isRustStringKey(mapType.Key())
 					}
 				}
 			}
@@ -3473,6 +3703,7 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						re.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
 						re.mapCommaOkIndent = indent
 						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
+						re.mapKeyIsString = isRustStringKey(mapType.Key())
 						re.suppressMapEmit = true
 						re.shouldGenerate = true
 						return
@@ -3500,7 +3731,73 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
+	// Detect mixed index assignment: any combination of map[k] and slice[i] on LHS
+	// This handles patterns like: slice[i][j]["key"] = v or map["k"][i]["k2"] = v
+	// IMPORTANT: This must run BEFORE simple map assignment detection
+	if len(node.Lhs) == 1 {
+		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
+			ops, isMixed := re.analyzeLhsIndexChainRust(node.Lhs[0])
+			if isMixed && len(ops) > 0 {
+				// Mixed index assignment detected
+				re.isMixedIndexAssign = true
+				re.mixedAssignIndent = indent
+				re.suppressMapEmit = true
+
+				// Build map var expressions and temp var names for each map access
+				tempCounter := 0
+				var currentExpr string
+				for i := 0; i < len(ops); i++ {
+					op := &ops[i]
+					if i == 0 {
+						// First operation: get the root variable name
+						if ident, ok := indexExpr.X.(*ast.Ident); ok {
+							currentExpr = ident.Name
+						} else {
+							// Walk down to find the root
+							tmpExpr := indexExpr.X
+							for {
+								if ie, ok := tmpExpr.(*ast.IndexExpr); ok {
+									tmpExpr = ie.X
+								} else if ident, ok := tmpExpr.(*ast.Ident); ok {
+									currentExpr = ident.Name
+									break
+								} else {
+									break
+								}
+							}
+						}
+					}
+
+					isLast := (i == len(ops)-1)
+					if op.accessType == "map" {
+						op.mapVarExpr = currentExpr
+						if !isLast {
+							// Only create temp variables for intermediate map accesses
+							op.tempVarName = fmt.Sprintf("__temp_%d", tempCounter)
+							tempCounter++
+							currentExpr = op.tempVarName
+						}
+					} else {
+						// For slice access, append the index to current expression
+						currentExpr = currentExpr + "[" + op.keyExpr + " as usize]"
+					}
+				}
+
+				// The final target is the final map var expression (for map) or the final slice expression
+				if ops[len(ops)-1].accessType == "map" {
+					re.mixedAssignFinalTarget = ops[len(ops)-1].mapVarExpr
+				} else {
+					re.mixedAssignFinalTarget = currentExpr
+				}
+
+				re.mixedIndexAssignOps = ops
+				re.shouldGenerate = true
+				return
+			}
+		}
+	}
 	// Detect map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
+	// Also handles nested: m[k1][k2] = v (map-then-map only, since mixed is handled above)
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			if re.pkg != nil && re.pkg.TypesInfo != nil {
@@ -3509,9 +3806,31 @@ func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if mapType, isMap := tv.Type.Underlying().(*types.Map); isMap {
 						re.isMapAssign = true
 						re.mapAssignIndent = indent
-						// Extract map variable name
-						re.mapAssignVarName = exprToString(indexExpr.X)
 						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
+						re.mapKeyIsString = isRustStringKey(mapType.Key())
+
+						// Check for nested map assignment: m[k1][k2] = v (map-then-map only)
+						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
+							// Check if outer is a map
+							tvOuter := re.pkg.TypesInfo.Types[outerIndexExpr.X]
+							if tvOuter.Type != nil {
+								if outerMapType, ok := tvOuter.Type.Underlying().(*types.Map); ok {
+									// Map-then-map: m["outer"]["inner"] = v
+									re.isNestedMapAssign = true
+									re.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
+									re.nestedMapOuterKey = exprToRustString(outerIndexExpr.Index)
+									re.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", re.nestedMapCounter)
+									re.nestedMapCounter++
+									re.mapAssignVarName = re.nestedMapVarName
+									re.nestedMapOuterKeyCastSuffix = getRustKeyCast(outerMapType.Key())
+									re.nestedMapOuterKeyIsString = isRustStringKey(outerMapType.Key())
+									re.nestedMapValueRustType = getRustValueTypeCast(outerMapType.Elem())
+								}
+							}
+						} else {
+							re.isNestedMapAssign = false
+							re.mapAssignVarName = exprToString(indexExpr.X)
+						}
 						// Suppress normal LHS emission
 						re.suppressMapEmit = true
 						re.shouldGenerate = true
@@ -3600,19 +3919,100 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		re.captureMapKey = false
 		re.suppressMapEmit = false
 		re.mapKeyCastSuffix = ""
+		re.mapKeyIsString = false
 		re.inAssignRhs = false
 		re.shouldGenerate = false
 		return
 	}
+	// Handle mixed index assignment: emit epilogue to set-back chain in reverse order
+	if re.isMixedIndexAssign {
+		lastOp := re.mixedIndexAssignOps[len(re.mixedIndexAssignOps)-1]
+		if lastOp.accessType == "map" {
+			// Close the Rc::new( and hashMapSet( for the final map assignment
+			re.gir.emitToFileBuffer("));\n", EmptyVisitMethod)
+		} else {
+			// Close the simple assignment for the final slice assignment
+			re.gir.emitToFileBuffer(";\n", EmptyVisitMethod)
+		}
+
+		// Emit epilogue: set-back chain in reverse order for INTERMEDIATE map accesses
+		indentStr := strings.Repeat(" ", re.mixedAssignIndent)
+		for i := len(re.mixedIndexAssignOps) - 1; i >= 0; i-- {
+			op := re.mixedIndexAssignOps[i]
+			// Only emit set-back for intermediate map accesses (those with tempVarName)
+			if op.accessType == "map" && op.tempVarName != "" {
+				// For string keys, add .to_string()
+				wrappedKey := ""
+				if op.isStringKey {
+					// String key
+					wrappedKey = "Rc::new(" + op.keyExpr + ".to_string())"
+				} else {
+					// Non-string key with cast
+					wrappedKey = "Rc::new(" + op.keyExpr + op.keyCastSuffix + ")"
+				}
+
+				// Set-back the updated map
+				var epilogue string
+				if re.OptimizeRefs {
+					epilogue = indentStr + op.mapVarExpr + " = hmap::hashMapSet(" +
+						op.mapVarExpr + ".clone(), " + wrappedKey + ", Rc::new(" + op.tempVarName + "));\n"
+				} else {
+					epilogue = indentStr + op.mapVarExpr + " = hmap::hashMapSet(" +
+						op.mapVarExpr + ".clone(), " + wrappedKey + ", Rc::new(" + op.tempVarName + "));\n"
+				}
+				re.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
+			}
+		}
+
+		// Reset state
+		re.isMixedIndexAssign = false
+		re.mixedIndexAssignOps = nil
+		re.mixedAssignFinalTarget = ""
+		re.suppressMapEmit = false
+		re.inAssignRhs = false
+		re.shouldGenerate = false
+		return
+	}
+
 	// Handle map assignment: close the hashMapSet call with ));
 	if re.isMapAssign {
-		re.gir.emitToFileBuffer("));", EmptyVisitMethod)
+		re.gir.emitToFileBuffer("));\n", EmptyVisitMethod)
+
+		// For nested map assignment, emit epilogue to set updated inner map back to outer
+		if re.isNestedMapAssign {
+			outerKey := re.nestedMapOuterKey
+			// Wrap outer key with .to_string() if it's a string key
+			wrappedOuterKey := ""
+			if re.nestedMapOuterKeyIsString {
+				wrappedOuterKey = "Rc::new(" + outerKey + ".to_string())"
+			} else {
+				wrappedOuterKey = "Rc::new(" + outerKey + re.nestedMapOuterKeyCastSuffix + ")"
+			}
+
+			var epilogue string
+			if re.OptimizeRefs {
+				epilogue = re.emitAsString(re.nestedMapOuterVarName+" = hmap::hashMapSet("+
+					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+", Rc::new("+re.nestedMapVarName+"));", re.mapAssignIndent)
+			} else {
+				epilogue = re.emitAsString(re.nestedMapOuterVarName+" = hmap::hashMapSet("+
+					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+", Rc::new("+re.nestedMapVarName+"));", re.mapAssignIndent)
+			}
+			re.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
+			re.isNestedMapAssign = false
+			re.nestedMapOuterVarName = ""
+			re.nestedMapOuterKey = ""
+			re.nestedMapOuterKeyCastSuffix = ""
+			re.nestedMapOuterKeyIsString = false
+			re.nestedMapValueRustType = ""
+		}
+
 		re.isMapAssign = false
 		re.mapAssignVarName = ""
 		re.capturedMapKey = ""
 		re.captureMapKey = false
 		re.suppressMapEmit = false
 		re.mapKeyCastSuffix = ""
+		re.mapKeyIsString = false
 		re.inAssignRhs = false
 		re.shouldGenerate = false
 		return
@@ -3669,8 +4069,69 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 }
 
 func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	// Skip if all LHS are blank identifiers
+	if re.suppressRangeEmit {
+		return
+	}
 	re.shouldGenerate = true
 	re.inAssignRhs = true
+
+	// For mixed index assignment, emit preamble: extract temp variables for each INTERMEDIATE map access
+	if re.isMixedIndexAssign {
+		re.suppressMapEmit = false
+		indentStr := strings.Repeat(" ", re.mixedAssignIndent)
+
+		// Emit preamble: extract temp variables for each intermediate map access
+		for i, op := range re.mixedIndexAssignOps {
+			if op.accessType == "map" && i < len(re.mixedIndexAssignOps)-1 {
+				// Intermediate map access: extract to temp variable
+				// For string keys, add .to_string()
+				wrappedKey := ""
+				if op.isStringKey {
+					// String key
+					wrappedKey = "Rc::new(" + op.keyExpr + ".to_string())"
+				} else {
+					// Non-string key with cast
+					wrappedKey = "Rc::new(" + op.keyExpr + op.keyCastSuffix + ")"
+				}
+
+				var preamble string
+				if re.OptimizeRefs {
+					preamble = indentStr + "let mut " + op.tempVarName + " = hmap::hashMapGet(&" +
+						op.mapVarExpr + ".clone(), " + wrappedKey +
+						").downcast_ref::<" + op.valueRustType + ">().unwrap().clone();\n"
+				} else {
+					preamble = indentStr + "let mut " + op.tempVarName + " = hmap::hashMapGet(" +
+						op.mapVarExpr + ".clone(), " + wrappedKey +
+						").downcast_ref::<" + op.valueRustType + ">().unwrap().clone();\n"
+				}
+				re.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
+			}
+		}
+
+		// Emit assignment start based on last operation type
+		lastOp := re.mixedIndexAssignOps[len(re.mixedIndexAssignOps)-1]
+		if lastOp.accessType == "map" {
+			// Final operation is map assignment: emit hashMapSet
+			// For string keys, add .to_string()
+			wrappedKey := ""
+			if lastOp.isStringKey {
+				// String key
+				wrappedKey = "Rc::new(" + lastOp.keyExpr + ".to_string())"
+			} else {
+				// Non-string key with cast
+				wrappedKey = "Rc::new(" + lastOp.keyExpr + lastOp.keyCastSuffix + ")"
+			}
+			assignStart := indentStr + lastOp.mapVarExpr + " = hmap::hashMapSet(" +
+				lastOp.mapVarExpr + ".clone(), " + wrappedKey + ", Rc::new("
+			re.gir.emitToFileBuffer(assignStart, EmptyVisitMethod)
+		} else {
+			// Final operation is slice assignment: emit simple assignment
+			assignStart := indentStr + re.mixedAssignFinalTarget + " = "
+			re.gir.emitToFileBuffer(assignStart, EmptyVisitMethod)
+		}
+		return
+	}
 
 	// For map assignment, emit: varName = hmap::hashMapSet(varName, capturedKey, Rc::new(
 	if re.isMapAssign {
@@ -3678,7 +4139,43 @@ func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 		varName := re.mapAssignVarName
 		capturedKey := re.capturedMapKey
 		// Wrap keys in Rc::new(key) with cast if needed
-		wrappedKey := "Rc::new(" + capturedKey + re.mapKeyCastSuffix + ")"
+		// For string keys, add .to_string()
+		wrappedKey := ""
+		if re.mapKeyIsString {
+			// String key
+			wrappedKey = "Rc::new(" + capturedKey + ".to_string())"
+		} else {
+			// Non-string key with cast
+			wrappedKey = "Rc::new(" + capturedKey + re.mapKeyCastSuffix + ")"
+		}
+
+		if re.isNestedMapAssign {
+			// For nested map: m["outer"]["inner"] = v
+			// Generate:
+			//   let mut __nested_inner_N = hmap::hashMapGet(m.clone(), Rc::new(outerKey)).downcast_ref::<hmap::HashMap>().unwrap().clone();
+			//   __nested_inner_N = hmap::hashMapSet(__nested_inner_N.clone(), Rc::new(innerKey), Rc::new(value));
+			outerKey := re.nestedMapOuterKey
+			// Wrap outer key with .to_string() if it's a string key
+			wrappedOuterKey := ""
+			if re.nestedMapOuterKeyIsString {
+				wrappedOuterKey = "Rc::new(" + outerKey + ".to_string())"
+			} else {
+				wrappedOuterKey = "Rc::new(" + outerKey + re.nestedMapOuterKeyCastSuffix + ")"
+			}
+
+			var preamble string
+			if re.OptimizeRefs {
+				preamble = re.emitAsString("let mut "+re.nestedMapVarName+" = hmap::hashMapGet(&"+
+					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+
+					").downcast_ref::<"+re.nestedMapValueRustType+">().unwrap().clone();\n", re.mapAssignIndent)
+			} else {
+				preamble = re.emitAsString("let mut "+re.nestedMapVarName+" = hmap::hashMapGet("+
+					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+
+					").downcast_ref::<"+re.nestedMapValueRustType+">().unwrap().clone();\n", re.mapAssignIndent)
+			}
+			re.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
+		}
+
 		str := re.emitAsString(varName+" = hmap::hashMapSet("+varName+".clone(), "+wrappedKey+", Rc::new(", re.mapAssignIndent)
 		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
 		return
@@ -3717,6 +4214,10 @@ func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (re *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	// Skip if all LHS are blank identifiers
+	if re.suppressRangeEmit {
+		return
+	}
 	// Check if we need to add a type cast for constant assignments
 	// This handles untyped int constants assigned to i8 variables
 	if len(node.Lhs) == 1 && len(node.Rhs) == 1 {
@@ -3947,11 +4448,30 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		tv := re.pkg.TypesInfo.Types[node.X]
 		if tv.Type != nil {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+				// Push "map" onto access type stack
+				re.indexAccessTypeStack = append(re.indexAccessTypeStack, "map")
+
+				// If already in a map index (nested read), save current state
+				if re.isMapIndex {
+					re.mapKeyCastStack = append(re.mapKeyCastStack, rustKeyCastState{
+						keyCastSuffix: re.mapKeyCastSuffix,
+						valueType:     re.mapIndexValueType,
+					})
+				}
 				re.isMapIndex = true
-				re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
 				re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
-				// For map assignment or comma-ok, don't emit hashMapGet — we're capturing the key
-				if !re.isMapAssign && !re.isMapCommaOk {
+						re.mapKeyIsString = isRustStringKey(mapType.Key())
+
+				// Check if the value type is also a map (nested map read)
+				// If so, cast to hmap::HashMap instead of the map type
+				if _, isNestedMap := mapType.Elem().Underlying().(*types.Map); isNestedMap {
+					re.mapIndexValueType = "hmap::HashMap"
+				} else {
+					re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
+				}
+
+				// For map assignment or comma-ok or mixed index assign, don't emit hashMapGet — we're capturing the key
+				if !re.isMapAssign && !re.isMapCommaOk && !re.isMixedIndexAssign {
 					re.gir.emitToFileBuffer("hmap::hashMapGet(", EmptyVisitMethod)
 					// With ref-opt, hashMapGet takes &HashMap, so add & before the map variable
 					if re.OptimizeRefs {
@@ -3959,6 +4479,14 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 					}
 				}
 				return
+			}
+			// Check if it's a slice/array type
+			if _, ok := tv.Type.Underlying().(*types.Slice); ok {
+				// Push "slice" onto access type stack
+				re.indexAccessTypeStack = append(re.indexAccessTypeStack, "slice")
+			} else if _, ok := tv.Type.Underlying().(*types.Array); ok {
+				// Push "slice" onto access type stack (arrays behave like slices)
+				re.indexAccessTypeStack = append(re.indexAccessTypeStack, "slice")
 			}
 		}
 	}
@@ -3977,22 +4505,91 @@ func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 }
 
 func (re *RustEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	if re.isMapIndex && !re.isMapAssign && !re.isMapCommaOk {
-		if re.OptimizeRefs {
-			// With ref-opt, hashMapGet takes &HashMap (already prepended &), no clone needed
-			re.gir.emitToFileBuffer(", Rc::new(", EmptyVisitMethod)
-		} else {
-			// Emit .clone() for map variable (HashMap doesn't implement Copy), then comma and Rc::new( to wrap the key
-			re.gir.emitToFileBuffer(".clone(), Rc::new(", EmptyVisitMethod)
+	// For mixed index assignment, suppress all index emission
+	if re.isMixedIndexAssign {
+		return
+	}
+
+	// Check the stack to determine the access type
+	if len(re.indexAccessTypeStack) > 0 {
+		accessType := re.indexAccessTypeStack[len(re.indexAccessTypeStack)-1]
+		if accessType == "map" && !re.isMapAssign && !re.isMapCommaOk {
+			if re.OptimizeRefs {
+				// With ref-opt, hashMapGet takes &HashMap (already prepended &), no clone needed
+				re.gir.emitToFileBuffer(", Rc::new(", EmptyVisitMethod)
+			} else {
+				// Emit .clone() for map variable (HashMap doesn't implement Copy), then comma and Rc::new( to wrap the key
+				re.gir.emitToFileBuffer(".clone(), Rc::new(", EmptyVisitMethod)
+			}
+		}
+		// For slice access, nothing to emit here
+	} else {
+		// Fallback: use isMapIndex when stack is empty (for assign/comma-ok modes)
+		if re.isMapIndex && !re.isMapAssign && !re.isMapCommaOk {
+			if re.OptimizeRefs {
+				re.gir.emitToFileBuffer(", Rc::new(", EmptyVisitMethod)
+			} else {
+				re.gir.emitToFileBuffer(".clone(), Rc::new(", EmptyVisitMethod)
+			}
 		}
 	}
 }
 
 func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 	re.shouldGenerate = true
-	// For map index, don't emit [ - instead start capturing key if in map assign or comma-ok
+
+	// For mixed index assignment, suppress all index emission
+	if re.isMixedIndexAssign {
+		return
+	}
+
+	// Check the stack to determine the access type
+	if len(re.indexAccessTypeStack) > 0 {
+		accessType := re.indexAccessTypeStack[len(re.indexAccessTypeStack)-1]
+		if accessType == "map" {
+			// For map index, don't emit [ - instead start capturing key if in map assign or comma-ok
+			if re.isMapAssign || re.isMapCommaOk {
+				// For nested map assignment, only capture the inner key (the second/root index)
+				// Skip capture if this is the nested map's index (outer key) - we already have it from AST
+				if re.isNestedMapAssign {
+					// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
+					// node.X IS an IndexExpr means this is the root index (for inner key m["outer"]["inner"])
+					if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+						// This is the nested index (outer key) - don't capture, we have it already
+						return
+					}
+				}
+				re.captureMapKey = true
+				re.capturedMapKey = ""
+			}
+			return
+		} else if accessType == "slice" {
+			// For slice access, emit [
+			// If the base expression is a string, we need .as_bytes() for indexing
+			if node.X != nil {
+				tv := re.pkg.TypesInfo.Types[node.X]
+				if tv.Type != nil && tv.Type.String() == "string" {
+					re.gir.emitToFileBuffer(".as_bytes()", EmptyVisitMethod)
+				}
+			}
+			re.emitToken("[", LeftBracket, 0)
+			return
+		}
+	}
+
+	// Fallback for when stack is empty (use isMapIndex)
 	if re.isMapIndex {
 		if re.isMapAssign || re.isMapCommaOk {
+			// For nested map assignment, only capture the inner key (the second/root index)
+			// Skip capture if this is the nested map's index (outer key) - we already have it from AST
+			if re.isNestedMapAssign {
+				// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
+				// node.X IS an IndexExpr means this is the root index (for inner key m["outer"]["inner"])
+				if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+					// This is the nested index (outer key) - don't capture, we have it already
+					return
+				}
+			}
 			re.captureMapKey = true
 			re.capturedMapKey = ""
 		}
@@ -4009,10 +4606,125 @@ func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 
 }
 func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	// Handle map index: emit ) + type assertion
+	// For mixed index assignment, suppress all index emission and pop stack
+	if re.isMixedIndexAssign {
+		// Still need to pop the stack
+		if len(re.indexAccessTypeStack) > 0 {
+			re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
+		}
+		return
+	}
+
+	// Check the stack to determine the access type
+	if len(re.indexAccessTypeStack) > 0 {
+		accessType := re.indexAccessTypeStack[len(re.indexAccessTypeStack)-1]
+		if accessType == "map" {
+			if re.isMapAssign || re.isMapCommaOk {
+				// Stop capturing key - cast suffix will be used in PreVisitAssignStmtRhs or PostVisitAssignStmt
+				// For nested map assignment, don't stop things for the nested index - we need to process root index next
+				if re.isNestedMapAssign {
+					// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
+					if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+						// This is the nested index - keep isMapIndex true so root index can capture
+						// Don't reset isMapIndex or captureMapKey - let root index use them
+						// Pop the stack
+						re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
+						return
+					}
+				}
+				re.captureMapKey = false
+			} else {
+				// For map read: close Rc::new() for key (with cast if needed), then close hashMapGet, add type assertion
+				re.gir.emitToFileBuffer(re.mapKeyCastSuffix+"))", EmptyVisitMethod)
+				// Add type assertion (downcast)
+				valType := re.mapIndexValueType
+				if valType == "String" {
+					re.gir.emitToFileBuffer(".downcast_ref::<String>().unwrap().clone()", EmptyVisitMethod)
+				} else if valType == "bool" {
+					re.gir.emitToFileBuffer(".downcast_ref::<bool>().unwrap().clone()", EmptyVisitMethod)
+				} else {
+					re.gir.emitToFileBuffer(fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType), EmptyVisitMethod)
+				}
+				// Restore previous key cast state if we have saved state (nested reads)
+				if len(re.mapKeyCastStack) > 0 {
+					state := re.mapKeyCastStack[len(re.mapKeyCastStack)-1]
+					re.mapKeyCastStack = re.mapKeyCastStack[:len(re.mapKeyCastStack)-1]
+					re.mapKeyCastSuffix = state.keyCastSuffix
+					re.mapIndexValueType = state.valueType
+					// Pop the stack and keep isMapIndex true for the outer map read
+					re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
+					return
+				}
+				re.mapKeyCastSuffix = ""
+				re.mapKeyIsString = false
+			}
+			re.isMapIndex = false
+			re.mapIndexValueType = ""
+			// Pop the stack
+			re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
+			return
+		} else if accessType == "slice" {
+			// For slice access, check if the index type is an integer (not usize) - need to add "as usize"
+			if node.Index != nil {
+				tv := re.pkg.TypesInfo.Types[node.Index]
+				if tv.Type != nil {
+					typeStr := tv.Type.String()
+					// Go int types need to be cast to usize for Rust indexing
+					if typeStr == "int" || typeStr == "int32" || typeStr == "int64" ||
+						typeStr == "int8" || typeStr == "int16" {
+						re.gir.emitToFileBuffer(" as usize", EmptyVisitMethod)
+					}
+				}
+			}
+			re.emitToken("]", RightBracket, 0)
+			// Add .clone() for Vec element access when element type doesn't implement Copy
+			if node.X != nil && !re.inAssignLhs {
+				tv := re.pkg.TypesInfo.Types[node.X]
+				if tv.Type != nil {
+					if sliceType, ok := tv.Type.Underlying().(*types.Slice); ok {
+						elemType := sliceType.Elem()
+						if _, isStruct := elemType.Underlying().(*types.Struct); isStruct {
+							re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+							if re.inCallExprArg {
+								re.argAlreadyCloned = true
+							}
+						}
+						if basic, isBasic := elemType.Underlying().(*types.Basic); isBasic {
+							if basic.Kind() == types.String {
+								re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+								if re.inCallExprArg {
+									re.argAlreadyCloned = true
+								}
+							}
+						}
+						if _, isInterface := elemType.Underlying().(*types.Interface); isInterface {
+							re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
+							if re.inCallExprArg {
+								re.argAlreadyCloned = true
+							}
+						}
+					}
+				}
+			}
+			// Pop the stack
+			re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
+			return
+		}
+	}
+
+	// Fallback for when stack is empty (use isMapIndex)
 	if re.isMapIndex {
 		if re.isMapAssign || re.isMapCommaOk {
 			// Stop capturing key - cast suffix will be used in PreVisitAssignStmtRhs or PostVisitAssignStmt
+			// For nested map assignment, don't stop things for the nested index - we need to process root index next
+			if re.isNestedMapAssign {
+				// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
+				if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
+					// This is the nested index - keep isMapIndex true so root index can capture
+					// Don't reset isMapIndex or captureMapKey - let root index use them
+					return
+				}
+			}
 			re.captureMapKey = false
 		} else {
 			// For map read: close Rc::new() for key (with cast if needed), then close hashMapGet, add type assertion
@@ -4026,7 +4738,17 @@ func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 			} else {
 				re.gir.emitToFileBuffer(fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType), EmptyVisitMethod)
 			}
+			// Restore previous key cast state if we have saved state (nested reads)
+			if len(re.mapKeyCastStack) > 0 {
+				state := re.mapKeyCastStack[len(re.mapKeyCastStack)-1]
+				re.mapKeyCastStack = re.mapKeyCastStack[:len(re.mapKeyCastStack)-1]
+				re.mapKeyCastSuffix = state.keyCastSuffix
+				re.mapIndexValueType = state.valueType
+				// Keep isMapIndex true for the outer map read
+				return
+			}
 			re.mapKeyCastSuffix = ""
+			re.mapKeyIsString = false
 		}
 		re.isMapIndex = false
 		re.mapIndexValueType = ""

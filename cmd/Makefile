@@ -8,17 +8,16 @@ ASTYLE_LIB = $(ASTYLE_DIR)/libastyle.a
 
 # Go build flags
 GO_BUILD_FLAGS = -v
-GO_GENERATE_FLAGS =
 
 # Default target
 .PHONY: all
 all: build
 
-# Generate code (runs go generate)
+# Generate code (runs go generate for emitter.go)
 .PHONY: generate
 generate:
 	@echo "Generating code..."
-	cd .. && go generate $(GO_GENERATE_FLAGS) ./...
+	cd .. && go generate ./...
 
 # Build astyle static library
 .PHONY: astyle

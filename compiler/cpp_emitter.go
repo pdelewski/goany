@@ -28,6 +28,24 @@ var cppTypesMap = map[string]string{
 	"string":  "std::string",
 }
 
+// keyCastState holds key cast values for nested map reads
+type keyCastState struct {
+	prefix    string
+	suffix    string
+	valueType string
+}
+
+// mixedIndexOp represents a single index operation in a chain
+type mixedIndexOp struct {
+	accessType   string // "map" or "slice"
+	keyExpr      string // Key/index expression
+	keyCastPfx   string // Cast prefix for map key
+	keyCastSfx   string // Cast suffix for map key
+	valueCppType string // C++ type of the value at this level
+	tempVarName  string // Temp variable name (only for map access)
+	mapVarExpr   string // The expression to call hashMapGet on
+}
+
 type CPPEmitter struct {
 	Output          string
 	OutputDir       string
@@ -74,6 +92,30 @@ type CPPEmitter struct {
 	mapAssignKeyCastPrefix string // Cast prefix for map assign key
 	mapAssignKeyCastSuffix string // Cast suffix for map assign key
 	mapAssignValueIsString bool   // Value is string type
+	// Nested map assignment: m["outer"]["inner"] = v
+	isNestedMapAssign           bool   // Assignment to nested map index
+	nestedMapOuterVarName       string // Outer map variable name (e.g., "m")
+	nestedMapOuterKey           string // Outer map key expression (captured)
+	nestedMapOuterKeyCastPrefix string // Cast prefix for outer key
+	nestedMapOuterKeyCastSuffix string // Cast suffix for outer key
+	captureOuterMapKey          bool   // Capturing outer map key expression
+	capturedOuterMapKey         string // Captured outer key expression text
+	nestedMapCounter            int    // Counter for unique nested map variable names
+	nestedMapVarName            string // Generated variable name (e.g., "__nested_inner_0")
+	nestedMapValueCppType       string // C++ type for the nested value extraction (e.g., "hmap::HashMap" or "std::vector<hmap::HashMap>")
+	// Nested map read: m["outer"]["inner"] (read context)
+	nestedMapReadDepth          int    // Depth of nested map reads (0 = not nested, 1+ = nested)
+	nestedMapReadOuterKeyType   types.Type // Key type of the outer map for casting
+	mapIndexKeyCastStack        []keyCastState // Stack to save/restore key cast values for nested reads
+	// Mixed nested composites: []map[string]int, map[string][]int, etc.
+	indexAccessTypeStack        []string // Stack of access types: "map" or "slice" for each IndexExpr level
+	// Save/restore stack for suppressEmit during nested type traversal
+	suppressEmitStack           []bool
+	// General mixed index assignment: any combination of map[k] and slice[i] on LHS
+	isMixedIndexAssign          bool              // Assignment involves map access below outermost level
+	mixedIndexAssignOps         []mixedIndexOp    // Chain of operations from root to outermost
+	mixedAssignIndent           int               // Indent level
+	mixedAssignFinalTarget      string            // Final assignment target expression (e.g., "__temp[0]" or "__temp")
 	captureMapKey          bool   // Capturing map key expression
 	capturedMapKey         string // Captured key expression text
 	isDeleteCall           bool   // Inside delete(m, k) call
@@ -303,6 +345,15 @@ func getCppTypeName(t types.Type) string {
 			return "std::int64_t"
 		}
 	}
+	// Handle slice types - recursively get element type
+	if slice, ok := t.(*types.Slice); ok {
+		elemType := getCppTypeName(slice.Elem())
+		return "std::vector<" + elemType + ">"
+	}
+	// Handle map types
+	if _, ok := t.Underlying().(*types.Map); ok {
+		return "hmap::HashMap"
+	}
 	if named, ok := t.(*types.Named); ok {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()
@@ -338,6 +389,87 @@ func getCppKeyCast(keyType types.Type) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// analyzeLhsIndexChain walks an IndexExpr chain and returns operations from root to outermost.
+// Returns true if any intermediate map access was found (requiring temp var extraction).
+func (cppe *CPPEmitter) analyzeLhsIndexChain(expr ast.Expr) (ops []mixedIndexOp, hasIntermediateMap bool) {
+	// Collect the chain from outermost to root
+	var chain []ast.Expr
+	current := expr
+	for {
+		indexExpr, ok := current.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append(chain, indexExpr)
+		current = indexExpr.X
+	}
+	// chain[0] is outermost, chain[len-1] is innermost (closest to root variable)
+	// Reverse to get root to outermost order
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	// Now chain[0] is innermost (root[k1]), chain[len-1] is outermost ([kN])
+	hasIntermediateMap = false
+	for i, node := range chain {
+		ie := node.(*ast.IndexExpr)
+		tv := cppe.pkg.TypesInfo.Types[ie.X]
+		if tv.Type == nil {
+			continue
+		}
+		isLast := (i == len(chain)-1)
+		if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+			op := mixedIndexOp{
+				accessType:   "map",
+				keyExpr:      exprToCppString(ie.Index),
+				valueCppType: getCppTypeName(mapType.Elem()),
+			}
+			op.keyCastPfx, op.keyCastSfx = getCppKeyCast(mapType.Key())
+			if !isLast {
+				hasIntermediateMap = true
+			}
+			ops = append(ops, op)
+		} else {
+			op := mixedIndexOp{
+				accessType: "slice",
+				keyExpr:    exprToCppString(ie.Index),
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops, hasIntermediateMap
+}
+
+// exprToCppString converts a simple expression (BasicLit, Ident, IndexExpr) to its C++ string representation
+// Used for extracting map key expressions and slice access expressions from AST nodes
+func exprToCppString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind == token.STRING {
+			// Go string literal to C++ - keep the quotes
+			return e.Value
+		}
+		return e.Value
+	case *ast.Ident:
+		return e.Name
+	case *ast.IndexExpr:
+		// Handle slice/array access like sliceOfMaps[0]
+		xStr := exprToCppString(e.X)
+		indexStr := exprToCppString(e.Index)
+		if xStr != "" && indexStr != "" {
+			return xStr + "[" + indexStr + "]"
+		}
+		return ""
+	case *ast.SelectorExpr:
+		xStr := exprToCppString(e.X)
+		if xStr != "" {
+			return xStr + "." + e.Sel.Name
+		}
+		return ""
+	default:
+		return ""
+	}
 }
 
 func (cppe *CPPEmitter) emitToFile(s string) error {
@@ -798,6 +930,38 @@ func (cppe *CPPEmitter) PreVisitMapType(node *ast.MapType, indent int) {
 func (cppe *CPPEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 }
 
+// PreVisitMapKeyType suppresses output during map key type traversal
+func (cppe *CPPEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
+	cppe.suppressEmitStack = append(cppe.suppressEmitStack, cppe.suppressEmit)
+	cppe.suppressEmit = true
+}
+
+// PostVisitMapKeyType restores output state after map key type traversal
+func (cppe *CPPEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	if len(cppe.suppressEmitStack) > 0 {
+		cppe.suppressEmit = cppe.suppressEmitStack[len(cppe.suppressEmitStack)-1]
+		cppe.suppressEmitStack = cppe.suppressEmitStack[:len(cppe.suppressEmitStack)-1]
+	} else {
+		cppe.suppressEmit = false
+	}
+}
+
+// PreVisitMapValueType suppresses output during map value type traversal
+func (cppe *CPPEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
+	cppe.suppressEmitStack = append(cppe.suppressEmitStack, cppe.suppressEmit)
+	cppe.suppressEmit = true
+}
+
+// PostVisitMapValueType restores output state after map value type traversal
+func (cppe *CPPEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	if len(cppe.suppressEmitStack) > 0 {
+		cppe.suppressEmit = cppe.suppressEmitStack[len(cppe.suppressEmitStack)-1]
+		cppe.suppressEmitStack = cppe.suppressEmitStack[:len(cppe.suppressEmitStack)-1]
+	} else {
+		cppe.suppressEmit = false
+	}
+}
+
 func (cppe *CPPEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
 	if ident, ok := node.(*ast.Ident); ok {
 		if cppe.lowerToBuiltins(ident.Name) == "" {
@@ -824,11 +988,40 @@ func (cppe *CPPEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		tv := cppe.pkg.TypesInfo.Types[node.X]
 		if tv.Type != nil {
 			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+				// Push "map" onto the access type stack
+				cppe.indexAccessTypeStack = append(cppe.indexAccessTypeStack, "map")
+
+				// If already in a map index (nested read), save current state
+				if cppe.isMapIndex {
+					cppe.mapIndexKeyCastStack = append(cppe.mapIndexKeyCastStack, keyCastState{
+						prefix:    cppe.mapIndexKeyCastPrefix,
+						suffix:    cppe.mapIndexKeyCastSuffix,
+						valueType: cppe.mapIndexValueCppType,
+					})
+				}
 				cppe.isMapIndex = true
-				cppe.mapIndexValueCppType = getCppTypeName(mapType.Elem())
 				cppe.mapIndexKeyCastPrefix, cppe.mapIndexKeyCastSuffix = getCppKeyCast(mapType.Key())
+
+				// Check if the value type is also a map (nested map read)
+				// If so, cast to hmap::HashMap instead of the map type
+				if _, isNestedMap := mapType.Elem().Underlying().(*types.Map); isNestedMap {
+					cppe.mapIndexValueCppType = "hmap::HashMap"
+					cppe.nestedMapReadDepth++
+				} else {
+					cppe.mapIndexValueCppType = getCppTypeName(mapType.Elem())
+				}
+
 				// Emit: std::any_cast<ValueType>(hmap::hashMapGet(
 				cppe.emitToFile("std::any_cast<" + cppe.mapIndexValueCppType + ">(hmap::hashMapGet(")
+			} else {
+				// Slice or array access - push "slice" onto the stack
+				switch tv.Type.Underlying().(type) {
+				case *types.Slice, *types.Array:
+					cppe.indexAccessTypeStack = append(cppe.indexAccessTypeStack, "slice")
+				default:
+					// For other types (like string indexing), treat as slice-like
+					cppe.indexAccessTypeStack = append(cppe.indexAccessTypeStack, "slice")
+				}
 			}
 		}
 	}
@@ -840,20 +1033,25 @@ func (cppe *CPPEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 		cppe.capturedMapKey = ""
 		return
 	}
-	if cppe.isMapIndex {
-		if cppe.mapIndexKeyCastPrefix != "" {
-			cppe.emitToFile(", " + cppe.mapIndexKeyCastPrefix)
-		} else {
-			cppe.emitToFile(", ")
-		}
-		return
-	}
 	if cppe.isMapAssign {
 		// Capture the key expression
 		cppe.captureMapKey = true
 		cppe.capturedMapKey = ""
 		return
 	}
+	// Check the access type stack to determine if this is a map or slice access
+	if len(cppe.indexAccessTypeStack) > 0 {
+		accessType := cppe.indexAccessTypeStack[len(cppe.indexAccessTypeStack)-1]
+		if accessType == "map" {
+			if cppe.mapIndexKeyCastPrefix != "" {
+				cppe.emitToFile(", " + cppe.mapIndexKeyCastPrefix)
+			} else {
+				cppe.emitToFile(", ")
+			}
+			return
+		}
+	}
+	// Slice/array access - emit [
 	str := cppe.emitAsString("[", 0)
 	cppe.emitToFile(str)
 }
@@ -862,21 +1060,42 @@ func (cppe *CPPEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int)
 		cppe.captureMapKey = false
 		return
 	}
-	if cppe.isMapIndex {
-		if cppe.mapIndexKeyCastSuffix != "" {
-			cppe.emitToFile(cppe.mapIndexKeyCastSuffix)
-		}
-		cppe.emitToFile("))")
-		cppe.isMapIndex = false
-		cppe.mapIndexValueCppType = ""
-		cppe.mapIndexKeyCastPrefix = ""
-		cppe.mapIndexKeyCastSuffix = ""
-		return
-	}
 	if cppe.captureMapKey {
 		cppe.captureMapKey = false
 		return
 	}
+	// Check the access type stack to determine if this is a map or slice access
+	if len(cppe.indexAccessTypeStack) > 0 {
+		accessType := cppe.indexAccessTypeStack[len(cppe.indexAccessTypeStack)-1]
+		// Pop from the stack
+		cppe.indexAccessTypeStack = cppe.indexAccessTypeStack[:len(cppe.indexAccessTypeStack)-1]
+
+		if accessType == "map" {
+			if cppe.mapIndexKeyCastSuffix != "" {
+				cppe.emitToFile(cppe.mapIndexKeyCastSuffix)
+			}
+			cppe.emitToFile("))")
+			// Restore previous key cast state if we have saved state (nested reads)
+			if len(cppe.mapIndexKeyCastStack) > 0 {
+				state := cppe.mapIndexKeyCastStack[len(cppe.mapIndexKeyCastStack)-1]
+				cppe.mapIndexKeyCastStack = cppe.mapIndexKeyCastStack[:len(cppe.mapIndexKeyCastStack)-1]
+				cppe.mapIndexKeyCastPrefix = state.prefix
+				cppe.mapIndexKeyCastSuffix = state.suffix
+				cppe.mapIndexValueCppType = state.valueType
+				// Keep isMapIndex true for the outer map read
+				if cppe.nestedMapReadDepth > 0 {
+					cppe.nestedMapReadDepth--
+				}
+			} else {
+				cppe.isMapIndex = false
+				cppe.mapIndexValueCppType = ""
+				cppe.mapIndexKeyCastPrefix = ""
+				cppe.mapIndexKeyCastSuffix = ""
+			}
+			return
+		}
+	}
+	// Slice/array access - emit ]
 	str := cppe.emitAsString("]", 0)
 	cppe.emitToFile(str)
 }
@@ -1228,7 +1447,7 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 	}
-	// Detect map assignment: m[k] = v
+	// Detect map assignment: m[k] = v or nested m[k1][k2] = v
 	if len(node.Lhs) == 1 {
 		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
@@ -1238,13 +1457,108 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						cppe.isMapAssign = true
 						cppe.mapAssignIndent = indent
 						cppe.mapAssignValueIsString = false
-						cppe.mapAssignVarName = exprToString(indexExpr.X)
 						cppe.mapAssignKeyCastPrefix, cppe.mapAssignKeyCastSuffix = getCppKeyCast(mapType.Key())
 						valType := mapType.Elem()
 						if basic, isBasic := valType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
 							cppe.mapAssignValueIsString = true
 						}
+
+						// Check for nested index: m[k1][k2] = v or sliceOfMaps[0]["key"] = v
+						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
+							// Check if outer expression is a map or a slice
+							outerTv := cppe.pkg.TypesInfo.Types[outerIndexExpr.X]
+							if outerTv.Type != nil {
+								if outerMapType, ok := outerTv.Type.Underlying().(*types.Map); ok {
+									// Nested map assignment: m[k1][k2] = v
+									cppe.isNestedMapAssign = true
+									cppe.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
+									// Extract outer key directly from AST
+									cppe.nestedMapOuterKey = exprToCppString(outerIndexExpr.Index)
+									cppe.nestedMapOuterKeyCastPrefix, cppe.nestedMapOuterKeyCastSuffix = getCppKeyCast(outerMapType.Key())
+									cppe.nestedMapValueCppType = "hmap::HashMap"
+									// Use temp variable for inner map with unique name
+									cppe.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cppe.nestedMapCounter)
+									cppe.nestedMapCounter++
+									cppe.mapAssignVarName = cppe.nestedMapVarName
+								} else {
+									// Check if the slice is accessed from a map further up
+									// e.g., mapVar[k1][sliceIdx]["key"] = v
+									if deeperIndexExpr, isDeeper := outerIndexExpr.X.(*ast.IndexExpr); isDeeper {
+										deeperTv := cppe.pkg.TypesInfo.Types[deeperIndexExpr.X]
+										if deeperTv.Type != nil {
+											if deeperMapType, ok := deeperTv.Type.Underlying().(*types.Map); ok {
+												// map-slice-map assignment pattern
+												cppe.isNestedMapAssign = true
+												cppe.nestedMapOuterVarName = exprToString(deeperIndexExpr.X)
+												cppe.nestedMapOuterKey = exprToCppString(deeperIndexExpr.Index)
+												cppe.nestedMapOuterKeyCastPrefix, cppe.nestedMapOuterKeyCastSuffix = getCppKeyCast(deeperMapType.Key())
+												cppe.nestedMapValueCppType = getCppTypeName(deeperMapType.Elem())
+												cppe.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cppe.nestedMapCounter)
+												cppe.nestedMapCounter++
+												sliceIdx := exprToCppString(outerIndexExpr.Index)
+												cppe.mapAssignVarName = cppe.nestedMapVarName + "[" + sliceIdx + "]"
+											} else {
+												cppe.isNestedMapAssign = false
+												cppe.mapAssignVarName = exprToCppString(indexExpr.X)
+											}
+										} else {
+											cppe.isNestedMapAssign = false
+											cppe.mapAssignVarName = exprToCppString(indexExpr.X)
+										}
+									} else {
+										// Simple slice-then-map: sliceOfMaps[0]["key"] = v
+										cppe.isNestedMapAssign = false
+										cppe.mapAssignVarName = exprToCppString(indexExpr.X)
+									}
+								}
+							} else {
+								// Fallback: treat as non-nested
+								cppe.isNestedMapAssign = false
+								cppe.mapAssignVarName = exprToCppString(indexExpr.X)
+							}
+						} else {
+							cppe.isNestedMapAssign = false
+							cppe.mapAssignVarName = exprToString(indexExpr.X)
+						}
 						// Suppress normal LHS output (the m[k] part will be captured)
+						cppe.suppressEmit = true
+						return
+					}
+					// Detect mixed index assignment: any pattern where intermediate map
+					// accesses exist below a non-map outermost access
+					// e.g., mapOfSlices["key"][idx] = v, nestedMaps["a"]["b"][idx] = v
+					ops, hasIntermediateMap := cppe.analyzeLhsIndexChain(node.Lhs[0])
+					if hasIntermediateMap && len(ops) > 0 {
+						// Get root variable name
+						rootExpr := node.Lhs[0]
+						for {
+							if ie, ok := rootExpr.(*ast.IndexExpr); ok {
+								rootExpr = ie.X
+							} else {
+								break
+							}
+						}
+						rootVar := exprToString(rootExpr)
+
+						// Assign temp var names to map accesses and build the chain
+						currentVar := rootVar
+						for i := range ops {
+							if ops[i].accessType == "map" {
+								ops[i].mapVarExpr = currentVar
+								ops[i].tempVarName = fmt.Sprintf("__nested_inner_%d", cppe.nestedMapCounter)
+								cppe.nestedMapCounter++
+								currentVar = ops[i].tempVarName
+							} else {
+								// Slice access on current variable
+								ops[i].mapVarExpr = currentVar
+								currentVar = currentVar + "[" + ops[i].keyExpr + "]"
+							}
+						}
+
+						cppe.isMixedIndexAssign = true
+						cppe.mixedIndexAssignOps = ops
+						cppe.mixedAssignIndent = indent
+						cppe.mixedAssignFinalTarget = currentVar
 						cppe.suppressEmit = true
 						return
 					}
@@ -1296,6 +1610,28 @@ func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		cppe.captureMapKey = false
 		return
 	}
+	if cppe.isMixedIndexAssign {
+		// Finish the value assignment
+		cppe.emitToFile(";\n")
+		// Emit epilogue: set-back chain in reverse order for map accesses
+		for i := len(cppe.mixedIndexAssignOps) - 1; i >= 0; i-- {
+			op := cppe.mixedIndexAssignOps[i]
+			if op.accessType == "map" {
+				key := op.keyExpr
+				if op.keyCastPfx != "" {
+					key = op.keyCastPfx + key + op.keyCastSfx
+				}
+				epilogue := cppe.emitAsString(op.mapVarExpr+" = hmap::hashMapSet("+
+					op.mapVarExpr+", "+key+", "+op.tempVarName+");\n", cppe.mixedAssignIndent)
+				cppe.emitToFile(epilogue)
+			}
+		}
+		// Reset state
+		cppe.isMixedIndexAssign = false
+		cppe.mixedIndexAssignOps = nil
+		cppe.mixedAssignFinalTarget = ""
+		return
+	}
 	if cppe.isMapCommaOk {
 		key := cppe.capturedMapKey
 		if cppe.mapCommaOkKeyCastPrefix != "" {
@@ -1320,6 +1656,23 @@ func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			cppe.emitToFile(")")
 		}
 		cppe.emitToFile(");\n")
+
+		// For nested map assignment, emit epilogue to set updated inner map back to outer
+		if cppe.isNestedMapAssign {
+			outerKey := cppe.nestedMapOuterKey
+			if cppe.nestedMapOuterKeyCastPrefix != "" {
+				outerKey = cppe.nestedMapOuterKeyCastPrefix + outerKey + cppe.nestedMapOuterKeyCastSuffix
+			}
+			epilogue := cppe.emitAsString(cppe.nestedMapOuterVarName+" = hmap::hashMapSet("+
+				cppe.nestedMapOuterVarName+", "+outerKey+", "+cppe.nestedMapVarName+");\n", cppe.mapAssignIndent)
+			cppe.emitToFile(epilogue)
+			cppe.isNestedMapAssign = false
+			cppe.nestedMapOuterVarName = ""
+			cppe.nestedMapOuterKey = ""
+			cppe.nestedMapOuterKeyCastPrefix = ""
+			cppe.nestedMapOuterKeyCastSuffix = ""
+		}
+
 		cppe.isMapAssign = false
 		cppe.mapAssignVarName = ""
 		cppe.capturedMapKey = ""
@@ -1382,13 +1735,55 @@ func (cppe *CPPEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int)
 }
 
 func (cppe *CPPEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	if cppe.isMixedIndexAssign {
+		// Turn off suppression and emit the preamble + assignment
+		cppe.suppressEmit = false
+		// Emit preamble: extract temp variables for each map access
+		for _, op := range cppe.mixedIndexAssignOps {
+			if op.accessType == "map" {
+				key := op.keyExpr
+				if op.keyCastPfx != "" {
+					key = op.keyCastPfx + key + op.keyCastSfx
+				}
+				preamble := cppe.emitAsString("auto "+op.tempVarName+" = std::any_cast<"+
+					op.valueCppType+">(hmap::hashMapGet("+
+					op.mapVarExpr+", "+key+"));\n", cppe.mixedAssignIndent)
+				cppe.emitToFile(preamble)
+			}
+		}
+		// Emit assignment: finalTarget = value
+		str := cppe.emitAsString(cppe.mixedAssignFinalTarget+" = ", cppe.mixedAssignIndent)
+		cppe.emitToFile(str)
+		return
+	}
 	if cppe.isMapAssign {
-		// Turn off suppression and emit: m = hmap::hashMapSet(m, key, value)
+		// Turn off suppression and emit the assignment
 		cppe.suppressEmit = false
 		key := cppe.capturedMapKey
 		if cppe.mapAssignKeyCastPrefix != "" {
 			key = cppe.mapAssignKeyCastPrefix + key + cppe.mapAssignKeyCastSuffix
 		}
+
+		if cppe.isNestedMapAssign {
+			// For nested map: m["outer"]["inner"] = v
+			// Generate:
+			//   auto __nested_inner = std::any_cast<hmap::HashMap>(hmap::hashMapGet(m, outerKey));
+			//   __nested_inner = hmap::hashMapSet(__nested_inner, innerKey, value)
+			// (The epilogue in PostVisitAssignStmt will add the outer set)
+			outerKey := cppe.nestedMapOuterKey
+			if cppe.nestedMapOuterKeyCastPrefix != "" {
+				outerKey = cppe.nestedMapOuterKeyCastPrefix + outerKey + cppe.nestedMapOuterKeyCastSuffix
+			}
+			// Emit preamble: extract inner value (map or slice of maps)
+			castType := cppe.nestedMapValueCppType
+			if castType == "" {
+				castType = "hmap::HashMap"
+			}
+			preamble := cppe.emitAsString("auto "+cppe.nestedMapVarName+" = std::any_cast<"+castType+">(hmap::hashMapGet("+
+				cppe.nestedMapOuterVarName+", "+outerKey+"));\n", cppe.mapAssignIndent)
+			cppe.emitToFile(preamble)
+		}
+
 		str := cppe.emitAsString(cppe.mapAssignVarName+" = hmap::hashMapSet("+cppe.mapAssignVarName+", "+key+", ", cppe.mapAssignIndent)
 		cppe.emitToFile(str)
 		if cppe.mapAssignValueIsString {

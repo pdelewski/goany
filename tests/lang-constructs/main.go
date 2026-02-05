@@ -1129,6 +1129,46 @@ func addToMap(m map[string]int, key string, value int) map[string]int {
 	return m
 }
 
+func testNestedSlices() {
+	fmt.Println("=== Nested Slices ===")
+
+	// 2D slice: [][]int
+	var m [][]int
+	m = make([][]int, 2)
+	m[0] = make([]int, 3)
+	m[1] = make([]int, 2)
+	m[0][0] = 1
+	m[0][1] = 2
+	m[0][2] = 3
+	m[1][0] = 4
+	m[1][1] = 5
+
+	if len(m) == 2 && len(m[0]) == 3 && len(m[1]) == 2 {
+		fmt.Println("PASS: nested slice dimensions")
+	} else {
+		fmt.Println("FAIL: nested slice dimensions")
+	}
+
+	if m[0][0] == 1 && m[0][1] == 2 && m[0][2] == 3 && m[1][0] == 4 && m[1][1] == 5 {
+		fmt.Println("PASS: nested slice values")
+	} else {
+		fmt.Println("FAIL: nested slice values")
+	}
+
+	// Sum all elements
+	sum := 0
+	for i := 0; i < len(m); i++ {
+		for j := 0; j < len(m[i]); j++ {
+			sum = sum + m[i][j]
+		}
+	}
+	if sum == 15 {
+		fmt.Println("PASS: nested slice sum")
+	} else {
+		fmt.Println("FAIL: nested slice sum")
+	}
+}
+
 func testMapReturnValue() {
 	fmt.Println("=== Map Return Value ===")
 
@@ -1164,6 +1204,173 @@ func testMapReturnValue() {
 		fmt.Println("PASS: map return value chained")
 	} else {
 		fmt.Println("FAIL: map return value chained")
+	}
+}
+
+func testNestedMaps() {
+	fmt.Println("=== Nested Maps ===")
+
+	// Basic nested map assignment: map[string]map[string]int
+	m := make(map[string]map[string]int)
+	m["outer"] = make(map[string]int)
+	m["outer"]["inner"] = 42
+	m["outer"]["second"] = 100
+
+	// Test nested map read: m["outer"]["inner"]
+	val := m["outer"]["inner"]
+	if val == 42 {
+		fmt.Println("PASS: nested map read")
+	} else {
+		fmt.Println("FAIL: nested map read")
+	}
+
+	// Test nested map read with multiple keys
+	val2 := m["outer"]["second"]
+	if val2 == 100 {
+		fmt.Println("PASS: nested map read second key")
+	} else {
+		fmt.Println("FAIL: nested map read second key")
+	}
+}
+
+func testMixedNestedComposites() {
+	fmt.Println("=== Mixed Nested Composites ===")
+
+	// Test 1: []map[string]int - slice of maps
+	var sliceOfMaps []map[string]int
+	sliceOfMaps = make([]map[string]int, 2)
+	sliceOfMaps[0] = make(map[string]int)
+	sliceOfMaps[1] = make(map[string]int)
+	sliceOfMaps[0]["a"] = 10
+	sliceOfMaps[0]["b"] = 20
+	sliceOfMaps[1]["c"] = 30
+
+	// Read from slice of maps
+	val1 := sliceOfMaps[0]["a"]
+	val2 := sliceOfMaps[0]["b"]
+	val3 := sliceOfMaps[1]["c"]
+	if val1 == 10 && val2 == 20 && val3 == 30 {
+		fmt.Println("PASS: slice of maps read")
+	} else {
+		fmt.Println("FAIL: slice of maps read")
+	}
+
+	// Test 2: map[string][]int - map of slices
+	var mapOfSlices map[string][]int
+	mapOfSlices = make(map[string][]int)
+	mapOfSlices["first"] = make([]int, 3)
+	mapOfSlices["second"] = make([]int, 2)
+	mapOfSlices["first"][0] = 100
+	mapOfSlices["first"][1] = 200
+	mapOfSlices["first"][2] = 300
+	mapOfSlices["second"][0] = 400
+	mapOfSlices["second"][1] = 500
+
+	// Read from map of slices
+	v1 := mapOfSlices["first"][0]
+	v2 := mapOfSlices["first"][2]
+	v3 := mapOfSlices["second"][1]
+	if v1 == 100 && v2 == 300 && v3 == 500 {
+		fmt.Println("PASS: map of slices read")
+	} else {
+		fmt.Println("FAIL: map of slices read")
+	}
+
+	// Test 3: [][]map[string]int - nested slice of maps
+	var nestedSliceOfMaps [][]map[string]int
+	nestedSliceOfMaps = make([][]map[string]int, 2)
+	nestedSliceOfMaps[0] = make([]map[string]int, 2)
+	nestedSliceOfMaps[1] = make([]map[string]int, 1)
+	nestedSliceOfMaps[0][0] = make(map[string]int)
+	nestedSliceOfMaps[0][1] = make(map[string]int)
+	nestedSliceOfMaps[1][0] = make(map[string]int)
+	nestedSliceOfMaps[0][0]["x"] = 1
+	nestedSliceOfMaps[0][1]["y"] = 2
+	nestedSliceOfMaps[1][0]["z"] = 3
+
+	// Read from nested slice of maps
+	r1 := nestedSliceOfMaps[0][0]["x"]
+	r2 := nestedSliceOfMaps[0][1]["y"]
+	r3 := nestedSliceOfMaps[1][0]["z"]
+	if r1 == 1 && r2 == 2 && r3 == 3 {
+		fmt.Println("PASS: nested slice of maps read")
+	} else {
+		fmt.Println("FAIL: nested slice of maps read")
+	}
+
+	// Test 4: map[string]map[string][]int - nested maps with slice values
+	var nestedMapsWithSlice map[string]map[string][]int
+	nestedMapsWithSlice = make(map[string]map[string][]int)
+	nestedMapsWithSlice["outer"] = make(map[string][]int)
+	nestedMapsWithSlice["outer"]["inner"] = make([]int, 3)
+	nestedMapsWithSlice["outer"]["inner"][0] = 111
+	nestedMapsWithSlice["outer"]["inner"][1] = 222
+	nestedMapsWithSlice["outer"]["inner"][2] = 333
+
+	// Read from nested maps with slice
+	s1 := nestedMapsWithSlice["outer"]["inner"][0]
+	s2 := nestedMapsWithSlice["outer"]["inner"][1]
+	s3 := nestedMapsWithSlice["outer"]["inner"][2]
+	if s1 == 111 && s2 == 222 && s3 == 333 {
+		fmt.Println("PASS: nested maps with slice read")
+	} else {
+		fmt.Println("FAIL: nested maps with slice read")
+	}
+
+	// Test 5: map[string][][]int - map of nested slices
+	var mapOfNestedSlices map[string][][]int
+	mapOfNestedSlices = make(map[string][][]int)
+	mapOfNestedSlices["matrix"] = make([][]int, 2)
+	mapOfNestedSlices["matrix"][0] = make([]int, 2)
+	mapOfNestedSlices["matrix"][1] = make([]int, 2)
+	mapOfNestedSlices["matrix"][0][0] = 11
+	mapOfNestedSlices["matrix"][0][1] = 12
+	mapOfNestedSlices["matrix"][1][0] = 21
+	mapOfNestedSlices["matrix"][1][1] = 22
+
+	// Read from map of nested slices
+	m1 := mapOfNestedSlices["matrix"][0][0]
+	m2 := mapOfNestedSlices["matrix"][0][1]
+	m3 := mapOfNestedSlices["matrix"][1][0]
+	m4 := mapOfNestedSlices["matrix"][1][1]
+	if m1 == 11 && m2 == 12 && m3 == 21 && m4 == 22 {
+		fmt.Println("PASS: map of nested slices read")
+	} else {
+		fmt.Println("FAIL: map of nested slices read")
+	}
+
+	// Test 6: [][][]map[string]int - triple nested slice of maps
+	var tripleNestedSliceOfMaps [][][]map[string]int
+	tripleNestedSliceOfMaps = make([][][]map[string]int, 1)
+	tripleNestedSliceOfMaps[0] = make([][]map[string]int, 1)
+	tripleNestedSliceOfMaps[0][0] = make([]map[string]int, 1)
+	tripleNestedSliceOfMaps[0][0][0] = make(map[string]int)
+	tripleNestedSliceOfMaps[0][0][0]["deep"] = 999
+
+	// Read from triple nested slice of maps
+	deep := tripleNestedSliceOfMaps[0][0][0]["deep"]
+	if deep == 999 {
+		fmt.Println("PASS: triple nested slice of maps read")
+	} else {
+		fmt.Println("FAIL: triple nested slice of maps read")
+	}
+
+	// Test 7: map[int][]map[string]int - map with int key, slice of maps value
+	var intKeySliceOfMaps map[int][]map[string]int
+	intKeySliceOfMaps = make(map[int][]map[string]int)
+	intKeySliceOfMaps[1] = make([]map[string]int, 2)
+	intKeySliceOfMaps[1][0] = make(map[string]int)
+	intKeySliceOfMaps[1][1] = make(map[string]int)
+	intKeySliceOfMaps[1][0]["foo"] = 777
+	intKeySliceOfMaps[1][1]["bar"] = 888
+
+	// Read from map with int key
+	ik1 := intKeySliceOfMaps[1][0]["foo"]
+	ik2 := intKeySliceOfMaps[1][1]["bar"]
+	if ik1 == 777 && ik2 == 888 {
+		fmt.Println("PASS: int key map of slice of maps read")
+	} else {
+		fmt.Println("FAIL: int key map of slice of maps read")
 	}
 }
 
@@ -1207,6 +1414,9 @@ func main() {
 	testIfInitCommaOk()
 	testMapStructField()
 	testMapReturnValue()
+	testNestedSlices()
+	testNestedMaps()
+	testMixedNestedComposites()
 
 	fmt.Println("=== Done ===")
 }

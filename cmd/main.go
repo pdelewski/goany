@@ -146,9 +146,11 @@ func main() {
 	flag.StringVar(&graphicsRuntime, "graphics-runtime", "tigr", "Graphics runtime: tigr (default), sdl2, none")
 	var optimizeMoves bool
 	var optimizeRefs bool
+	var checkSyntax bool
 	flag.BoolVar(&compiler.DebugMode, "debug", false, "Enable debug output")
 	flag.BoolVar(&optimizeMoves, "optimize-moves", false, "Enable move optimizations to reduce struct cloning")
 	flag.BoolVar(&optimizeRefs, "optimize-refs", false, "Enable reference optimization for read-only parameters")
+	flag.BoolVar(&checkSyntax, "check-syntax", true, "Enable GoAny syntax validation (default: true)")
 	flag.Parse()
 	if sourceDir == "" {
 		fmt.Println("Please provide a source directory")
@@ -185,6 +187,21 @@ func main() {
 		return
 	}
 
+	// Verify that source packages have a go.mod file (Module != nil)
+	// Without go.mod, packages would be silently skipped as "stdlib"
+	for _, pkg := range pkgs {
+		if pkg.Module == nil {
+			fmt.Printf("\033[31m\033[1mError: go.mod file required\033[0m\n")
+			fmt.Printf("  \033[36m-->\033[0m %s\n", sourceDir)
+			fmt.Printf("  The source directory must be a Go module (contain go.mod).\n")
+			fmt.Printf("  Without go.mod, packages cannot be properly validated.\n")
+			fmt.Println()
+			fmt.Printf("  \033[32mTo fix:\033[0m Run 'go mod init <module-name>' in the source directory.\n")
+			fmt.Println()
+			os.Exit(1)
+		}
+	}
+
 	// Collect all imported packages recursively (excluding standard library)
 	allPkgs := collectAllPackages(pkgs)
 
@@ -213,8 +230,19 @@ func main() {
 	useJs := backendSet["js"] // JS is opt-in, not included in "all"
 
 	// Build passes list
-	sema := &compiler.BasePass{PassName: "Sema", Emitter: &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}}
-	passes := []compiler.Pass{sema}
+	var passes []compiler.Pass
+
+	// Pass 1: Syntax checking (rejects unsupported Go constructs)
+	if checkSyntax {
+		syntaxChecker := &compiler.SyntaxChecker{Emitter: &compiler.BaseEmitter{}}
+		syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
+		passes = append(passes, syntaxPass)
+	}
+
+	// Pass 2: Semantic analysis (always runs)
+	semaChecker := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
+	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
+	passes = append(passes, sema)
 	var programFiles []string
 
 	if useCpp {
