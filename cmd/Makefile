@@ -32,9 +32,9 @@ clean-astyle:
 	@echo "Cleaning astyle..."
 	$(MAKE) -C $(ASTYLE_DIR) -f Makefile.cgo clean
 
-# Build the main binary
+# Build the main binary (uses pre-committed patterns_data.go)
 .PHONY: build
-build: astyle generate
+build: astyle
 	@echo "Building goany..."
 	go build $(GO_BUILD_FLAGS) -o $(BINARY_NAME) .
 	@echo "Build completed successfully!"
@@ -73,13 +73,13 @@ deps:
 
 # Development build (no optimizations, with debug info)
 .PHONY: dev
-dev: generate astyle
+dev: astyle
 	@echo "Building goany (development)..."
 	go build $(GO_BUILD_FLAGS) -gcflags="all=-N -l" -o $(BINARY_NAME) .
 
 # Production build (optimizations enabled)
 .PHONY: prod
-prod: generate astyle
+prod: astyle
 	@echo "Building goany (production)..."
 	go build $(GO_BUILD_FLAGS) -ldflags="-w -s" -o $(BINARY_NAME) .
 
