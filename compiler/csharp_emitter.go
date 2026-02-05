@@ -64,9 +64,8 @@ type CSharpEmitter struct {
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string          // Path to runtime directory (empty = disabled)
-	GraphicsRuntime string          // Graphics backend: tigr (default), sdl2, none
-	RuntimePackages map[string]bool // Detected runtime packages (e.g. "http", "json")
+	LinkRuntime     string            // Path to runtime directory (empty = disabled)
+	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
 	file            *os.File
 	BaseEmitter
 	pkg               *packages.Package
@@ -714,9 +713,6 @@ func (cse *CSharpEmitter) PostVisitProgram(indent int) {
 	// Generate .NET project files if link-runtime is enabled
 	if cse.LinkRuntime != "" {
 		if err := cse.GenerateCsproj(); err != nil {
-			log.Printf("Warning: %v", err)
-		}
-		if err := cse.CopyGraphicsRuntime(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
 		if err := cse.CopyRuntimePackages(); err != nil {
@@ -2790,10 +2786,10 @@ func (cse *CSharpEmitter) GenerateCsproj() error {
 	}
 	defer file.Close()
 
-	// Determine graphics backend
-	graphicsBackend := cse.GraphicsRuntime
+	// Determine graphics backend from RuntimePackages
+	graphicsBackend := cse.RuntimePackages["graphics"]
 	if graphicsBackend == "" {
-		graphicsBackend = "tigr" // Default to tigr for C#
+		graphicsBackend = "none" // no graphics import detected
 	}
 
 	var csproj string
@@ -2886,110 +2882,58 @@ func (cse *CSharpEmitter) GenerateCsproj() error {
 	return nil
 }
 
-// CopyGraphicsRuntime copies the graphics runtime file from the runtime directory
-func (cse *CSharpEmitter) CopyGraphicsRuntime() error {
-	if cse.LinkRuntime == "" {
-		return nil
-	}
-
-	// Determine graphics backend
-	graphicsBackend := cse.GraphicsRuntime
-	if graphicsBackend == "" {
-		graphicsBackend = "tigr"
-	}
-
-	// Select the appropriate runtime file based on backend
-	var runtimeFileName string
-	switch graphicsBackend {
-	case "tigr":
-		runtimeFileName = "GraphicsRuntimeTigr.cs"
-	case "sdl2":
-		runtimeFileName = "GraphicsRuntimeSDL2.cs"
-	default:
-		// For "none" or unknown, use SDL2 runtime as fallback
-		runtimeFileName = "GraphicsRuntimeSDL2.cs"
-	}
-
-	// Source path: LinkRuntime points to runtime directory, graphics runtime is in graphics/csharp/
-	runtimeSrcPath := filepath.Join(cse.LinkRuntime, "graphics", "csharp", runtimeFileName)
-	graphicsCs, err := os.ReadFile(runtimeSrcPath)
-	if err != nil {
-		return fmt.Errorf("failed to read graphics runtime from %s: %w", runtimeSrcPath, err)
-	}
-
-	// Destination path
-	graphicsPath := filepath.Join(cse.OutputDir, "GraphicsRuntime.cs")
-	if err := os.WriteFile(graphicsPath, graphicsCs, 0644); err != nil {
-		return fmt.Errorf("failed to write GraphicsRuntime.cs: %w", err)
-	}
-
-	DebugLogPrintf("Copied GraphicsRuntime.cs from %s to %s", runtimeSrcPath, graphicsPath)
-
-	// For tigr backend, also copy tigr.c and tigr.h
-	if graphicsBackend == "tigr" {
-		// Copy tigr.c
-		tigrCSrc := filepath.Join(cse.LinkRuntime, "graphics", "cpp", "tigr.c")
-		tigrCDst := filepath.Join(cse.OutputDir, "tigr.c")
-		tigrCContent, err := os.ReadFile(tigrCSrc)
-		if err != nil {
-			return fmt.Errorf("failed to read tigr.c from %s: %w", tigrCSrc, err)
-		}
-		if err := os.WriteFile(tigrCDst, tigrCContent, 0644); err != nil {
-			return fmt.Errorf("failed to write tigr.c: %w", err)
-		}
-		DebugLogPrintf("Copied tigr.c to %s", tigrCDst)
-
-		// Copy tigr.h
-		tigrHSrc := filepath.Join(cse.LinkRuntime, "graphics", "cpp", "tigr.h")
-		tigrHDst := filepath.Join(cse.OutputDir, "tigr.h")
-		tigrHContent, err := os.ReadFile(tigrHSrc)
-		if err != nil {
-			return fmt.Errorf("failed to read tigr.h from %s: %w", tigrHSrc, err)
-		}
-		if err := os.WriteFile(tigrHDst, tigrHContent, 0644); err != nil {
-			return fmt.Errorf("failed to write tigr.h: %w", err)
-		}
-		DebugLogPrintf("Copied tigr.h to %s", tigrHDst)
-
-		// Copy screen_helper.c (platform-specific screen size detection)
-		shSrc := filepath.Join(cse.LinkRuntime, "graphics", "cpp", "screen_helper.c")
-		shDst := filepath.Join(cse.OutputDir, "screen_helper.c")
-		shContent, err := os.ReadFile(shSrc)
-		if err != nil {
-			return fmt.Errorf("failed to read screen_helper.c from %s: %w", shSrc, err)
-		}
-		if err := os.WriteFile(shDst, shContent, 0644); err != nil {
-			return fmt.Errorf("failed to write screen_helper.c: %w", err)
-		}
-		DebugLogPrintf("Copied screen_helper.c to %s", shDst)
-	}
-
-	return nil
-}
-
-// CopyRuntimePackages copies runtime .cs files for detected runtime packages.
-// Convention: runtime/X/csharp/XRuntime.cs -> outputDir/XRuntime.cs
+// CopyRuntimePackages copies runtime .cs files for all detected runtime packages.
+// Convention: runtime/X/csharp/<Cap>Runtime.cs (no variant) or <Cap>Runtime<Cap_variant>.cs (with variant)
+// Destination: outputDir/<Cap>Runtime.cs
 func (cse *CSharpEmitter) CopyRuntimePackages() error {
 	if cse.LinkRuntime == "" {
 		return nil
 	}
-	for name := range cse.RuntimePackages {
-		if name == "graphics" {
-			continue // graphics has its own copy method with backend selection
+	for name, variant := range cse.RuntimePackages {
+		if variant == "none" {
+			continue
 		}
 		capName := strings.ToUpper(name[:1]) + name[1:]
-		fileName := capName + "Runtime.cs"
-		runtimeSrcPath := filepath.Join(cse.LinkRuntime, name, "csharp", fileName)
+
+		// Build source file name with variant awareness
+		var srcFileName string
+		if variant != "" {
+			capVariant := strings.ToUpper(variant[:1]) + variant[1:]
+			srcFileName = capName + "Runtime" + capVariant + ".cs"
+		} else {
+			srcFileName = capName + "Runtime.cs"
+		}
+
+		runtimeSrcPath := filepath.Join(cse.LinkRuntime, name, "csharp", srcFileName)
 		content, err := os.ReadFile(runtimeSrcPath)
 		if err != nil {
 			DebugLogPrintf("Skipping C# runtime for %s: %v", name, err)
 			continue
 		}
-		dstPath := filepath.Join(cse.OutputDir, fileName)
+
+		// Destination always uses the base name (without variant)
+		dstFileName := capName + "Runtime.cs"
+		dstPath := filepath.Join(cse.OutputDir, dstFileName)
 		if err := os.WriteFile(dstPath, content, 0644); err != nil {
-			return fmt.Errorf("failed to write %s: %w", fileName, err)
+			return fmt.Errorf("failed to write %s: %w", dstFileName, err)
 		}
-		DebugLogPrintf("Copied %s from %s to %s", fileName, runtimeSrcPath, dstPath)
+		DebugLogPrintf("Copied %s from %s to %s", dstFileName, runtimeSrcPath, dstPath)
+
+		// For tigr graphics variant, also copy native C files
+		if name == "graphics" && variant == "tigr" {
+			for _, extraFile := range []string{"tigr.c", "tigr.h", "screen_helper.c"} {
+				src := filepath.Join(cse.LinkRuntime, "graphics", "cpp", extraFile)
+				dst := filepath.Join(cse.OutputDir, extraFile)
+				data, err := os.ReadFile(src)
+				if err != nil {
+					return fmt.Errorf("failed to read %s from %s: %w", extraFile, src, err)
+				}
+				if err := os.WriteFile(dst, data, 0644); err != nil {
+					return fmt.Errorf("failed to write %s: %w", extraFile, err)
+				}
+				DebugLogPrintf("Copied %s to %s", extraFile, dst)
+			}
+		}
 	}
 	return nil
 }

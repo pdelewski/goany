@@ -92,9 +92,8 @@ type RustEmitter struct {
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string          // Path to runtime directory (empty = disabled)
-	GraphicsRuntime string          // Graphics backend: tigr (default), sdl2, none
-	RuntimePackages map[string]bool // Detected runtime packages (e.g. "http", "json")
+	LinkRuntime     string            // Path to runtime directory (empty = disabled)
+	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
 	OptimizeMoves   bool            // Enable move optimizations to reduce struct cloning
 	MoveOptCount    int    // Count of clones removed by move optimizations
 	OptimizeRefs    bool   // Enable reference optimization for read-only parameters
@@ -1750,22 +1749,13 @@ pub fn len<T>(slice: &[T]) -> i32 {
 	panicStr := re.emitAsString("\n// GoAny panic runtime\n"+goanyrt.PanicRustSource+"\n", indent)
 	re.gir.emitToFileBuffer(panicStr, EmptyVisitMethod)
 
-	// Include runtime module if link-runtime is enabled
+	// Include runtime package modules (convention: mod X; use X::*;)
 	if re.LinkRuntime != "" {
-		runtimeInclude := `
-// Graphics runtime
-mod graphics;
-use graphics::*;
-`
-		re.gir.emitToFileBuffer(runtimeInclude, EmptyVisitMethod)
-	}
-	// Include runtime package modules (convention: mod X;)
-	if re.LinkRuntime != "" {
-		for name := range re.RuntimePackages {
-			if name == "graphics" {
-				continue // graphics has its own mod declaration above
+		for name, variant := range re.RuntimePackages {
+			if variant == "none" {
+				continue
 			}
-			modInclude := fmt.Sprintf("\n// %s runtime\nmod %s;\n", name, name)
+			modInclude := fmt.Sprintf("\n// %s runtime\nmod %s;\nuse %s::*;\n", name, name, name)
 			re.gir.emitToFileBuffer(modInclude, EmptyVisitMethod)
 		}
 	}
@@ -1780,9 +1770,6 @@ func (re *RustEmitter) PostVisitProgram(indent int) {
 	// Generate Cargo project files if link-runtime is enabled
 	if re.LinkRuntime != "" {
 		if err := re.GenerateCargoToml(); err != nil {
-			log.Printf("Warning: %v", err)
-		}
-		if err := re.GenerateGraphicsMod(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
 		if err := re.GenerateBuildRs(); err != nil {
@@ -6654,10 +6641,10 @@ func (re *RustEmitter) GenerateCargoToml() error {
 	}
 	defer file.Close()
 
-	// Determine graphics backend
-	graphicsBackend := re.GraphicsRuntime
+	// Determine graphics backend from RuntimePackages
+	graphicsBackend := re.RuntimePackages["graphics"]
 	if graphicsBackend == "" {
-		graphicsBackend = "tigr" // Default to tigr for Rust
+		graphicsBackend = "none" // no graphics import detected
 	}
 
 	var cargoToml string
@@ -6696,7 +6683,7 @@ sdl2 = "0.36"
 	}
 
 	// Add ureq dependency if HTTP runtime is used
-	if re.RuntimePackages["http"] {
+	if _, hasHTTP := re.RuntimePackages["http"]; hasHTTP {
 		// Insert ureq after [dependencies]
 		cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nureq = \"2\"", 1)
 	}
@@ -6710,95 +6697,8 @@ sdl2 = "0.36"
 	return nil
 }
 
-// GenerateGraphicsMod creates the graphics.rs module file by copying from runtime
-func (re *RustEmitter) GenerateGraphicsMod() error {
-	if re.LinkRuntime == "" {
-		return nil
-	}
-
-	// Create src directory if needed (Cargo convention)
-	srcDir := filepath.Join(re.OutputDir, "src")
-	if err := os.MkdirAll(srcDir, 0755); err != nil {
-		return fmt.Errorf("failed to create src directory: %w", err)
-	}
-
-	// Determine graphics backend
-	graphicsBackend := re.GraphicsRuntime
-	if graphicsBackend == "" {
-		graphicsBackend = "tigr"
-	}
-
-	// Select the appropriate runtime file based on backend
-	var runtimeFileName string
-	switch graphicsBackend {
-	case "tigr":
-		runtimeFileName = "graphics_runtime_tigr.rs"
-	case "sdl2":
-		runtimeFileName = "graphics_runtime_sdl2.rs"
-	default:
-		// For "none" or unknown, use SDL2 runtime as fallback
-		runtimeFileName = "graphics_runtime_sdl2.rs"
-	}
-
-	// Source path: LinkRuntime points to runtime directory, graphics runtime is in graphics/rust/
-	runtimeSrcPath := filepath.Join(re.LinkRuntime, "graphics", "rust", runtimeFileName)
-	graphicsRs, err := os.ReadFile(runtimeSrcPath)
-	if err != nil {
-		return fmt.Errorf("failed to read graphics runtime from %s: %w", runtimeSrcPath, err)
-	}
-
-	// Destination path
-	graphicsPath := filepath.Join(srcDir, "graphics.rs")
-	if err := os.WriteFile(graphicsPath, graphicsRs, 0644); err != nil {
-		return fmt.Errorf("failed to write graphics.rs: %w", err)
-	}
-
-	DebugLogPrintf("Copied graphics.rs from %s to %s", runtimeSrcPath, graphicsPath)
-
-	// For tigr backend, copy tigr.c and tigr.h (tigr.c includes tigr.h)
-	if graphicsBackend == "tigr" {
-		// Copy tigr.c
-		tigrCSrc := filepath.Join(re.LinkRuntime, "graphics", "cpp", "tigr.c")
-		tigrCDst := filepath.Join(srcDir, "tigr.c")
-		tigrCContent, err := os.ReadFile(tigrCSrc)
-		if err != nil {
-			return fmt.Errorf("failed to read tigr.c from %s: %w", tigrCSrc, err)
-		}
-		if err := os.WriteFile(tigrCDst, tigrCContent, 0644); err != nil {
-			return fmt.Errorf("failed to write tigr.c: %w", err)
-		}
-		DebugLogPrintf("Copied tigr.c to %s", tigrCDst)
-
-		// Copy tigr.h (required by tigr.c)
-		tigrHSrc := filepath.Join(re.LinkRuntime, "graphics", "cpp", "tigr.h")
-		tigrHDst := filepath.Join(srcDir, "tigr.h")
-		tigrHContent, err := os.ReadFile(tigrHSrc)
-		if err != nil {
-			return fmt.Errorf("failed to read tigr.h from %s: %w", tigrHSrc, err)
-		}
-		if err := os.WriteFile(tigrHDst, tigrHContent, 0644); err != nil {
-			return fmt.Errorf("failed to write tigr.h: %w", err)
-		}
-		DebugLogPrintf("Copied tigr.h to %s", tigrHDst)
-
-		// Copy screen_helper.c (platform-specific screen size detection)
-		shSrc := filepath.Join(re.LinkRuntime, "graphics", "cpp", "screen_helper.c")
-		shDst := filepath.Join(srcDir, "screen_helper.c")
-		shContent, err := os.ReadFile(shSrc)
-		if err != nil {
-			return fmt.Errorf("failed to read screen_helper.c from %s: %w", shSrc, err)
-		}
-		if err := os.WriteFile(shDst, shContent, 0644); err != nil {
-			return fmt.Errorf("failed to write screen_helper.c: %w", err)
-		}
-		DebugLogPrintf("Copied screen_helper.c to %s", shDst)
-	}
-
-	return nil
-}
-
-// CopyRuntimeMods copies runtime .rs module files for detected runtime packages.
-// Convention: runtime/X/rust/X_runtime.rs -> src/X.rs
+// CopyRuntimeMods copies runtime .rs module files for all detected runtime packages.
+// Convention: runtime/X/rust/X_runtime.rs (no variant) or X_runtime_<variant>.rs (with variant) -> src/X.rs
 func (re *RustEmitter) CopyRuntimeMods() error {
 	if re.LinkRuntime == "" {
 		return nil
@@ -6807,11 +6707,19 @@ func (re *RustEmitter) CopyRuntimeMods() error {
 	if err := os.MkdirAll(srcDir, 0755); err != nil {
 		return fmt.Errorf("failed to create src directory: %w", err)
 	}
-	for name := range re.RuntimePackages {
-		if name == "graphics" {
-			continue // graphics has its own copy method with backend selection
+	for name, variant := range re.RuntimePackages {
+		if variant == "none" {
+			continue
 		}
-		runtimeSrcPath := filepath.Join(re.LinkRuntime, name, "rust", name+"_runtime.rs")
+
+		// Build source file name with variant awareness
+		srcFileName := name + "_runtime"
+		if variant != "" {
+			srcFileName += "_" + variant
+		}
+		srcFileName += ".rs"
+
+		runtimeSrcPath := filepath.Join(re.LinkRuntime, name, "rust", srcFileName)
 		content, err := os.ReadFile(runtimeSrcPath)
 		if err != nil {
 			DebugLogPrintf("Skipping Rust runtime for %s: %v", name, err)
@@ -6822,6 +6730,22 @@ func (re *RustEmitter) CopyRuntimeMods() error {
 			return fmt.Errorf("failed to write %s.rs: %w", name, err)
 		}
 		DebugLogPrintf("Copied %s.rs from %s to %s", name, runtimeSrcPath, dstPath)
+
+		// For tigr graphics variant, also copy native C files
+		if name == "graphics" && variant == "tigr" {
+			for _, extraFile := range []string{"tigr.c", "tigr.h", "screen_helper.c"} {
+				src := filepath.Join(re.LinkRuntime, "graphics", "cpp", extraFile)
+				dst := filepath.Join(srcDir, extraFile)
+				data, err := os.ReadFile(src)
+				if err != nil {
+					return fmt.Errorf("failed to read %s from %s: %w", extraFile, src, err)
+				}
+				if err := os.WriteFile(dst, data, 0644); err != nil {
+					return fmt.Errorf("failed to write %s: %w", extraFile, err)
+				}
+				DebugLogPrintf("Copied %s to %s", extraFile, dst)
+			}
+		}
 	}
 	return nil
 }
@@ -6839,10 +6763,10 @@ func (re *RustEmitter) GenerateBuildRs() error {
 	}
 	defer file.Close()
 
-	// Determine graphics backend
-	graphicsBackend := re.GraphicsRuntime
+	// Determine graphics backend from RuntimePackages
+	graphicsBackend := re.RuntimePackages["graphics"]
 	if graphicsBackend == "" {
-		graphicsBackend = "tigr"
+		graphicsBackend = "none" // no graphics import detected
 	}
 
 	var buildRs string
