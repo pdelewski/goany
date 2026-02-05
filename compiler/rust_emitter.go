@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	goanyrt "goany/runtime"
+
 	"golang.org/x/tools/go/packages"
 )
 
@@ -285,6 +287,8 @@ func (*RustEmitter) lowerToBuiltins(selector string) string {
 		return "printf"
 	case "len":
 		return "len"
+	case "panic":
+		return "goany_panic"
 	}
 	return selector
 }
@@ -1740,6 +1744,10 @@ pub fn len<T>(slice: &[T]) -> i32 {
 `
 	str := re.emitAsString(builtin, indent)
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
+
+	// Include panic runtime
+	panicStr := re.emitAsString("\n// GoAny panic runtime\n"+goanyrt.PanicRustSource+"\n", indent)
+	re.gir.emitToFileBuffer(panicStr, EmptyVisitMethod)
 
 	// Include runtime module if link-runtime is enabled
 	if re.LinkRuntime != "" {

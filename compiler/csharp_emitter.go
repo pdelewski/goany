@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	goanyrt "goany/runtime"
+
 	"golang.org/x/tools/go/packages"
 )
 
@@ -168,6 +170,8 @@ func (*CSharpEmitter) lowerToBuiltins(selector string) string {
 		return "SliceBuiltins.Length"
 	case "append":
 		return "SliceBuiltins.Append"
+	case "panic":
+		return "GoanyRuntime.goany_panic"
 	}
 	return selector
 }
@@ -558,6 +562,11 @@ func (cse *CSharpEmitter) PreVisitProgram(indent int) {
 		fmt.Println("Error writing to file:", err)
 		return
 	}
+	// Include panic runtime
+	cse.file.WriteString("// GoAny panic runtime\n")
+	cse.file.WriteString(goanyrt.PanicCsSource)
+	cse.file.WriteString("\n")
+
 	builtin := `public static class SliceBuiltins
 {
   public static List<T> Append<T>(this List<T> list, T element)
