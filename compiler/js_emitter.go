@@ -35,8 +35,8 @@ type JSEmitter struct {
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string // Path to runtime directory (empty = disabled)
-	GraphicsRuntime string // Graphics backend for browser
+	LinkRuntime     string          // Path to runtime directory (empty = disabled)
+	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
 	file            *os.File
 	Emitter
 	pkg                   *packages.Package
@@ -408,8 +408,8 @@ function bool(v) { return Boolean(v); }
 	jse.file.WriteString(goanyrt.PanicJsSource)
 	jse.file.WriteString("\n")
 
-	// Include graphics runtime if enabled
-	if jse.LinkRuntime != "" {
+	// Include graphics runtime if graphics package is used
+	if _, hasGraphics := jse.RuntimePackages["graphics"]; hasGraphics {
 		jse.file.WriteString(`// Graphics runtime for Canvas
 const graphics = {
   canvas: null,
@@ -661,6 +661,24 @@ const graphics = {
 };
 
 `)
+	}
+	// Include runtime packages from files (convention: X/js/X_runtime.js)
+	// Graphics is inlined above (Canvas API), so skip it in the file-based loop
+	if jse.LinkRuntime != "" {
+		for name, variant := range jse.RuntimePackages {
+			if name == "graphics" || variant == "none" {
+				continue
+			}
+			runtimePath := filepath.Join(jse.LinkRuntime, name, "js", name+"_runtime.js")
+			content, err := os.ReadFile(runtimePath)
+			if err != nil {
+				DebugLogPrintf("Skipping JS runtime for %s: %v", name, err)
+				continue
+			}
+			jse.file.WriteString(fmt.Sprintf("// %s runtime\n", name))
+			jse.file.Write(content)
+			jse.file.WriteString("\n")
+		}
 	}
 }
 

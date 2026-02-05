@@ -61,6 +61,34 @@ func collectAllPackages(pkgs []*packages.Package) []*packages.Package {
 }
 
 // packagesUseMap checks if any package in the list uses Go map types
+// detectRuntimePackages scans all packages for "runtime/X" imports and returns
+// a map of detected runtime package names (e.g. {"http": true, "json": true}).
+func detectRuntimePackages(pkgs []*packages.Package) map[string]string {
+	result := make(map[string]string)
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Syntax {
+			for _, imp := range file.Imports {
+				if imp.Path == nil {
+					continue
+				}
+				path := imp.Path.Value
+				if len(path) > 2 {
+					path = path[1 : len(path)-1] // strip quotes
+				}
+				if strings.HasPrefix(path, "runtime/") {
+					name := path[len("runtime/"):]
+					// Take first component only (e.g. "graphics" from "runtime/graphics/go/tigr")
+					if idx := strings.Index(name, "/"); idx >= 0 {
+						name = name[:idx]
+					}
+					result[name] = "" // default variant (empty)
+				}
+			}
+		}
+	}
+	return result
+}
+
 func packagesUseMap(pkgs []*packages.Package) bool {
 	for _, pkg := range pkgs {
 		if pkg.TypesInfo == nil {
@@ -217,6 +245,20 @@ func main() {
 		compiler.DebugLogPrintf("Runtime hashmap package loaded: %s", hashmapPkg.Name)
 	}
 
+	// Detect runtime package usage (e.g. runtime/http, runtime/graphics, etc.)
+	runtimePackages := detectRuntimePackages(pkgs)
+	// Apply graphics variant from CLI flag
+	if _, ok := runtimePackages["graphics"]; ok {
+		runtimePackages["graphics"] = graphicsRuntime
+	}
+	for name, variant := range runtimePackages {
+		if variant != "" {
+			compiler.DebugLogPrintf("Runtime package detected: %s (variant: %s)", name, variant)
+		} else {
+			compiler.DebugLogPrintf("Runtime package detected: %s", name)
+		}
+	}
+
 	// Parse backend selection
 	backends := strings.Split(strings.ToLower(backend), ",")
 	backendSet := make(map[string]bool)
@@ -250,7 +292,7 @@ func main() {
 			Emitter:         &compiler.BaseEmitter{},
 			Output:          output + ".cpp",
 			LinkRuntime:     linkRuntime,
-			GraphicsRuntime: graphicsRuntime,
+			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 			OptimizeMoves:   optimizeMoves,
@@ -263,7 +305,7 @@ func main() {
 			BaseEmitter:     compiler.BaseEmitter{},
 			Output:          output + ".cs",
 			LinkRuntime:     linkRuntime,
-			GraphicsRuntime: graphicsRuntime,
+			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 		}}
@@ -275,7 +317,7 @@ func main() {
 			BaseEmitter:     compiler.BaseEmitter{},
 			Output:          output + ".rs",
 			LinkRuntime:     linkRuntime,
-			GraphicsRuntime: graphicsRuntime,
+			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 			OptimizeMoves:   optimizeMoves,
@@ -289,7 +331,7 @@ func main() {
 			Emitter:         &compiler.BaseEmitter{},
 			Output:          output + ".js",
 			LinkRuntime:     linkRuntime,
-			GraphicsRuntime: graphicsRuntime,
+			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 		}}

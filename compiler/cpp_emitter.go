@@ -52,9 +52,9 @@ type CPPEmitter struct {
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string // Path to runtime directory (empty = disabled)
-	GraphicsRuntime string // Graphics backend: tigr (default), sdl2, none
-	OptimizeMoves   bool   // Enable move optimizations to reduce struct cloning
+	LinkRuntime     string            // Path to runtime directory (empty = disabled)
+	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
+	OptimizeMoves   bool            // Enable move optimizations to reduce struct cloning
 	MoveOptCount    int    // Count of copies replaced by std::move()
 	file            *os.File
 	Emitter
@@ -527,20 +527,18 @@ func (cppe *CPPEmitter) PreVisitProgram(indent int) {
 #include <initializer_list>
 #include <iostream>
 `)
-	// Include runtime header if link-runtime is enabled
+	// Include runtime headers if link-runtime is enabled
+	// Convention: X/cpp/X_runtime.hpp (no variant) or X/cpp/X_runtime_<variant>.hpp (with variant)
 	if cppe.LinkRuntime != "" {
-		// Include graphics runtime based on selected backend
-		graphicsBackend := cppe.GraphicsRuntime
-		if graphicsBackend == "" {
-			graphicsBackend = "tigr"
-		}
-		switch graphicsBackend {
-		case "sdl2":
-			cppe.file.WriteString("#include \"graphics/cpp/graphics_runtime_sdl2.hpp\"\n")
-		case "tigr":
-			cppe.file.WriteString("#include \"graphics/cpp/graphics_runtime_tigr.hpp\"\n")
-		case "none":
-			// No graphics runtime
+		for name, variant := range cppe.RuntimePackages {
+			if variant == "none" {
+				continue
+			}
+			fileName := name + "_runtime"
+			if variant != "" {
+				fileName += "_" + variant
+			}
+			cppe.file.WriteString(fmt.Sprintf("#include \"%s/cpp/%s.hpp\"\n", name, fileName))
 		}
 	}
 	// Include panic runtime
@@ -2235,10 +2233,10 @@ func (cppe *CPPEmitter) GenerateMakefile() error {
 
 	var makefile string
 
-	// Determine graphics backend (default to tigr)
-	graphicsBackend := cppe.GraphicsRuntime
+	// Determine graphics backend from RuntimePackages
+	graphicsBackend := cppe.RuntimePackages["graphics"]
 	if graphicsBackend == "" {
-		graphicsBackend = "tigr"
+		graphicsBackend = "none" // no graphics import detected
 	}
 
 	switch graphicsBackend {
@@ -2320,6 +2318,20 @@ clean:
 
 .PHONY: all clean
 `, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath, absRuntimePath)
+	}
+
+	// Add platform-specific linker flags if HTTP runtime is used
+	// httplib.h needs -pthread on Unix and -lws2_32 on Windows
+	if _, hasHTTP := cppe.RuntimePackages["http"]; hasHTTP {
+		httpFlags := `
+# HTTP runtime linker flags
+ifeq ($(OS),Windows_NT)
+    LDFLAGS += -lws2_32 -pthread
+else
+    LDFLAGS += -pthread
+endif
+`
+		makefile = strings.Replace(makefile, "\nall:", httpFlags+"\nall:", 1)
 	}
 
 	_, err = file.WriteString(makefile)
