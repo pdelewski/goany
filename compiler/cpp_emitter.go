@@ -5,12 +5,14 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	goanyrt "goany/runtime"
+
 	"golang.org/x/tools/go/packages"
-	"log"
 )
 
 var cppTypesMap = map[string]string{
@@ -278,6 +280,8 @@ func (*CPPEmitter) lowerToBuiltins(selector string) string {
 		return "printf"
 	case "len":
 		return "std::size"
+	case "panic":
+		return "goany_panic"
 	}
 	return selector
 }
@@ -539,6 +543,11 @@ func (cppe *CPPEmitter) PreVisitProgram(indent int) {
 			// No graphics runtime
 		}
 	}
+	// Include panic runtime
+	cppe.file.WriteString("\n// GoAny panic runtime\n")
+	cppe.file.WriteString(goanyrt.PanicCppSource)
+	cppe.file.WriteString("\n")
+
 	cppe.file.WriteString(`
 using int8 = int8_t;
 using int16 = int16_t;

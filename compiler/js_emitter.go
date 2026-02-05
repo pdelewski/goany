@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	goanyrt "goany/runtime"
+
 	"golang.org/x/tools/go/packages"
 )
 
@@ -262,6 +264,8 @@ func (*JSEmitter) lowerToBuiltins(selector string) string {
 		return "print" // Uses process.stdout.write (no newline)
 	case "len":
 		return "len"
+	case "panic":
+		return "goany_panic"
 	}
 	return selector
 }
@@ -399,6 +403,10 @@ function string(v) { return String(v); }
 function bool(v) { return Boolean(v); }
 
 `)
+	// Include panic runtime
+	jse.file.WriteString("// GoAny panic runtime\n")
+	jse.file.WriteString(goanyrt.PanicJsSource)
+	jse.file.WriteString("\n")
 
 	// Include graphics runtime if enabled
 	if jse.LinkRuntime != "" {

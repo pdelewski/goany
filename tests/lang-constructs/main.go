@@ -65,7 +65,7 @@ func testSliceOperations() {
 	if len(intSlice) == 3 {
 		fmt.Println("PASS: slice literal len")
 	} else {
-		fmt.Println("FAIL: slice literal len")
+		panic("FAIL: slice literal len")
 	}
 
 	if len(a) == 0 {
@@ -114,7 +114,7 @@ func testLoopConstructs() {
 	if counter == 5 {
 		fmt.Println("PASS: while loop")
 	} else {
-		fmt.Println("FAIL: while loop")
+		panic("FAIL: while loop")
 	}
 
 	// Infinite loop with break
@@ -129,7 +129,7 @@ func testLoopConstructs() {
 	if counter2 == 3 {
 		fmt.Println("PASS: infinite loop break")
 	} else {
-		fmt.Println("FAIL: infinite loop break")
+		panic("FAIL: infinite loop break")
 	}
 
 	// Continue statement
@@ -143,7 +143,7 @@ func testLoopConstructs() {
 	if sum == 25 {
 		fmt.Println("PASS: continue statement")
 	} else {
-		fmt.Println("FAIL: continue statement")
+		panic("FAIL: continue statement")
 	}
 
 	// Index-only range loop
@@ -161,7 +161,7 @@ func testLoopConstructs() {
 	if sumStep == 20 {
 		fmt.Println("PASS: step by 2")
 	} else {
-		fmt.Println("FAIL: step by 2")
+		panic("FAIL: step by 2")
 	}
 
 	// Decrement loop: i--
@@ -173,7 +173,7 @@ func testLoopConstructs() {
 	if sumDecr == 15 {
 		fmt.Println("PASS: decrement loop")
 	} else {
-		fmt.Println("FAIL: decrement loop")
+		panic("FAIL: decrement loop")
 	}
 
 	// Inclusive range: i <= n
@@ -185,7 +185,7 @@ func testLoopConstructs() {
 	if sumIncl == 15 {
 		fmt.Println("PASS: inclusive range")
 	} else {
-		fmt.Println("FAIL: inclusive range")
+		panic("FAIL: inclusive range")
 	}
 
 	// Decrement with inclusive: i >= 0
@@ -197,7 +197,7 @@ func testLoopConstructs() {
 	if sumDecrIncl == 6 {
 		fmt.Println("PASS: decrement inclusive")
 	} else {
-		fmt.Println("FAIL: decrement inclusive")
+		panic("FAIL: decrement inclusive")
 	}
 
 	// Step by 3 decrement: i -= 3
@@ -209,7 +209,7 @@ func testLoopConstructs() {
 	if sumDecrStep == 18 {
 		fmt.Println("PASS: decrement step 3")
 	} else {
-		fmt.Println("FAIL: decrement step 3")
+		panic("FAIL: decrement step 3")
 	}
 
 	// Compound condition with && (cannot be converted to simple range)
@@ -222,7 +222,7 @@ func testLoopConstructs() {
 	if sumCompound == 10 {
 		fmt.Println("PASS: compound condition")
 	} else {
-		fmt.Println("FAIL: compound condition")
+		panic("FAIL: compound condition")
 	}
 
 	// Compound condition with || (cannot be converted to simple range)
@@ -238,7 +238,7 @@ func testLoopConstructs() {
 	if sumOr == 3 {
 		fmt.Println("PASS: compound or condition")
 	} else {
-		fmt.Println("FAIL: compound or condition")
+		panic("FAIL: compound or condition")
 	}
 
 	// Compound condition with slice length check (common pattern)
@@ -252,7 +252,7 @@ func testLoopConstructs() {
 	if sumItems == 60 {
 		fmt.Println("PASS: slice length check")
 	} else {
-		fmt.Println("FAIL: slice length check")
+		panic("FAIL: slice length check")
 	}
 
 	// Multiple compound conditions
@@ -265,7 +265,7 @@ func testLoopConstructs() {
 	if sumMulti == 21 {
 		fmt.Println("PASS: multiple compound conditions")
 	} else {
-		fmt.Println("FAIL: multiple compound conditions")
+		panic("FAIL: multiple compound conditions")
 	}
 }
 
@@ -366,27 +366,27 @@ func testArithmeticOperators() {
 	if sum == 13 {
 		fmt.Println("PASS: arithmetic sum")
 	} else {
-		fmt.Println("FAIL: arithmetic sum")
+		panic("FAIL: arithmetic sum")
 	}
 	if diff == 7 {
 		fmt.Println("PASS: arithmetic diff")
 	} else {
-		fmt.Println("FAIL: arithmetic diff")
+		panic("FAIL: arithmetic diff")
 	}
 	if prod == 30 {
 		fmt.Println("PASS: arithmetic prod")
 	} else {
-		fmt.Println("FAIL: arithmetic prod")
+		panic("FAIL: arithmetic prod")
 	}
 	if quot == 3 {
 		fmt.Println("PASS: arithmetic quot")
 	} else {
-		fmt.Println("FAIL: arithmetic quot")
+		panic("FAIL: arithmetic quot")
 	}
 	if rem == 1 {
 		fmt.Println("PASS: arithmetic rem")
 	} else {
-		fmt.Println("FAIL: arithmetic rem")
+		panic("FAIL: arithmetic rem")
 	}
 }
 
@@ -432,7 +432,7 @@ func testAssignmentOperators() {
 	if a == 22 {
 		fmt.Println("PASS: assignment operators")
 	} else {
-		fmt.Println("FAIL: assignment operators")
+		panic("FAIL: assignment operators")
 	}
 }
 
@@ -444,7 +444,7 @@ func testIncrementDecrement() {
 	if a == 0 {
 		fmt.Println("PASS: increment decrement")
 	} else {
-		fmt.Println("FAIL: increment decrement")
+		panic("FAIL: increment decrement")
 	}
 }
 
@@ -454,7 +454,7 @@ func testStringOperations() {
 	if s == "hello" {
 		fmt.Println("PASS: string operations")
 	} else {
-		fmt.Println("FAIL: string operations")
+		panic("FAIL: string operations")
 	}
 }
 
@@ -490,7 +490,7 @@ func testAppend() {
 	if len(a) == 3 {
 		fmt.Println("PASS: append len")
 	} else {
-		fmt.Println("FAIL: append len")
+		panic("FAIL: append len")
 	}
 }
 
@@ -506,7 +506,7 @@ func testStructInitialization() {
 	if p.name == "Alice" && p.age == 30 {
 		fmt.Println("PASS: struct init")
 	} else {
-		fmt.Println("FAIL: struct init")
+		panic("FAIL: struct init")
 	}
 }
 
@@ -519,10 +519,10 @@ func testNestedIf() {
 		if b == 20 {
 			fmt.Println("PASS: nested if")
 		} else {
-			fmt.Println("FAIL: nested if inner")
+			panic("FAIL: nested if inner")
 		}
 	} else {
-		fmt.Println("FAIL: nested if outer")
+		panic("FAIL: nested if outer")
 	}
 }
 
@@ -537,7 +537,7 @@ func testInt32Int64Types() {
 	if a == 100 && b == 200 {
 		fmt.Println("PASS: int32 int64 values")
 	} else {
-		fmt.Println("FAIL: int32 int64 values")
+		panic("FAIL: int32 int64 values")
 	}
 
 	// Struct with int32/int64 fields
@@ -550,7 +550,7 @@ func testInt32Int64Types() {
 	if record.ID == 1 && record.Size == 1024 {
 		fmt.Println("PASS: int32 int64 struct fields")
 	} else {
-		fmt.Println("FAIL: int32 int64 struct fields")
+		panic("FAIL: int32 int64 struct fields")
 	}
 }
 
@@ -587,7 +587,7 @@ func testZeroValueStruct() {
 	if plan.Root == 0 && len(plan.Literals) == 0 {
 		fmt.Println("PASS: zero value struct")
 	} else {
-		fmt.Println("FAIL: zero value struct")
+		panic("FAIL: zero value struct")
 	}
 }
 
@@ -603,7 +603,7 @@ func testReturnModifiedStruct() {
 	if idx == 1 && len(plan.Literals) == 2 {
 		fmt.Println("PASS: return modified struct")
 	} else {
-		fmt.Println("FAIL: return modified struct")
+		panic("FAIL: return modified struct")
 	}
 }
 
@@ -617,7 +617,7 @@ func testBoolFieldInStruct() {
 	if f.ID == 1 && f.Name == "column1" && f.Required {
 		fmt.Println("PASS: bool field struct required")
 	} else {
-		fmt.Println("FAIL: bool field struct required")
+		panic("FAIL: bool field struct required")
 	}
 
 	f2 := types.Field{
@@ -628,7 +628,7 @@ func testBoolFieldInStruct() {
 	if f2.ID == 2 && !f2.Required {
 		fmt.Println("PASS: bool field struct optional")
 	} else {
-		fmt.Println("FAIL: bool field struct optional")
+		panic("FAIL: bool field struct optional")
 	}
 }
 
@@ -648,12 +648,12 @@ func testNestedStructField() {
 	if entry.Status == 1 && entry.DataFileF.RecordCount == 1000 && entry.DataFileF.Stats.NullCount == 100 {
 		fmt.Println("PASS: nested struct fields")
 	} else {
-		fmt.Println("FAIL: nested struct fields")
+		panic("FAIL: nested struct fields")
 	}
 	if entry.DataFileF.FilePath == "/path/to/file" {
 		fmt.Println("PASS: nested struct string field")
 	} else {
-		fmt.Println("FAIL: nested struct string field")
+		panic("FAIL: nested struct string field")
 	}
 }
 
@@ -677,14 +677,14 @@ func testMultiPackageImport() {
 	if idx == 1 && len(plan.Literals) == 2 {
 		fmt.Println("PASS: multi-package plan")
 	} else {
-		fmt.Println("FAIL: multi-package plan")
+		panic("FAIL: multi-package plan")
 	}
 
 	// Use constants from types package
 	if types.ExprLiteral == 0 {
 		fmt.Println("PASS: multi-package constant")
 	} else {
-		fmt.Println("FAIL: multi-package constant")
+		panic("FAIL: multi-package constant")
 	}
 
 	// Use nested struct from types package
@@ -699,7 +699,7 @@ func testMultiPackageImport() {
 	if entry.DataFileF.FilePath == "/data/file.parquet" && entry.DataFileF.RecordCount == 500 {
 		fmt.Println("PASS: multi-package nested struct")
 	} else {
-		fmt.Println("FAIL: multi-package nested struct")
+		panic("FAIL: multi-package nested struct")
 	}
 }
 
@@ -762,7 +762,7 @@ func testTypeAssertions() {
 	if intVal == 42 {
 		fmt.Println("PASS: type assert int")
 	} else {
-		fmt.Println("FAIL: type assert int")
+		panic("FAIL: type assert int")
 	}
 
 	a = "world"
@@ -770,7 +770,7 @@ func testTypeAssertions() {
 	if strVal == "world" {
 		fmt.Println("PASS: type assert string")
 	} else {
-		fmt.Println("FAIL: type assert string")
+		panic("FAIL: type assert string")
 	}
 
 	a = true
@@ -778,7 +778,7 @@ func testTypeAssertions() {
 	if boolVal {
 		fmt.Println("PASS: type assert bool")
 	} else {
-		fmt.Println("FAIL: type assert bool")
+		panic("FAIL: type assert bool")
 	}
 
 	a = 2.71
@@ -797,7 +797,7 @@ func checkSliceSum(s []int, expected int) {
 	if total == expected {
 		fmt.Println("PASS: slice sum")
 	} else {
-		fmt.Println("FAIL: slice sum")
+		panic("FAIL: slice sum")
 	}
 }
 
@@ -818,7 +818,7 @@ func testNestedWhileLoops() {
 	if innerTotal == 12 {
 		fmt.Println("PASS: nested while")
 	} else {
-		fmt.Println("FAIL: nested while")
+		panic("FAIL: nested while")
 	}
 
 	// Condition-only loop nested inside traditional for loop
@@ -833,7 +833,7 @@ func testNestedWhileLoops() {
 	if sum2 == 6 {
 		fmt.Println("PASS: traditional outer while inner")
 	} else {
-		fmt.Println("FAIL: traditional outer while inner")
+		panic("FAIL: traditional outer while inner")
 	}
 
 	// Three levels of nesting: while > while > while
@@ -854,7 +854,7 @@ func testNestedWhileLoops() {
 	if total3 == 8 {
 		fmt.Println("PASS: triple nested while")
 	} else {
-		fmt.Println("FAIL: triple nested while")
+		panic("FAIL: triple nested while")
 	}
 }
 
@@ -890,7 +890,7 @@ func testMapAsParameter() {
 	if getMapLen(m) == 2 && m["hello"] == 1 && m["world"] == 2 {
 		fmt.Println("PASS: map as parameter")
 	} else {
-		fmt.Println("FAIL: map as parameter")
+		panic("FAIL: map as parameter")
 	}
 }
 
@@ -903,13 +903,13 @@ func testMapOperations() {
 	if m["hello"] == 1 && m["world"] == 2 && len(m) == 2 {
 		fmt.Println("PASS: map string keys")
 	} else {
-		fmt.Println("FAIL: map string keys")
+		panic("FAIL: map string keys")
 	}
 	delete(m, "hello")
 	if len(m) == 1 {
 		fmt.Println("PASS: map delete")
 	} else {
-		fmt.Println("FAIL: map delete")
+		panic("FAIL: map delete")
 	}
 
 	// Int keys
@@ -919,7 +919,7 @@ func testMapOperations() {
 	if m2[42] == "answer" && len(m2) == 2 {
 		fmt.Println("PASS: map int keys")
 	} else {
-		fmt.Println("FAIL: map int keys")
+		panic("FAIL: map int keys")
 	}
 
 	// Bool keys
@@ -929,7 +929,7 @@ func testMapOperations() {
 	if m3[true] == 1 && m3[false] == 0 {
 		fmt.Println("PASS: map bool keys")
 	} else {
-		fmt.Println("FAIL: map bool keys")
+		panic("FAIL: map bool keys")
 	}
 }
 
@@ -938,14 +938,14 @@ func testNilMap() {
 	if len(m) == 0 {
 		fmt.Println("PASS: nil map len")
 	} else {
-		fmt.Println("FAIL: nil map len")
+		panic("FAIL: nil map len")
 	}
 	m = make(map[string]int)
 	m["x"] = 10
 	if m["x"] == 10 && len(m) == 1 {
 		fmt.Println("PASS: nil map after make")
 	} else {
-		fmt.Println("FAIL: nil map after make")
+		panic("FAIL: nil map after make")
 	}
 }
 
@@ -955,7 +955,7 @@ func testMapKeyTypes() {
 	if m1[100] == "hundred" && len(m1) == 1 {
 		fmt.Println("PASS: map int64 key")
 	} else {
-		fmt.Println("FAIL: map int64 key")
+		panic("FAIL: map int64 key")
 	}
 
 	m2 := make(map[float64]int)
@@ -963,7 +963,7 @@ func testMapKeyTypes() {
 	if m2[3.14] == 314 && len(m2) == 1 {
 		fmt.Println("PASS: map float64 key")
 	} else {
-		fmt.Println("FAIL: map float64 key")
+		panic("FAIL: map float64 key")
 	}
 
 	m3 := make(map[int32]string)
@@ -971,7 +971,7 @@ func testMapKeyTypes() {
 	if m3[42] == "answer" && len(m3) == 1 {
 		fmt.Println("PASS: map int32 key")
 	} else {
-		fmt.Println("FAIL: map int32 key")
+		panic("FAIL: map int32 key")
 	}
 }
 
@@ -987,7 +987,7 @@ func testMapStructValue() {
 	if s.Name == "hello" && s.Value == 42 && len(m) == 1 {
 		fmt.Println("PASS: map struct value")
 	} else {
-		fmt.Println("FAIL: map struct value")
+		panic("FAIL: map struct value")
 	}
 }
 
@@ -1000,20 +1000,20 @@ func testMapCommaOk() {
 	if val == 42 && ok {
 		fmt.Println("PASS: map comma-ok found")
 	} else {
-		fmt.Println("FAIL: map comma-ok found")
+		panic("FAIL: map comma-ok found")
 	}
 
 	val2, ok2 := m["missing"]
 	if val2 == 0 && !ok2 {
 		fmt.Println("PASS: map comma-ok missing")
 	} else {
-		fmt.Println("FAIL: map comma-ok missing")
+		panic("FAIL: map comma-ok missing")
 	}
 
 	if len(m) == 1 {
 		fmt.Println("PASS: map comma-ok len")
 	} else {
-		fmt.Println("FAIL: map comma-ok len")
+		panic("FAIL: map comma-ok len")
 	}
 }
 
@@ -1025,7 +1025,7 @@ func testTypeAssertCommaOk() {
 	if val == 42 && ok {
 		fmt.Println("PASS: type assert comma-ok int")
 	} else {
-		fmt.Println("FAIL: type assert comma-ok int")
+		panic("FAIL: type assert comma-ok int")
 	}
 
 	val2, ok2 := x.(string)
@@ -1042,14 +1042,14 @@ func testIfInitCommaOk() {
 		if val == 42 {
 			fmt.Println("PASS: if-init map found")
 		} else {
-			fmt.Println("FAIL: if-init map found wrong val")
+			panic("FAIL: if-init map found wrong val")
 		}
 	} else {
-		fmt.Println("FAIL: if-init map found not entered")
+		panic("FAIL: if-init map found not entered")
 	}
 	if val, ok := m["missing"]; ok {
 		fmt.Println(val)
-		fmt.Println("FAIL: if-init map missing entered")
+		panic("FAIL: if-init map missing entered")
 	} else {
 		fmt.Println("PASS: if-init map missing")
 	}
@@ -1060,10 +1060,10 @@ func testIfInitCommaOk() {
 		if val == 10 {
 			fmt.Println("PASS: if-init type assert")
 		} else {
-			fmt.Println("FAIL: if-init type assert wrong val")
+			panic("FAIL: if-init type assert wrong val")
 		}
 	} else {
-		fmt.Println("FAIL: if-init type assert not entered")
+		panic("FAIL: if-init type assert not entered")
 	}
 }
 
@@ -1082,7 +1082,7 @@ func testMapStructField() {
 	if s.Settings["timeout"] == 30 && len(s.Settings) == 2 {
 		fmt.Println("PASS: map struct field get/len")
 	} else {
-		fmt.Println("FAIL: map struct field get/len")
+		panic("FAIL: map struct field get/len")
 	}
 
 	// delete
@@ -1090,7 +1090,7 @@ func testMapStructField() {
 	if len(s.Settings) == 1 {
 		fmt.Println("PASS: map struct field delete")
 	} else {
-		fmt.Println("FAIL: map struct field delete")
+		panic("FAIL: map struct field delete")
 	}
 
 	// comma-ok
@@ -1098,14 +1098,14 @@ func testMapStructField() {
 	if val == 30 && ok {
 		fmt.Println("PASS: map struct field comma-ok")
 	} else {
-		fmt.Println("FAIL: map struct field comma-ok")
+		panic("FAIL: map struct field comma-ok")
 	}
 
 	val2, ok2 := s.Settings["missing"]
 	if val2 == 0 && !ok2 {
 		fmt.Println("PASS: map struct field comma-ok missing")
 	} else {
-		fmt.Println("FAIL: map struct field comma-ok missing")
+		panic("FAIL: map struct field comma-ok missing")
 	}
 }
 
@@ -1146,13 +1146,13 @@ func testNestedSlices() {
 	if len(m) == 2 && len(m[0]) == 3 && len(m[1]) == 2 {
 		fmt.Println("PASS: nested slice dimensions")
 	} else {
-		fmt.Println("FAIL: nested slice dimensions")
+		panic("FAIL: nested slice dimensions")
 	}
 
 	if m[0][0] == 1 && m[0][1] == 2 && m[0][2] == 3 && m[1][0] == 4 && m[1][1] == 5 {
 		fmt.Println("PASS: nested slice values")
 	} else {
-		fmt.Println("FAIL: nested slice values")
+		panic("FAIL: nested slice values")
 	}
 
 	// Sum all elements
@@ -1165,7 +1165,7 @@ func testNestedSlices() {
 	if sum == 15 {
 		fmt.Println("PASS: nested slice sum")
 	} else {
-		fmt.Println("FAIL: nested slice sum")
+		panic("FAIL: nested slice sum")
 	}
 }
 
@@ -1177,7 +1177,7 @@ func testMapReturnValue() {
 	if m1["one"] == 1 && m1["two"] == 2 && m1["three"] == 3 && len(m1) == 3 {
 		fmt.Println("PASS: map return value basic")
 	} else {
-		fmt.Println("FAIL: map return value basic")
+		panic("FAIL: map return value basic")
 	}
 
 	// Test 2: Empty map return
@@ -1185,7 +1185,7 @@ func testMapReturnValue() {
 	if len(m2) == 0 {
 		fmt.Println("PASS: map return value empty")
 	} else {
-		fmt.Println("FAIL: map return value empty")
+		panic("FAIL: map return value empty")
 	}
 
 	// Test 3: Map passed and returned
@@ -1195,7 +1195,7 @@ func testMapReturnValue() {
 	if m3["start"] == 100 && m3["added"] == 200 && len(m3) == 2 {
 		fmt.Println("PASS: map return value modified")
 	} else {
-		fmt.Println("FAIL: map return value modified")
+		panic("FAIL: map return value modified")
 	}
 
 	// Test 4: Chained map operations with return
@@ -1203,7 +1203,7 @@ func testMapReturnValue() {
 	if m4["chained"] == 42 && len(m4) == 1 {
 		fmt.Println("PASS: map return value chained")
 	} else {
-		fmt.Println("FAIL: map return value chained")
+		panic("FAIL: map return value chained")
 	}
 }
 
@@ -1221,7 +1221,7 @@ func testNestedMaps() {
 	if val == 42 {
 		fmt.Println("PASS: nested map read")
 	} else {
-		fmt.Println("FAIL: nested map read")
+		panic("FAIL: nested map read")
 	}
 
 	// Test nested map read with multiple keys
@@ -1229,7 +1229,7 @@ func testNestedMaps() {
 	if val2 == 100 {
 		fmt.Println("PASS: nested map read second key")
 	} else {
-		fmt.Println("FAIL: nested map read second key")
+		panic("FAIL: nested map read second key")
 	}
 }
 
@@ -1252,7 +1252,7 @@ func testMixedNestedComposites() {
 	if val1 == 10 && val2 == 20 && val3 == 30 {
 		fmt.Println("PASS: slice of maps read")
 	} else {
-		fmt.Println("FAIL: slice of maps read")
+		panic("FAIL: slice of maps read")
 	}
 
 	// Test 2: map[string][]int - map of slices
@@ -1273,7 +1273,7 @@ func testMixedNestedComposites() {
 	if v1 == 100 && v2 == 300 && v3 == 500 {
 		fmt.Println("PASS: map of slices read")
 	} else {
-		fmt.Println("FAIL: map of slices read")
+		panic("FAIL: map of slices read")
 	}
 
 	// Test 3: [][]map[string]int - nested slice of maps
@@ -1295,7 +1295,7 @@ func testMixedNestedComposites() {
 	if r1 == 1 && r2 == 2 && r3 == 3 {
 		fmt.Println("PASS: nested slice of maps read")
 	} else {
-		fmt.Println("FAIL: nested slice of maps read")
+		panic("FAIL: nested slice of maps read")
 	}
 
 	// Test 4: map[string]map[string][]int - nested maps with slice values
@@ -1314,7 +1314,7 @@ func testMixedNestedComposites() {
 	if s1 == 111 && s2 == 222 && s3 == 333 {
 		fmt.Println("PASS: nested maps with slice read")
 	} else {
-		fmt.Println("FAIL: nested maps with slice read")
+		panic("FAIL: nested maps with slice read")
 	}
 
 	// Test 5: map[string][][]int - map of nested slices
@@ -1336,7 +1336,7 @@ func testMixedNestedComposites() {
 	if m1 == 11 && m2 == 12 && m3 == 21 && m4 == 22 {
 		fmt.Println("PASS: map of nested slices read")
 	} else {
-		fmt.Println("FAIL: map of nested slices read")
+		panic("FAIL: map of nested slices read")
 	}
 
 	// Test 6: [][][]map[string]int - triple nested slice of maps
@@ -1352,7 +1352,7 @@ func testMixedNestedComposites() {
 	if deep == 999 {
 		fmt.Println("PASS: triple nested slice of maps read")
 	} else {
-		fmt.Println("FAIL: triple nested slice of maps read")
+		panic("FAIL: triple nested slice of maps read")
 	}
 
 	// Test 7: map[int][]map[string]int - map with int key, slice of maps value
@@ -1370,7 +1370,7 @@ func testMixedNestedComposites() {
 	if ik1 == 777 && ik2 == 888 {
 		fmt.Println("PASS: int key map of slice of maps read")
 	} else {
-		fmt.Println("FAIL: int key map of slice of maps read")
+		panic("FAIL: int key map of slice of maps read")
 	}
 }
 
