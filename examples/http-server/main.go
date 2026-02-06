@@ -28,6 +28,6 @@ func main() {
 	fmt.Println("Starting server on :8089...")
 	err := http.ListenAndServe(":8089")
 	if err != "" {
-		fmt.Println("Server error: " + err)
+		panic("Server error: " + err)
 	}
 }
