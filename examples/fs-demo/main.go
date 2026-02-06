@@ -6,8 +6,8 @@ import (
 )
 
 func main() {
-	testFile := "/tmp/fs-demo-test.txt"
-	testDir := "/tmp/fs-demo-testdir"
+	testFile := "fs-demo-test.txt"
+	testDir := "fs-demo-testdir"
 	testContent := "Hello from fs-demo!"
 
 	// Test WriteFile
@@ -64,7 +64,7 @@ func main() {
 	fmt.Println("RemoveAll: OK")
 
 	// ========== Chunked Read Tests ==========
-	chunkTestFile := "/tmp/fs-demo-chunk-test.txt"
+	chunkTestFile := "fs-demo-chunk-test.txt"
 	chunkContent := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 	// Create test file for chunked reading
