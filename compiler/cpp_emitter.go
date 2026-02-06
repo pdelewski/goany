@@ -24,6 +24,7 @@ var cppTypesMap = map[string]string{
 	"uint16":  "std::uint16_t",
 	"uint32":  "std::uint32_t",
 	"uint64":  "std::uint64_t",
+	"byte":    "std::uint8_t", // Go byte is alias for uint8
 	"float32": "float",
 	"float64": "double",
 	"any":     "std::any",
@@ -2320,18 +2321,20 @@ clean:
 `, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath, absRuntimePath)
 	}
 
-	// Add platform-specific linker flags if HTTP runtime is used
-	// httplib.h needs -pthread on Unix and -lws2_32 on Windows
-	if _, hasHTTP := cppe.RuntimePackages["http"]; hasHTTP {
-		httpFlags := `
-# HTTP runtime linker flags
+	// Add platform-specific linker flags if HTTP or NET runtime is used
+	// These need -pthread on Unix and -lws2_32 on Windows
+	_, hasHTTP := cppe.RuntimePackages["http"]
+	_, hasNet := cppe.RuntimePackages["net"]
+	if hasHTTP || hasNet {
+		networkFlags := `
+# Network runtime linker flags
 ifeq ($(OS),Windows_NT)
     LDFLAGS += -lws2_32 -pthread
 else
     LDFLAGS += -pthread
 endif
 `
-		makefile = strings.Replace(makefile, "\nall:", httpFlags+"\nall:", 1)
+		makefile = strings.Replace(makefile, "\nall:", networkFlags+"\nall:", 1)
 	}
 
 	_, err = file.WriteString(makefile)

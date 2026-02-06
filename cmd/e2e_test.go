@@ -36,6 +36,7 @@ var e2eTestCases = []TestCase{
 	{"http-client", "../examples/http-client", true, true, true, true, false},
 	{"http-server", "../examples/http-server", true, true, true, true, false},
 	{"fs-demo", "../examples/fs-demo", true, true, true, true, true},
+	{"net-demo", "../examples/net-demo", true, true, true, true, false}, // JS transpile only (needs deasync npm package)
 }
 
 func TestE2E(t *testing.T) {
