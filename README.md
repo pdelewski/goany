@@ -181,10 +181,11 @@ make
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-source` | Source directory containing Go files | (required) |
-| `-output` | Output file name (without extension) | (required) |
+| `-output` | Output file name (without extension) | (required for transpilation) |
 | `-backend` | Backend(s) to use: `all`, `cpp`, `cs`, `rust`, `js` | `all` |
 | `-link-runtime` | Path to runtime for linking (generates build files with include paths) | (none) |
 | `-graphics-runtime` | Graphics backend: `tigr`, `sdl2`, `none` | `tigr` |
+| `-check-sema` | Check syntax and semantics only, no transpilation | `false` |
 | `-debug` | Enable debug output | `false` |
 
 The `-backend` flag accepts comma-separated values for multiple backends.
@@ -229,6 +230,11 @@ Transpile graphics demo with SDL2 (all backends):
 Transpile CLI app without graphics:
 ```bash
 ./goany -source=../examples/uql -output=./build/uql -link-runtime=../runtime -graphics-runtime=none
+```
+
+Check syntax and semantics only (no transpilation):
+```bash
+./goany -source=../examples/uql -check-sema
 ```
 
 ## Supported Features
