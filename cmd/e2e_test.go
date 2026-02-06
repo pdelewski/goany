@@ -33,9 +33,12 @@ var e2eTestCases = []TestCase{
 	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false}, // JS transpile only (needs browser)
 	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, true, true, false},               // JS transpile only (needs browser)
 	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false},         // JS transpile only (needs browser) - uses RunLoopWithState API
-	{"http-client", "../examples/http-client", true, true, true, true, false},
-	{"http-server", "../examples/http-server", true, true, true, true, false},
+	{"http-client", "../examples/http/client", true, true, true, true, false},
+	{"http-server", "../examples/http/server", true, true, true, true, false},
 	{"fs-demo", "../examples/fs-demo", true, true, true, true, true},
+	{"net-demo", "../examples/net/demo", true, true, true, true, false},              // JS transpile only (needs deasync npm package)
+	{"net-echo-server", "../examples/net/echo-server", true, true, true, true, false}, // Server example - transpile/compile only
+	{"net-echo-client", "../examples/net/echo-client", true, true, true, true, false}, // Client example - transpile/compile only
 }
 
 func TestE2E(t *testing.T) {

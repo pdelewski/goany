@@ -26,6 +26,7 @@ var rustTypesMap = map[string]string{
 	"uint16":  rustDestTypes[5],
 	"uint32":  "u32",
 	"uint64":  "u64",
+	"byte":    "u8", // Go byte is alias for uint8
 	"any":     rustDestTypes[6],
 	"string":  rustDestTypes[7],
 	"int":     rustDestTypes[8],
@@ -6692,6 +6693,16 @@ sdl2 = "0.36"
 	// Only add if http didn't already add it
 	if _, hasFS := re.RuntimePackages["fs"]; hasFS {
 		if _, hasHTTP := re.RuntimePackages["http"]; !hasHTTP {
+			cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nlazy_static = \"1.4\"", 1)
+		}
+	}
+
+	// Add NET runtime dependencies (lazy_static for connection handle storage)
+	// Only add if http and fs didn't already add it
+	if _, hasNet := re.RuntimePackages["net"]; hasNet {
+		_, hasHTTP := re.RuntimePackages["http"]
+		_, hasFS := re.RuntimePackages["fs"]
+		if !hasHTTP && !hasFS {
 			cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nlazy_static = \"1.4\"", 1)
 		}
 	}
