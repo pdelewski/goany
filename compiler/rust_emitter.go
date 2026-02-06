@@ -6688,6 +6688,14 @@ sdl2 = "0.36"
 		cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nureq = \"2\"\ntiny_http = \"0.12\"\nlazy_static = \"1.4\"", 1)
 	}
 
+	// Add FS runtime dependencies (lazy_static for file handle storage)
+	// Only add if http didn't already add it
+	if _, hasFS := re.RuntimePackages["fs"]; hasFS {
+		if _, hasHTTP := re.RuntimePackages["http"]; !hasHTTP {
+			cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nlazy_static = \"1.4\"", 1)
+		}
+	}
+
 	_, err = file.WriteString(cargoToml)
 	if err != nil {
 		return fmt.Errorf("failed to write Cargo.toml: %w", err)

@@ -94,6 +94,127 @@ func main() {
 		}
 	}
 
+	// ========== Chunked Read Tests ==========
+	chunkTestFile := "/tmp/fs-demo-chunk-test.txt"
+	chunkContent := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+	// Create test file for chunked reading
+	if allPassed {
+		chunkWriteErr := fs.WriteFile(chunkTestFile, chunkContent)
+		if chunkWriteErr != "" {
+			fmt.Println("ChunkWrite error: " + chunkWriteErr)
+			allPassed = false
+		}
+	}
+
+	// Test Open
+	if allPassed {
+		handle, openErr := fs.Open(chunkTestFile)
+		if openErr != "" {
+			fmt.Println("Open error: " + openErr)
+			allPassed = false
+		} else {
+			fmt.Println("Open: OK")
+
+			// Test Size
+			size, sizeErr := fs.Size(handle)
+			if sizeErr != "" {
+				fmt.Println("Size error: " + sizeErr)
+				allPassed = false
+			} else {
+				if size == 26 {
+					fmt.Println("Size: OK")
+				} else {
+					fmt.Println("Size: FAIL - expected 26")
+					allPassed = false
+				}
+			}
+
+			// Test Read (first 5 bytes: "ABCDE")
+			if allPassed {
+				data, bytesRead, readErr := fs.Read(handle, 5)
+				if readErr != "" {
+					fmt.Println("Read error: " + readErr)
+					allPassed = false
+				} else {
+					if bytesRead == 5 && len(data) == 5 {
+						if data[0] == 65 && data[4] == 69 {
+							fmt.Println("Read chunk 1: OK")
+						} else {
+							fmt.Println("Read chunk 1: FAIL - wrong content")
+							allPassed = false
+						}
+					} else {
+						fmt.Println("Read chunk 1: FAIL - wrong bytes read")
+						allPassed = false
+					}
+				}
+			}
+
+			// Test Read (next 5 bytes: "FGHIJ")
+			if allPassed {
+				data2, bytesRead2, readErr2 := fs.Read(handle, 5)
+				if readErr2 != "" {
+					fmt.Println("Read error: " + readErr2)
+					allPassed = false
+				} else {
+					if bytesRead2 == 5 && data2[0] == 70 && data2[4] == 74 {
+						fmt.Println("Read chunk 2: OK")
+					} else {
+						fmt.Println("Read chunk 2: FAIL")
+						allPassed = false
+					}
+				}
+			}
+
+			// Test Seek (go back to start)
+			if allPassed {
+				newPos, seekErr := fs.Seek(handle, 0, fs.SeekStart)
+				if seekErr != "" {
+					fmt.Println("Seek error: " + seekErr)
+					allPassed = false
+				} else {
+					if newPos == 0 {
+						fmt.Println("Seek to start: OK")
+					} else {
+						fmt.Println("Seek to start: FAIL")
+						allPassed = false
+					}
+				}
+			}
+
+			// Test ReadAt (read "KLMNO" at offset 10)
+			if allPassed {
+				dataAt, bytesReadAt, readAtErr := fs.ReadAt(handle, 10, 5)
+				if readAtErr != "" {
+					fmt.Println("ReadAt error: " + readAtErr)
+					allPassed = false
+				} else {
+					if bytesReadAt == 5 && dataAt[0] == 75 && dataAt[4] == 79 {
+						fmt.Println("ReadAt: OK")
+					} else {
+						fmt.Println("ReadAt: FAIL")
+						allPassed = false
+					}
+				}
+			}
+
+			// Test Close
+			closeErr := fs.Close(handle)
+			if closeErr != "" {
+				fmt.Println("Close error: " + closeErr)
+				allPassed = false
+			} else {
+				fmt.Println("Close: OK")
+			}
+		}
+	}
+
+	// Cleanup chunk test file
+	if allPassed {
+		fs.Remove(chunkTestFile)
+	}
+
 	if allPassed {
 		fmt.Println("All fs tests passed!")
 	}
