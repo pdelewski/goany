@@ -33,11 +33,11 @@ func main() {
 	flag.StringVar(&graphicsRuntime, "graphics-runtime", "tigr", "Graphics runtime: tigr (default), sdl2, none")
 	var optimizeMoves bool
 	var optimizeRefs bool
-	var checkSyntax bool
+	var checkSema bool
 	flag.BoolVar(&compiler.DebugMode, "debug", false, "Enable debug output")
 	flag.BoolVar(&optimizeMoves, "optimize-moves", false, "Enable move optimizations to reduce struct cloning")
 	flag.BoolVar(&optimizeRefs, "optimize-refs", false, "Enable reference optimization for read-only parameters")
-	flag.BoolVar(&checkSyntax, "check-syntax", true, "Enable GoAny syntax validation (default: true)")
+	flag.BoolVar(&checkSema, "check-sema", false, "Check syntax and semantics only, no transpilation")
 	flag.Parse()
 	if sourceDir == "" {
 		fmt.Println("Please provide a source directory")
@@ -134,16 +134,33 @@ func main() {
 	var passes []compiler.Pass
 
 	// Pass 1: Syntax checking (rejects unsupported Go constructs)
-	if checkSyntax {
-		syntaxChecker := &compiler.SyntaxChecker{Emitter: &compiler.BaseEmitter{}}
-		syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
-		passes = append(passes, syntaxPass)
-	}
+	syntaxChecker := &compiler.SyntaxChecker{Emitter: &compiler.BaseEmitter{}}
+	syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
+	passes = append(passes, syntaxPass)
 
-	// Pass 2: Semantic analysis (always runs)
+	// Pass 2: Semantic analysis
 	semaChecker := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
 	passes = append(passes, sema)
+
+	// If check-sema mode, run passes and exit
+	if checkSema {
+		passManager := &compiler.PassManager{
+			Pkgs:   allPkgs,
+			Passes: passes,
+		}
+		passManager.RunPasses()
+
+		// Print success message
+		green := "\033[32m"
+		bold := "\033[1m"
+		reset := "\033[0m"
+		checkmark := "✓"
+		fmt.Printf("\n%s%s%s Syntax and semantic checks passed!%s\n", bold, green, checkmark, reset)
+		fmt.Printf("%s  Checked:%s %d package(s)\n", green, reset, len(allPkgs))
+		return
+	}
+
 	var programFiles []string
 
 	if useCpp {
