@@ -128,7 +128,8 @@ func main() {
 	useCpp := useAll || backendSet["cpp"]
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
-	useJs := backendSet["js"] // JS is opt-in, not included in "all"
+	useJs := backendSet["js"]     // JS is opt-in, not included in "all"
+	useJava := backendSet["java"] // Java is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -214,6 +215,18 @@ func main() {
 		passes = append(passes, jsBackend)
 		programFiles = append(programFiles, "js")
 	}
+	if useJava {
+		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
+			BaseEmitter:     compiler.BaseEmitter{},
+			Output:          output + ".java",
+			LinkRuntime:     linkRuntime,
+			RuntimePackages: runtimePackages,
+			OutputDir:       outputDir,
+			OutputName:      outputName,
+		}}
+		passes = append(passes, javaBackend)
+		programFiles = append(programFiles, "java")
+	}
 
 	passManager := &compiler.PassManager{
 		Pkgs:   allPkgs,
@@ -223,8 +236,8 @@ func main() {
 	passManager.RunPasses()
 
 	// Format generated files
-	// Use astyle for C++/C#, rustfmt for Rust
-	hasAstyleFiles := useCpp || useCs
+	// Use astyle for C++/C#/Java, rustfmt for Rust
+	hasAstyleFiles := useCpp || useCs || useJava
 	if hasAstyleFiles {
 		compiler.DebugLogPrintf("Using astyle version: %s\n", compiler.GetAStyleVersion())
 		const astyleOptions = "--style=webkit"
@@ -238,6 +251,13 @@ func main() {
 		}
 		if useCs {
 			filePath := fmt.Sprintf("%s.cs", output)
+			err = compiler.FormatFile(filePath, astyleOptions)
+			if err != nil {
+				log.Fatalf("Failed to format %s: %v", filePath, err)
+			}
+		}
+		if useJava {
+			filePath := fmt.Sprintf("%s.java", output)
 			err = compiler.FormatFile(filePath, astyleOptions)
 			if err != nil {
 				log.Fatalf("Failed to format %s: %v", filePath, err)

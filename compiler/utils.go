@@ -10,13 +10,26 @@ import (
 )
 
 // exprToString converts an ast.Expr to its string representation.
-// Handles *ast.Ident (e.g., "m") and *ast.SelectorExpr (e.g., "s.Settings").
+// Handles *ast.Ident (e.g., "m"), *ast.SelectorExpr (e.g., "s.Settings"),
+// *ast.BasicLit (e.g., "hello", 42), and other common expression types.
 func exprToString(expr ast.Expr) string {
 	switch e := expr.(type) {
 	case *ast.Ident:
 		return e.Name
 	case *ast.SelectorExpr:
 		return exprToString(e.X) + "." + e.Sel.Name
+	case *ast.BasicLit:
+		return e.Value
+	case *ast.IndexExpr:
+		return exprToString(e.X) + "[" + exprToString(e.Index) + "]"
+	case *ast.CallExpr:
+		return exprToString(e.Fun) + "(...)"
+	case *ast.UnaryExpr:
+		return e.Op.String() + exprToString(e.X)
+	case *ast.BinaryExpr:
+		return exprToString(e.X) + " " + e.Op.String() + " " + exprToString(e.Y)
+	case *ast.ParenExpr:
+		return "(" + exprToString(e.X) + ")"
 	default:
 		return ""
 	}
