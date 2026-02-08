@@ -218,7 +218,11 @@ func main() {
 	}
 	if useJava {
 		// Sanitize output name for Java (replace hyphens with underscores)
+		// Strip .java extension if present to avoid double extension
 		javaOutputName := strings.ReplaceAll(outputName, "-", "_")
+		if strings.HasSuffix(javaOutputName, ".java") {
+			javaOutputName = strings.TrimSuffix(javaOutputName, ".java")
+		}
 		javaOutput = filepath.Join(outputDir, javaOutputName)
 		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
 			BaseEmitter:     compiler.BaseEmitter{},

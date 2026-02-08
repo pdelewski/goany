@@ -83,6 +83,10 @@ type JavaEmitter struct {
 	file            *os.File
 	BaseEmitter
 	pkg                        *packages.Package
+	// Track files per package for separate file generation
+	mainFile                   *os.File           // The main output file
+	packageFiles               map[string]*os.File // Package name -> file
+	currentPkgName             string             // Current package being processed
 	insideForPostCond          bool
 	assignmentToken            string
 	forwardDecls               bool
@@ -106,6 +110,8 @@ type JavaEmitter struct {
 	pendingKeyName             string
 	inTypeContext              bool
 	inArrayTypeContext         bool  // Track when we're inside ArrayList<...> to use boxed types
+	inCompositeLitType         bool  // Track when we're inside a composite literal type (new Type(...))
+	inPackageQualifiedExpr     bool  // Track when we're in a package-qualified expression (pkg.Type)
 	apiClassOpened             bool
 	suppressTypeAliasEmit      bool
 	currentAliasName           string
@@ -203,6 +209,10 @@ type JavaEmitter struct {
 	// Unsupported indexed function call (x[0](args))
 	isUnsupportedIndexedCall bool
 	unsupportedCallIndent    int
+	// Track when we're inside call expression arguments (for method reference detection)
+	inCallExprArgs bool
+	// Track when we're visiting the Fun part of a CallExpr (being called, not passed as value)
+	inCallExprFunDepth int
 	// Slice index assignment (x[i] = value -> x.set(i, value))
 	isSliceIndexAssign  bool
 	sliceIndexVarName   string
@@ -397,6 +407,19 @@ func (je *JavaEmitter) getTokenType(content string) TokenType {
 }
 
 func (je *JavaEmitter) emitToken(content string, tokenType TokenType, indent int) {
+	je.emitToPackage(content)
+}
+
+// emitToPackage writes output to the appropriate destination:
+// - For non-main packages: writes directly to the package's separate file
+// - For main package: writes to the main buffer via gir.emitToFileBuffer
+func (je *JavaEmitter) emitToPackage(content string) {
+	if je.currentPkgName != "main" && je.currentPkgName != "" {
+		if pkgFile, exists := je.packageFiles[je.currentPkgName]; exists {
+			pkgFile.WriteString(content)
+			return
+		}
+	}
 	je.gir.emitToFileBuffer(content, EmptyVisitMethod)
 }
 
@@ -440,6 +463,11 @@ func (je *JavaEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 	}
 }
 
+
+// javaOuterClassPackages tracks packages that become separate Java outer classes.
+// Set by JavaEmitter before code generation. Types from these packages need prefix.
+var javaOuterClassPackages map[string]bool
+
 func getJavaTypeName(t types.Type) string {
 	// First, check if this is a named type
 	if named, ok := t.(*types.Named); ok {
@@ -473,7 +501,15 @@ func getJavaTypeName(t types.Type) string {
 			}
 		}
 		// Otherwise, it's a struct or other named type - use the name
-		return named.Obj().Name()
+		// If the type's package is an outer class package, prefix with package name
+		typeName := named.Obj().Name()
+		if pkg := named.Obj().Pkg(); pkg != nil && javaOuterClassPackages != nil {
+			pkgName := pkg.Name()
+			if _, exists := javaOuterClassPackages[pkgName]; exists {
+				return pkgName + "." + typeName
+			}
+		}
+		return typeName
 	}
 
 	switch ut := t.Underlying().(type) {
@@ -525,7 +561,12 @@ func toBoxedType(t string) string {
 
 // sanitizeJavaIdentifier converts a string to a valid Java identifier
 // by replacing invalid characters (like hyphens) with underscores
+// and removing the .java extension if present
 func sanitizeJavaIdentifier(name string) string {
+	// Remove .java extension if present
+	if strings.HasSuffix(name, ".java") {
+		name = strings.TrimSuffix(name, ".java")
+	}
 	return strings.ReplaceAll(name, "-", "_")
 }
 
@@ -751,6 +792,10 @@ func (je *JavaEmitter) PreVisitProgram(indent int) {
 	je.resultClassRegistry = make(map[string]string)
 	je.mapVarValueTypes = make(map[string]string)
 	je.declaredVarsStack = []map[string]bool{make(map[string]bool)}
+	je.packageFiles = make(map[string]*os.File)
+	// javaOuterClassPackages will be populated with all non-main packages
+	// Uses namespaces which is auto-populated in base_pass.go
+	javaOuterClassPackages = nil // Will use namespaces directly
 	outputFile := je.Output
 	je.shouldGenerate = true
 	var err error
@@ -922,7 +967,7 @@ class Formatter {
 
 `
 	str := je.emitAsString(builtin, indent)
-	_ = je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+	je.emitToPackage(str)
 
 	je.insideForPostCond = false
 }
@@ -930,7 +975,7 @@ class Formatter {
 func (je *JavaEmitter) PostVisitProgram(indent int) {
 	// Close the main class
 	if je.apiClassOpened {
-		je.gir.emitToFileBuffer("}\n", EmptyVisitMethod)
+		je.emitToPackage("}\n")
 	}
 
 	emitTokensToFile(je.file, je.gir.tokenSlice)
@@ -963,7 +1008,7 @@ func (je *JavaEmitter) PreVisitFuncDeclName(node *ast.Ident, indent int) {
 		} else {
 			str = je.emitAsString(node.Name, 0)
 		}
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -974,12 +1019,12 @@ func (je *JavaEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
 
 		je.emitToken("{", LeftBrace, 1)
 		str := je.emitAsString("\n", 1)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 
 		if je.pendingRangeValueDecl {
 			valueDecl := je.emitAsString(fmt.Sprintf("var %s = %s.get(%s);\n",
 				je.pendingValueName, je.pendingCollectionExpr, je.pendingKeyName), indent+2)
-			je.gir.emitToFileBuffer(valueDecl, EmptyVisitMethod)
+			je.emitToPackage(valueDecl)
 			// Track this variable in current scope
 			if len(je.declaredVarsStack) > 0 {
 				je.declaredVarsStack[len(je.declaredVarsStack)-1][je.pendingValueName] = true
@@ -995,7 +1040,7 @@ func (je *JavaEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
 func (je *JavaEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("}", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 		// Pop scope for variable tracking
 		if len(je.declaredVarsStack) > 0 {
 			je.declaredVarsStack = je.declaredVarsStack[:len(je.declaredVarsStack)-1]
@@ -1009,7 +1054,7 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, i
 		je.emitToken("(", LeftParen, 0)
 		// Add String[] args for main function
 		if node.Name.Name == "main" {
-			je.gir.emitToFileBuffer("String[] args", EmptyVisitMethod)
+			je.emitToPackage("String[] args")
 		}
 	})
 }
@@ -1077,7 +1122,8 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 			return
 		}
 		// Also suppress when inside map type declarations (inTypeContext and suppressMapEmit)
-		if je.inTypeContext && je.suppressMapEmit {
+		// But don't suppress composite literal types - we need the type name for "new Type(...)"
+		if je.inTypeContext && je.suppressMapEmit && !je.inCompositeLitType {
 			return
 		}
 		// Suppress LHS identifiers during map assignment (handled in PreVisitAssignStmtRhs)
@@ -1108,6 +1154,23 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 		var str string
 		name := e.Name
 
+		// Check if this identifier is a function being passed as an argument (not being called)
+		// In Java, we need to emit method references (ClassName::methodName) instead of just the name
+		// Only convert if: we're inside call arguments AND not in the Fun part of a nested call
+		if je.inCallExprArgs && je.inCallExprFunDepth == 0 && je.pkg != nil && je.pkg.TypesInfo != nil {
+			if obj := je.pkg.TypesInfo.Uses[e]; obj != nil {
+				if _, isFunc := obj.Type().(*types.Signature); isFunc {
+					// This is a function reference - emit as method reference
+					className := je.OutputName
+					// Sanitize class name (replace hyphens with underscores)
+					className = strings.ReplaceAll(className, "-", "_")
+					str = je.emitAsString(className+"::"+name, indent)
+					je.emitToken(str, Identifier, 0)
+					return
+				}
+			}
+		}
+
 		// Map operation identifier replacements
 		if je.isMapMakeCall && name == "make" {
 			name = "newHashMap"
@@ -1137,7 +1200,21 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 				}
 				str = je.emitAsString(underlyingType, indent)
 			} else {
-				str = je.emitAsString(name, indent)
+				// Check if this identifier is a type from an outer class package
+				// If so, prefix with the package name (but not if we're already in a package-qualified expression)
+				prefixedName := name
+				if je.inTypeContext && !je.inPackageQualifiedExpr && je.pkg != nil && je.pkg.TypesInfo != nil {
+					if obj := je.pkg.TypesInfo.Uses[e]; obj != nil {
+						if typeName, isTypeName := obj.(*types.TypeName); isTypeName {
+							if pkg := typeName.Pkg(); pkg != nil && javaOuterClassPackages != nil {
+								if _, exists := javaOuterClassPackages[pkg.Name()]; exists {
+									prefixedName = pkg.Name() + "." + name
+								}
+							}
+						}
+					}
+				}
+				str = je.emitAsString(prefixedName, indent)
 			}
 		}
 
@@ -1216,7 +1293,7 @@ func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 							// This is a function variable call - transform to functional interface method
 							methodName := je.getFunctionalInterfaceMethod(sig)
 							if methodName != "" {
-								je.gir.emitToFileBuffer(fmt.Sprintf("%s.%s(", ident.Name, methodName), EmptyVisitMethod)
+								je.emitToPackage(fmt.Sprintf("%s.%s(", ident.Name, methodName))
 								je.isFuncVarCall = true
 								return
 							}
@@ -1256,6 +1333,8 @@ func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 
 func (je *JavaEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Mark that we're in the Fun part of a CallExpr (the function being called)
+		je.inCallExprFunDepth++
 		// Suppress for unsupported indexed function call
 		if je.isUnsupportedIndexedCall {
 			return
@@ -1277,12 +1356,15 @@ func (je *JavaEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
 
 func (je *JavaEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		je.inCallExprFunDepth--
 		javaSuppressTypeCastIdent = false
 	})
 }
 
 func (je *JavaEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Mark that we're inside call expression arguments (for method reference detection)
+		je.inCallExprArgs = true
 		// Suppress for unsupported indexed function call
 		if je.isUnsupportedIndexedCall {
 			return
@@ -1335,6 +1417,7 @@ func (je *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		je.isDeleteCall = false
 		je.deleteMapVarName = ""
 		je.isMapLenCall = false
+		je.inCallExprArgs = false
 	})
 }
 
@@ -1421,14 +1504,9 @@ func (je *JavaEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index 
 					}
 					// Check for struct types that need initialization
 					if _, isStruct := typeAndValue.Type.Underlying().(*types.Struct); isStruct {
-						// Get the type name (either Ident or SelectorExpr)
-						if ident, ok := node.Type.(*ast.Ident); ok {
-							je.pendingStructInit = true
-							je.pendingStructTypeName = ident.Name
-						} else if sel, ok := node.Type.(*ast.SelectorExpr); ok {
-							je.pendingStructInit = true
-							je.pendingStructTypeName = sel.Sel.Name
-						}
+						// Use getJavaTypeName which handles package prefixing
+						je.pendingStructInit = true
+						je.pendingStructTypeName = getJavaTypeName(typeAndValue.Type)
 					}
 					// Check for slice types - initialize to empty ArrayList
 					if sliceType, isSlice := typeAndValue.Type.Underlying().(*types.Slice); isSlice {
@@ -1459,7 +1537,7 @@ func (je *JavaEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index 
 						if basic, ok := underlyingType.(*types.Basic); ok {
 							// Emit the underlying basic type directly
 							javaType := getJavaTypeName(basic)
-							je.gir.emitToFileBuffer(javaType, EmptyVisitMethod)
+							je.emitToPackage(javaType)
 							je.suppressTypeAliasSelectorX = true
 							je.inTypeContext = false // Skip normal type emission
 						}
@@ -1482,59 +1560,87 @@ func (je *JavaEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int
 	je.executeIfNotForwardDecls(func() {
 		// Just emit space before name - the name itself is emitted by PreVisitIdent
 		str := je.emitAsString(" ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
 func (je *JavaEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		if je.pendingMapInit {
-			je.gir.emitToFileBuffer(fmt.Sprintf(" = newHashMap(%d)", je.pendingMapKeyType), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf(" = newHashMap(%d)", je.pendingMapKeyType))
 			je.pendingMapInit = false
 			je.pendingMapKeyType = 0
 		}
 		if je.pendingStructInit {
-			je.gir.emitToFileBuffer(fmt.Sprintf(" = new %s()", je.pendingStructTypeName), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf(" = new %s()", je.pendingStructTypeName))
 			je.pendingStructInit = false
 			je.pendingStructTypeName = ""
 		}
 		if je.pendingSliceInit {
-			je.gir.emitToFileBuffer(fmt.Sprintf(" = new ArrayList<%s>()", je.pendingSliceElemType), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf(" = new ArrayList<%s>()", je.pendingSliceElemType))
 			je.pendingSliceInit = false
 			je.pendingSliceElemType = ""
 		}
 		if je.pendingPrimitiveInit {
-			je.gir.emitToFileBuffer(fmt.Sprintf(" = %s", je.pendingPrimitiveDefault), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf(" = %s", je.pendingPrimitiveDefault))
 			je.pendingPrimitiveInit = false
 			je.pendingPrimitiveDefault = ""
 		}
-		je.gir.emitToFileBuffer(";\n", EmptyVisitMethod)
+		je.emitToPackage(";\n")
 	})
 }
 
 func (je *JavaEmitter) PreVisitGenStructFieldType(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("public ", indent+4)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
 func (je *JavaEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(" ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
 func (je *JavaEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		je.gir.emitToFileBuffer(";\n", EmptyVisitMethod)
+		je.emitToPackage(";\n")
 	})
 }
 
 func (je *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		je.pkg = pkg
+		je.currentPkgName = pkg.Name
+
+		// For non-main packages, create a separate file
+		// Exception: "hmap" is a utility package used by generated code, so keep it inline
+		if pkg.Name != "main" && pkg.Name != "hmap" {
+			// Create separate file for this package
+			pkgFileName := filepath.Join(je.OutputDir, pkg.Name+".java")
+			pkgFile, err := os.Create(pkgFileName)
+			if err != nil {
+				fmt.Println("Error creating package file:", err)
+				return
+			}
+			je.packageFiles[pkg.Name] = pkgFile
+
+			// Write imports and class header to package file
+			imports := "import java.util.*;\nimport java.util.function.*;\n\n"
+			pkgFile.WriteString(imports)
+			pkgFile.WriteString(fmt.Sprintf("public class %s {\n\n", pkg.Name))
+
+			// Add this package to outer class packages for type prefixing
+			if javaOuterClassPackages == nil {
+				javaOuterClassPackages = make(map[string]bool)
+			}
+			javaOuterClassPackages[pkg.Name] = true
+			return
+		}
+
+		// For main package, use the main output file
 		// Only create class if not already opened
 		if je.apiClassOpened {
 			return
@@ -1543,27 +1649,28 @@ func (je *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 		if je.OutputName != "" {
 			// Use the output file name as the class name, sanitized for Java
 			className = sanitizeJavaIdentifier(je.OutputName)
-		} else if pkg.Name == "main" {
-			className = "Main"
 		} else {
-			className = sanitizeJavaIdentifier(pkg.Name)
+			className = "Main"
 		}
 		str := je.emitAsString(fmt.Sprintf("public class %s {\n\n", className), indent)
-		err := je.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		err = je.gir.emitToFileBufferString("", pkg.Name)
+		je.emitToPackage(str)
+		_ = je.gir.emitToFileBufferString("", pkg.Name)
 		je.currentPackage = className
 		je.apiClassOpened = true
-		if err != nil {
-			fmt.Println("Error writing to file:", err)
-			return
-		}
 	})
 }
 
 func (je *JavaEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		// Don't close the class here - it will be closed in PostVisitProgram
-		// This prevents multiple class closings when processing multiple packages
+		// For non-main packages, close the class and file
+		if pkg.Name != "main" {
+			if pkgFile, exists := je.packageFiles[pkg.Name]; exists {
+				pkgFile.WriteString("}\n") // Close class
+				pkgFile.Close()
+			}
+			return
+		}
+		// Don't close the main class here - it will be closed in PostVisitProgram
 	})
 }
 
@@ -1576,21 +1683,21 @@ func (je *JavaEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int
 func (je *JavaEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("\n", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
 func (je *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("\n\n", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
 func (je *JavaEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(fmt.Sprintf("public static class %s {\n", node.Name), indent+2)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -1632,7 +1739,7 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 				defaultConstructor += fmt.Sprintf("            this.%s = %s;\n", f.name, getJavaDefaultValue(f.javaType))
 			}
 			defaultConstructor += "        }\n"
-			je.gir.emitToFileBuffer(defaultConstructor, EmptyVisitMethod)
+			je.emitToPackage(defaultConstructor)
 
 			// Generate all-args constructor
 			constructorCode := fmt.Sprintf("        public %s(", node.Name)
@@ -1647,11 +1754,11 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 				constructorCode += fmt.Sprintf("            this.%s = %s;\n", f.name, f.name)
 			}
 			constructorCode += "        }\n"
-			je.gir.emitToFileBuffer(constructorCode, EmptyVisitMethod)
+			je.emitToPackage(constructorCode)
 		}
 
 		str := je.emitAsString("}\n\n", indent+2)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -1675,9 +1782,9 @@ func (je *JavaEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 			je.sliceLitElemCast = ""
 		}
 		str := je.emitAsString("ArrayList", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 		str = je.emitAsString("<", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -1688,7 +1795,7 @@ func (je *JavaEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 		}
 		je.inArrayTypeContext = false // Clear boxed type context
 		str := je.emitAsString(">", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 
 		if je.isSliceMakeCall {
 			return
@@ -1717,7 +1824,7 @@ func (je *JavaEmitter) PreVisitMapType(node *ast.MapType, indent int) {
 			return
 		}
 		// Use HashMap without prefix since it's defined as an inner class
-		je.gir.emitToFileBuffer("HashMap", EmptyVisitMethod)
+		je.emitToPackage("HashMap")
 	})
 }
 
@@ -1762,7 +1869,7 @@ func (je *JavaEmitter) PreVisitFuncType(node *ast.FuncType, indent int) {
 		// Map Go function types to Java functional interfaces
 		funcInterfaceType := je.getFunctionalInterfaceType(node)
 		str := je.emitAsString(funcInterfaceType, indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 		// Suppress all type parameter emissions (we already emitted the full type)
 		je.suppressMultiReturnTypes = true
 	})
@@ -1794,11 +1901,17 @@ func (je *JavaEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 			if je.pkg != nil && je.pkg.TypesInfo != nil {
 				if uses, ok := je.pkg.TypesInfo.Uses[ident]; ok {
 					if _, isPkg := uses.(*types.PkgName); isPkg {
-						// Check if this is a runtime package - if so, keep the prefix
-						// because the runtime defines a class with that name (e.g., fs class)
-						if _, isRuntime := je.RuntimePackages[ident.Name]; !isRuntime {
-							// Not a runtime package - suppress the package name
+						// Check if this is a runtime package or outer class package - if so, keep the prefix
+						// because these packages define a class with that name (e.g., fs, http, types)
+						_, isRuntime := je.RuntimePackages[ident.Name]
+						_, isOuterClass := javaOuterClassPackages[ident.Name]
+						if !isRuntime && !isOuterClass {
+							// Not a runtime or outer class package - suppress the package name
 							je.suppressFmtPackage = true // reuse this flag for package suppression
+						} else {
+							// We're in a package-qualified expression (types.Plan, http.Response)
+							// Set flag to prevent double-prefixing in PreVisitIdent
+							je.inPackageQualifiedExpr = true
 						}
 					}
 				}
@@ -1830,6 +1943,7 @@ func (je *JavaEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 func (je *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		je.suppressFmtPackage = false
+		je.inPackageQualifiedExpr = false
 	})
 }
 
@@ -1864,7 +1978,7 @@ func (je *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
 			return
 		}
 		str := je.emitAsString(".", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -1884,7 +1998,7 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 	je.executeIfNotForwardDecls(func() {
 		if index > 0 {
 			str := je.emitAsString(", ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -1892,7 +2006,7 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		je.inTypeContext = false
-		je.gir.emitToFileBuffer(" ", EmptyVisitMethod)
+		je.emitToPackage(" ")
 	})
 }
 
@@ -1903,7 +2017,7 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeResultsList(node *ast.Field,
 		}
 		if index > 0 {
 			str := je.emitAsString(", ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -1973,7 +2087,7 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, 
 					classCode += fmt.Sprintf("            this._%d = _%d;\n", i, i)
 				}
 				classCode += "        }\n    }\n\n"
-				je.gir.emitToFileBuffer(classCode, EmptyVisitMethod)
+				je.emitToPackage(classCode)
 			}
 
 			// Store for later use at call sites (use the shared class name)
@@ -1982,11 +2096,11 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, 
 
 		// Now emit the method signature
 		str := je.emitAsString("public static ", indent+2)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 
 		if je.numFuncResults == 0 {
 			str = je.emitAsString("void ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		} else if je.numFuncResults > 1 {
 			// Get the result class name from registry based on signature
 			var returnTypes []string
@@ -2005,7 +2119,7 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, 
 
 			// Emit the result class name as return type
 			str = je.emitAsString(resultClassName+" ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 			// Suppress individual return type emissions
 			je.suppressMultiReturnTypes = true
 		}
@@ -2017,7 +2131,7 @@ func (je *JavaEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl,
 		je.suppressMultiReturnTypes = false
 		if je.numFuncResults == 1 {
 			str := je.emitAsString(" ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -2053,7 +2167,7 @@ func (je *JavaEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
 func (je *JavaEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("return ", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 
 		if len(node.Results) > 1 {
 			// Look up the shared result class name from the registry
@@ -2079,7 +2193,7 @@ func (je *JavaEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 			je.emitToken(")", RightParen, 0)
 		}
 		str := je.emitAsString(";", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -2087,7 +2201,7 @@ func (je *JavaEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent
 	je.executeIfNotForwardDecls(func() {
 		if index > 0 {
 			str := je.emitAsString(", ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 		// Add cast for byte/short return values when returning literals
 		if returnTypes, ok := je.multiReturnFuncs[je.currentFuncName]; ok {
@@ -2096,9 +2210,9 @@ func (je *JavaEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent
 				if _, isLit := node.(*ast.BasicLit); isLit {
 					switch returnTypes[index] {
 					case "byte":
-						je.gir.emitToFileBuffer("(byte)", EmptyVisitMethod)
+						je.emitToPackage("(byte)")
 					case "short":
-						je.gir.emitToFileBuffer("(short)", EmptyVisitMethod)
+						je.emitToPackage("(short)")
 					}
 				}
 			}
@@ -2111,8 +2225,8 @@ func (je *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		if je.isUnsupportedIndexedCall {
 			// Emit a comment for unsupported indexed function call
 			indentStr := strings.Repeat("    ", je.unsupportedCallIndent)
-			je.gir.emitToFileBuffer(fmt.Sprintf("%s/* TODO: Unsupported indexed function call: %s */",
-				indentStr, exprToString(node)), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf("%s/* TODO: Unsupported indexed function call: %s */",
+				indentStr, exprToString(node)))
 			je.isUnsupportedIndexedCall = false
 		}
 	})
@@ -2307,7 +2421,7 @@ func (je *JavaEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -2345,7 +2459,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			je.mapCommaOkMapName,
 			je.mapKeyCastPrefix, keyExpr, je.mapKeyCastSuffix,
 			defaultVal)
-		je.gir.emitToFileBuffer(code, EmptyVisitMethod)
+		je.emitToPackage(code)
 		je.isMapCommaOk = false
 		je.suppressMapEmit = false
 		return
@@ -2381,7 +2495,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			je.typeAssertCommaOkType, je.typeAssertCommaOkXName,
 			defaultVal)
 
-		je.gir.emitToFileBuffer(code, EmptyVisitMethod)
+		je.emitToPackage(code)
 		je.isTypeAssertCommaOk = false
 		return
 	}
@@ -2399,11 +2513,13 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				if je.pkg != nil && je.pkg.TypesInfo != nil {
 					if uses, ok := je.pkg.TypesInfo.Uses[xIdent]; ok {
 						if _, isPkg := uses.(*types.PkgName); isPkg {
-							// It's a package reference - check if it's a runtime package
-							if _, isRuntime := je.RuntimePackages[xIdent.Name]; isRuntime {
-								// Runtime package - keep the package prefix (e.g., fs.ReadFile)
+							// It's a package reference - check if it's a runtime or outer class package
+							_, isRuntime := je.RuntimePackages[xIdent.Name]
+							_, isOuterClass := javaOuterClassPackages[xIdent.Name]
+							if isRuntime || isOuterClass {
+								// Runtime or outer class package - keep the package prefix (e.g., fs.ReadFile, types.AddLiteralToPlan)
 								funcName = xIdent.Name + "." + sel.Sel.Name
-								isRuntimeCall = true
+								isRuntimeCall = isRuntime // Only mark as runtime call if it's actually a runtime package
 							} else {
 								// Regular package - just use the function name
 								funcName = sel.Sel.Name
@@ -2467,7 +2583,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 
-		je.gir.emitToFileBuffer(code, EmptyVisitMethod)
+		je.emitToPackage(code)
 		je.isMultiReturnAssign = false
 		je.multiReturnLhsNames = nil
 		je.multiReturnLhsTypes = nil
@@ -2487,7 +2603,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		// For n levels, we have n+1 hashMapSet calls, so we need n+1 closing parens
 		// Plus 1 for the semicolon
 		closingParens := strings.Repeat(")", len(je.nestedMapLevels)+1) + ";"
-		je.gir.emitToFileBuffer(closingParens, EmptyVisitMethod)
+		je.emitToPackage(closingParens)
 		je.isNestedMapAssign = false
 		je.nestedMapRootVar = ""
 		je.nestedMapLevels = nil
@@ -2499,7 +2615,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Handle slice-of-map assignment
 	if je.isSliceOfMapAssign {
 		// Close the hashMapSet and set calls: ));
-		je.gir.emitToFileBuffer("));", EmptyVisitMethod)
+		je.emitToPackage("));")
 		je.isSliceOfMapAssign = false
 		je.sliceOfMapSliceVar = ""
 		je.sliceOfMapSliceIndices = nil
@@ -2527,7 +2643,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(";", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -2540,9 +2656,9 @@ func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 			je.suppressMapAssignLhs = false // Reset LHS suppression
 			indexExpr := node.Lhs[0].(*ast.IndexExpr)
 			keyStr := exprToString(indexExpr.Index)
-			je.gir.emitToFileBuffer(fmt.Sprintf("%s = hashMapSet(%s, %s%s%s, ",
+			je.emitToPackage(fmt.Sprintf("%s = hashMapSet(%s, %s%s%s, ",
 				je.mapAssignVarName, je.mapAssignVarName,
-				je.mapKeyCastPrefix, keyStr, je.mapKeyCastSuffix), EmptyVisitMethod)
+				je.mapKeyCastPrefix, keyStr, je.mapKeyCastSuffix))
 			return
 		}
 		// Handle nested map assignment: m["a"]["b"] = v
@@ -2573,7 +2689,7 @@ func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 			getExpr := je.generateNestedMapGetExpr(rootVar, levels)
 			code += fmt.Sprintf("hashMapSet(%s, %s, ", getExpr, finalKey)
 
-			je.gir.emitToFileBuffer(code, EmptyVisitMethod)
+			je.emitToPackage(code)
 			return
 		}
 		// Handle slice-of-map assignment: sliceOfMaps[i][j]...["key"] = v
@@ -2604,25 +2720,25 @@ func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 					fullGetChain,
 					je.sliceOfMapMapKey)
 			}
-			je.gir.emitToFileBuffer(code, EmptyVisitMethod)
+			je.emitToPackage(code)
 			return
 		}
 		// For slice index assignment: emit ", " between index and value
 		if je.isSliceIndexAssign {
-			je.gir.emitToFileBuffer(", ", EmptyVisitMethod)
+			je.emitToPackage(", ")
 			return
 		}
 		str := je.emitAsString(" ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 		if node.Tok == token.DEFINE {
 			str = je.emitAsString("= ", 0)
 		} else {
 			str = je.emitAsString(node.Tok.String()+" ", 0)
 		}
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 		// Emit cast prefix for byte/short arithmetic
 		if je.needsSmallIntCast {
-			je.gir.emitToFileBuffer(fmt.Sprintf("(%s)(", je.smallIntCastType), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf("(%s)(", je.smallIntCastType))
 		}
 	})
 }
@@ -2630,16 +2746,16 @@ func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 func (je *JavaEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	// Close byte/short arithmetic cast
 	if je.needsSmallIntCast {
-		je.gir.emitToFileBuffer(")", EmptyVisitMethod)
+		je.emitToPackage(")")
 		je.needsSmallIntCast = false
 		je.smallIntCastType = ""
 	}
 	if je.isMapAssign {
-		je.gir.emitToFileBuffer(");\n", EmptyVisitMethod)
+		je.emitToPackage(");\n")
 	}
 	// For slice index assignment: emit closing );\n
 	if je.isSliceIndexAssign {
-		je.gir.emitToFileBuffer(");\n", EmptyVisitMethod)
+		je.emitToPackage(");\n")
 	}
 }
 
@@ -2652,7 +2768,7 @@ func (je *JavaEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, inden
 	if index > 0 && !je.isMapCommaOk && !je.isTypeAssertCommaOk && !je.isMultiReturnAssign {
 		je.executeIfNotForwardDecls(func() {
 			str := je.emitAsString(", ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		})
 	}
 }
@@ -2675,7 +2791,7 @@ func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 			}
 			if allNew {
 				str := je.emitAsString("var ", 0)
-				je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+				je.emitToPackage(str)
 				// Mark variables as declared
 				for _, lhs := range node.Lhs {
 					if ident, ok := lhs.(*ast.Ident); ok {
@@ -2726,7 +2842,7 @@ func (je *JavaEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
 					// For nested map access, emit ((Type)hashMapGet( BEFORE X is traversed
 					// This way the X expression (which could be another IndexExpr) is emitted inside
 					boxedType := toBoxedType(je.mapIndexValueType)
-					je.gir.emitToFileBuffer(fmt.Sprintf("((%s)hashMapGet(", boxedType), EmptyVisitMethod)
+					je.emitToPackage(fmt.Sprintf("((%s)hashMapGet(", boxedType))
 					// Store the map variable name - but don't suppress X emission for nested cases
 					je.mapReadVarName = exprToString(node.X)
 					// Only suppress X if it's a simple identifier (not another IndexExpr)
@@ -2754,10 +2870,10 @@ func (je *JavaEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
 			// Check if X was a nested IndexExpr (already emitted) or a simple ident (needs emitting)
 			if _, isIndexExpr := node.X.(*ast.IndexExpr); isIndexExpr {
 				// X was a nested IndexExpr, it has been emitted, just add comma
-				je.gir.emitToFileBuffer(", ", EmptyVisitMethod)
+				je.emitToPackage(", ")
 			} else {
 				// X was a simple expression, emit it then comma
-				je.gir.emitToFileBuffer(je.mapReadVarName+", ", EmptyVisitMethod)
+				je.emitToPackage(je.mapReadVarName + ", ")
 			}
 			return
 		}
@@ -2805,7 +2921,7 @@ func (je *JavaEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 		if je.isMapIndex {
 			// Map variable already emitted in PostVisitIndexExprX, just emit key cast if needed
 			if je.mapKeyCastPrefix != "" {
-				je.gir.emitToFileBuffer(je.mapKeyCastPrefix, EmptyVisitMethod)
+				je.emitToPackage(je.mapKeyCastPrefix)
 			}
 		}
 	})
@@ -2821,10 +2937,10 @@ func (je *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 		}
 		if je.isMapIndex {
 			if je.mapKeyCastSuffix != "" {
-				je.gir.emitToFileBuffer(je.mapKeyCastSuffix, EmptyVisitMethod)
+				je.emitToPackage(je.mapKeyCastSuffix)
 			}
 			// Close both hashMapGet() and the cast wrapper
-			je.gir.emitToFileBuffer("))", EmptyVisitMethod)
+			je.emitToPackage("))")
 		} else {
 			// For slice index assignment, don't emit ) here - it will be emitted after the value
 			// Only suppress for the actual LHS index expression
@@ -2862,11 +2978,11 @@ func (je *JavaEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 						je.stringComparisonLhsExpr = exprToString(node.X)
 						// For !=, emit "!"
 						if node.Op == token.NEQ {
-							je.gir.emitToFileBuffer("!", EmptyVisitMethod)
+							je.emitToPackage("!")
 						}
 						// Emit opening paren to wrap the LHS for proper precedence
 						// This ensures (String)a becomes ((String)a).equals() not (String)(a.equals())
-						je.gir.emitToFileBuffer("(", EmptyVisitMethod)
+						je.emitToPackage("(")
 						return
 					}
 				}
@@ -2879,7 +2995,7 @@ func (je *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// Close .equals() for string comparison
 		if je.isStringComparison {
-			je.gir.emitToFileBuffer(")", EmptyVisitMethod)
+			je.emitToPackage(")")
 			je.isStringComparison = false
 			je.stringComparisonOp = ""
 			je.stringComparisonLhsExpr = ""
@@ -2891,11 +3007,11 @@ func (je *JavaEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// For string comparison, close LHS paren and emit .equals(
 		if je.isStringComparison {
-			je.gir.emitToFileBuffer(").equals(", EmptyVisitMethod)
+			je.emitToPackage(").equals(")
 			return
 		}
 		str := je.emitAsString(" "+op.String()+" ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -2916,16 +3032,16 @@ func (je *JavaEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 			if index == 1 {
 				// Use MakeSlice helper to create ArrayList with actual elements
 				if je.sliceMakeElemType == "boolean" || je.sliceMakeElemType == "Boolean" {
-					je.gir.emitToFileBuffer("SliceBuiltins.MakeBoolSlice(", EmptyVisitMethod)
+					je.emitToPackage("SliceBuiltins.MakeBoolSlice(")
 				} else {
-					je.gir.emitToFileBuffer("SliceBuiltins.<"+toBoxedType(je.sliceMakeElemType)+">MakeSlice(", EmptyVisitMethod)
+					je.emitToPackage("SliceBuiltins.<"+toBoxedType(je.sliceMakeElemType)+">MakeSlice(")
 				}
 				return
 			}
 		}
 		if index > 0 {
 			str := je.emitAsString(", ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -2942,7 +3058,7 @@ func (je *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 func (je *JavaEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(";", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -2956,7 +3072,7 @@ func (je *JavaEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 		}
 		je.hasIfInit = false
 		str := je.emitAsString("if ", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -2974,7 +3090,7 @@ func (je *JavaEmitter) PreVisitIfStmtInit(node ast.Stmt, indent int) {
 func (je *JavaEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// After init, emit newline - the statement already has its own semicolon
-		je.gir.emitToFileBuffer("\n", EmptyVisitMethod)
+		je.emitToPackage("\n")
 	})
 }
 
@@ -2983,11 +3099,11 @@ func (je *JavaEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
 		// If there was an Init, emit "if " now with proper indentation
 		if je.hasIfInit {
 			str := je.emitAsString("if (", je.ifInitIndent)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 			je.hasIfInit = false // Reset flag after use
 		} else {
 			str := je.emitAsString("(", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -2995,7 +3111,7 @@ func (je *JavaEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
 func (je *JavaEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(") ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3007,10 +3123,10 @@ func (je *JavaEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
 		je.isInfiniteLoop = node.Init == nil && node.Cond == nil && node.Post == nil
 		if je.isInfiniteLoop {
 			str := je.emitAsString("while (true) ", indent)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		} else {
 			str := je.emitAsString("for (", indent)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -3028,7 +3144,7 @@ func (je *JavaEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
 			return
 		}
 		str := je.emitAsString("; ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3045,14 +3161,14 @@ func (je *JavaEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
 			return
 		}
 		str := je.emitAsString(") ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
 func (je *JavaEmitter) PreVisitIfStmtElse(node *ast.IfStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(" else ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3062,7 +3178,7 @@ func (je *JavaEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
 			return
 		}
 		str := je.emitAsString("; ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3107,7 +3223,7 @@ func (je *JavaEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		}
 
 		str := je.emitAsString("for (", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3146,22 +3262,22 @@ func (je *JavaEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
 
 		if je.isKeyValueRange && je.rangeKeyName != "" {
 			// For key-value range: for (int key = 0; key < collection.size(); key++)
-			je.gir.emitToFileBuffer(fmt.Sprintf("int %s = 0; %s < %s.size(); %s++) ",
-				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, je.rangeKeyName), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s.size(); %s++) ",
+				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, je.rangeKeyName))
 			je.pendingRangeValueDecl = true
 			je.pendingValueName = je.rangeValueName
 			je.pendingCollectionExpr = je.rangeCollectionExpr
 			je.pendingKeyName = je.rangeKeyName
 		} else if je.rangeKeyName != "" && je.rangeValueName == "" {
 			// Index-only range: for (int i = 0; i < collection.size(); i++)
-			je.gir.emitToFileBuffer(fmt.Sprintf("int %s = 0; %s < %s.size(); %s++) ",
-				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, je.rangeKeyName), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s.size(); %s++) ",
+				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, je.rangeKeyName))
 		} else if je.rangeValueName != "" {
 			// Value-only range (key is "_" or not used): for (var val : collection)
-			je.gir.emitToFileBuffer(fmt.Sprintf("var %s : %s) ", je.rangeValueName, je.rangeCollectionExpr), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf("var %s : %s) ", je.rangeValueName, je.rangeCollectionExpr))
 		} else {
 			// Neither key nor value specified: for (var __item : collection)
-			je.gir.emitToFileBuffer(fmt.Sprintf("var __item : %s) ", je.rangeCollectionExpr), EmptyVisitMethod)
+			je.emitToPackage(fmt.Sprintf("var __item : %s) ", je.rangeCollectionExpr))
 		}
 	})
 }
@@ -3180,12 +3296,12 @@ func (je *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		if !je.insideForPostCond {
 			str := je.emitAsString(node.Tok.String(), 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 			str = je.emitAsString(";", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		} else {
 			str := je.emitAsString(node.Tok.String(), 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -3193,18 +3309,23 @@ func (je *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 func (je *JavaEmitter) PreVisitCompositeLitType(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("new ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
+		// Set type context so type names get proper package prefix
+		je.inTypeContext = true
+		je.inCompositeLitType = true
 	})
 }
 
 func (je *JavaEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		je.inTypeContext = false
+		je.inCompositeLitType = false
 		if je.isArray {
 			str := je.emitAsString("(Arrays.asList", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		} else {
 			str := je.emitAsString("(", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -3213,7 +3334,7 @@ func (je *JavaEmitter) PreVisitCompositeLitElts(node []ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		if je.isArray {
 			str := je.emitAsString("(", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -3222,12 +3343,12 @@ func (je *JavaEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		if je.isArray {
 			str := je.emitAsString("))", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 			je.isArray = false
 			je.sliceLitElemCast = "" // Reset after processing slice literal
 		} else {
 			str := je.emitAsString(")", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -3236,13 +3357,13 @@ func (je *JavaEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent 
 	je.executeIfNotForwardDecls(func() {
 		if index > 0 {
 			str := je.emitAsString(", ", 0)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 		// Emit cast prefix for byte/short slice literal elements
 		if je.sliceLitElemCast != "" && je.isArray {
 			// Only apply cast to BasicLit (numeric literals)
 			if _, ok := node.(*ast.BasicLit); ok {
-				je.gir.emitToFileBuffer(je.sliceLitElemCast, EmptyVisitMethod)
+				je.emitToPackage(je.sliceLitElemCast)
 			}
 		}
 	})
@@ -3258,7 +3379,7 @@ func (je *JavaEmitter) PreVisitSliceExprX(node ast.Expr, indent int) {
 func (je *JavaEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(".subList(", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3279,7 +3400,7 @@ func (je *JavaEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// If Low is nil (like a[:high]), emit 0
 		if node == nil {
-			je.gir.emitToFileBuffer("0", EmptyVisitMethod)
+			je.emitToPackage("0")
 		}
 	})
 }
@@ -3287,7 +3408,7 @@ func (je *JavaEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
 func (je *JavaEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(", ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3308,7 +3429,7 @@ func (je *JavaEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// If High is nil (like a[low:]), emit X.size()
 		if node == nil {
-			je.gir.emitToFileBuffer(je.sliceExprXName+".size()", EmptyVisitMethod)
+			je.emitToPackage(je.sliceExprXName+".size()")
 		}
 	})
 }
@@ -3316,7 +3437,7 @@ func (je *JavaEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
 func (je *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(")", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 		je.sliceExprXName = "" // Reset
 	})
 }
@@ -3347,7 +3468,7 @@ func (je *JavaEmitter) PreVisitFuncLitTypeParam(node *ast.Field, index int, inde
 		}
 		// Emit parameter name only for lambda (Java uses type inference)
 		if len(node.Names) > 0 {
-			je.gir.emitToFileBuffer(node.Names[0].Name, EmptyVisitMethod)
+			je.emitToPackage(node.Names[0].Name)
 		}
 		// Set type context to suppress type emission
 		je.inTypeContext = true
@@ -3379,7 +3500,7 @@ func (je *JavaEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int
 			return
 		}
 		str := je.emitAsString("Object", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3404,7 +3525,7 @@ func (je *JavaEmitter) PreVisitKeyValueExprValue(node ast.Expr, indent int) {
 func (je *JavaEmitter) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(node.Op.String(), 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3415,36 +3536,36 @@ func (je *JavaEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 
 func (je *JavaEmitter) PreVisitParenExpr(node *ast.ParenExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		je.gir.emitToFileBuffer("(", EmptyVisitMethod)
+		je.emitToPackage("(")
 	})
 }
 
 func (je *JavaEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		je.gir.emitToFileBuffer(")", EmptyVisitMethod)
+		je.emitToPackage(")")
 	})
 }
 
 func (je *JavaEmitter) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("public static final ", indent+2)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 
 		// Try to infer type from value
 		if je.pkg != nil && je.pkg.TypesInfo != nil {
 			if obj := je.pkg.TypesInfo.Defs[node]; obj != nil {
 				typeName := getJavaTypeName(obj.Type())
-				je.gir.emitToFileBuffer(typeName+" ", EmptyVisitMethod)
+				je.emitToPackage(typeName+" ")
 			}
 		}
 		str = je.emitAsString(node.Name+" = ", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
 func (je *JavaEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		je.gir.emitToFileBuffer(";\n", EmptyVisitMethod)
+		je.emitToPackage(";\n")
 	})
 }
 
@@ -3456,7 +3577,7 @@ func (je *JavaEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
 func (je *JavaEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("switch ", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 		je.emitToken("(", LeftParen, 0)
 	})
 }
@@ -3464,7 +3585,7 @@ func (je *JavaEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 func (je *JavaEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("}\n", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3472,7 +3593,7 @@ func (je *JavaEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		je.emitToken(")", RightParen, 0)
 		str := je.emitAsString(" {\n", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3480,7 +3601,7 @@ func (je *JavaEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// Add break after each case unless it's a fallthrough
 		str := je.emitAsString("break;\n", indent+2)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3488,7 +3609,7 @@ func (je *JavaEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		if len(node) == 0 {
 			str := je.emitAsString("default:\n", indent)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -3497,7 +3618,7 @@ func (je *JavaEmitter) PreVisitCaseClauseListExpr(node ast.Expr, index int, inde
 	je.executeIfNotForwardDecls(func() {
 		if index == 0 {
 			str := je.emitAsString("case ", indent)
-			je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+			je.emitToPackage(str)
 		}
 	})
 }
@@ -3505,7 +3626,7 @@ func (je *JavaEmitter) PreVisitCaseClauseListExpr(node ast.Expr, index int, inde
 func (je *JavaEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(":\n", 0)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
@@ -3540,7 +3661,7 @@ func (je *JavaEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
 func (je *JavaEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(strings.ToLower(node.Tok.String())+";", indent)
-		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
+		je.emitToPackage(str)
 	})
 }
 
