@@ -128,7 +128,8 @@ func main() {
 	useCpp := useAll || backendSet["cpp"]
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
-	useJs := backendSet["js"] // JS is opt-in, not included in "all"
+	useJs := backendSet["js"]     // JS is opt-in, not included in "all"
+	useJava := backendSet["java"] // Java is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -162,6 +163,7 @@ func main() {
 	}
 
 	var programFiles []string
+	var javaOutput string // Sanitized output path for Java
 
 	if useCpp {
 		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CPPEmitter{
@@ -214,6 +216,21 @@ func main() {
 		passes = append(passes, jsBackend)
 		programFiles = append(programFiles, "js")
 	}
+	if useJava {
+		// Sanitize output name for Java (replace hyphens with underscores)
+		javaOutputName := strings.ReplaceAll(outputName, "-", "_")
+		javaOutput = filepath.Join(outputDir, javaOutputName)
+		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
+			BaseEmitter:     compiler.BaseEmitter{},
+			Output:          javaOutput + ".java",
+			LinkRuntime:     linkRuntime,
+			RuntimePackages: runtimePackages,
+			OutputDir:       outputDir,
+			OutputName:      javaOutputName,
+		}}
+		passes = append(passes, javaBackend)
+		programFiles = append(programFiles, "java")
+	}
 
 	passManager := &compiler.PassManager{
 		Pkgs:   allPkgs,
@@ -223,8 +240,8 @@ func main() {
 	passManager.RunPasses()
 
 	// Format generated files
-	// Use astyle for C++/C#, rustfmt for Rust
-	hasAstyleFiles := useCpp || useCs
+	// Use astyle for C++/C#/Java, rustfmt for Rust
+	hasAstyleFiles := useCpp || useCs || useJava
 	if hasAstyleFiles {
 		compiler.DebugLogPrintf("Using astyle version: %s\n", compiler.GetAStyleVersion())
 		const astyleOptions = "--style=webkit"
@@ -238,6 +255,13 @@ func main() {
 		}
 		if useCs {
 			filePath := fmt.Sprintf("%s.cs", output)
+			err = compiler.FormatFile(filePath, astyleOptions)
+			if err != nil {
+				log.Fatalf("Failed to format %s: %v", filePath, err)
+			}
+		}
+		if useJava {
+			filePath := fmt.Sprintf("%s.java", javaOutput)
 			err = compiler.FormatFile(filePath, astyleOptions)
 			if err != nil {
 				log.Fatalf("Failed to format %s: %v", filePath, err)

@@ -16,3 +16,6 @@ var PanicRustSource string
 
 //go:embed std/js/goany_panic.js
 var PanicJsSource string
+
+//go:embed std/java/GoanyPanic.java
+var PanicJavaSource string

@@ -5,8 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func joinStrings(strs []string, sep string) string {
+	return strings.Join(strs, sep)
+}
 
 type TestCase struct {
 	Name          string
@@ -16,29 +21,31 @@ type TestCase struct {
 	RustEnabled   bool
 	JsEnabled     bool
 	JsRunnable    bool // Can run with Node.js (false for graphics apps that need browser)
+	JavaEnabled   bool
+	JavaRunnable  bool // Can run standalone (false for apps that need special setup)
 }
 
 const runtimePath = "../runtime"
 
 var e2eTestCases = []TestCase{
-	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true},
-	{"containers", "../examples/containers", true, true, true, true, true},
-	{"uql", "../examples/uql", true, true, true, true, true},
-	{"ast-demo", "../examples/ast-demo", true, true, true, true, true},
-	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false},         // JS transpile only (needs browser)
-	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false},               // JS transpile only (needs browser)
-	{"gui-demo", "../examples/gui-demo", true, true, true, true, false},                         // JS transpile only (needs browser)
-	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, true, true, false},       // JS transpile only (needs browser)
-	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, true, true, false},             // JS transpile only (needs browser)
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false}, // JS transpile only (needs browser)
-	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, true, true, false},               // JS transpile only (needs browser)
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false},         // JS transpile only (needs browser) - uses RunLoopWithState API
-	{"http-client", "../examples/http/client", true, true, true, true, false},
-	{"http-server", "../examples/http/server", true, true, true, true, false},
-	{"fs-demo", "../examples/fs-demo", true, true, true, true, true},
-	{"net-demo", "../examples/net/demo", true, true, true, true, false},              // JS transpile only (needs deasync npm package)
-	{"net-echo-server", "../examples/net/echo-server", true, true, true, true, false}, // Server example - transpile/compile only
-	{"net-echo-client", "../examples/net/echo-client", true, true, true, true, false}, // Client example - transpile/compile only
+	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true},
+	{"containers", "../examples/containers", true, true, true, true, true, false, false},
+	{"uql", "../examples/uql", true, true, true, true, true, false, false},
+	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, false, false},
+	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false, false, false},         // JS transpile only (needs browser)
+	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false, false, false},               // JS transpile only (needs browser)
+	{"gui-demo", "../examples/gui-demo", true, true, true, true, false, false, false},                         // JS transpile only (needs browser)
+	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, true, true, false, false, false},       // JS transpile only (needs browser)
+	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, true, true, false, false, false},             // JS transpile only (needs browser)
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false, false, false}, // JS transpile only (needs browser)
+	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, true, true, false, false, false},               // JS transpile only (needs browser)
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false, false, false},         // JS transpile only (needs browser) - uses RunLoopWithState API
+	{"http-client", "../examples/http/client", true, true, true, true, false, false, false},
+	{"http-server", "../examples/http/server", true, true, true, true, false, false, false},
+	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, false, false},
+	{"net-demo", "../examples/net/demo", true, true, true, true, false, false, false},              // JS transpile only (needs deasync npm package)
+	{"net-echo-server", "../examples/net/echo-server", true, true, true, true, false, false, false}, // Server example - transpile/compile only
+	{"net-echo-client", "../examples/net/echo-client", true, true, true, true, false, false, false}, // Client example - transpile/compile only
 }
 
 func TestE2E(t *testing.T) {
@@ -95,9 +102,16 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		"--optimize-moves",
 		"--optimize-refs",
 	}
-	// Add JS backend if enabled (JS is opt-in, not included in "all")
+	// Add opt-in backends (JS and Java are not included in "all")
+	optInBackends := []string{}
 	if tc.JsEnabled {
-		args = append(args, "--backend=all,js")
+		optInBackends = append(optInBackends, "js")
+	}
+	if tc.JavaEnabled {
+		optInBackends = append(optInBackends, "java")
+	}
+	if len(optInBackends) > 0 {
+		args = append(args, fmt.Sprintf("--backend=all,%s", joinStrings(optInBackends, ",")))
 	}
 	cmd := exec.Command("go", args...)
 	cmd.Dir = wd
@@ -156,6 +170,33 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		t.Logf("JavaScript execution output: %s", output)
 	} else if tc.JsEnabled {
 		t.Logf("Skipping JavaScript execution for %s (requires browser)", tc.Name)
+	}
+
+	// Step 6: Compile and run Java
+	if tc.JavaEnabled {
+		// Java file names are sanitized (hyphens replaced with underscores)
+		javaName := strings.ReplaceAll(tc.Name, "-", "_")
+		javaFile := filepath.Join(outputDir, javaName+".java")
+		t.Logf("Compiling Java for %s", tc.Name)
+		cmd = exec.Command("javac", javaFile)
+		cmd.Dir = outputDir
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Java compilation failed: %v\nOutput: %s", err, output)
+		}
+		t.Logf("Java compilation output: %s", output)
+
+		if tc.JavaRunnable {
+			// The class name is the sanitized file name (without extension)
+			t.Logf("Running Java for %s", tc.Name)
+			cmd = exec.Command("java", javaName)
+			cmd.Dir = outputDir
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("Java execution failed: %v\nOutput: %s", err, output)
+			}
+			t.Logf("Java execution output: %s", output)
+		}
 	}
 
 	t.Logf("Done with %s", tc.Name)
