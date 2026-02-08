@@ -163,6 +163,7 @@ func main() {
 	}
 
 	var programFiles []string
+	var javaOutput string // Sanitized output path for Java
 
 	if useCpp {
 		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CPPEmitter{
@@ -216,13 +217,16 @@ func main() {
 		programFiles = append(programFiles, "js")
 	}
 	if useJava {
+		// Sanitize output name for Java (replace hyphens with underscores)
+		javaOutputName := strings.ReplaceAll(outputName, "-", "_")
+		javaOutput = filepath.Join(outputDir, javaOutputName)
 		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
 			BaseEmitter:     compiler.BaseEmitter{},
-			Output:          output + ".java",
+			Output:          javaOutput + ".java",
 			LinkRuntime:     linkRuntime,
 			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
-			OutputName:      outputName,
+			OutputName:      javaOutputName,
 		}}
 		passes = append(passes, javaBackend)
 		programFiles = append(programFiles, "java")
@@ -257,7 +261,7 @@ func main() {
 			}
 		}
 		if useJava {
-			filePath := fmt.Sprintf("%s.java", output)
+			filePath := fmt.Sprintf("%s.java", javaOutput)
 			err = compiler.FormatFile(filePath, astyleOptions)
 			if err != nil {
 				log.Fatalf("Failed to format %s: %v", filePath, err)

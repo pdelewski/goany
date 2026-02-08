@@ -514,6 +514,12 @@ func toBoxedType(t string) string {
 	return t
 }
 
+// sanitizeJavaIdentifier converts a string to a valid Java identifier
+// by replacing invalid characters (like hyphens) with underscores
+func sanitizeJavaIdentifier(name string) string {
+	return strings.ReplaceAll(name, "-", "_")
+}
+
 func getJavaDefaultValue(javaType string) string {
 	switch javaType {
 	case "int":
@@ -1526,12 +1532,12 @@ func (je *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 		}
 		var className string
 		if je.OutputName != "" {
-			// Use the output file name as the class name
-			className = je.OutputName
+			// Use the output file name as the class name, sanitized for Java
+			className = sanitizeJavaIdentifier(je.OutputName)
 		} else if pkg.Name == "main" {
 			className = "Main"
 		} else {
-			className = pkg.Name
+			className = sanitizeJavaIdentifier(pkg.Name)
 		}
 		str := je.emitAsString(fmt.Sprintf("public class %s {\n\n", className), indent)
 		err := je.gir.emitToFileBuffer(str, EmptyVisitMethod)
