@@ -192,6 +192,7 @@ type JavaEmitter struct {
 	multiReturnFuncs      map[string][]string // Map of func name to return type names
 	isMultiReturnAssign   bool                // Flag for multi-return assignment
 	multiReturnLhsNames   []string            // LHS variable names for unpacking
+	multiReturnLhsTypes   []string            // LHS variable Java types for casting (runtime calls)
 	multiReturnIsDecl     bool                // Whether it's a := declaration
 	multiReturnIndent     int                 // Indent for the assignment
 	resultClassDefs       []string            // Collected result class definitions
@@ -209,6 +210,10 @@ type JavaEmitter struct {
 	sliceIndexLhsExpr   *ast.IndexExpr // Track the actual LHS index expression
 	// Multi-return type reuse - map signature to class name
 	resultClassRegistry map[string]string
+	// String comparison handling
+	isStringComparison     bool   // Flag for string == or != comparison
+	stringComparisonOp     string // "==" or "!="
+	stringComparisonLhsExpr string // LHS expression as string for .equals() call
 	// HashMap value type tracking - map variable name to value type
 	mapVarValueTypes map[string]string
 	// Variable shadowing - track declared variables per scope
@@ -451,7 +456,9 @@ func getJavaTypeName(t types.Type) string {
 				return "short"
 			case types.Int64:
 				return "long"
-			case types.Uint, types.Uint8, types.Uint16, types.Uint32:
+			case types.Uint8:
+				return "byte"
+			case types.Uint, types.Uint16, types.Uint32:
 				return "int"
 			case types.Uint64:
 				return "long"
@@ -480,7 +487,9 @@ func getJavaTypeName(t types.Type) string {
 			return "short"
 		case types.Int64:
 			return "long"
-		case types.Uint, types.Uint8, types.Uint16, types.Uint32:
+		case types.Uint8:
+			return "byte"
+		case types.Uint, types.Uint16, types.Uint32:
 			return "int"
 		case types.Uint64:
 			return "long"
@@ -1785,8 +1794,12 @@ func (je *JavaEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 			if je.pkg != nil && je.pkg.TypesInfo != nil {
 				if uses, ok := je.pkg.TypesInfo.Uses[ident]; ok {
 					if _, isPkg := uses.(*types.PkgName); isPkg {
-						// This is a package reference - suppress the package name
-						je.suppressFmtPackage = true // reuse this flag for package suppression
+						// Check if this is a runtime package - if so, keep the prefix
+						// because the runtime defines a class with that name (e.g., fs class)
+						if _, isRuntime := je.RuntimePackages[ident.Name]; !isRuntime {
+							// Not a runtime package - suppress the package name
+							je.suppressFmtPackage = true // reuse this flag for package suppression
+						}
 					}
 				}
 			}
@@ -2175,11 +2188,26 @@ func (je *JavaEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				funcName = sel.Sel.Name
 			}
 			if _, isMultiReturn := je.multiReturnFuncs[funcName]; isMultiReturn || funcName != "" {
-				// Collect LHS variable names
+				// Collect LHS variable names and types
 				je.multiReturnLhsNames = nil
+				je.multiReturnLhsTypes = nil
 				for _, lhs := range node.Lhs {
 					if ident, ok := lhs.(*ast.Ident); ok {
 						je.multiReturnLhsNames = append(je.multiReturnLhsNames, ident.Name)
+						// Get the type of the LHS variable
+						if je.pkg != nil && je.pkg.TypesInfo != nil {
+							if tv, ok := je.pkg.TypesInfo.Types[ident]; ok {
+								javaType := getJavaTypeName(tv.Type)
+								je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, javaType)
+							} else if def := je.pkg.TypesInfo.Defs[ident]; def != nil {
+								javaType := getJavaTypeName(def.Type())
+								je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, javaType)
+							} else {
+								je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, "")
+							}
+						} else {
+							je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, "")
+						}
 					}
 				}
 				je.isMultiReturnAssign = true
@@ -2362,16 +2390,24 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if je.isMultiReturnAssign {
 		callExpr := node.Rhs[0].(*ast.CallExpr)
 		funcName := ""
+		isRuntimeCall := false // Track if this is a runtime package call (uses Object[] instead of tuple)
 		if ident, ok := callExpr.Fun.(*ast.Ident); ok {
 			funcName = ident.Name
 		} else if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
-			// Check if X is a package - if so, just use the function name
+			// Check if X is a package - if so, use function name with or without prefix
 			if xIdent, ok := sel.X.(*ast.Ident); ok {
 				if je.pkg != nil && je.pkg.TypesInfo != nil {
 					if uses, ok := je.pkg.TypesInfo.Uses[xIdent]; ok {
 						if _, isPkg := uses.(*types.PkgName); isPkg {
-							// It's a package reference - just use the function name
-							funcName = sel.Sel.Name
+							// It's a package reference - check if it's a runtime package
+							if _, isRuntime := je.RuntimePackages[xIdent.Name]; isRuntime {
+								// Runtime package - keep the package prefix (e.g., fs.ReadFile)
+								funcName = xIdent.Name + "." + sel.Sel.Name
+								isRuntimeCall = true
+							} else {
+								// Regular package - just use the function name
+								funcName = sel.Sel.Name
+							}
 						} else {
 							funcName = exprToString(sel.X) + "." + sel.Sel.Name
 						}
@@ -2401,21 +2437,40 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		code := fmt.Sprintf("%svar %s = %s(%s);\n", indentStr, resultVarName, funcName, argsStr)
 
 		// Unpack fields with variable shadowing check
+		// Runtime functions return Object[] (use array indexing with cast), user functions return tuple (use ._N fields)
 		for i, name := range je.multiReturnLhsNames {
 			if name == "_" {
 				continue // Skip blank identifiers
 			}
+			var valueExpr string
+			if isRuntimeCall {
+				// For runtime calls, we need to cast the Object[] element to the correct type
+				javaType := ""
+				if i < len(je.multiReturnLhsTypes) {
+					javaType = je.multiReturnLhsTypes[i]
+				}
+				if javaType != "" && javaType != "Object" {
+					// Use boxed type for cast, then auto-unbox
+					boxedType := toBoxedType(javaType)
+					valueExpr = fmt.Sprintf("(%s)%s[%d]", boxedType, resultVarName, i)
+				} else {
+					valueExpr = fmt.Sprintf("%s[%d]", resultVarName, i)
+				}
+			} else {
+				valueExpr = fmt.Sprintf("%s._%d", resultVarName, i)
+			}
 			if je.multiReturnIsDecl && !je.isVarDeclared(name) {
-				code += fmt.Sprintf("%svar %s = %s._%d;\n", indentStr, name, resultVarName, i)
+				code += fmt.Sprintf("%svar %s = %s;\n", indentStr, name, valueExpr)
 				je.declareVar(name)
 			} else {
-				code += fmt.Sprintf("%s%s = %s._%d;\n", indentStr, name, resultVarName, i)
+				code += fmt.Sprintf("%s%s = %s;\n", indentStr, name, valueExpr)
 			}
 		}
 
 		je.gir.emitToFileBuffer(code, EmptyVisitMethod)
 		je.isMultiReturnAssign = false
 		je.multiReturnLhsNames = nil
+		je.multiReturnLhsTypes = nil
 		return
 	}
 
@@ -2603,7 +2658,7 @@ func (je *JavaEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, inden
 }
 
 func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	if je.isMapCommaOk || je.isTypeAssertCommaOk || je.isMapAssign {
+	if je.isMapCommaOk || je.isTypeAssertCommaOk || je.isMapAssign || je.isMultiReturnAssign {
 		return
 	}
 	je.executeIfNotForwardDecls(func() {
@@ -2796,16 +2851,49 @@ func (je *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 
 func (je *JavaEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Check for string comparison (== or !=)
+		if node.Op == token.EQL || node.Op == token.NEQ {
+			if je.pkg != nil && je.pkg.TypesInfo != nil {
+				// Check if LHS is a string
+				if tv, ok := je.pkg.TypesInfo.Types[node.X]; ok {
+					if tv.Type != nil && tv.Type.String() == "string" {
+						je.isStringComparison = true
+						je.stringComparisonOp = node.Op.String()
+						je.stringComparisonLhsExpr = exprToString(node.X)
+						// For !=, emit "!"
+						if node.Op == token.NEQ {
+							je.gir.emitToFileBuffer("!", EmptyVisitMethod)
+						}
+						// Emit opening paren to wrap the LHS for proper precedence
+						// This ensures (String)a becomes ((String)a).equals() not (String)(a.equals())
+						je.gir.emitToFileBuffer("(", EmptyVisitMethod)
+						return
+					}
+				}
+			}
+		}
 	})
 }
 
 func (je *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Close .equals() for string comparison
+		if je.isStringComparison {
+			je.gir.emitToFileBuffer(")", EmptyVisitMethod)
+			je.isStringComparison = false
+			je.stringComparisonOp = ""
+			je.stringComparisonLhsExpr = ""
+		}
 	})
 }
 
 func (je *JavaEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// For string comparison, close LHS paren and emit .equals(
+		if je.isStringComparison {
+			je.gir.emitToFileBuffer(").equals(", EmptyVisitMethod)
+			return
+		}
 		str := je.emitAsString(" "+op.String()+" ", 0)
 		je.gir.emitToFileBuffer(str, EmptyVisitMethod)
 	})
