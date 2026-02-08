@@ -36,6 +36,12 @@ jobs:
           profile: minimal
           override: true
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
       - name: Build
         run: |
           cd cmd
@@ -73,6 +79,12 @@ jobs:
           profile: minimal
           override: true
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
       - name: Build
         run: |
           cd cmd
@@ -109,6 +121,12 @@ jobs:
           toolchain: stable
           profile: minimal
           override: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
 
       - name: Build
         shell: cmd
