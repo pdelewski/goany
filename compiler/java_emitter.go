@@ -796,6 +796,12 @@ func (je *JavaEmitter) PreVisitProgram(indent int) {
 	// javaOuterClassPackages will be populated with all non-main packages
 	// Uses namespaces which is auto-populated in base_pass.go
 	javaOuterClassPackages = nil // Will use namespaces directly
+
+	// Sanitize output name for Java (replace hyphens with underscores, strip .java extension)
+	je.OutputName = sanitizeJavaIdentifier(je.OutputName)
+	// Rebuild the output path with sanitized name
+	je.Output = filepath.Join(je.OutputDir, je.OutputName+".java")
+
 	outputFile := je.Output
 	je.shouldGenerate = true
 	var err error

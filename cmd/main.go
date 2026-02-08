@@ -163,7 +163,6 @@ func main() {
 	}
 
 	var programFiles []string
-	var javaOutput string // Sanitized output path for Java
 
 	if useCpp {
 		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CPPEmitter{
@@ -217,20 +216,13 @@ func main() {
 		programFiles = append(programFiles, "js")
 	}
 	if useJava {
-		// Sanitize output name for Java (replace hyphens with underscores)
-		// Strip .java extension if present to avoid double extension
-		javaOutputName := strings.ReplaceAll(outputName, "-", "_")
-		if strings.HasSuffix(javaOutputName, ".java") {
-			javaOutputName = strings.TrimSuffix(javaOutputName, ".java")
-		}
-		javaOutput = filepath.Join(outputDir, javaOutputName)
 		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
 			BaseEmitter:     compiler.BaseEmitter{},
-			Output:          javaOutput + ".java",
+			Output:          output + ".java",
 			LinkRuntime:     linkRuntime,
 			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
-			OutputName:      javaOutputName,
+			OutputName:      outputName,
 		}}
 		passes = append(passes, javaBackend)
 		programFiles = append(programFiles, "java")
@@ -265,7 +257,12 @@ func main() {
 			}
 		}
 		if useJava {
-			filePath := fmt.Sprintf("%s.java", javaOutput)
+			// Compute sanitized Java output path (matching java_emitter sanitization)
+			javaOutputName := strings.ReplaceAll(outputName, "-", "_")
+			if strings.HasSuffix(javaOutputName, ".java") {
+				javaOutputName = strings.TrimSuffix(javaOutputName, ".java")
+			}
+			filePath := filepath.Join(outputDir, javaOutputName+".java")
 			err = compiler.FormatFile(filePath, astyleOptions)
 			if err != nil {
 				log.Fatalf("Failed to format %s: %v", filePath, err)
