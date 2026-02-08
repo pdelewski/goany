@@ -464,9 +464,16 @@ func (je *JavaEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 }
 
 
-// javaOuterClassPackages tracks packages that become separate Java outer classes.
-// Set by JavaEmitter before code generation. Types from these packages need prefix.
-var javaOuterClassPackages map[string]bool
+// isJavaOuterClassPackage checks if a package name is an outer class that needs prefixing.
+// Uses the global namespaces map from base_pass.go, excluding "main" and "hmap".
+// "hmap" is a utility package that's inlined in the main file, not a separate outer class.
+func isJavaOuterClassPackage(pkgName string) bool {
+	if pkgName == "main" || pkgName == "hmap" {
+		return false
+	}
+	_, exists := namespaces[pkgName]
+	return exists
+}
 
 func getJavaTypeName(t types.Type) string {
 	// First, check if this is a named type
@@ -503,9 +510,9 @@ func getJavaTypeName(t types.Type) string {
 		// Otherwise, it's a struct or other named type - use the name
 		// If the type's package is an outer class package, prefix with package name
 		typeName := named.Obj().Name()
-		if pkg := named.Obj().Pkg(); pkg != nil && javaOuterClassPackages != nil {
+		if pkg := named.Obj().Pkg(); pkg != nil {
 			pkgName := pkg.Name()
-			if _, exists := javaOuterClassPackages[pkgName]; exists {
+			if isJavaOuterClassPackage(pkgName) {
 				return pkgName + "." + typeName
 			}
 		}
@@ -793,11 +800,9 @@ func (je *JavaEmitter) PreVisitProgram(indent int) {
 	je.mapVarValueTypes = make(map[string]string)
 	je.declaredVarsStack = []map[string]bool{make(map[string]bool)}
 	je.packageFiles = make(map[string]*os.File)
-	// javaOuterClassPackages will be populated with all non-main packages
-	// Initialize with runtime packages (they are outer classes in Java)
-	javaOuterClassPackages = make(map[string]bool)
+	// Runtime packages are added to namespaces so they get proper type prefixing
 	for pkgName := range je.RuntimePackages {
-		javaOuterClassPackages[pkgName] = true
+		namespaces[pkgName] = struct{}{}
 	}
 
 	// Sanitize output name for Java (replace hyphens with underscores, strip .java extension)
@@ -1215,8 +1220,8 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 				if je.inTypeContext && !je.inPackageQualifiedExpr && je.pkg != nil && je.pkg.TypesInfo != nil {
 					if obj := je.pkg.TypesInfo.Uses[e]; obj != nil {
 						if typeName, isTypeName := obj.(*types.TypeName); isTypeName {
-							if pkg := typeName.Pkg(); pkg != nil && javaOuterClassPackages != nil {
-								if _, exists := javaOuterClassPackages[pkg.Name()]; exists {
+							if pkg := typeName.Pkg(); pkg != nil {
+								if isJavaOuterClassPackage(pkg.Name()) {
 									prefixedName = pkg.Name() + "." + name
 								}
 							}
@@ -1641,11 +1646,7 @@ func (je *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 			pkgFile.WriteString(imports)
 			pkgFile.WriteString(fmt.Sprintf("public class %s {\n\n", pkg.Name))
 
-			// Add this package to outer class packages for type prefixing
-			if javaOuterClassPackages == nil {
-				javaOuterClassPackages = make(map[string]bool)
-			}
-			javaOuterClassPackages[pkg.Name] = true
+			// Package is already in namespaces (added by base_pass.go), so type prefixing works
 			return
 		}
 
@@ -1918,9 +1919,7 @@ func (je *JavaEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 					if _, isPkg := uses.(*types.PkgName); isPkg {
 						// Check if this is a runtime package or outer class package - if so, keep the prefix
 						// because these packages define a class with that name (e.g., fs, http, types)
-						_, isRuntime := je.RuntimePackages[ident.Name]
-						_, isOuterClass := javaOuterClassPackages[ident.Name]
-						if !isRuntime && !isOuterClass {
+						if !isJavaOuterClassPackage(ident.Name) {
 							// Not a runtime or outer class package - suppress the package name
 							je.suppressFmtPackage = true // reuse this flag for package suppression
 						} else {
@@ -2528,13 +2527,12 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				if je.pkg != nil && je.pkg.TypesInfo != nil {
 					if uses, ok := je.pkg.TypesInfo.Uses[xIdent]; ok {
 						if _, isPkg := uses.(*types.PkgName); isPkg {
-							// It's a package reference - check if it's a runtime or outer class package
-							_, isRuntime := je.RuntimePackages[xIdent.Name]
-							_, isOuterClass := javaOuterClassPackages[xIdent.Name]
-							if isRuntime || isOuterClass {
+							// It's a package reference - check if it's an outer class package
+							if isJavaOuterClassPackage(xIdent.Name) {
 								// Runtime or outer class package - keep the package prefix (e.g., fs.ReadFile, types.AddLiteralToPlan)
 								funcName = xIdent.Name + "." + sel.Sel.Name
-								isRuntimeCall = isRuntime // Only mark as runtime call if it's actually a runtime package
+								// Only mark as runtime call if it's actually a runtime package (uses Object[] instead of tuple)
+								_, isRuntimeCall = je.RuntimePackages[xIdent.Name]
 							} else {
 								// Regular package - just use the function name
 								funcName = sel.Sel.Name
