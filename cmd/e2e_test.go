@@ -42,7 +42,7 @@ var e2eTestCases = []TestCase{
 	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false, false, false},         // JS transpile only (needs browser) - uses RunLoopWithState API
 	{"http-client", "../examples/http/client", true, true, true, true, false, false, false},
 	{"http-server", "../examples/http/server", true, true, true, true, false, false, false},
-	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, false, false},
+	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true},
 	{"net-demo", "../examples/net/demo", true, true, true, true, false, false, false},              // JS transpile only (needs deasync npm package)
 	{"net-echo-server", "../examples/net/echo-server", true, true, true, true, false, false, false}, // Server example - transpile/compile only
 	{"net-echo-client", "../examples/net/echo-client", true, true, true, true, false, false, false}, // Client example - transpile/compile only
@@ -176,9 +176,11 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 	if tc.JavaEnabled {
 		// Java file names are sanitized (hyphens replaced with underscores)
 		javaName := strings.ReplaceAll(tc.Name, "-", "_")
-		javaFile := filepath.Join(outputDir, javaName+".java")
-		t.Logf("Compiling Java for %s", tc.Name)
-		cmd = exec.Command("javac", javaFile)
+		// Find all Java files in the output directory (main file + runtime files)
+		javaFiles, _ := filepath.Glob(filepath.Join(outputDir, "*.java"))
+		t.Logf("Compiling Java for %s (files: %v)", tc.Name, javaFiles)
+		// Compile all Java files together
+		cmd = exec.Command("javac", javaFiles...)
 		cmd.Dir = outputDir
 		output, err = cmd.CombinedOutput()
 		if err != nil {
