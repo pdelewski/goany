@@ -794,8 +794,11 @@ func (je *JavaEmitter) PreVisitProgram(indent int) {
 	je.declaredVarsStack = []map[string]bool{make(map[string]bool)}
 	je.packageFiles = make(map[string]*os.File)
 	// javaOuterClassPackages will be populated with all non-main packages
-	// Uses namespaces which is auto-populated in base_pass.go
-	javaOuterClassPackages = nil // Will use namespaces directly
+	// Initialize with runtime packages (they are outer classes in Java)
+	javaOuterClassPackages = make(map[string]bool)
+	for pkgName := range je.RuntimePackages {
+		javaOuterClassPackages[pkgName] = true
+	}
 
 	// Sanitize output name for Java (replace hyphens with underscores, strip .java extension)
 	je.OutputName = sanitizeJavaIdentifier(je.OutputName)
@@ -1673,6 +1676,12 @@ func (je *JavaEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 			if pkgFile, exists := je.packageFiles[pkg.Name]; exists {
 				pkgFile.WriteString("}\n") // Close class
 				pkgFile.Close()
+
+				// Format the package file
+				pkgFileName := filepath.Join(je.OutputDir, pkg.Name+".java")
+				if err := FormatFile(pkgFileName, "--style=webkit"); err != nil {
+					log.Printf("Warning: failed to format %s: %v", pkgFileName, err)
+				}
 			}
 			return
 		}
@@ -3642,6 +3651,8 @@ func (je *JavaEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
 			return
 		}
 		je.emitToken("(", LeftParen, 0)
+		// Set type context so type names get proper package prefix
+		je.inTypeContext = true
 	})
 }
 
@@ -3650,6 +3661,7 @@ func (je *JavaEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
 		if je.isTypeAssertCommaOk {
 			return
 		}
+		je.inTypeContext = false
 		je.emitToken(")", RightParen, 0)
 	})
 }
