@@ -790,6 +790,18 @@ func (je *JavaEmitter) lowerToBuiltins(name string) string {
 	}
 }
 
+// writeJavaBoilerplate writes imports and panic runtime to the main output file
+func (je *JavaEmitter) writeJavaBoilerplate() {
+	imports := `import java.util.*;
+import java.util.function.*;
+
+`
+	je.file.WriteString(imports)
+	je.file.WriteString("// GoAny panic runtime\n")
+	je.file.WriteString(goanyrt.PanicJavaSource)
+	je.file.WriteString("\n")
+}
+
 // Main visitor methods
 
 func (je *JavaEmitter) PreVisitProgram(indent int) {
@@ -820,21 +832,8 @@ func (je *JavaEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	// Java imports
-	imports := `import java.util.*;
-import java.util.function.*;
-
-`
-	_, err = je.file.WriteString(imports)
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-		return
-	}
-
-	// Include panic runtime
-	je.file.WriteString("// GoAny panic runtime\n")
-	je.file.WriteString(goanyrt.PanicJavaSource)
-	je.file.WriteString("\n")
+	// Write imports and panic runtime
+	je.writeJavaBoilerplate()
 
 	// Builtin helper classes
 	builtin := `class SliceBuiltins {
@@ -1632,6 +1631,27 @@ func (je *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 		// For non-main packages, create a separate file
 		// Exception: "hmap" is a utility package used by generated code, so keep it inline
 		if pkg.Name != "main" && pkg.Name != "hmap" {
+			// Check for naming conflict with main output file
+			if pkg.Name == je.OutputName {
+				// Naming conflict - rename main output to avoid collision
+				// Close and remove the current main file, create a new one with "_main" suffix
+				oldOutput := je.Output
+				je.file.Close()
+				os.Remove(oldOutput) // Remove the old file
+
+				je.OutputName = je.OutputName + "_main"
+				je.Output = filepath.Join(je.OutputDir, je.OutputName+".java")
+				var err error
+				je.file, err = os.Create(je.Output)
+				if err != nil {
+					fmt.Println("Error creating renamed main file:", err)
+					return
+				}
+				je.SetFile(je.file)
+				// Re-write imports and helpers to the new main file
+				je.writeJavaBoilerplate()
+			}
+
 			// Create separate file for this package
 			pkgFileName := filepath.Join(je.OutputDir, pkg.Name+".java")
 			pkgFile, err := os.Create(pkgFileName)
@@ -3386,6 +3406,8 @@ func (je *JavaEmitter) PreVisitSliceExprX(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// Capture the X expression name for later use (for .size() call when High is nil)
 		je.sliceExprXName = exprToString(node)
+		// Wrap subList with new ArrayList<>() to convert List back to ArrayList
+		je.emitToPackage("new ArrayList<>(")
 	})
 }
 
@@ -3449,7 +3471,8 @@ func (je *JavaEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
 
 func (je *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(")", 0)
+		// Close both subList() and the ArrayList wrapper
+		str := je.emitAsString("))", 0)
 		je.emitToPackage(str)
 		je.sliceExprXName = "" // Reset
 	})
