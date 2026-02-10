@@ -22,7 +22,7 @@ var javaTypesMap = map[string]string{
 	"int16":   "short",
 	"int32":   "int",
 	"int64":   "long",
-	"uint8":   "int",    // No unsigned in Java, use wider signed
+	"uint8":   "byte",   // Map to byte, handle unsigned math with & 0xFF when needed
 	"uint16":  "int",    // No unsigned in Java
 	"uint32":  "long",   // No unsigned in Java
 	"uint64":  "long",   // No unsigned in Java (would need BigInteger for full range)
@@ -211,6 +211,9 @@ type JavaEmitter struct {
 	mapReadVarName string
 	// Multi-return function support
 	currentFuncName       string              // Name of current function being processed
+	currentFuncReturnType string              // Single return type of current function (for byte/short casting)
+	needsReturnCast       bool                // Whether return value needs byte/short cast
+	returnCastType        string              // Type to cast return value to
 	multiReturnFuncs      map[string][]string // Map of func name to return type names
 	isMultiReturnAssign   bool                // Flag for multi-return assignment
 	multiReturnLhsNames   []string            // LHS variable names for unpacking
@@ -231,13 +234,23 @@ type JavaEmitter struct {
 	inCallExprFunDepth int
 	// Call expression parameter types for byte/short casting
 	callExprParamTypes []string
+	// Byte-to-int type conversion (need & 0xFF to convert signed to unsigned)
+	// Use a stack to handle nested call expressions
+	byteToIntConversionStack []bool
+	// Byte comparison masking (need & 0xFF for unsigned comparison semantics)
+	// Use a stack to handle nested binary expressions
+	byteComparisonStack []struct {
+		maskLhs bool
+		maskRhs bool
+	}
 	// Declaration statement value tracking
 	hasDeclValue bool // True if current declaration has an explicit initialization value
 	// Slice index assignment (x[i] = value -> x.set(i, value))
-	isSliceIndexAssign  bool
-	sliceIndexVarName   string
-	sliceIndexIndent    int
-	sliceIndexLhsExpr   *ast.IndexExpr // Track the actual LHS index expression
+	isSliceIndexAssign   bool
+	sliceIndexVarName    string
+	sliceIndexIndent     int
+	sliceIndexLhsExpr    *ast.IndexExpr // Track the actual LHS index expression
+	sliceIndexElemType   string         // Element type of the slice (for byte/short casting)
 	// Multi-return type reuse - map signature to class name
 	resultClassRegistry map[string]string
 	// String comparison handling
@@ -2180,9 +2193,29 @@ func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		if ident, ok := node.Fun.(*ast.Ident); ok {
 			if _, isType := javaTypesMap[ident.Name]; isType {
 				javaIsTypeConversion = true
+				// Check if this is a byte-to-int conversion (need & 0xFF for unsigned semantics)
+				// Go's uint8/byte is unsigned, but Java's byte is signed
+				isByteToInt := false
+				targetType := ident.Name
+				if (targetType == "int" || targetType == "int32" || targetType == "int64" ||
+					targetType == "uint" || targetType == "uint32" || targetType == "uint64" ||
+					targetType == "long") && len(node.Args) == 1 {
+					if je.pkg != nil && je.pkg.TypesInfo != nil {
+						tv := je.pkg.TypesInfo.Types[node.Args[0]]
+						if tv.Type != nil {
+							argType := tv.Type.String()
+							if argType == "byte" || argType == "uint8" || argType == "int8" {
+								isByteToInt = true
+							}
+						}
+					}
+				}
+				je.byteToIntConversionStack = append(je.byteToIntConversionStack, isByteToInt)
 				return
 			}
 		}
+		// Not a type conversion - push false to maintain stack balance
+		je.byteToIntConversionStack = append(je.byteToIntConversionStack, false)
 
 		// Get parameter types for byte/short casting in arguments
 		je.callExprParamTypes = nil
@@ -2282,6 +2315,14 @@ func (je *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 			je.sliceMakeElemType = ""
 			je.isArray = false
 			return
+		}
+		// Add & 0xFF for byte-to-int conversions to get unsigned semantics
+		if len(je.byteToIntConversionStack) > 0 {
+			isByteToInt := je.byteToIntConversionStack[len(je.byteToIntConversionStack)-1]
+			je.byteToIntConversionStack = je.byteToIntConversionStack[:len(je.byteToIntConversionStack)-1]
+			if isByteToInt {
+				je.emitToPackage(" & 0xFF")
+			}
 		}
 		je.emitToken(")", RightParen, 0)
 		// Reset functional interface call flags
@@ -2783,9 +2824,9 @@ func (je *JavaEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 		// Detect byte/short element types for literal casting
 		if ident, ok := node.Elt.(*ast.Ident); ok {
 			switch ident.Name {
-			case "int8", "byte":
+			case "int8", "byte", "uint8":
 				je.sliceLitElemCast = "(byte)"
-			case "int16":
+			case "int16", "uint16":
 				je.sliceLitElemCast = "(short)"
 			default:
 				je.sliceLitElemCast = ""
@@ -3067,8 +3108,16 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, 
 		je.numFuncResults = 0
 		je.suppressMultiReturnTypes = false
 		je.currentFuncName = node.Name.Name
+		je.currentFuncReturnType = "" // Reset single return type
 		if node.Type.Results != nil {
 			je.numFuncResults = len(node.Type.Results.List)
+			// Track single return type for byte/short casting
+			if len(node.Type.Results.List) == 1 && je.pkg != nil && je.pkg.TypesInfo != nil {
+				tv := je.pkg.TypesInfo.Types[node.Type.Results.List[0].Type]
+				if tv.Type != nil {
+					je.currentFuncReturnType = getJavaTypeName(tv.Type)
+				}
+			}
 		}
 
 		var resultClassName string
@@ -3236,28 +3285,50 @@ func (je *JavaEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent
 			str := je.emitAsString(", ", 0)
 			je.emitToPackage(str)
 		}
-		// Add cast for byte/short return values when returning literals
-		if returnTypes, ok := je.multiReturnFuncs[je.currentFuncName]; ok {
-			if index < len(returnTypes) {
-				// Check if this is a numeric literal (including unary minus like -1)
-				isNumericLit := false
-				if _, isLit := node.(*ast.BasicLit); isLit {
-					isNumericLit = true
-				} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
-					// Handle -1, +1, etc.
-					if _, isLit := unary.X.(*ast.BasicLit); isLit {
-						isNumericLit = true
-					}
-				}
-				if isNumericLit {
-					switch returnTypes[index] {
-					case "byte":
-						je.emitToPackage("(byte)")
-					case "short":
-						je.emitToPackage("(short)")
-					}
-				}
+
+		// Determine the return type for this result
+		var returnType string
+		if returnTypes, ok := je.multiReturnFuncs[je.currentFuncName]; ok && index < len(returnTypes) {
+			returnType = returnTypes[index]
+		} else if index == 0 && je.currentFuncReturnType != "" {
+			returnType = je.currentFuncReturnType
+		}
+
+		// Check if this is a numeric literal (including unary minus like -1)
+		isNumericLit := false
+		if _, isLit := node.(*ast.BasicLit); isLit {
+			isNumericLit = true
+		} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
+			// Handle -1, +1, etc.
+			if _, isLit := unary.X.(*ast.BasicLit); isLit {
+				isNumericLit = true
 			}
+		}
+
+		// Check if this is a binary expression (arithmetic/bitwise)
+		_, isBinary := node.(*ast.BinaryExpr)
+
+		// Add cast for byte/short return values
+		if returnType == "byte" || returnType == "short" {
+			if isNumericLit {
+				je.emitToPackage(fmt.Sprintf("(%s)", returnType))
+			} else if isBinary {
+				// For binary expressions, we need to wrap the whole expression
+				je.emitToPackage(fmt.Sprintf("(%s)(", returnType))
+				je.needsReturnCast = true
+				je.returnCastType = returnType
+			}
+		}
+	})
+}
+
+func (je *JavaEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		// Close the cast wrapper for binary expressions
+		if je.needsReturnCast {
+			je.emitToPackage(")")
+			je.needsReturnCast = false
+			je.returnCastType = ""
 		}
 	})
 }
@@ -3431,11 +3502,13 @@ func (je *JavaEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						return
 					}
 					// Detect slice index assignment: x[i] = value -> x.set(i, value)
-					if _, ok := tv.Type.Underlying().(*types.Slice); ok {
+					if sliceType, ok := tv.Type.Underlying().(*types.Slice); ok {
 						je.isSliceIndexAssign = true
 						je.sliceIndexVarName = exprToString(indexExpr.X)
 						je.sliceIndexIndent = indent
 						je.sliceIndexLhsExpr = indexExpr // Track the specific LHS index expr
+						// Track element type for byte/short casting
+						je.sliceIndexElemType = getJavaTypeName(sliceType.Elem())
 						return
 					}
 				}
@@ -3446,20 +3519,29 @@ func (je *JavaEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Detect byte/short arithmetic: a = a + 5 where a is byte/short
 	// In Java, byte/short arithmetic produces int, so we need to cast back
 	if len(node.Lhs) == 1 && len(node.Rhs) == 1 {
-		if ident, ok := node.Lhs[0].(*ast.Ident); ok {
-			// Check if RHS contains a binary expression (arithmetic)
-			if _, isBinary := node.Rhs[0].(*ast.BinaryExpr); isBinary {
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
+		// Check if RHS contains a binary expression (arithmetic)
+		if _, isBinary := node.Rhs[0].(*ast.BinaryExpr); isBinary {
+			if je.pkg != nil && je.pkg.TypesInfo != nil {
+				var lhsType types.Type
+				// Handle both simple identifiers and selector expressions (like c.Status)
+				if ident, ok := node.Lhs[0].(*ast.Ident); ok {
 					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil {
-						typeName := obj.Type().String()
-						switch typeName {
-						case "int8", "byte":
-							je.needsSmallIntCast = true
-							je.smallIntCastType = "byte"
-						case "int16":
-							je.needsSmallIntCast = true
-							je.smallIntCastType = "short"
-						}
+						lhsType = obj.Type()
+					}
+				} else if sel, ok := node.Lhs[0].(*ast.SelectorExpr); ok {
+					if tv, ok := je.pkg.TypesInfo.Types[sel]; ok {
+						lhsType = tv.Type
+					}
+				}
+				if lhsType != nil {
+					typeName := lhsType.String()
+					switch typeName {
+					case "int8", "byte", "uint8":
+						je.needsSmallIntCast = true
+						je.smallIntCastType = "byte"
+					case "int16", "uint16":
+						je.needsSmallIntCast = true
+						je.smallIntCastType = "short"
 					}
 				}
 			}
@@ -3702,6 +3784,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if je.isSliceIndexAssign {
 		je.isSliceIndexAssign = false
 		je.sliceIndexLhsExpr = nil
+		je.sliceIndexElemType = ""
 		return
 	}
 
@@ -3800,6 +3883,10 @@ func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 		// For slice index assignment: emit ", " between index and value
 		if je.isSliceIndexAssign {
 			je.emitToPackage(", ")
+			// Add cast for byte/short element types
+			if je.sliceIndexElemType == "byte" || je.sliceIndexElemType == "short" {
+				je.emitToPackage(fmt.Sprintf("(%s)", je.sliceIndexElemType))
+			}
 			return
 		}
 		str := je.emitAsString(" ", 0)
@@ -4001,6 +4088,9 @@ func (je *JavaEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
 		if je.isUnsupportedIndexedCall {
 			return
 		}
+		if je.isMultiReturnAssign {
+			return
+		}
 		if je.isMapIndex {
 			je.suppressMapIndexX = false // Reset
 			je.currentMapGetValueType = je.mapIndexValueType
@@ -4056,6 +4146,9 @@ func (je *JavaEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
 		if je.isUnsupportedIndexedCall {
 			return
 		}
+		if je.isMultiReturnAssign {
+			return
+		}
 		if je.isMapIndex {
 			// Map variable already emitted in PostVisitIndexExprX, just emit key cast if needed
 			if je.mapKeyCastPrefix != "" {
@@ -4073,6 +4166,9 @@ func (je *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 		if je.isUnsupportedIndexedCall {
 			return
 		}
+		if je.isMultiReturnAssign {
+			return
+		}
 		if je.isMapIndex {
 			if je.mapKeyCastSuffix != "" {
 				je.emitToPackage(je.mapKeyCastSuffix)
@@ -4080,6 +4176,17 @@ func (je *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 			// Close both hashMapGet() and the cast wrapper
 			je.emitToPackage("))")
 		} else {
+			// Check if index is byte/uint8 type - need to add & 0xFF to convert signed to unsigned
+			// Java's byte is signed (-128 to 127), but when used as index we need unsigned (0 to 255)
+			if je.pkg != nil && je.pkg.TypesInfo != nil {
+				tv := je.pkg.TypesInfo.Types[node.Index]
+				if tv.Type != nil {
+					typeName := tv.Type.String()
+					if typeName == "byte" || typeName == "uint8" || typeName == "int8" {
+						je.emitToPackage(" & 0xFF")
+					}
+				}
+			}
 			// For slice index assignment, don't emit ) here - it will be emitted after the value
 			// Only suppress for the actual LHS index expression
 			if je.isSliceIndexAssign && node == je.sliceIndexLhsExpr {
@@ -4109,6 +4216,113 @@ func (je *JavaEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		if je.isMultiReturnAssign {
 			return
 		}
+		// Initialize byte comparison state for this expression
+		maskLhs := false
+		maskRhs := false
+
+		// Check for byte comparison with integer (need & 0xFF for unsigned semantics)
+		// This applies to <, >, <=, >=, ==, != operators
+		if node.Op == token.LSS || node.Op == token.GTR || node.Op == token.LEQ ||
+			node.Op == token.GEQ || node.Op == token.EQL || node.Op == token.NEQ {
+			if je.pkg != nil && je.pkg.TypesInfo != nil {
+				// Check LHS type - handle both identifiers and other expressions
+				var lhsType string
+				if ident, ok := node.X.(*ast.Ident); ok {
+					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
+						lhsType = obj.Type().String()
+					}
+				}
+				if lhsType == "" {
+					if tvX, ok := je.pkg.TypesInfo.Types[node.X]; ok && tvX.Type != nil {
+						lhsType = tvX.Type.String()
+					}
+				}
+				if lhsType == "byte" || lhsType == "uint8" || lhsType == "int8" {
+					// Check if RHS is a literal, constant, or larger integer type
+					// For byte < 128, RHS might be untyped int or a constant
+					var rhsType string
+					if ident, ok := node.Y.(*ast.Ident); ok {
+						if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
+							rhsType = obj.Type().String()
+						}
+					}
+					if rhsType == "" {
+						if tvY, ok := je.pkg.TypesInfo.Types[node.Y]; ok && tvY.Type != nil {
+							rhsType = tvY.Type.String()
+						}
+					}
+					// If RHS is a BasicLit (literal), always mask LHS
+					if _, isLit := node.Y.(*ast.BasicLit); isLit {
+						maskLhs = true
+					} else if rhsType != "" {
+						// If RHS is not also a byte, we need to mask LHS
+						if rhsType != "byte" && rhsType != "uint8" && rhsType != "int8" {
+							maskLhs = true
+						}
+					} else {
+						// RHS type is unknown/untyped - this is an untyped constant, mask LHS
+						maskLhs = true
+					}
+				}
+				// Check RHS type - handle both identifiers and other expressions
+				var rhsType string
+				if ident, ok := node.Y.(*ast.Ident); ok {
+					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
+						rhsType = obj.Type().String()
+					}
+				}
+				if rhsType == "" {
+					if tvY, ok := je.pkg.TypesInfo.Types[node.Y]; ok && tvY.Type != nil {
+						rhsType = tvY.Type.String()
+					}
+				}
+				if rhsType == "byte" || rhsType == "uint8" || rhsType == "int8" {
+					// Check if LHS is a literal, constant, or larger integer type
+					var lhsTypeForRhs string
+					if ident, ok := node.X.(*ast.Ident); ok {
+						if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
+							lhsTypeForRhs = obj.Type().String()
+						}
+					}
+					if lhsTypeForRhs == "" {
+						if tvX, ok := je.pkg.TypesInfo.Types[node.X]; ok && tvX.Type != nil {
+							lhsTypeForRhs = tvX.Type.String()
+						}
+					}
+					if _, isLit := node.X.(*ast.BasicLit); isLit {
+						maskRhs = true
+					} else if lhsTypeForRhs != "" {
+						// If LHS is not also a byte, we need to mask RHS
+						if lhsTypeForRhs != "byte" && lhsTypeForRhs != "uint8" && lhsTypeForRhs != "int8" {
+							maskRhs = true
+						}
+					} else {
+						// LHS type is unknown/untyped - this is an untyped constant, mask RHS
+						maskRhs = true
+					}
+				}
+			}
+		}
+
+		// Check for right shift on byte (need & 0xFF for unsigned/logical shift)
+		// Java's >> on a signed byte does arithmetic shift, but we need logical shift
+		if node.Op == token.SHR {
+			if je.pkg != nil && je.pkg.TypesInfo != nil {
+				if tvX, ok := je.pkg.TypesInfo.Types[node.X]; ok && tvX.Type != nil {
+					lhsType := tvX.Type.String()
+					if lhsType == "byte" || lhsType == "uint8" || lhsType == "int8" {
+						maskLhs = true
+					}
+				}
+			}
+		}
+
+		// Push state to stack for this binary expression
+		je.byteComparisonStack = append(je.byteComparisonStack, struct {
+			maskLhs bool
+			maskRhs bool
+		}{maskLhs, maskRhs})
+
 		// Check for string comparison (== or !=)
 		if node.Op == token.EQL || node.Op == token.NEQ {
 			if je.pkg != nil && je.pkg.TypesInfo != nil {
@@ -4130,6 +4344,11 @@ func (je *JavaEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 				}
 			}
 		}
+
+		// Emit opening paren if we need to mask LHS
+		if maskLhs {
+			je.emitToPackage("(")
+		}
 	})
 }
 
@@ -4138,6 +4357,14 @@ func (je *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
 		if je.isMultiReturnAssign {
 			return
+		}
+		// Pop byte comparison state from stack and close RHS mask if needed
+		if len(je.byteComparisonStack) > 0 {
+			state := je.byteComparisonStack[len(je.byteComparisonStack)-1]
+			je.byteComparisonStack = je.byteComparisonStack[:len(je.byteComparisonStack)-1]
+			if state.maskRhs {
+				je.emitToPackage(" & 0xFF)")
+			}
 		}
 		// Close .equals() for string comparison
 		if je.isStringComparison {
@@ -4160,8 +4387,23 @@ func (je *JavaEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
 			je.emitToPackage(").equals(")
 			return
 		}
+		// Get current byte comparison state from stack
+		var maskLhs, maskRhs bool
+		if len(je.byteComparisonStack) > 0 {
+			state := je.byteComparisonStack[len(je.byteComparisonStack)-1]
+			maskLhs = state.maskLhs
+			maskRhs = state.maskRhs
+		}
+		// For byte comparison, close LHS mask if needed
+		if maskLhs {
+			je.emitToPackage(" & 0xFF)")
+		}
 		str := je.emitAsString(" "+op.String()+" ", 0)
 		je.emitToPackage(str)
+		// For byte comparison, open RHS mask if needed
+		if maskRhs {
+			je.emitToPackage("(")
+		}
 	})
 }
 
