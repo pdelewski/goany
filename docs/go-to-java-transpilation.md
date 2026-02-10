@@ -42,6 +42,7 @@ C# was probably the easiest since it has value-type structs, proper generics, an
 9. **Lambda Parameter Shadowing** - Go allows shadowing; Java captures outer variable
 10. **Generic Array Creation** - Java doesn't allow `new ArrayList<T>[]`
 11. **Multi-Return Functions** - Go returns multiple values; Java returns single value
+12. **Signed/Unsigned Integers** - Go's uint8 (0-255) becomes Java's signed byte (-128 to 127); requires `& 0xFF` masking in comparisons
 
 ## Key Challenges (Detailed)
 
@@ -384,6 +385,178 @@ The Java backend is tested via:
 1. **E2E Tests:** Compile and run example programs, compare output across backends
 2. **Codegen Tests:** Verify generated code structure
 3. **Manual Testing:** Complex examples like UQL parser
+
+## Signed/Unsigned Integer Handling
+
+Java has no unsigned integer types. This is one of the most subtle and bug-prone differences between Go and Java. Go's `uint8` (0-255) becomes Java's `byte` (-128 to 127), which requires careful handling throughout the emitter.
+
+### The Core Problem
+
+```go
+// Go: uint8 values are 0-255
+var opcode uint8 = 0xA9  // 169 in decimal
+
+// When compared with a constant:
+if opcode == 0xA9 {  // Works correctly - compares 169 == 169
+    // ...
+}
+```
+
+```java
+// Java: byte values are -128 to 127
+byte opcode = (byte)0xA9;  // Stored as -87 (sign-extended)
+
+// Naive comparison FAILS:
+if (opcode == 0xA9) {  // Compares -87 == 169 → false!
+    // ...
+}
+
+// Correct comparison:
+if ((opcode & 0xFF) == 0xA9) {  // Compares 169 == 169 → true!
+    // ...
+}
+```
+
+### Where Masking is Required
+
+The emitter adds `& 0xFF` masking in these situations:
+
+#### 1. Byte Comparisons with Integer Constants
+
+When a `byte`/`uint8`/`int8` variable is compared with an integer literal or constant:
+
+```go
+// Go
+if opcode == OpLDAImm {  // OpLDAImm = 0xA9
+```
+
+```java
+// Java (generated)
+if ((opcode & 0xFF) == OpLDAImm) {
+```
+
+**Implementation:** `PreVisitBinaryExpr()` detects when LHS is a byte type and RHS is a non-byte type (or untyped constant), then wraps LHS with `& 0xFF`.
+
+#### 2. Byte Comparisons with Character Literals
+
+```go
+// Go
+if b >= 'A' && b <= 'Z' {  // b is uint8
+```
+
+```java
+// Java (generated)
+if ((b & 0xFF) >= 'A' && (b & 0xFF) <= 'Z') {
+```
+
+#### 3. Byte Array/Slice Indexing
+
+When a byte value is used as an array or slice index:
+
+```go
+// Go
+result := data[index]  // index is uint8
+```
+
+```java
+// Java (generated)
+var result = data.get(index & 0xFF);
+```
+
+**Implementation:** `PostVisitIndexExpr()` detects byte-type indices and adds masking.
+
+#### 4. Byte-to-Int Conversions
+
+When explicitly converting a byte to a larger integer type:
+
+```go
+// Go
+value := int(byteValue)  // byteValue is uint8
+```
+
+```java
+// Java (generated)
+var value = (int)(byteValue & 0xFF);
+```
+
+**Implementation:** `PreVisitCallExpr()` detects type conversion calls where the argument is a byte type and the target is a larger integer type.
+
+#### 5. Right Shift on Bytes
+
+Java's `>>` operator on signed bytes performs arithmetic shift (preserves sign bit). Go's `>>` on unsigned types performs logical shift:
+
+```go
+// Go: Logical shift - high bits filled with 0
+result := byteValue >> 2
+```
+
+```java
+// Java (generated): Must mask first to get logical shift behavior
+var result = (byte)((byteValue & 0xFF) >> 2);
+```
+
+**Implementation:** `PreVisitBinaryExpr()` detects right-shift operations on byte types and adds masking.
+
+### Places Where Masking is Already Applied
+
+The emitter handles these cases with `& 0xFF`:
+
+| Context | Example Go | Generated Java |
+|---------|-----------|----------------|
+| Comparison with constant | `b == 0xA9` | `(b & 0xFF) == 0xA9` |
+| Comparison with char | `b >= 'a'` | `(b & 0xFF) >= 'a'` |
+| Array index | `arr[b]` | `arr.get(b & 0xFF)` |
+| Type conversion | `int(b)` | `(int)(b & 0xFF)` |
+| Right shift | `b >> 2` | `(b & 0xFF) >> 2` |
+| Memory read comparison | `Memory[i] == 0x80` | `(Memory.get(i) & 0xFF) == 0x80` |
+
+### Memory and CPU Emulation Example
+
+The MOS 6502 CPU emulator is a good example of where this matters:
+
+```go
+// Go: opcode is uint8, constants like OpLDAImm = 0xA9 (169)
+var opcode uint8
+c, opcode = FetchByte(c)
+
+if opcode == OpLDAImm {  // Must compare correctly for values >= 128
+    // ...
+}
+```
+
+Without proper masking, opcodes with values >= 128 (like 0xA9, 0xBD, 0xE9, etc.) would never match because:
+- `opcode` as Java `byte` would be negative (-87 for 0xA9)
+- The constant `OpLDAImm` as Java `int` would be positive (169)
+- The comparison would always fail
+
+### Implementation Details
+
+The masking logic is primarily in `PreVisitBinaryExpr()` in `java_emitter.go`:
+
+1. **Detect comparison operators:** `==`, `!=`, `<`, `>`, `<=`, `>=`
+2. **Check LHS type:** Use `TypesInfo.ObjectOf()` for identifiers or `TypesInfo.Types[]` for expressions
+3. **Check RHS type:** Same approach
+4. **Apply masking rules:**
+   - If LHS is byte and RHS is non-byte (or untyped constant) → mask LHS
+   - If RHS is byte and LHS is non-byte (or untyped constant) → mask RHS
+   - If both are byte → no masking needed
+
+The actual masking is emitted in `PreVisitBinaryExprOperator()`:
+- Opens with `(` before the byte operand
+- Closes with ` & 0xFF)` after the byte operand
+
+### Testing Signed/Unsigned Handling
+
+The `mos6502` examples are particularly good for testing this because:
+- CPU opcodes range from 0x00 to 0xFF
+- Many opcodes are >= 0x80 (128)
+- Character codes for screen rendering include values >= 0x80
+- Memory addresses and values span the full 0-255 range
+
+If signed/unsigned handling is broken, these examples will fail with:
+- Unrecognized opcodes (comparisons fail for values >= 128)
+- Incorrect character rendering
+- Wrong memory access patterns
 
 ## Known Limitations
 
