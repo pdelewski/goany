@@ -101,6 +101,7 @@ type JSEmitter struct {
 	nestedMapVarName      string
 	pendingMapInit   bool   // var m map[K]V needs default init
 	pendingMapKeyType int   // Key type for pending init
+	hasDeclValue     bool   // True if current declaration has an explicit initialization value
 	// Comma-ok idiom: val, ok := m[key]
 	isMapCommaOk      bool
 	mapCommaOkValName string
@@ -2269,6 +2270,8 @@ func (jse *JSEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
 func (jse *JSEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
 	// Suppress type emission - JavaScript doesn't need type annotations
 	jse.suppressTypeEmit = true
+	// Track if this declaration has an explicit initialization value
+	jse.hasDeclValue = index < len(node.Values)
 	// Emit "let " for variable declaration
 	str := jse.emitAsString("let ", indent)
 	jse.emitToFile(str)
@@ -2367,7 +2370,25 @@ func (jse *JSEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int
 		}
 		jse.pendingBasicInit = nil
 	}
+	// Only emit semicolon if there's no explicit value to follow
+	if !jse.hasDeclValue {
+		jse.emitToFile(";\n")
+	}
+}
+
+func (jse *JSEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	if jse.forwardDecl {
+		return
+	}
+	jse.emitToFile(" = ")
+}
+
+func (jse *JSEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	if jse.forwardDecl {
+		return
+	}
 	jse.emitToFile(";\n")
+	jse.hasDeclValue = false
 }
 
 // isBuiltinType returns true if the type name is a Go built-in type

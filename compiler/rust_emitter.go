@@ -272,6 +272,8 @@ type RustEmitter struct {
 	typeAssertCommaOkType    string
 	typeAssertCommaOkIsDecl  bool
 	typeAssertCommaOkIndent  int
+	// Variable declaration value tracking
+	hasDeclValue bool // True if current declaration has an explicit initialization value
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -2454,6 +2456,8 @@ func (re *RustEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index 
 	if re.forwardDecls {
 		return
 	}
+	// Track if this declaration has an explicit initialization value
+	re.hasDeclValue = index < len(node.Values)
 	// Detect var m map[K]V declarations (no initialization value)
 	if len(node.Values) == 0 && node.Type != nil {
 		if re.pkg != nil && re.pkg.TypesInfo != nil {
@@ -2549,6 +2553,10 @@ func (re *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index in
 		}
 	}
 	re.gir.emitToFileBuffer("", "@PostVisitDeclStmtValueSpecNames")
+	// Skip default initialization if we have an explicit value coming
+	if re.hasDeclValue {
+		return
+	}
 	var str string
 	if re.pendingMapInit {
 		str += fmt.Sprintf(" = hmap::newHashMap(%d)", re.pendingMapKeyType)
@@ -2585,6 +2593,20 @@ func (re *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index in
 		}
 	}
 	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
+}
+
+func (re *RustEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	if re.forwardDecls {
+		return
+	}
+	re.gir.emitToFileBuffer(" = ", EmptyVisitMethod)
+}
+
+func (re *RustEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	if re.forwardDecls {
+		return
+	}
+	re.hasDeclValue = false
 }
 
 func (re *RustEmitter) PreVisitGenStructFieldType(node ast.Expr, indent int) {

@@ -74,6 +74,18 @@ type javaMixedIndexOp struct {
 	mapVarExpr   string
 }
 
+// structLitState holds state for partial struct literal initialization
+type structLitState struct {
+	isStructLit       bool               // True when in a struct literal with key-value pairs
+	structLitType     types.Type         // The struct type being constructed
+	fieldOrder        []string           // Field names in order
+	fieldTypes        map[string]string  // Field name -> Java type
+	currentKey        string             // Current key being processed
+	capturing         bool               // True when capturing elements to buffer
+	buffer            *strings.Builder   // Buffer for current element (pointer to avoid copy issues)
+	fieldBuffers      map[string]string  // Field name -> captured value string
+}
+
 type JavaEmitter struct {
 	Output          string
 	OutputDir       string
@@ -112,6 +124,8 @@ type JavaEmitter struct {
 	inArrayTypeContext         bool  // Track when we're inside ArrayList<...> to use boxed types
 	inCompositeLitType         bool  // Track when we're inside a composite literal type (new Type(...))
 	inPackageQualifiedExpr     bool  // Track when we're in a package-qualified expression (pkg.Type)
+	// Struct literal handling for partial initialization (stack-based for nesting)
+	structLitStack []structLitState // Stack for nested struct literals
 	apiClassOpened             bool
 	suppressTypeAliasEmit      bool
 	currentAliasName           string
@@ -169,8 +183,10 @@ type JavaEmitter struct {
 	typeAssertCommaOkBoxedType string
 	typeAssertCommaOkIsDecl    bool
 	typeAssertCommaOkIndent    int
-	isSliceMakeCall   bool
-	sliceMakeElemType string
+	isSliceMakeCall     bool
+	sliceMakeElemType   string
+	isAppendCall        bool     // Track when we're in an append call
+	appendStructType    string   // Type name for struct copy constructor
 	indexAccessTypeStack    []string
 	suppressMapEmitStack    []bool
 	isMixedIndexAssign      bool
@@ -213,6 +229,10 @@ type JavaEmitter struct {
 	inCallExprArgs bool
 	// Track when we're visiting the Fun part of a CallExpr (being called, not passed as value)
 	inCallExprFunDepth int
+	// Call expression parameter types for byte/short casting
+	callExprParamTypes []string
+	// Declaration statement value tracking
+	hasDeclValue bool // True if current declaration has an explicit initialization value
 	// Slice index assignment (x[i] = value -> x.set(i, value))
 	isSliceIndexAssign  bool
 	sliceIndexVarName   string
@@ -228,6 +248,8 @@ type JavaEmitter struct {
 	mapVarValueTypes map[string]string
 	// Variable shadowing - track declared variables per scope
 	declaredVarsStack []map[string]bool
+	// Track current function parameters (for lambda shadowing detection)
+	funcParamsStack []map[string]bool
 	// Track map value type for current map get operation
 	currentMapGetValueType string
 	// Slice expression handling
@@ -238,7 +260,18 @@ type JavaEmitter struct {
 	needsSmallIntCast bool   // Whether assignment RHS needs byte/short cast
 	smallIntCastType  string // The type to cast to ("byte" or "short")
 	// Functional interface call tracking
-	isFuncVarCall bool // Whether current call is a function variable (needs .accept() etc.)
+	isFuncVarCall        bool   // Whether current call is a function variable (needs .accept() etc.)
+	funcFieldCallMethod  string // Method to call on function field (e.g., "apply" for BiFunction)
+	// Closure-captured mutable variable tracking (for Java's "effectively final" requirement)
+	closureCapturedMutVars  map[string]bool   // Variables that are captured by closures and mutated
+	closureCapturedVarType  map[string]string // Captured variable name -> Java array element type
+	inClosureLit            bool              // Track if we're inside a FuncLit body
+	closureLitDepth         int               // Depth of nested closures (for scoping)
+	isClosureCapturedDecl   bool              // True if current declaration is for a closure-captured variable
+	closureCapturedDeclName string            // Name of current closure-captured variable being declared
+	inDeclName              bool              // True when emitting a declaration variable name
+	suppressClosureTypeEmit bool              // Suppress type emission for closure-captured variables (we emit Object[] instead)
+	inAssignLhs             bool              // True when processing LHS of assignment (skip cast for captured vars)
 }
 
 // Helper functions
@@ -265,6 +298,521 @@ func (je *JavaEmitter) isVarDeclared(name string) bool {
 		}
 	}
 	return false
+}
+
+// isFuncParam checks if a name is a function parameter in any active scope
+func (je *JavaEmitter) isFuncParam(name string) bool {
+	for _, scope := range je.funcParamsStack {
+		if scope[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// addFuncParam adds a parameter name to the current function parameter scope
+func (je *JavaEmitter) addFuncParam(name string) {
+	if len(je.funcParamsStack) > 0 {
+		je.funcParamsStack[len(je.funcParamsStack)-1][name] = true
+	}
+}
+
+// analyzeClosureCapturedMutVars analyzes a function body to find variables that are:
+// 1. Declared in the outer scope (not inside a closure)
+// 2. Captured by a closure (referenced inside a FuncLit)
+// 3. Assigned somewhere (either in the outer scope or inside the closure)
+// These variables need to be wrapped in single-element arrays for Java's "effectively final" requirement.
+func (je *JavaEmitter) analyzeClosureCapturedMutVars(body *ast.BlockStmt) {
+	if body == nil {
+		return
+	}
+
+	je.closureCapturedMutVars = make(map[string]bool)
+	je.closureCapturedVarType = make(map[string]string)
+
+	// Step 1: Find all variable declarations at the outer level (not inside closures)
+	outerVars := make(map[string]bool)
+	outerVarTypes := make(map[string]types.Type)
+
+	// Step 2: Find all assignments (to identify mutated variables)
+	assignedVars := make(map[string]bool)
+
+	// Step 3: Find all identifiers inside closures (captured variables)
+	capturedVars := make(map[string]bool)
+
+	// Helper to collect identifiers from an expression
+	var collectIdents func(expr ast.Expr, inClosure bool)
+	collectIdents = func(expr ast.Expr, inClosure bool) {
+		if expr == nil {
+			return
+		}
+		switch e := expr.(type) {
+		case *ast.Ident:
+			if inClosure {
+				capturedVars[e.Name] = true
+			}
+		case *ast.BinaryExpr:
+			collectIdents(e.X, inClosure)
+			collectIdents(e.Y, inClosure)
+		case *ast.UnaryExpr:
+			collectIdents(e.X, inClosure)
+		case *ast.CallExpr:
+			collectIdents(e.Fun, inClosure)
+			for _, arg := range e.Args {
+				collectIdents(arg, inClosure)
+			}
+		case *ast.IndexExpr:
+			collectIdents(e.X, inClosure)
+			collectIdents(e.Index, inClosure)
+		case *ast.SelectorExpr:
+			collectIdents(e.X, inClosure)
+		case *ast.ParenExpr:
+			collectIdents(e.X, inClosure)
+		case *ast.SliceExpr:
+			collectIdents(e.X, inClosure)
+			collectIdents(e.Low, inClosure)
+			collectIdents(e.High, inClosure)
+			collectIdents(e.Max, inClosure)
+		case *ast.CompositeLit:
+			for _, elt := range e.Elts {
+				collectIdents(elt, inClosure)
+			}
+		case *ast.KeyValueExpr:
+			collectIdents(e.Value, inClosure)
+		case *ast.FuncLit:
+			// Nested closure - recurse with inClosure=true
+			// But first, collect parameter names to exclude them from captured variables
+			lambdaParams := make(map[string]bool)
+			if e.Type != nil && e.Type.Params != nil {
+				for _, field := range e.Type.Params.List {
+					for _, name := range field.Names {
+						lambdaParams[name.Name] = true
+					}
+				}
+			}
+			if e.Body != nil {
+				// Create a new collectIdents that excludes lambda parameters
+				closureCollectIdents := func(expr ast.Expr, inClosure bool) {
+					collectIdentsExcluding(expr, inClosure, lambdaParams, capturedVars, collectIdents)
+				}
+				analyzeClosureBodyWithCollector(e.Body, true, &assignedVars, capturedVars, closureCollectIdents)
+			}
+		}
+	}
+
+	// Walk the body
+	for _, stmt := range body.List {
+		walkStmtForClosureAnalysis(stmt, false, outerVars, outerVarTypes, &assignedVars, &capturedVars, collectIdents, je.pkg)
+	}
+
+	// Find variables that are: (1) outer vars, (2) captured, (3) assigned
+	for varName := range outerVars {
+		if capturedVars[varName] && assignedVars[varName] {
+			je.closureCapturedMutVars[varName] = true
+			// Get the Java type for the array wrapper
+			if varType, ok := outerVarTypes[varName]; ok && varType != nil {
+				je.closureCapturedVarType[varName] = getJavaTypeName(varType)
+			}
+		}
+	}
+}
+
+// collectIdentsExcluding collects identifiers but excludes lambda parameters
+func collectIdentsExcluding(expr ast.Expr, inClosure bool, excludeVars map[string]bool, capturedVars map[string]bool, baseCollect func(ast.Expr, bool)) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		// Only mark as captured if NOT in the exclude list (lambda parameters)
+		if inClosure && !excludeVars[e.Name] {
+			capturedVars[e.Name] = true
+		}
+	case *ast.BinaryExpr:
+		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
+		collectIdentsExcluding(e.Y, inClosure, excludeVars, capturedVars, baseCollect)
+	case *ast.UnaryExpr:
+		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
+	case *ast.CallExpr:
+		collectIdentsExcluding(e.Fun, inClosure, excludeVars, capturedVars, baseCollect)
+		for _, arg := range e.Args {
+			collectIdentsExcluding(arg, inClosure, excludeVars, capturedVars, baseCollect)
+		}
+	case *ast.IndexExpr:
+		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
+		collectIdentsExcluding(e.Index, inClosure, excludeVars, capturedVars, baseCollect)
+	case *ast.SelectorExpr:
+		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
+	case *ast.ParenExpr:
+		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
+	case *ast.SliceExpr:
+		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
+		collectIdentsExcluding(e.Low, inClosure, excludeVars, capturedVars, baseCollect)
+		collectIdentsExcluding(e.High, inClosure, excludeVars, capturedVars, baseCollect)
+		collectIdentsExcluding(e.Max, inClosure, excludeVars, capturedVars, baseCollect)
+	case *ast.CompositeLit:
+		for _, elt := range e.Elts {
+			collectIdentsExcluding(elt, inClosure, excludeVars, capturedVars, baseCollect)
+		}
+	case *ast.KeyValueExpr:
+		collectIdentsExcluding(e.Value, inClosure, excludeVars, capturedVars, baseCollect)
+	case *ast.FuncLit:
+		// Nested closure inside - need to add its parameters to exclude list too
+		nestedExclude := make(map[string]bool)
+		for k, v := range excludeVars {
+			nestedExclude[k] = v
+		}
+		if e.Type != nil && e.Type.Params != nil {
+			for _, field := range e.Type.Params.List {
+				for _, name := range field.Names {
+					nestedExclude[name.Name] = true
+				}
+			}
+		}
+		if e.Body != nil {
+			nestedCollect := func(expr ast.Expr, inClosure bool) {
+				collectIdentsExcluding(expr, inClosure, nestedExclude, capturedVars, baseCollect)
+			}
+			analyzeClosureBodyWithCollector(e.Body, true, nil, capturedVars, nestedCollect)
+		}
+	}
+}
+
+// analyzeClosureBodyWithCollector analyzes statements inside a closure body with a custom collector
+func analyzeClosureBodyWithCollector(body *ast.BlockStmt, inClosure bool, assignedVars *map[string]bool, capturedVars map[string]bool, collectIdents func(ast.Expr, bool)) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.List {
+		walkStmtInClosureWithCollector(stmt, inClosure, assignedVars, capturedVars, collectIdents)
+	}
+}
+
+// walkStmtInClosureWithCollector walks a statement inside a closure with a custom collector
+func walkStmtInClosureWithCollector(stmt ast.Stmt, inClosure bool, assignedVars *map[string]bool, capturedVars map[string]bool, collectIdents func(ast.Expr, bool)) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		// Track assigned variables (only if assignedVars is provided)
+		for _, lhs := range s.Lhs {
+			if assignedVars != nil {
+				if ident, ok := lhs.(*ast.Ident); ok {
+					(*assignedVars)[ident.Name] = true
+				}
+			}
+			collectIdents(lhs, inClosure)
+		}
+		for _, rhs := range s.Rhs {
+			collectIdents(rhs, inClosure)
+		}
+	case *ast.ExprStmt:
+		collectIdents(s.X, inClosure)
+	case *ast.ReturnStmt:
+		for _, result := range s.Results {
+			collectIdents(result, inClosure)
+		}
+	case *ast.IfStmt:
+		collectIdents(s.Cond, inClosure)
+		if s.Body != nil {
+			analyzeClosureBodyWithCollector(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+		if s.Else != nil {
+			walkStmtInClosureWithCollector(s.Else, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+	case *ast.ForStmt:
+		walkStmtInClosureWithCollector(s.Init, inClosure, assignedVars, capturedVars, collectIdents)
+		collectIdents(s.Cond, inClosure)
+		walkStmtInClosureWithCollector(s.Post, inClosure, assignedVars, capturedVars, collectIdents)
+		if s.Body != nil {
+			analyzeClosureBodyWithCollector(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+	case *ast.RangeStmt:
+		collectIdents(s.X, inClosure)
+		if s.Body != nil {
+			analyzeClosureBodyWithCollector(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+	case *ast.BlockStmt:
+		analyzeClosureBodyWithCollector(s, inClosure, assignedVars, capturedVars, collectIdents)
+	case *ast.IncDecStmt:
+		if assignedVars != nil {
+			if ident, ok := s.X.(*ast.Ident); ok {
+				(*assignedVars)[ident.Name] = true
+			}
+		}
+		collectIdents(s.X, inClosure)
+	}
+}
+
+// analyzeClosureBody analyzes statements inside a closure body
+func analyzeClosureBody(body *ast.BlockStmt, inClosure bool, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool)) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.List {
+		walkStmtInClosure(stmt, inClosure, assignedVars, capturedVars, collectIdents)
+	}
+}
+
+// walkStmtInClosure walks a statement inside a closure to find captured and assigned variables
+func walkStmtInClosure(stmt ast.Stmt, inClosure bool, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool)) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		// Track assigned variables
+		for _, lhs := range s.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok {
+				(*assignedVars)[ident.Name] = true
+			}
+			collectIdents(lhs, inClosure)
+		}
+		for _, rhs := range s.Rhs {
+			collectIdents(rhs, inClosure)
+		}
+	case *ast.ExprStmt:
+		collectIdents(s.X, inClosure)
+	case *ast.ReturnStmt:
+		for _, result := range s.Results {
+			collectIdents(result, inClosure)
+		}
+	case *ast.IfStmt:
+		collectIdents(s.Cond, inClosure)
+		if s.Body != nil {
+			analyzeClosureBody(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+		if s.Else != nil {
+			walkStmtInClosure(s.Else, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+	case *ast.ForStmt:
+		walkStmtInClosure(s.Init, inClosure, assignedVars, capturedVars, collectIdents)
+		collectIdents(s.Cond, inClosure)
+		walkStmtInClosure(s.Post, inClosure, assignedVars, capturedVars, collectIdents)
+		if s.Body != nil {
+			analyzeClosureBody(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+	case *ast.RangeStmt:
+		collectIdents(s.X, inClosure)
+		if s.Body != nil {
+			analyzeClosureBody(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+	case *ast.BlockStmt:
+		analyzeClosureBody(s, inClosure, assignedVars, capturedVars, collectIdents)
+	case *ast.IncDecStmt:
+		if ident, ok := s.X.(*ast.Ident); ok {
+			(*assignedVars)[ident.Name] = true
+		}
+		collectIdents(s.X, inClosure)
+	}
+}
+
+// walkStmtForClosureAnalysis walks a statement at the outer level to find declarations and closures
+func walkStmtForClosureAnalysis(stmt ast.Stmt, inClosure bool, outerVars map[string]bool, outerVarTypes map[string]types.Type, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool), pkg *packages.Package) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *ast.DeclStmt:
+		// Variable declarations
+		if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
+			for _, spec := range genDecl.Specs {
+				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+					for _, name := range valueSpec.Names {
+						if !inClosure {
+							outerVars[name.Name] = true
+							// Get type info
+							if pkg != nil && pkg.TypesInfo != nil {
+								if obj := pkg.TypesInfo.Defs[name]; obj != nil {
+									outerVarTypes[name.Name] = obj.Type()
+								}
+							}
+						}
+					}
+					// Check RHS for closures
+					for _, value := range valueSpec.Values {
+						collectIdents(value, inClosure)
+					}
+				}
+			}
+		}
+	case *ast.AssignStmt:
+		// Track declared variables (short declarations)
+		if s.Tok == token.DEFINE {
+			for _, lhs := range s.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok {
+					if !inClosure {
+						outerVars[ident.Name] = true
+						// Get type info from RHS
+						if pkg != nil && pkg.TypesInfo != nil {
+							if obj := pkg.TypesInfo.Defs[ident]; obj != nil {
+								outerVarTypes[ident.Name] = obj.Type()
+							}
+						}
+					}
+				}
+			}
+		}
+		// Track assigned variables
+		for _, lhs := range s.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok {
+				(*assignedVars)[ident.Name] = true
+			}
+		}
+		// Check RHS for closures
+		for _, rhs := range s.Rhs {
+			collectIdents(rhs, inClosure)
+		}
+	case *ast.ExprStmt:
+		collectIdents(s.X, inClosure)
+	case *ast.ReturnStmt:
+		for _, result := range s.Results {
+			collectIdents(result, inClosure)
+		}
+	case *ast.IfStmt:
+		if s.Init != nil {
+			walkStmtForClosureAnalysis(s.Init, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
+		}
+		collectIdents(s.Cond, inClosure)
+		if s.Body != nil {
+			for _, bodyStmt := range s.Body.List {
+				walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
+			}
+		}
+		if s.Else != nil {
+			walkStmtForClosureAnalysis(s.Else, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
+		}
+	case *ast.ForStmt:
+		// For loop init variables are scoped to the for loop, NOT outer vars
+		// So we only collect assignments and identifiers, but don't add to outerVars
+		if s.Init != nil {
+			walkForLoopInitForClosureAnalysis(s.Init, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+		collectIdents(s.Cond, inClosure)
+		if s.Post != nil {
+			walkForLoopInitForClosureAnalysis(s.Post, inClosure, assignedVars, capturedVars, collectIdents)
+		}
+		if s.Body != nil {
+			for _, bodyStmt := range s.Body.List {
+				walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
+			}
+		}
+	case *ast.RangeStmt:
+		// Range loop variables (Key, Value) are scoped to the range loop, NOT outer vars
+		collectIdents(s.X, inClosure)
+		if s.Body != nil {
+			for _, bodyStmt := range s.Body.List {
+				walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
+			}
+		}
+	case *ast.BlockStmt:
+		for _, bodyStmt := range s.List {
+			walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
+		}
+	case *ast.IncDecStmt:
+		if ident, ok := s.X.(*ast.Ident); ok {
+			(*assignedVars)[ident.Name] = true
+		}
+		collectIdents(s.X, inClosure)
+	}
+}
+
+// walkForLoopInitForClosureAnalysis walks a for loop init/post statement
+// to find assignments and closures, but does NOT add to outerVars
+// because for loop init variables are scoped to the for loop
+func walkForLoopInitForClosureAnalysis(stmt ast.Stmt, inClosure bool, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool)) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		// Track assigned variables (for both := and =)
+		for _, lhs := range s.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok {
+				(*assignedVars)[ident.Name] = true
+			}
+		}
+		// Check RHS for closures
+		for _, rhs := range s.Rhs {
+			collectIdents(rhs, inClosure)
+		}
+	case *ast.IncDecStmt:
+		if ident, ok := s.X.(*ast.Ident); ok {
+			(*assignedVars)[ident.Name] = true
+		}
+		collectIdents(s.X, inClosure)
+	case *ast.ExprStmt:
+		collectIdents(s.X, inClosure)
+	}
+}
+
+// javaExprToString converts an ast.Expr to its Java string representation.
+// This handles Java-specific transformations like slice expressions -> subList.
+func javaExprToString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.SelectorExpr:
+		return javaExprToString(e.X) + "." + e.Sel.Name
+	case *ast.BasicLit:
+		value := e.Value
+		// Handle raw strings (backticks) for Java
+		if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
+			inner := value[1 : len(value)-1]
+			inner = strings.ReplaceAll(inner, "\\", "\\\\")
+			inner = strings.ReplaceAll(inner, "\"", "\\\"")
+			inner = strings.ReplaceAll(inner, "\n", "\\n")
+			inner = strings.ReplaceAll(inner, "\r", "\\r")
+			inner = strings.ReplaceAll(inner, "\t", "\\t")
+			return "\"" + inner + "\""
+		}
+		return value
+	case *ast.IndexExpr:
+		// Array/slice index: x[i] -> x.get(i)
+		return javaExprToString(e.X) + ".get(" + javaExprToString(e.Index) + ")"
+	case *ast.SliceExpr:
+		// Slice expression: x[low:high] -> new ArrayList<>(x.subList(low, high))
+		xStr := javaExprToString(e.X)
+		lowStr := "0"
+		if e.Low != nil {
+			lowStr = javaExprToString(e.Low)
+		}
+		highStr := xStr + ".size()"
+		if e.High != nil {
+			highStr = javaExprToString(e.High)
+		}
+		return fmt.Sprintf("new ArrayList<>(%s.subList(%s, %s))", xStr, lowStr, highStr)
+	case *ast.CallExpr:
+		// Function call: f(args) -> f(args)
+		var args []string
+		for _, arg := range e.Args {
+			args = append(args, javaExprToString(arg))
+		}
+		return javaExprToString(e.Fun) + "(" + strings.Join(args, ", ") + ")"
+	case *ast.UnaryExpr:
+		return e.Op.String() + javaExprToString(e.X)
+	case *ast.BinaryExpr:
+		return javaExprToString(e.X) + " " + e.Op.String() + " " + javaExprToString(e.Y)
+	case *ast.ParenExpr:
+		return "(" + javaExprToString(e.X) + ")"
+	case *ast.CompositeLit:
+		// Composite literal: Type{elts} -> new Type(elts)
+		typeStr := javaExprToString(e.Type)
+		var elts []string
+		for _, elt := range e.Elts {
+			elts = append(elts, javaExprToString(elt))
+		}
+		return "new " + typeStr + "(" + strings.Join(elts, ", ") + ")"
+	case *ast.KeyValueExpr:
+		// Key-value in composite literal - just return value for Java constructor args
+		return javaExprToString(e.Value)
+	case *ast.ArrayType:
+		// []Type -> ArrayList<Type>
+		return "ArrayList<" + javaExprToString(e.Elt) + ">"
+	default:
+		return ""
+	}
 }
 
 // declareVar marks a variable as declared in the current scope
@@ -411,9 +959,18 @@ func (je *JavaEmitter) emitToken(content string, tokenType TokenType, indent int
 }
 
 // emitToPackage writes output to the appropriate destination:
+// - When capturing struct literal elements: writes to the capture buffer of nearest capturing state
 // - For non-main packages: writes directly to the package's separate file
 // - For main package: writes to the main buffer via gir.emitToFileBuffer
 func (je *JavaEmitter) emitToPackage(content string) {
+	// If capturing struct literal elements, find nearest capturing state and redirect to its buffer
+	// We search from the top of the stack downward to find the innermost capturing state
+	for i := len(je.structLitStack) - 1; i >= 0; i-- {
+		if je.structLitStack[i].capturing {
+			je.structLitStack[i].buffer.WriteString(content)
+			return
+		}
+	}
 	if je.currentPkgName != "main" && je.currentPkgName != "" {
 		if pkgFile, exists := je.packageFiles[je.currentPkgName]; exists {
 			pkgFile.WriteString(content)
@@ -507,6 +1064,18 @@ func getJavaTypeName(t types.Type) string {
 				return "String"
 			}
 		}
+		// Check if the underlying type is a slice (type alias like `type AST []Statement`)
+		// In that case, resolve to ArrayList<elemType>
+		if sliceType, ok := named.Underlying().(*types.Slice); ok {
+			elemType := getJavaTypeName(sliceType.Elem())
+			return fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType))
+		}
+		// Check if the underlying type is a map (type alias like `type Table map[K]V`)
+		if mapType, ok := named.Underlying().(*types.Map); ok {
+			keyType := getJavaTypeName(mapType.Key())
+			valType := getJavaTypeName(mapType.Elem())
+			return fmt.Sprintf("HashMap<%s, %s>", toBoxedType(keyType), toBoxedType(valType))
+		}
 		// Otherwise, it's a struct or other named type - use the name
 		// If the type's package is an outer class package, prefix with package name
 		typeName := named.Obj().Name()
@@ -522,7 +1091,7 @@ func getJavaTypeName(t types.Type) string {
 	switch ut := t.Underlying().(type) {
 	case *types.Basic:
 		switch ut.Kind() {
-		case types.Int, types.Int32:
+		case types.Int, types.Int32, types.UntypedInt, types.UntypedRune:
 			return "int"
 		case types.Int8:
 			return "byte"
@@ -538,11 +1107,11 @@ func getJavaTypeName(t types.Type) string {
 			return "long"
 		case types.Float32:
 			return "float"
-		case types.Float64:
+		case types.Float64, types.UntypedFloat:
 			return "double"
-		case types.Bool:
+		case types.Bool, types.UntypedBool:
 			return "boolean"
-		case types.String:
+		case types.String, types.UntypedString:
 			return "String"
 		default:
 			return "Object"
@@ -554,6 +1123,38 @@ func getJavaTypeName(t types.Type) string {
 		return "HashMap"
 	case *types.Pointer:
 		return getJavaTypeName(ut.Elem())
+	case *types.Signature:
+		// Function types -> BiFunction, Function, etc.
+		numParams := ut.Params().Len()
+		hasReturn := ut.Results().Len() > 0
+
+		if !hasReturn {
+			switch numParams {
+			case 0:
+				return "Runnable"
+			case 1:
+				p1 := getJavaTypeName(ut.Params().At(0).Type())
+				return fmt.Sprintf("Consumer<%s>", toBoxedType(p1))
+			case 2:
+				p1 := getJavaTypeName(ut.Params().At(0).Type())
+				p2 := getJavaTypeName(ut.Params().At(1).Type())
+				return fmt.Sprintf("BiConsumer<%s, %s>", toBoxedType(p1), toBoxedType(p2))
+			}
+		} else {
+			returnType := getJavaTypeName(ut.Results().At(0).Type())
+			switch numParams {
+			case 0:
+				return fmt.Sprintf("Supplier<%s>", toBoxedType(returnType))
+			case 1:
+				p1 := getJavaTypeName(ut.Params().At(0).Type())
+				return fmt.Sprintf("Function<%s, %s>", toBoxedType(p1), toBoxedType(returnType))
+			case 2:
+				p1 := getJavaTypeName(ut.Params().At(0).Type())
+				p2 := getJavaTypeName(ut.Params().At(1).Type())
+				return fmt.Sprintf("BiFunction<%s, %s, %s>", toBoxedType(p1), toBoxedType(p2), toBoxedType(returnType))
+			}
+		}
+		return "Object"
 	default:
 		return "Object"
 	}
@@ -600,6 +1201,118 @@ func getJavaDefaultValue(javaType string) string {
 	default:
 		return "null"
 	}
+}
+
+// getJavaDefaultValueForStruct returns the default value for a field type,
+// initializing struct types with new instances (to match Go value semantics)
+func getJavaDefaultValueForStruct(javaType string) string {
+	// Primitives and String
+	switch javaType {
+	case "int":
+		return "0"
+	case "long":
+		return "0L"
+	case "double":
+		return "0.0"
+	case "float":
+		return "0.0f"
+	case "boolean":
+		return "false"
+	case "char":
+		return "'\\0'"
+	case "byte":
+		return "(byte)0"
+	case "short":
+		return "(short)0"
+	case "String":
+		return "\"\""
+	}
+	// Collections, functional interfaces, and built-in reference types should be null
+	if strings.HasPrefix(javaType, "ArrayList<") ||
+		strings.HasPrefix(javaType, "HashMap<") ||
+		isJavaFunctionalInterface(javaType) ||
+		isJavaBuiltinReferenceType(javaType) {
+		return "null"
+	}
+	// Other types are assumed to be structs - initialize them
+	return fmt.Sprintf("new %s()", javaType)
+}
+
+// isJavaPrimitiveType returns true if the type is a Java primitive type
+func isJavaPrimitiveType(javaType string) bool {
+	switch javaType {
+	case "int", "long", "double", "float", "boolean", "char", "byte", "short", "String":
+		return true
+	default:
+		return false
+	}
+}
+
+// isJavaBuiltinReferenceType returns true if the type is a Java built-in reference type
+// that should not be treated as a custom struct (no copy constructor available)
+func isJavaBuiltinReferenceType(javaType string) bool {
+	switch javaType {
+	case "Object", "Integer", "Long", "Double", "Float", "Boolean", "Character", "Byte", "Short":
+		return true
+	default:
+		return false
+	}
+}
+
+// isJavaFunctionalInterface returns true if the type is a Java functional interface
+// that should be copied by reference (not by calling a copy constructor)
+func isJavaFunctionalInterface(javaType string) bool {
+	// Check for common functional interface types from java.util.function
+	if strings.HasPrefix(javaType, "BiFunction<") ||
+		strings.HasPrefix(javaType, "Function<") ||
+		strings.HasPrefix(javaType, "Consumer<") ||
+		strings.HasPrefix(javaType, "BiConsumer<") ||
+		strings.HasPrefix(javaType, "Supplier<") ||
+		strings.HasPrefix(javaType, "Predicate<") ||
+		strings.HasPrefix(javaType, "BiPredicate<") ||
+		strings.HasPrefix(javaType, "Runnable") {
+		return true
+	}
+	return false
+}
+
+// needsByteCast returns true if a value needs to be cast to byte/short
+// This is needed because Java integer literals are 'int' by default
+func needsByteCast(fieldType, value string) bool {
+	if fieldType != "byte" && fieldType != "short" {
+		return false
+	}
+	// Skip if already cast
+	if strings.HasPrefix(value, "(byte)") || strings.HasPrefix(value, "(short)") {
+		return false
+	}
+	// Check for numeric literals (positive or negative)
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) == 0 {
+		return false
+	}
+	// Skip if it's null
+	if trimmed == "null" {
+		return false
+	}
+	// Check if it's a number literal
+	firstChar := trimmed[0]
+	if firstChar >= '0' && firstChar <= '9' {
+		return true
+	}
+	// Check for negative number
+	if firstChar == '-' && len(trimmed) > 1 && trimmed[1] >= '0' && trimmed[1] <= '9' {
+		return true
+	}
+	// Check if it looks like a constant identifier (starts with letter/underscore)
+	// Constants like TokenTypeSemicolon or ast.PgOrderAsc need casting
+	if (firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z') || firstChar == '_' {
+		// Not a method call (no parens) - allow dots for package-qualified constants
+		if !strings.Contains(trimmed, "(") {
+			return true
+		}
+	}
+	return false
 }
 
 func getJavaKeyCast(keyType types.Type) (string, string) {
@@ -811,6 +1524,7 @@ func (je *JavaEmitter) PreVisitProgram(indent int) {
 	je.resultClassRegistry = make(map[string]string)
 	je.mapVarValueTypes = make(map[string]string)
 	je.declaredVarsStack = []map[string]bool{make(map[string]bool)}
+	je.funcParamsStack = []map[string]bool{make(map[string]bool)}
 	je.packageFiles = make(map[string]*os.File)
 	// Runtime packages are added to namespaces so they get proper type prefixing
 	for pkgName := range je.RuntimePackages {
@@ -1005,6 +1719,32 @@ func (je *JavaEmitter) PostVisitProgram(indent int) {
 	}
 }
 
+func (je *JavaEmitter) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		// Analyze function body for closure-captured mutable variables
+		// This must be done before any code is emitted
+		if node.Body != nil {
+			je.analyzeClosureCapturedMutVars(node.Body)
+		}
+	})
+}
+
+func (je *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		// Clear closure analysis state after function is processed
+		je.closureCapturedMutVars = nil
+		je.closureCapturedVarType = nil
+
+		str := je.emitAsString("\n\n", 0)
+		je.emitToPackage(str)
+
+		// Pop the function parameter scope
+		if len(je.funcParamsStack) > 0 {
+			je.funcParamsStack = je.funcParamsStack[:len(je.funcParamsStack)-1]
+		}
+	})
+}
+
 func (je *JavaEmitter) PreVisitFuncDeclSignatures(indent int) {
 	je.forwardDecls = true
 }
@@ -1064,6 +1804,9 @@ func (je *JavaEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 
 func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Push a new function parameter scope for lambda shadowing detection
+		je.funcParamsStack = append(je.funcParamsStack, make(map[string]bool))
+
 		je.emitToken("(", LeftParen, 0)
 		// Add String[] args for main function
 		if node.Name.Name == "main" {
@@ -1085,6 +1828,10 @@ var javaSuppressTypeCastIdent bool
 func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		if !je.shouldGenerate {
+			return
+		}
+		// Suppress type emission for closure-captured variables (we use Object[] instead)
+		if je.suppressClosureTypeEmit {
 			return
 		}
 		if je.suppressTypeAliasEmit {
@@ -1231,12 +1978,59 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 			}
 		}
 
+		// Add cast and [0] suffix for closure-captured mutable variables (not during declaration, not in type context)
+		isCapturedAccess := false
+		capturedType := ""
+		if !je.inDeclName && !je.inTypeContext && je.closureCapturedMutVars != nil {
+			if je.closureCapturedMutVars[e.Name] {
+				isCapturedAccess = true
+				capturedType = je.closureCapturedVarType[e.Name]
+				// Emit cast prefix for read access only (not when on LHS of assignment)
+				// LHS assignment: tokens[0] = ... (no cast)
+				// Read access: ((ArrayList<Token>)tokens[0]) (with cast)
+				if capturedType != "" && !je.inAssignLhs {
+					je.emitToken("(("+capturedType+")", LeftParen, 0)
+				}
+			}
+		}
+
 		je.emitToken(str, Identifier, 0)
+
+		if isCapturedAccess {
+			je.emitToken("[0]", LeftBracket, 0)
+			// Emit cast suffix for read access only (not when on LHS of assignment)
+			if capturedType != "" && !je.inAssignLhs {
+				je.emitToken(")", RightParen, 0)
+			}
+		}
 	})
 }
 
 func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
+		// Check for append call with struct argument that's a variable reference
+		// (not a composite literal or constructor call)
+		if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "append" && len(node.Args) >= 2 {
+			je.isAppendCall = true
+			je.appendStructType = ""
+			// Only apply copy constructor for variable references (Ident), not for
+			// composite literals or other expressions that already create new structs
+			if _, isIdent := node.Args[1].(*ast.Ident); isIdent {
+				// Check if the second argument is a struct type (needs copy constructor)
+				if je.pkg != nil && je.pkg.TypesInfo != nil {
+					tv := je.pkg.TypesInfo.Types[node.Args[1]]
+					if tv.Type != nil {
+						if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
+							je.appendStructType = getJavaTypeName(tv.Type)
+						}
+					}
+				}
+			}
+		}
 		// Map operations
 		if ident, ok := node.Fun.(*ast.Ident); ok {
 			if ident.Name == "make" && len(node.Args) >= 1 {
@@ -1316,6 +2110,25 @@ func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 			}
 		}
 
+		// Check if calling a struct field that is a function type (BiFunction)
+		// e.g., visitor.PreVisitFrom(state, expr) -> visitor.PreVisitFrom.apply(state, expr)
+		if selExpr, ok := node.Fun.(*ast.SelectorExpr); ok {
+			if je.pkg != nil && je.pkg.TypesInfo != nil {
+				// Get the type of the selection
+				if sel := je.pkg.TypesInfo.Selections[selExpr]; sel != nil {
+					// Check if the field type is a function signature
+					if sig, isFunc := sel.Type().Underlying().(*types.Signature); isFunc {
+						// This is a function field call - transform to functional interface method
+						methodName := je.getFunctionalInterfaceMethod(sig)
+						if methodName != "" {
+							// Set flag to add .apply() after selector but before args
+							je.funcFieldCallMethod = methodName
+						}
+					}
+				}
+			}
+		}
+
 		// Check for unsupported indexed function call: x[0](args)
 		// Java doesn't support calling functions from slice index directly
 		if indexExpr, ok := node.Fun.(*ast.IndexExpr); ok {
@@ -1340,6 +2153,21 @@ func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 				return
 			}
 		}
+
+		// Get parameter types for byte/short casting in arguments
+		je.callExprParamTypes = nil
+		if je.pkg != nil && je.pkg.TypesInfo != nil {
+			tv := je.pkg.TypesInfo.Types[node.Fun]
+			if tv.Type != nil {
+				if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+					params := sig.Params()
+					for i := 0; i < params.Len(); i++ {
+						je.callExprParamTypes = append(je.callExprParamTypes, getJavaTypeName(params.At(i).Type()))
+					}
+				}
+			}
+		}
+
 		javaIsTypeConversion = false
 	})
 }
@@ -1348,6 +2176,10 @@ func (je *JavaEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		// Mark that we're in the Fun part of a CallExpr (the function being called)
 		je.inCallExprFunDepth++
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// Suppress for unsupported indexed function call
 		if je.isUnsupportedIndexedCall {
 			return
@@ -1396,6 +2228,11 @@ func (je *JavaEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
 		if je.isFuncVarCall {
 			return
 		}
+		// For struct field function calls, emit .apply( (or .accept(, etc.)
+		if je.funcFieldCallMethod != "" {
+			je.emitToPackage("." + je.funcFieldCallMethod + "(")
+			return
+		}
 		je.emitToken("(", LeftParen, 0)
 	})
 }
@@ -1417,8 +2254,9 @@ func (je *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 			return
 		}
 		je.emitToken(")", RightParen, 0)
-		// Reset functional interface call flag
+		// Reset functional interface call flags
 		je.isFuncVarCall = false
+		je.funcFieldCallMethod = ""
 		if je.isMapMakeCall {
 			je.suppressMapEmit = false
 		}
@@ -1465,9 +2303,12 @@ func (je *JavaEmitter) PreVisitBasicLit(e *ast.BasicLit, indent int) {
 			} else if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
 				// Raw string literal - Java doesn't have verbatim strings, escape as needed
 				value = value[1 : len(value)-1]
-				// Escape backslashes and quotes for Java
+				// Escape backslashes, quotes, and newlines for Java
 				value = strings.ReplaceAll(value, "\\", "\\\\")
 				value = strings.ReplaceAll(value, "\"", "\\\"")
+				value = strings.ReplaceAll(value, "\n", "\\n")
+				value = strings.ReplaceAll(value, "\r", "\\r")
+				value = strings.ReplaceAll(value, "\t", "\\t")
 				str = je.emitAsString(fmt.Sprintf("\"%s\"", value), 0)
 			} else {
 				str = je.emitAsString(fmt.Sprintf("\"%s\"", value), 0)
@@ -1506,6 +2347,24 @@ func (je *JavaEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index 
 	je.executeIfNotForwardDecls(func() {
 		je.isArray = false
 		je.inTypeContext = true
+		// Track if there's an explicit initialization value
+		je.hasDeclValue = index < len(node.Values)
+		// Check if this variable is a closure-captured mutable variable
+		je.isClosureCapturedDecl = false
+		je.closureCapturedDeclName = ""
+		je.suppressClosureTypeEmit = false
+		if index < len(node.Names) && je.closureCapturedMutVars != nil {
+			varName := node.Names[index].Name
+			if je.closureCapturedMutVars[varName] {
+				je.isClosureCapturedDecl = true
+				je.closureCapturedDeclName = varName
+				// For closure-captured variables, emit Object[] instead of the actual type
+				// (Java doesn't allow generic array creation like ArrayList<T>[])
+				je.emitToPackage("Object[]")
+				je.suppressClosureTypeEmit = true
+				je.inTypeContext = false // Prevent normal type emission
+			}
+		}
 		if len(node.Values) == 0 && node.Type != nil {
 			if je.pkg != nil && je.pkg.TypesInfo != nil {
 				if typeAndValue, ok := je.pkg.TypesInfo.Types[node.Type]; ok {
@@ -1553,6 +2412,18 @@ func (je *JavaEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index 
 							je.emitToPackage(javaType)
 							je.suppressTypeAliasSelectorX = true
 							je.inTypeContext = false // Skip normal type emission
+						} else if _, ok := underlyingType.(*types.Slice); ok {
+							// Slice type alias - emit ArrayList<elemType> directly
+							javaType := getJavaTypeName(typeAndValue.Type)
+							je.emitToPackage(javaType)
+							je.suppressTypeAliasSelectorX = true
+							je.inTypeContext = false // Skip normal type emission
+						} else if _, ok := underlyingType.(*types.Map); ok {
+							// Map type alias - emit HashMap<K,V> directly
+							javaType := getJavaTypeName(typeAndValue.Type)
+							je.emitToPackage(javaType)
+							je.suppressTypeAliasSelectorX = true
+							je.inTypeContext = false // Skip normal type emission
 						}
 					}
 				}
@@ -1565,7 +2436,10 @@ func (je *JavaEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index
 	je.executeIfNotForwardDecls(func() {
 		je.inTypeContext = false
 		je.suppressTypeAliasSelectorX = false
-		je.isArray = false // Reset array flag after declaration type
+		je.suppressClosureTypeEmit = false // Reset closure type suppression
+		je.isArray = false                 // Reset array flag after declaration type
+		// For closure-captured mutable variables, we already emitted Object[] in PreVisit
+		// (skipped normal type emission), so nothing to do here
 	})
 }
 
@@ -1574,32 +2448,80 @@ func (je *JavaEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int
 		// Just emit space before name - the name itself is emitted by PreVisitIdent
 		str := je.emitAsString(" ", 0)
 		je.emitToPackage(str)
+		// Set flag to indicate we're in a declaration name (don't add [0] to the name)
+		je.inDeclName = true
 	})
 }
 
 func (je *JavaEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		je.inDeclName = false // Reset declaration name context
 		if je.pendingMapInit {
-			je.emitToPackage(fmt.Sprintf(" = newHashMap(%d)", je.pendingMapKeyType))
+			if je.isClosureCapturedDecl {
+				je.emitToPackage(fmt.Sprintf(" = {newHashMap(%d)}", je.pendingMapKeyType))
+			} else {
+				je.emitToPackage(fmt.Sprintf(" = newHashMap(%d)", je.pendingMapKeyType))
+			}
 			je.pendingMapInit = false
 			je.pendingMapKeyType = 0
 		}
 		if je.pendingStructInit {
-			je.emitToPackage(fmt.Sprintf(" = new %s()", je.pendingStructTypeName))
+			if je.isClosureCapturedDecl {
+				je.emitToPackage(fmt.Sprintf(" = {new %s()}", je.pendingStructTypeName))
+			} else {
+				je.emitToPackage(fmt.Sprintf(" = new %s()", je.pendingStructTypeName))
+			}
 			je.pendingStructInit = false
 			je.pendingStructTypeName = ""
 		}
 		if je.pendingSliceInit {
-			je.emitToPackage(fmt.Sprintf(" = new ArrayList<%s>()", je.pendingSliceElemType))
+			if je.isClosureCapturedDecl {
+				je.emitToPackage(fmt.Sprintf(" = {new ArrayList<%s>()}", je.pendingSliceElemType))
+			} else {
+				je.emitToPackage(fmt.Sprintf(" = new ArrayList<%s>()", je.pendingSliceElemType))
+			}
 			je.pendingSliceInit = false
 			je.pendingSliceElemType = ""
 		}
 		if je.pendingPrimitiveInit {
-			je.emitToPackage(fmt.Sprintf(" = %s", je.pendingPrimitiveDefault))
+			if je.isClosureCapturedDecl {
+				je.emitToPackage(fmt.Sprintf(" = {%s}", je.pendingPrimitiveDefault))
+			} else {
+				je.emitToPackage(fmt.Sprintf(" = %s", je.pendingPrimitiveDefault))
+			}
 			je.pendingPrimitiveInit = false
 			je.pendingPrimitiveDefault = ""
 		}
-		je.emitToPackage(";\n")
+		// Only emit semicolon if there's no value coming
+		if !je.hasDeclValue {
+			je.emitToPackage(";\n")
+			// Reset closure-captured decl flag
+			je.isClosureCapturedDecl = false
+			je.closureCapturedDeclName = ""
+		}
+	})
+}
+
+func (je *JavaEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		if je.isClosureCapturedDecl {
+			je.emitToPackage(" = {")
+		} else {
+			je.emitToPackage(" = ")
+		}
+	})
+}
+
+func (je *JavaEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		if je.isClosureCapturedDecl {
+			je.emitToPackage("};\n")
+			je.isClosureCapturedDecl = false
+			je.closureCapturedDeclName = ""
+		} else {
+			je.emitToPackage(";\n")
+		}
+		je.hasDeclValue = false
 	})
 }
 
@@ -1723,13 +2645,6 @@ func (je *JavaEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent i
 	})
 }
 
-func (je *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("\n\n", 0)
-		je.emitToPackage(str)
-	})
-}
-
 func (je *JavaEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString(fmt.Sprintf("public static class %s {\n", node.Name), indent+2)
@@ -1770,9 +2685,10 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			}
 
 			// Generate default (no-arg) constructor that initializes fields to defaults
+			// Use getJavaDefaultValueForStruct to initialize nested structs (Go value semantics)
 			defaultConstructor := fmt.Sprintf("        public %s() {\n", node.Name)
 			for _, f := range fields {
-				defaultConstructor += fmt.Sprintf("            this.%s = %s;\n", f.name, getJavaDefaultValue(f.javaType))
+				defaultConstructor += fmt.Sprintf("            this.%s = %s;\n", f.name, getJavaDefaultValueForStruct(f.javaType))
 			}
 			defaultConstructor += "        }\n"
 			je.emitToPackage(defaultConstructor)
@@ -1787,10 +2703,40 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			}
 			constructorCode += ") {\n"
 			for _, f := range fields {
-				constructorCode += fmt.Sprintf("            this.%s = %s;\n", f.name, f.name)
+				// For struct types, convert null to new instance (Go value semantics)
+				if !isJavaPrimitiveType(f.javaType) &&
+					!strings.HasPrefix(f.javaType, "ArrayList<") &&
+					!strings.HasPrefix(f.javaType, "HashMap<") &&
+					!isJavaFunctionalInterface(f.javaType) &&
+					!isJavaBuiltinReferenceType(f.javaType) {
+					constructorCode += fmt.Sprintf("            this.%s = %s != null ? %s : new %s();\n", f.name, f.name, f.name, f.javaType)
+				} else {
+					constructorCode += fmt.Sprintf("            this.%s = %s;\n", f.name, f.name)
+				}
 			}
 			constructorCode += "        }\n"
 			je.emitToPackage(constructorCode)
+
+			// Generate copy constructor for value semantics when appending to slices
+			copyConstructor := fmt.Sprintf("        public %s(%s other) {\n", node.Name, node.Name)
+			for _, f := range fields {
+				// Deep copy ArrayList/reference types, shallow copy primitives
+				if strings.HasPrefix(f.javaType, "ArrayList<") {
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new ArrayList<>(other.%s) : null;\n", f.name, f.name, f.name)
+				} else if strings.HasPrefix(f.javaType, "HashMap<") {
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new HashMap<>(other.%s) : null;\n", f.name, f.name, f.name)
+				} else if isJavaPrimitiveType(f.javaType) {
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s;\n", f.name, f.name)
+				} else if isJavaFunctionalInterface(f.javaType) || isJavaBuiltinReferenceType(f.javaType) {
+					// Functional interfaces (lambdas) and built-in reference types can be copied by reference
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s;\n", f.name, f.name)
+				} else {
+					// For other reference types (structs), use copy constructor if available
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new %s(other.%s) : null;\n", f.name, f.name, f.javaType, f.name)
+				}
+			}
+			copyConstructor += "        }\n"
+			je.emitToPackage(copyConstructor)
 		}
 
 		str := je.emitAsString("}\n\n", indent+2)
@@ -1800,7 +2746,7 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 
 func (je *JavaEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		if je.suppressTypeAliasEmit || je.suppressMapEmit || je.suppressMultiReturnTypes || je.isSliceMakeCall {
+		if je.suppressTypeAliasEmit || je.suppressMapEmit || je.suppressMultiReturnTypes || je.isSliceMakeCall || je.suppressClosureTypeEmit {
 			return
 		}
 		je.inArrayTypeContext = true // Track for boxed type conversion
@@ -1826,7 +2772,7 @@ func (je *JavaEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
 
 func (je *JavaEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	je.executeIfNotForwardDecls(func() {
-		if je.suppressTypeAliasEmit || je.suppressMapEmit || je.suppressMultiReturnTypes || je.isSliceMakeCall {
+		if je.suppressTypeAliasEmit || je.suppressMapEmit || je.suppressMultiReturnTypes || je.isSliceMakeCall || je.suppressClosureTypeEmit {
 			return
 		}
 		je.inArrayTypeContext = false // Clear boxed type context
@@ -1968,7 +2914,7 @@ func (je *JavaEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 			return
 		}
 		if je.captureRangeExpr {
-			je.rangeCollectionExpr += exprToString(node.X) + "."
+			// X will be captured by PreVisitIdent, dot will be added by PostVisitSelectorExprX
 			return
 		}
 	})
@@ -1989,8 +2935,9 @@ func (je *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
 		if je.suppressTypeAliasSelectorX {
 			return
 		}
-		// Don't emit dot when capturing range expression
+		// Add dot to captured range expression (after X is captured by PreVisitIdent)
 		if je.captureRangeExpr {
+			je.rangeCollectionExpr += "."
 			return
 		}
 		// Skip package prefix (use types/functions directly since all in one file)
@@ -2009,6 +2956,18 @@ func (je *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
 		}
 		// Suppress dot during type assert comma-ok (handled in PostVisitAssignStmt)
 		if je.isTypeAssertCommaOk {
+			return
+		}
+		// Suppress dot in lambda parameter types (Java uses type inference)
+		if je.inLambdaParams && je.inTypeContext {
+			return
+		}
+		// Suppress dot when suppressing multi-return types
+		if je.suppressMultiReturnTypes {
+			return
+		}
+		// Suppress dot when suppressing closure type emission
+		if je.suppressClosureTypeEmit {
 			return
 		}
 		str := je.emitAsString(".", 0)
@@ -2041,6 +3000,10 @@ func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParamsArgName(node *ast.Iden
 	je.executeIfNotForwardDecls(func() {
 		je.inTypeContext = false
 		je.emitToPackage(" ")
+		// Track this parameter name for lambda conflict detection
+		if node != nil {
+			je.addFuncParam(node.Name)
+		}
 	})
 }
 
@@ -2240,8 +3203,17 @@ func (je *JavaEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent
 		// Add cast for byte/short return values when returning literals
 		if returnTypes, ok := je.multiReturnFuncs[je.currentFuncName]; ok {
 			if index < len(returnTypes) {
-				// Only cast BasicLit (numeric literals)
+				// Check if this is a numeric literal (including unary minus like -1)
+				isNumericLit := false
 				if _, isLit := node.(*ast.BasicLit); isLit {
+					isNumericLit = true
+				} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
+					// Handle -1, +1, etc.
+					if _, isLit := unary.X.(*ast.BasicLit); isLit {
+						isNumericLit = true
+					}
+				}
+				if isNumericLit {
 					switch returnTypes[index] {
 					case "byte":
 						je.emitToPackage("(byte)")
@@ -2263,6 +3235,11 @@ func (je *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				indentStr, exprToString(node)))
 			je.isUnsupportedIndexedCall = false
 		}
+		// Clear parameter types after call expression
+		je.callExprParamTypes = nil
+		// Clear append call flags
+		je.isAppendCall = false
+		je.appendStructType = ""
 	})
 }
 
@@ -2571,10 +3548,28 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 
-		// Generate function call arguments
+		// Generate function call arguments using Java-specific expression conversion
+		// Get parameter types for byte/short casting
+		var paramTypes []string
+		if je.pkg != nil && je.pkg.TypesInfo != nil {
+			tv := je.pkg.TypesInfo.Types[callExpr.Fun]
+			if tv.Type != nil {
+				if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+					params := sig.Params()
+					for i := 0; i < params.Len(); i++ {
+						paramTypes = append(paramTypes, getJavaTypeName(params.At(i).Type()))
+					}
+				}
+			}
+		}
 		var args []string
-		for _, arg := range callExpr.Args {
-			args = append(args, exprToString(arg))
+		for i, arg := range callExpr.Args {
+			argStr := javaExprToString(arg)
+			// Add cast for byte/short parameters
+			if i < len(paramTypes) && needsByteCast(paramTypes[i], argStr) {
+				argStr = fmt.Sprintf("(%s)(%s)", paramTypes[i], argStr)
+			}
+			args = append(args, argStr)
 		}
 		argsStr := strings.Join(args, ", ")
 
@@ -2807,6 +3802,8 @@ func (je *JavaEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, inden
 }
 
 func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	// Track that we're in assignment LHS (skip cast for closure-captured vars)
+	je.inAssignLhs = true
 	if je.isMapCommaOk || je.isTypeAssertCommaOk || je.isMapAssign || je.isMultiReturnAssign {
 		return
 	}
@@ -2823,8 +3820,38 @@ func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 				}
 			}
 			if allNew {
-				str := je.emitAsString("var ", 0)
-				je.emitToPackage(str)
+				// Check if RHS is a function literal - if so, emit the functional interface type
+				// instead of var (Java can't infer lambda types from var)
+				isFuncLit := false
+				var funcLitType string
+				if len(node.Rhs) == 1 {
+					if funcLit, ok := node.Rhs[0].(*ast.FuncLit); ok {
+						isFuncLit = true
+						// Determine the functional interface type based on params and return
+						numParams := 0
+						hasReturn := false
+						if funcLit.Type.Params != nil {
+							numParams = len(funcLit.Type.Params.List)
+						}
+						if funcLit.Type.Results != nil && len(funcLit.Type.Results.List) > 0 {
+							hasReturn = true
+						}
+						if !hasReturn {
+							funcLitType = "Runnable"
+						} else {
+							funcLitType = "Supplier<Object>"
+						}
+						_ = numParams // Future: could use Consumer, Function, etc. for params
+					}
+				}
+
+				if isFuncLit {
+					str := je.emitAsString(funcLitType+" ", 0)
+					je.emitToPackage(str)
+				} else {
+					str := je.emitAsString("var ", 0)
+					je.emitToPackage(str)
+				}
 				// Mark variables as declared
 				for _, lhs := range node.Lhs {
 					if ident, ok := lhs.(*ast.Ident); ok {
@@ -2839,6 +3866,8 @@ func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 }
 
 func (je *JavaEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	// Reset assignment LHS flag
+	je.inAssignLhs = false
 	je.executeIfNotForwardDecls(func() {
 	})
 }
@@ -3000,6 +4029,10 @@ func (je *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) 
 
 func (je *JavaEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// Check for string comparison (== or !=)
 		if node.Op == token.EQL || node.Op == token.NEQ {
 			if je.pkg != nil && je.pkg.TypesInfo != nil {
@@ -3026,6 +4059,10 @@ func (je *JavaEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 
 func (je *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// Close .equals() for string comparison
 		if je.isStringComparison {
 			je.emitToPackage(")")
@@ -3038,6 +4075,10 @@ func (je *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 
 func (je *JavaEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// For string comparison, close LHS paren and emit .equals(
 		if je.isStringComparison {
 			je.emitToPackage(").equals(")
@@ -3076,6 +4117,41 @@ func (je *JavaEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 			str := je.emitAsString(", ", 0)
 			je.emitToPackage(str)
 		}
+		// For append call with struct argument, wrap with copy constructor
+		if je.isAppendCall && index > 0 && je.appendStructType != "" {
+			je.emitToPackage("new " + je.appendStructType + "(")
+		}
+		// Add cast for byte/short parameters when passing integer literals/constants
+		if index < len(je.callExprParamTypes) {
+			paramType := je.callExprParamTypes[index]
+			// Check if argument needs cast (integer literal or constant to byte/short)
+			needsCast := false
+			if _, isLit := node.(*ast.BasicLit); isLit {
+				needsCast = true
+			} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
+				// Handle -1, +1, etc.
+				if _, isLit := unary.X.(*ast.BasicLit); isLit {
+					needsCast = true
+				}
+			} else if ident, isIdent := node.(*ast.Ident); isIdent {
+				// Check if it's a constant
+				if je.pkg != nil && je.pkg.TypesInfo != nil {
+					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+						if _, isConst := obj.(*types.Const); isConst {
+							needsCast = true
+						}
+					}
+				}
+			}
+			if needsCast {
+				switch paramType {
+				case "byte":
+					je.emitToPackage("(byte)(")
+				case "short":
+					je.emitToPackage("(short)(")
+				}
+			}
+		}
 	})
 }
 
@@ -3084,6 +4160,34 @@ func (je *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 		if je.isSliceMakeCall && index == 0 {
 			// Clear type context after first argument
 			je.inTypeContext = false
+		}
+		// Close copy constructor for append with struct
+		if je.isAppendCall && index > 0 && je.appendStructType != "" {
+			je.emitToPackage(")")
+		}
+		// Close cast for byte/short parameters
+		if index < len(je.callExprParamTypes) {
+			paramType := je.callExprParamTypes[index]
+			// Check if argument was cast
+			needsCast := false
+			if _, isLit := node.(*ast.BasicLit); isLit {
+				needsCast = true
+			} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
+				if _, isLit := unary.X.(*ast.BasicLit); isLit {
+					needsCast = true
+				}
+			} else if ident, isIdent := node.(*ast.Ident); isIdent {
+				if je.pkg != nil && je.pkg.TypesInfo != nil {
+					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+						if _, isConst := obj.(*types.Const); isConst {
+							needsCast = true
+						}
+					}
+				}
+			}
+			if needsCast && (paramType == "byte" || paramType == "short") {
+				je.emitToPackage(")")
+			}
 		}
 	})
 }
@@ -3293,24 +4397,46 @@ func (je *JavaEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		je.captureRangeExpr = false
 
+		// Check if ranging over a string - need to use .toCharArray() for Java
+		collectionExpr := je.rangeCollectionExpr
+		isStringRange := false
+		if je.pkg != nil && je.pkg.TypesInfo != nil {
+			if t := je.pkg.TypesInfo.TypeOf(node); t != nil {
+				if basic, ok := t.Underlying().(*types.Basic); ok {
+					if basic.Kind() == types.String {
+						isStringRange = true
+						collectionExpr = je.rangeCollectionExpr + ".toCharArray()"
+					}
+				}
+			}
+		}
+
 		if je.isKeyValueRange && je.rangeKeyName != "" {
 			// For key-value range: for (int key = 0; key < collection.size(); key++)
-			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s.size(); %s++) ",
-				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, je.rangeKeyName))
+			sizeMethod := ".size()"
+			if isStringRange {
+				sizeMethod = ".length()"
+			}
+			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s%s; %s++) ",
+				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, sizeMethod, je.rangeKeyName))
 			je.pendingRangeValueDecl = true
 			je.pendingValueName = je.rangeValueName
 			je.pendingCollectionExpr = je.rangeCollectionExpr
 			je.pendingKeyName = je.rangeKeyName
 		} else if je.rangeKeyName != "" && je.rangeValueName == "" {
 			// Index-only range: for (int i = 0; i < collection.size(); i++)
-			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s.size(); %s++) ",
-				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, je.rangeKeyName))
+			sizeMethod := ".size()"
+			if isStringRange {
+				sizeMethod = ".length()"
+			}
+			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s%s; %s++) ",
+				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, sizeMethod, je.rangeKeyName))
 		} else if je.rangeValueName != "" {
 			// Value-only range (key is "_" or not used): for (var val : collection)
-			je.emitToPackage(fmt.Sprintf("var %s : %s) ", je.rangeValueName, je.rangeCollectionExpr))
+			je.emitToPackage(fmt.Sprintf("var %s : %s) ", je.rangeValueName, collectionExpr))
 		} else {
 			// Neither key nor value specified: for (var __item : collection)
-			je.emitToPackage(fmt.Sprintf("var __item : %s) ", je.rangeCollectionExpr))
+			je.emitToPackage(fmt.Sprintf("var __item : %s) ", collectionExpr))
 		}
 	})
 }
@@ -3339,6 +4465,58 @@ func (je *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 	})
 }
 
+func (je *JavaEmitter) PreVisitCompositeLit(node *ast.CompositeLit, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		// Push a new state to the stack for this composite literal
+		state := structLitState{
+			isStructLit:  false,
+			buffer:       &strings.Builder{},
+			fieldBuffers: make(map[string]string),
+		}
+
+		// Check if any element is a key-value expression (partial struct initialization)
+		hasKeyValue := false
+		for _, elt := range node.Elts {
+			if _, ok := elt.(*ast.KeyValueExpr); ok {
+				hasKeyValue = true
+				break
+			}
+		}
+
+		if hasKeyValue && je.pkg != nil && je.pkg.TypesInfo != nil {
+			// Get the type of the composite literal
+			tv := je.pkg.TypesInfo.Types[node]
+			if tv.Type != nil {
+				// Check if it's a struct type
+				if structType, ok := tv.Type.Underlying().(*types.Struct); ok {
+					state.isStructLit = true
+					state.structLitType = tv.Type
+					state.fieldOrder = make([]string, structType.NumFields())
+					state.fieldTypes = make(map[string]string)
+
+					// Build the field order and types
+					for i := 0; i < structType.NumFields(); i++ {
+						field := structType.Field(i)
+						state.fieldOrder[i] = field.Name()
+						state.fieldTypes[field.Name()] = getJavaTypeName(field.Type())
+					}
+				}
+			}
+		}
+
+		je.structLitStack = append(je.structLitStack, state)
+	})
+}
+
+func (je *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		// Pop from the struct literal stack
+		if len(je.structLitStack) > 0 {
+			je.structLitStack = je.structLitStack[:len(je.structLitStack)-1]
+		}
+	})
+}
+
 func (je *JavaEmitter) PreVisitCompositeLitType(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		str := je.emitAsString("new ", 0)
@@ -3346,6 +4524,30 @@ func (je *JavaEmitter) PreVisitCompositeLitType(node ast.Expr, indent int) {
 		// Set type context so type names get proper package prefix
 		je.inTypeContext = true
 		je.inCompositeLitType = true
+
+		// Check if the type is a package-qualified slice/map type alias
+		// If so, emit the resolved type directly and suppress normal selector emission
+		if _, ok := node.(*ast.SelectorExpr); ok {
+			if je.pkg != nil && je.pkg.TypesInfo != nil {
+				typeAndValue := je.pkg.TypesInfo.Types[node]
+				if typeAndValue.Type != nil {
+					underlyingType := typeAndValue.Type.Underlying()
+					if _, ok := underlyingType.(*types.Slice); ok {
+						// Slice type alias - emit ArrayList<elemType> directly
+						javaType := getJavaTypeName(typeAndValue.Type)
+						je.emitToPackage(javaType)
+						je.suppressTypeAliasSelectorX = true
+						je.inTypeContext = false // Skip normal type emission
+					} else if _, ok := underlyingType.(*types.Map); ok {
+						// Map type alias - emit HashMap<K,V> directly
+						javaType := getJavaTypeName(typeAndValue.Type)
+						je.emitToPackage(javaType)
+						je.suppressTypeAliasSelectorX = true
+						je.inTypeContext = false // Skip normal type emission
+					}
+				}
+			}
+		}
 	})
 }
 
@@ -3353,6 +4555,7 @@ func (je *JavaEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
 		je.inTypeContext = false
 		je.inCompositeLitType = false
+		je.suppressTypeAliasSelectorX = false // Reset after composite literal type
 		if je.isArray {
 			str := je.emitAsString("(Arrays.asList", 0)
 			je.emitToPackage(str)
@@ -3369,6 +4572,14 @@ func (je *JavaEmitter) PreVisitCompositeLitElts(node []ast.Expr, indent int) {
 			str := je.emitAsString("(", 0)
 			je.emitToPackage(str)
 		}
+		// Enable capturing mode for struct literals with key-value pairs (use stack)
+		if len(je.structLitStack) > 0 {
+			top := &je.structLitStack[len(je.structLitStack)-1]
+			if top.isStructLit {
+				top.capturing = true
+				top.buffer.Reset()
+			}
+		}
 	})
 }
 
@@ -3379,6 +4590,38 @@ func (je *JavaEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
 			je.emitToPackage(str)
 			je.isArray = false
 			je.sliceLitElemCast = "" // Reset after processing slice literal
+		} else if len(je.structLitStack) > 0 {
+			top := &je.structLitStack[len(je.structLitStack)-1]
+			if top.isStructLit && top.capturing {
+				// Stop capturing and emit the properly ordered constructor arguments
+				top.capturing = false
+
+				// Build the argument list in field order with default values for missing fields
+				var args []string
+				for _, fieldName := range top.fieldOrder {
+					fieldType := top.fieldTypes[fieldName]
+					if val, exists := top.fieldBuffers[fieldName]; exists {
+						// Add cast for byte/short fields if the value needs it
+						if needsByteCast(fieldType, val) {
+							val = fmt.Sprintf("(%s)(%s)", fieldType, val)
+						}
+						args = append(args, val)
+					} else {
+						// Field not provided - emit default value based on type
+						defaultVal := getJavaDefaultValue(fieldType)
+						args = append(args, defaultVal)
+					}
+				}
+
+				// Emit all arguments with commas
+				str := je.emitAsString(strings.Join(args, ", "), 0)
+				je.emitToPackage(str)
+				str = je.emitAsString(")", 0)
+				je.emitToPackage(str)
+			} else {
+				str := je.emitAsString(")", 0)
+				je.emitToPackage(str)
+			}
 		} else {
 			str := je.emitAsString(")", 0)
 			je.emitToPackage(str)
@@ -3388,6 +4631,15 @@ func (je *JavaEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
 
 func (je *JavaEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// When capturing struct literal elements (check stack), reset buffer for each element
+		// and skip comma emission (we'll handle commas in PostVisitCompositeLitElts)
+		if len(je.structLitStack) > 0 {
+			top := &je.structLitStack[len(je.structLitStack)-1]
+			if top.capturing {
+				top.buffer.Reset()
+				return
+			}
+		}
 		if index > 0 {
 			str := je.emitAsString(", ", 0)
 			je.emitToPackage(str)
@@ -3402,8 +4654,39 @@ func (je *JavaEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent 
 	})
 }
 
+func (je *JavaEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		// When capturing struct literal elements (check stack), save the buffer for the current key
+		if len(je.structLitStack) > 0 {
+			top := &je.structLitStack[len(je.structLitStack)-1]
+			if top.capturing && top.currentKey != "" {
+				top.fieldBuffers[top.currentKey] = top.buffer.String()
+				top.currentKey = "" // Reset for next element
+			}
+		}
+	})
+}
+
+func (je *JavaEmitter) PreVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		// Capture the key name for struct literal element mapping (use stack)
+		if len(je.structLitStack) > 0 {
+			top := &je.structLitStack[len(je.structLitStack)-1]
+			if top.capturing {
+				if ident, ok := node.Key.(*ast.Ident); ok {
+					top.currentKey = ident.Name
+				}
+			}
+		}
+	})
+}
+
 func (je *JavaEmitter) PreVisitSliceExprX(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// Capture the X expression name for later use (for .size() call when High is nil)
 		je.sliceExprXName = exprToString(node)
 		// Wrap subList with new ArrayList<>() to convert List back to ArrayList
@@ -3413,6 +4696,10 @@ func (je *JavaEmitter) PreVisitSliceExprX(node ast.Expr, indent int) {
 
 func (je *JavaEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		str := je.emitAsString(".subList(", 0)
 		je.emitToPackage(str)
 	})
@@ -3433,6 +4720,10 @@ func (je *JavaEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
 
 func (je *JavaEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// If Low is nil (like a[:high]), emit 0
 		if node == nil {
 			je.emitToPackage("0")
@@ -3442,6 +4733,10 @@ func (je *JavaEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
 
 func (je *JavaEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		str := je.emitAsString(", ", 0)
 		je.emitToPackage(str)
 	})
@@ -3462,6 +4757,10 @@ func (je *JavaEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
 
 func (je *JavaEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// If High is nil (like a[low:]), emit X.size()
 		if node == nil {
 			je.emitToPackage(je.sliceExprXName+".size()")
@@ -3471,6 +4770,10 @@ func (je *JavaEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
 
 func (je *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
+		if je.isMultiReturnAssign {
+			return
+		}
 		// Close both subList() and the ArrayList wrapper
 		str := je.emitAsString("))", 0)
 		je.emitToPackage(str)
@@ -3504,7 +4807,13 @@ func (je *JavaEmitter) PreVisitFuncLitTypeParam(node *ast.Field, index int, inde
 		}
 		// Emit parameter name only for lambda (Java uses type inference)
 		if len(node.Names) > 0 {
-			je.emitToPackage(node.Names[0].Name)
+			paramName := node.Names[0].Name
+			// Check if parameter name conflicts with an outer scope variable (Java doesn't allow shadowing in lambdas)
+			if je.isVarDeclared(paramName) || je.isFuncParam(paramName) {
+				// Append underscore to make the name unique
+				paramName = paramName + "_"
+			}
+			je.emitToPackage(paramName)
 		}
 		// Set type context to suppress type emission
 		je.inTypeContext = true
@@ -3523,10 +4832,16 @@ func (je *JavaEmitter) PreVisitFuncLitBody(node *ast.BlockStmt, indent int) {
 }
 
 func (je *JavaEmitter) PreVisitFuncLitTypeResult(node *ast.Field, index int, indent int) {
-	// Lambda return types are inferred in Java
+	je.executeIfNotForwardDecls(func() {
+		// Lambda return types are inferred in Java - suppress emission
+		je.shouldGenerate = false
+	})
 }
 
 func (je *JavaEmitter) PostVisitFuncLitTypeResult(node *ast.Field, index int, indent int) {
+	je.executeIfNotForwardDecls(func() {
+		je.shouldGenerate = true
+	})
 }
 
 func (je *JavaEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {

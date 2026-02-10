@@ -436,6 +436,14 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 						v.traverseExpression(valueSpec.Names[i], 0)
 						v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitDeclStmtValueSpecNames)
 						v.emitter.PostVisitDeclStmtValueSpecNames(valueSpec.Names[i], i, indent)
+						// Traverse initialization value if present
+						if i < len(valueSpec.Values) {
+							v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitDeclStmtValueSpecValue)
+							v.emitter.PreVisitDeclStmtValueSpecValue(valueSpec.Values[i], i, indent)
+							v.traverseExpression(valueSpec.Values[i], indent)
+							v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitDeclStmtValueSpecValue)
+							v.emitter.PostVisitDeclStmtValueSpecValue(valueSpec.Values[i], i, indent)
+						}
 					}
 				}
 			}

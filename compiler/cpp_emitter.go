@@ -128,6 +128,7 @@ type CPPEmitter struct {
 	isMapLenCall           bool   // len() call on a map
 	pendingMapInit         bool   // var m map[K]V needs default init
 	pendingMapKeyType      int    // Key type for pending init
+	hasDeclValue           bool   // True if current declaration has an explicit initialization value
 	suppressEmit           bool   // When true, emitToFile does nothing
 	isSliceMakeCall        bool   // Inside make([]T, n) call
 	sliceMakeCppType       string // C++ vector type, e.g. "std::vector<std::any>"
@@ -1345,6 +1346,8 @@ func (cppe *CPPEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 }
 
 func (cppe *CPPEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
+	// Track if there's an explicit initialization value
+	cppe.hasDeclValue = index < len(node.Values)
 	// Detect var m map[K]V declarations
 	if len(node.Values) == 0 && node.Type != nil {
 		if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
@@ -1370,7 +1373,19 @@ func (cppe *CPPEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index i
 		cppe.pendingMapInit = false
 		cppe.pendingMapKeyType = 0
 	}
+	// Only emit semicolon if there's no value coming
+	if !cppe.hasDeclValue {
+		cppe.emitToFile(";")
+	}
+}
+
+func (cppe *CPPEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	cppe.emitToFile(" = ")
+}
+
+func (cppe *CPPEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
 	cppe.emitToFile(";")
+	cppe.hasDeclValue = false
 }
 
 func (cppe *CPPEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
