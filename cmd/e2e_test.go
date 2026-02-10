@@ -34,7 +34,7 @@ var e2eTestCases = []TestCase{
 	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, false},
 	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false, true, false},          // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false, true, false},               // JS transpile only (needs browser), Java transpile only (needs native lib)
-	{"gui-demo", "../examples/gui-demo", true, true, true, true, false, false, false},                         // JS transpile only (needs browser), Java disabled (2D array literal issue)
+	{"gui-demo", "../examples/gui-demo", true, true, true, true, false, true, false},                          // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, true, true, false, false, false},       // JS transpile only (needs browser), Java disabled (2D array literal issue)
 	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, true, true, false, false, false},             // JS transpile only (needs browser), Java disabled (2D array literal issue)
 	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false, false, false}, // JS transpile only (needs browser), Java disabled (2D array literal issue)

@@ -272,6 +272,7 @@ type JavaEmitter struct {
 	inDeclName              bool              // True when emitting a declaration variable name
 	suppressClosureTypeEmit bool              // Suppress type emission for closure-captured variables (we emit Object[] instead)
 	inAssignLhs             bool              // True when processing LHS of assignment (skip cast for captured vars)
+	inSelectorX             bool              // True when processing X part of a SelectorExpr (need cast for field access)
 }
 
 // Helper functions
@@ -750,11 +751,28 @@ func walkForLoopInitForClosureAnalysis(stmt ast.Stmt, inClosure bool, assignedVa
 // javaExprToString converts an ast.Expr to its Java string representation.
 // This handles Java-specific transformations like slice expressions -> subList.
 func javaExprToString(expr ast.Expr) string {
+	return javaExprToStringWithClosures(expr, nil, nil)
+}
+
+// javaExprToStringWithClosures converts an ast.Expr to its Java string representation
+// with support for closure-captured mutable variables.
+func javaExprToStringWithClosures(expr ast.Expr, closureCapturedMutVars map[string]bool, closureCapturedVarType map[string]string) string {
 	switch e := expr.(type) {
 	case *ast.Ident:
-		return e.Name
+		name := e.Name
+		// Handle closure-captured variables - add cast and [0] suffix
+		if closureCapturedMutVars != nil && closureCapturedMutVars[name] {
+			capturedType := closureCapturedVarType[name]
+			if capturedType != "" {
+				return fmt.Sprintf("((%s)%s[0])", capturedType, name)
+			}
+			return fmt.Sprintf("%s[0]", name)
+		}
+		return name
 	case *ast.SelectorExpr:
-		return javaExprToString(e.X) + "." + e.Sel.Name
+		// For selector expressions on closure-captured vars, we need to cast first
+		// e.g., menuState.MenuBarH -> ((gui.MenuState)menuState[0]).MenuBarH
+		return javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + "." + e.Sel.Name
 	case *ast.BasicLit:
 		value := e.Value
 		// Handle raw strings (backticks) for Java
@@ -770,46 +788,55 @@ func javaExprToString(expr ast.Expr) string {
 		return value
 	case *ast.IndexExpr:
 		// Array/slice index: x[i] -> x.get(i)
-		return javaExprToString(e.X) + ".get(" + javaExprToString(e.Index) + ")"
+		return javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + ".get(" + javaExprToStringWithClosures(e.Index, closureCapturedMutVars, closureCapturedVarType) + ")"
 	case *ast.SliceExpr:
 		// Slice expression: x[low:high] -> new ArrayList<>(x.subList(low, high))
-		xStr := javaExprToString(e.X)
+		xStr := javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType)
 		lowStr := "0"
 		if e.Low != nil {
-			lowStr = javaExprToString(e.Low)
+			lowStr = javaExprToStringWithClosures(e.Low, closureCapturedMutVars, closureCapturedVarType)
 		}
 		highStr := xStr + ".size()"
 		if e.High != nil {
-			highStr = javaExprToString(e.High)
+			highStr = javaExprToStringWithClosures(e.High, closureCapturedMutVars, closureCapturedVarType)
 		}
 		return fmt.Sprintf("new ArrayList<>(%s.subList(%s, %s))", xStr, lowStr, highStr)
 	case *ast.CallExpr:
-		// Function call: f(args) -> f(args)
+		// Check for type conversion: float64(x) -> (double)(x)
+		if ident, ok := e.Fun.(*ast.Ident); ok {
+			if javaType, isType := javaTypesMap[ident.Name]; isType {
+				// This is a type conversion, not a function call
+				if len(e.Args) == 1 {
+					return "(" + javaType + ")(" + javaExprToStringWithClosures(e.Args[0], closureCapturedMutVars, closureCapturedVarType) + ")"
+				}
+			}
+		}
+		// Regular function call: f(args) -> f(args)
 		var args []string
 		for _, arg := range e.Args {
-			args = append(args, javaExprToString(arg))
+			args = append(args, javaExprToStringWithClosures(arg, closureCapturedMutVars, closureCapturedVarType))
 		}
-		return javaExprToString(e.Fun) + "(" + strings.Join(args, ", ") + ")"
+		return javaExprToStringWithClosures(e.Fun, closureCapturedMutVars, closureCapturedVarType) + "(" + strings.Join(args, ", ") + ")"
 	case *ast.UnaryExpr:
-		return e.Op.String() + javaExprToString(e.X)
+		return e.Op.String() + javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType)
 	case *ast.BinaryExpr:
-		return javaExprToString(e.X) + " " + e.Op.String() + " " + javaExprToString(e.Y)
+		return javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + " " + e.Op.String() + " " + javaExprToStringWithClosures(e.Y, closureCapturedMutVars, closureCapturedVarType)
 	case *ast.ParenExpr:
-		return "(" + javaExprToString(e.X) + ")"
+		return "(" + javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + ")"
 	case *ast.CompositeLit:
 		// Composite literal: Type{elts} -> new Type(elts)
-		typeStr := javaExprToString(e.Type)
+		typeStr := javaExprToStringWithClosures(e.Type, closureCapturedMutVars, closureCapturedVarType)
 		var elts []string
 		for _, elt := range e.Elts {
-			elts = append(elts, javaExprToString(elt))
+			elts = append(elts, javaExprToStringWithClosures(elt, closureCapturedMutVars, closureCapturedVarType))
 		}
 		return "new " + typeStr + "(" + strings.Join(elts, ", ") + ")"
 	case *ast.KeyValueExpr:
 		// Key-value in composite literal - just return value for Java constructor args
-		return javaExprToString(e.Value)
+		return javaExprToStringWithClosures(e.Value, closureCapturedMutVars, closureCapturedVarType)
 	case *ast.ArrayType:
 		// []Type -> ArrayList<Type>
-		return "ArrayList<" + javaExprToString(e.Elt) + ">"
+		return "ArrayList<" + javaExprToStringWithClosures(e.Elt, closureCapturedMutVars, closureCapturedVarType) + ">"
 	default:
 		return ""
 	}
@@ -1985,10 +2012,12 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 			if je.closureCapturedMutVars[e.Name] {
 				isCapturedAccess = true
 				capturedType = je.closureCapturedVarType[e.Name]
-				// Emit cast prefix for read access only (not when on LHS of assignment)
-				// LHS assignment: tokens[0] = ... (no cast)
-				// Read access: ((ArrayList<Token>)tokens[0]) (with cast)
-				if capturedType != "" && !je.inAssignLhs {
+				// Emit cast prefix for read access and field access (even on LHS for field access)
+				// Direct LHS assignment: tokens[0] = ... (no cast needed)
+				// Field access on LHS: ((Type)ctx[0]).Field = ... (cast needed for field access)
+				// Read access: ((ArrayList<Token>)tokens[0]) (cast needed)
+				needsCast := !je.inAssignLhs || je.inSelectorX
+				if capturedType != "" && needsCast {
 					je.emitToken("(("+capturedType+")", LeftParen, 0)
 				}
 			}
@@ -1998,8 +2027,9 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 
 		if isCapturedAccess {
 			je.emitToken("[0]", LeftBracket, 0)
-			// Emit cast suffix for read access only (not when on LHS of assignment)
-			if capturedType != "" && !je.inAssignLhs {
+			// Emit cast suffix for read access and field access (even on LHS for field access)
+			needsCast := !je.inAssignLhs || je.inSelectorX
+			if capturedType != "" && needsCast {
 				je.emitToken(")", RightParen, 0)
 			}
 		}
@@ -2873,6 +2903,9 @@ func (je *JavaEmitter) PreVisitFuncTypeParam(node *ast.Field, index int, indent 
 
 func (je *JavaEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
 	je.executeIfNotForwardDecls(func() {
+		// Track that we're in selector X position (for closure-captured field access)
+		je.inSelectorX = true
+
 		// Check if X is a package - suppress it since all code is in one Java file
 		// Do this first before any early returns
 		if ident, ok := node.X.(*ast.Ident); ok {
@@ -2928,6 +2961,9 @@ func (je *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int)
 }
 
 func (je *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
+	// Reset selector X flag (we're done processing X, now processing Sel)
+	je.inSelectorX = false
+
 	je.executeIfNotForwardDecls(func() {
 		if je.isMultiReturnAssign {
 			return
@@ -3515,7 +3551,7 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if je.isMultiReturnAssign {
 		callExpr := node.Rhs[0].(*ast.CallExpr)
 		funcName := ""
-		isRuntimeCall := false // Track if this is a runtime package call (uses Object[] instead of tuple)
+		isRuntimeCall := false // Track if this is a runtime package call that returns Object[]
 		if ident, ok := callExpr.Fun.(*ast.Ident); ok {
 			funcName = ident.Name
 		} else if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
@@ -3528,8 +3564,11 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 							if isJavaOuterClassPackage(xIdent.Name) {
 								// Runtime or outer class package - keep the package prefix (e.g., fs.ReadFile, types.AddLiteralToPlan)
 								funcName = xIdent.Name + "." + sel.Sel.Name
-								// Only mark as runtime call if it's actually a runtime package (uses Object[] instead of tuple)
-								_, isRuntimeCall = je.RuntimePackages[xIdent.Name]
+								// Check if this runtime package returns Object[] (fs, http, net)
+								// Graphics package uses proper result classes (like GetMouseResult), not Object[]
+								if xIdent.Name == "fs" || xIdent.Name == "http" || xIdent.Name == "net" {
+									isRuntimeCall = true
+								}
 							} else {
 								// Regular package - just use the function name
 								funcName = sel.Sel.Name
@@ -3564,7 +3603,8 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 		var args []string
 		for i, arg := range callExpr.Args {
-			argStr := javaExprToString(arg)
+			// Use closure-aware expression converter
+			argStr := javaExprToStringWithClosures(arg, je.closureCapturedMutVars, je.closureCapturedVarType)
 			// Add cast for byte/short parameters
 			if i < len(paramTypes) && needsByteCast(paramTypes[i], argStr) {
 				argStr = fmt.Sprintf("(%s)(%s)", paramTypes[i], argStr)
@@ -3603,11 +3643,17 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			} else {
 				valueExpr = fmt.Sprintf("%s._%d", resultVarName, i)
 			}
-			if je.multiReturnIsDecl && !je.isVarDeclared(name) {
+			// Check if this LHS variable is closure-captured
+			lhsName := name
+			isClosureCaptured := je.closureCapturedMutVars != nil && je.closureCapturedMutVars[name]
+			if isClosureCaptured {
+				lhsName = name + "[0]"
+			}
+			if je.multiReturnIsDecl && !je.isVarDeclared(name) && !isClosureCaptured {
 				code += fmt.Sprintf("%svar %s = %s;\n", indentStr, name, valueExpr)
 				je.declareVar(name)
 			} else {
-				code += fmt.Sprintf("%s%s = %s;\n", indentStr, name, valueExpr)
+				code += fmt.Sprintf("%s%s = %s;\n", indentStr, lhsName, valueExpr)
 			}
 		}
 
