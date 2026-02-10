@@ -183,8 +183,10 @@ type JavaEmitter struct {
 	typeAssertCommaOkBoxedType string
 	typeAssertCommaOkIsDecl    bool
 	typeAssertCommaOkIndent    int
-	isSliceMakeCall   bool
-	sliceMakeElemType string
+	isSliceMakeCall     bool
+	sliceMakeElemType   string
+	isAppendCall        bool     // Track when we're in an append call
+	appendStructType    string   // Type name for struct copy constructor
 	indexAccessTypeStack    []string
 	suppressMapEmitStack    []bool
 	isMixedIndexAssign      bool
@@ -1201,6 +1203,79 @@ func getJavaDefaultValue(javaType string) string {
 	}
 }
 
+// getJavaDefaultValueForStruct returns the default value for a field type,
+// initializing struct types with new instances (to match Go value semantics)
+func getJavaDefaultValueForStruct(javaType string) string {
+	// Primitives and String
+	switch javaType {
+	case "int":
+		return "0"
+	case "long":
+		return "0L"
+	case "double":
+		return "0.0"
+	case "float":
+		return "0.0f"
+	case "boolean":
+		return "false"
+	case "char":
+		return "'\\0'"
+	case "byte":
+		return "(byte)0"
+	case "short":
+		return "(short)0"
+	case "String":
+		return "\"\""
+	}
+	// Collections, functional interfaces, and built-in reference types should be null
+	if strings.HasPrefix(javaType, "ArrayList<") ||
+		strings.HasPrefix(javaType, "HashMap<") ||
+		isJavaFunctionalInterface(javaType) ||
+		isJavaBuiltinReferenceType(javaType) {
+		return "null"
+	}
+	// Other types are assumed to be structs - initialize them
+	return fmt.Sprintf("new %s()", javaType)
+}
+
+// isJavaPrimitiveType returns true if the type is a Java primitive type
+func isJavaPrimitiveType(javaType string) bool {
+	switch javaType {
+	case "int", "long", "double", "float", "boolean", "char", "byte", "short", "String":
+		return true
+	default:
+		return false
+	}
+}
+
+// isJavaBuiltinReferenceType returns true if the type is a Java built-in reference type
+// that should not be treated as a custom struct (no copy constructor available)
+func isJavaBuiltinReferenceType(javaType string) bool {
+	switch javaType {
+	case "Object", "Integer", "Long", "Double", "Float", "Boolean", "Character", "Byte", "Short":
+		return true
+	default:
+		return false
+	}
+}
+
+// isJavaFunctionalInterface returns true if the type is a Java functional interface
+// that should be copied by reference (not by calling a copy constructor)
+func isJavaFunctionalInterface(javaType string) bool {
+	// Check for common functional interface types from java.util.function
+	if strings.HasPrefix(javaType, "BiFunction<") ||
+		strings.HasPrefix(javaType, "Function<") ||
+		strings.HasPrefix(javaType, "Consumer<") ||
+		strings.HasPrefix(javaType, "BiConsumer<") ||
+		strings.HasPrefix(javaType, "Supplier<") ||
+		strings.HasPrefix(javaType, "Predicate<") ||
+		strings.HasPrefix(javaType, "BiPredicate<") ||
+		strings.HasPrefix(javaType, "Runnable") {
+		return true
+	}
+	return false
+}
+
 // needsByteCast returns true if a value needs to be cast to byte/short
 // This is needed because Java integer literals are 'int' by default
 func needsByteCast(fieldType, value string) bool {
@@ -1937,6 +2012,25 @@ func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		if je.isMultiReturnAssign {
 			return
 		}
+		// Check for append call with struct argument that's a variable reference
+		// (not a composite literal or constructor call)
+		if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "append" && len(node.Args) >= 2 {
+			je.isAppendCall = true
+			je.appendStructType = ""
+			// Only apply copy constructor for variable references (Ident), not for
+			// composite literals or other expressions that already create new structs
+			if _, isIdent := node.Args[1].(*ast.Ident); isIdent {
+				// Check if the second argument is a struct type (needs copy constructor)
+				if je.pkg != nil && je.pkg.TypesInfo != nil {
+					tv := je.pkg.TypesInfo.Types[node.Args[1]]
+					if tv.Type != nil {
+						if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
+							je.appendStructType = getJavaTypeName(tv.Type)
+						}
+					}
+				}
+			}
+		}
 		// Map operations
 		if ident, ok := node.Fun.(*ast.Ident); ok {
 			if ident.Name == "make" && len(node.Args) >= 1 {
@@ -2591,9 +2685,10 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			}
 
 			// Generate default (no-arg) constructor that initializes fields to defaults
+			// Use getJavaDefaultValueForStruct to initialize nested structs (Go value semantics)
 			defaultConstructor := fmt.Sprintf("        public %s() {\n", node.Name)
 			for _, f := range fields {
-				defaultConstructor += fmt.Sprintf("            this.%s = %s;\n", f.name, getJavaDefaultValue(f.javaType))
+				defaultConstructor += fmt.Sprintf("            this.%s = %s;\n", f.name, getJavaDefaultValueForStruct(f.javaType))
 			}
 			defaultConstructor += "        }\n"
 			je.emitToPackage(defaultConstructor)
@@ -2608,10 +2703,40 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			}
 			constructorCode += ") {\n"
 			for _, f := range fields {
-				constructorCode += fmt.Sprintf("            this.%s = %s;\n", f.name, f.name)
+				// For struct types, convert null to new instance (Go value semantics)
+				if !isJavaPrimitiveType(f.javaType) &&
+					!strings.HasPrefix(f.javaType, "ArrayList<") &&
+					!strings.HasPrefix(f.javaType, "HashMap<") &&
+					!isJavaFunctionalInterface(f.javaType) &&
+					!isJavaBuiltinReferenceType(f.javaType) {
+					constructorCode += fmt.Sprintf("            this.%s = %s != null ? %s : new %s();\n", f.name, f.name, f.name, f.javaType)
+				} else {
+					constructorCode += fmt.Sprintf("            this.%s = %s;\n", f.name, f.name)
+				}
 			}
 			constructorCode += "        }\n"
 			je.emitToPackage(constructorCode)
+
+			// Generate copy constructor for value semantics when appending to slices
+			copyConstructor := fmt.Sprintf("        public %s(%s other) {\n", node.Name, node.Name)
+			for _, f := range fields {
+				// Deep copy ArrayList/reference types, shallow copy primitives
+				if strings.HasPrefix(f.javaType, "ArrayList<") {
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new ArrayList<>(other.%s) : null;\n", f.name, f.name, f.name)
+				} else if strings.HasPrefix(f.javaType, "HashMap<") {
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new HashMap<>(other.%s) : null;\n", f.name, f.name, f.name)
+				} else if isJavaPrimitiveType(f.javaType) {
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s;\n", f.name, f.name)
+				} else if isJavaFunctionalInterface(f.javaType) || isJavaBuiltinReferenceType(f.javaType) {
+					// Functional interfaces (lambdas) and built-in reference types can be copied by reference
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s;\n", f.name, f.name)
+				} else {
+					// For other reference types (structs), use copy constructor if available
+					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new %s(other.%s) : null;\n", f.name, f.name, f.javaType, f.name)
+				}
+			}
+			copyConstructor += "        }\n"
+			je.emitToPackage(copyConstructor)
 		}
 
 		str := je.emitAsString("}\n\n", indent+2)
@@ -3112,6 +3237,9 @@ func (je *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 		// Clear parameter types after call expression
 		je.callExprParamTypes = nil
+		// Clear append call flags
+		je.isAppendCall = false
+		je.appendStructType = ""
 	})
 }
 
@@ -3989,6 +4117,10 @@ func (je *JavaEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int)
 			str := je.emitAsString(", ", 0)
 			je.emitToPackage(str)
 		}
+		// For append call with struct argument, wrap with copy constructor
+		if je.isAppendCall && index > 0 && je.appendStructType != "" {
+			je.emitToPackage("new " + je.appendStructType + "(")
+		}
 		// Add cast for byte/short parameters when passing integer literals/constants
 		if index < len(je.callExprParamTypes) {
 			paramType := je.callExprParamTypes[index]
@@ -4028,6 +4160,10 @@ func (je *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int
 		if je.isSliceMakeCall && index == 0 {
 			// Clear type context after first argument
 			je.inTypeContext = false
+		}
+		// Close copy constructor for append with struct
+		if je.isAppendCall && index > 0 && je.appendStructType != "" {
+			je.emitToPackage(")")
 		}
 		// Close cast for byte/short parameters
 		if index < len(je.callExprParamTypes) {
