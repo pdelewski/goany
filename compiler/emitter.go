@@ -309,6 +309,10 @@ type Emitter interface {
 	PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int)
 	// PostVisitDeclStmtValueSpecNames is called after visiting the names of a value specification in a declaration.
 	PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int)
+	// PreVisitDeclStmtValueSpecValue is called before visiting the value of a value specification in a declaration.
+	PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int)
+	// PostVisitDeclStmtValueSpecValue is called after visiting the value of a value specification in a declaration.
+	PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int)
 	// PreVisitBranchStmt is called before visiting a branch statement (break, continue, goto).
 	PreVisitBranchStmt(node *ast.BranchStmt, indent int)
 	// PostVisitBranchStmt is called after visiting a branch statement (break, continue, goto).

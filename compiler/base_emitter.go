@@ -139,6 +139,8 @@ const (
 	PostVisitDeclStmtValueSpecType VisitMethod = "PostVisitDeclStmtValueSpecType"
 	PreVisitDeclStmtValueSpecNames VisitMethod = "PreVisitDeclStmtValueSpecNames"
 	PostVisitDeclStmtValueSpecNames VisitMethod = "PostVisitDeclStmtValueSpecNames"
+	PreVisitDeclStmtValueSpecValue VisitMethod = "PreVisitDeclStmtValueSpecValue"
+	PostVisitDeclStmtValueSpecValue VisitMethod = "PostVisitDeclStmtValueSpecValue"
 	PreVisitBranchStmt VisitMethod = "PreVisitBranchStmt"
 	PostVisitBranchStmt VisitMethod = "PostVisitBranchStmt"
 	PreVisitDeferStmt VisitMethod = "PreVisitDeferStmt"
@@ -378,6 +380,8 @@ func (v *BaseEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index i
 func (v *BaseEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {}
 func (v *BaseEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {}
 func (v *BaseEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {}
+func (v *BaseEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {}
+func (v *BaseEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {}
 func (v *BaseEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {}
 func (v *BaseEmitter) PostVisitBranchStmt(node *ast.BranchStmt, indent int) {}
 func (v *BaseEmitter) PreVisitDeferStmt(node *ast.DeferStmt, indent int) {}

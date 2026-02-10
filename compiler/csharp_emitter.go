@@ -152,6 +152,8 @@ type CSharpEmitter struct {
 	mixedIndexAssignOps    []csMixedIndexOp
 	mixedAssignIndent      int
 	mixedAssignFinalTarget string
+	// Variable declaration value tracking
+	hasDeclValue bool // True if current declaration has an explicit initialization value
 }
 
 func (*CSharpEmitter) lowerToBuiltins(selector string) string {
@@ -1021,6 +1023,8 @@ func (cse *CSharpEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, ind
 		cse.isArray = false
 		// Set type context flag - the variable type will be visited next
 		cse.inTypeContext = true
+		// Track if this declaration has an explicit initialization value
+		cse.hasDeclValue = index < len(node.Values)
 		// Detect var m map[K]V declarations (no initialization value)
 		if len(node.Values) == 0 && node.Type != nil {
 			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
@@ -1061,6 +1065,10 @@ func (cse *CSharpEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index 
 
 func (cse *CSharpEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
 	cse.executeIfNotForwardDecls(func() {
+		// Skip default initialization if we have an explicit value coming
+		if cse.hasDeclValue {
+			return
+		}
 		var str string
 		if cse.pendingMapInit {
 			str += fmt.Sprintf(" = hmap.newHashMap(%d);", cse.pendingMapKeyType)
@@ -1075,6 +1083,19 @@ func (cse *CSharpEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index
 			str += " = default;"
 		}
 		cse.gir.emitToFileBuffer(str, EmptyVisitMethod)
+	})
+}
+
+func (cse *CSharpEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		cse.gir.emitToFileBuffer(" = ", EmptyVisitMethod)
+	})
+}
+
+func (cse *CSharpEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	cse.executeIfNotForwardDecls(func() {
+		cse.gir.emitToFileBuffer(";", EmptyVisitMethod)
+		cse.hasDeclValue = false
 	})
 }
 

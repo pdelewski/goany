@@ -30,7 +30,7 @@ const runtimePath = "../runtime"
 var e2eTestCases = []TestCase{
 	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true},
 	{"containers", "../examples/containers", true, true, true, true, true, true, false},
-	{"uql", "../examples/uql", true, true, true, true, true, false, false},
+	{"uql", "../examples/uql", true, true, true, true, true, true, false},
 	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, false},
 	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false, false, false},         // JS transpile only (needs browser)
 	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false, false, false},               // JS transpile only (needs browser)
