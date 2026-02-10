@@ -3759,7 +3759,11 @@ func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 		str := je.emitAsString(" ", 0)
 		je.emitToPackage(str)
 		if node.Tok == token.DEFINE {
-			str = je.emitAsString("= ", 0)
+			if je.isClosureCapturedDecl {
+				str = je.emitAsString("= {", 0)
+			} else {
+				str = je.emitAsString("= ", 0)
+			}
 		} else {
 			str = je.emitAsString(node.Tok.String()+" ", 0)
 		}
@@ -3772,6 +3776,12 @@ func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (je *JavaEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	// Close closure-captured variable array wrapper
+	if je.isClosureCapturedDecl {
+		je.emitToPackage("}")
+		je.isClosureCapturedDecl = false
+		je.closureCapturedDeclName = ""
+	}
 	// Close byte/short arithmetic cast
 	if je.needsSmallIntCast {
 		je.emitToPackage(")")
@@ -3820,6 +3830,18 @@ func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 				}
 			}
 			if allNew {
+				// Check if any LHS variable is a closure-captured mutable variable
+				isClosureCaptured := false
+				if je.closureCapturedMutVars != nil && len(node.Lhs) == 1 {
+					if ident, ok := node.Lhs[0].(*ast.Ident); ok {
+						if je.closureCapturedMutVars[ident.Name] {
+							isClosureCaptured = true
+							je.isClosureCapturedDecl = true
+							je.closureCapturedDeclName = ident.Name
+						}
+					}
+				}
+
 				// Check if RHS is a function literal - if so, emit the functional interface type
 				// instead of var (Java can't infer lambda types from var)
 				isFuncLit := false
@@ -3845,7 +3867,13 @@ func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 					}
 				}
 
-				if isFuncLit {
+				if isClosureCaptured {
+					// Use Object[] for closure-captured mutable variables
+					str := je.emitAsString("Object[] ", 0)
+					je.emitToPackage(str)
+					// Set inDeclName to prevent [0] suffix on the variable name
+					je.inDeclName = true
+				} else if isFuncLit {
 					str := je.emitAsString(funcLitType+" ", 0)
 					je.emitToPackage(str)
 				} else {
@@ -3868,6 +3896,8 @@ func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 func (je *JavaEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	// Reset assignment LHS flag
 	je.inAssignLhs = false
+	// Reset declaration name flag (for closure-captured short var declarations)
+	je.inDeclName = false
 	je.executeIfNotForwardDecls(func() {
 	})
 }
@@ -5129,6 +5159,73 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 			return fmt.Errorf("failed to write %s: %w", dstFileName, err)
 		}
 		DebugLogPrintf("Copied %s from %s to %s", dstFileName, runtimeSrcPath, dstPath)
+
+		// For graphics with tigr variant, also copy native JNI files
+		if name == "graphics" && variant == "tigr" {
+			// Copy JNI C file
+			jniSrc := filepath.Join(je.LinkRuntime, "graphics", "java", "graphics_jni.c")
+			if jniContent, err := os.ReadFile(jniSrc); err == nil {
+				jniDst := filepath.Join(je.OutputDir, "graphics_jni.c")
+				if err := os.WriteFile(jniDst, jniContent, 0644); err != nil {
+					return fmt.Errorf("failed to write graphics_jni.c: %w", err)
+				}
+				DebugLogPrintf("Copied graphics_jni.c")
+			}
+
+			// Copy Makefile
+			makeSrc := filepath.Join(je.LinkRuntime, "graphics", "java", "Makefile")
+			if makeContent, err := os.ReadFile(makeSrc); err == nil {
+				makeDst := filepath.Join(je.OutputDir, "Makefile")
+				if err := os.WriteFile(makeDst, makeContent, 0644); err != nil {
+					return fmt.Errorf("failed to write Makefile: %w", err)
+				}
+				DebugLogPrintf("Copied Makefile")
+			}
+
+			// Copy TIGR files from cpp directory
+			tigrFiles := []string{"tigr.c", "tigr.h", "screen_helper.c"}
+			for _, file := range tigrFiles {
+				src := filepath.Join(je.LinkRuntime, "graphics", "cpp", file)
+				if fileContent, err := os.ReadFile(src); err == nil {
+					dst := filepath.Join(je.OutputDir, file)
+					if err := os.WriteFile(dst, fileContent, 0644); err != nil {
+						return fmt.Errorf("failed to write %s: %w", file, err)
+					}
+					DebugLogPrintf("Copied %s", file)
+				}
+			}
+
+			// Generate run.sh script with correct platform-specific flags
+			runScript := `#!/bin/bash
+# Run script for Java graphics application
+# Automatically adds required JVM flags for each platform
+
+MAIN_CLASS="${1:-` + je.OutputName + `}"
+
+# Detect OS and set appropriate flags
+case "$(uname -s)" in
+    Darwin)
+        # macOS requires -XstartOnFirstThread for GUI applications
+        java -XstartOnFirstThread --enable-native-access=ALL-UNNAMED -Djava.library.path=. "$MAIN_CLASS"
+        ;;
+    Linux)
+        java --enable-native-access=ALL-UNNAMED -Djava.library.path=. "$MAIN_CLASS"
+        ;;
+    MINGW*|MSYS*|CYGWIN*)
+        java --enable-native-access=ALL-UNNAMED -Djava.library.path=. "$MAIN_CLASS"
+        ;;
+    *)
+        echo "Unknown OS: $(uname -s)"
+        java --enable-native-access=ALL-UNNAMED -Djava.library.path=. "$MAIN_CLASS"
+        ;;
+esac
+`
+			runScriptPath := filepath.Join(je.OutputDir, "run.sh")
+			if err := os.WriteFile(runScriptPath, []byte(runScript), 0755); err != nil {
+				return fmt.Errorf("failed to write run.sh: %w", err)
+			}
+			DebugLogPrintf("Generated run.sh")
+		}
 	}
 
 	return nil
