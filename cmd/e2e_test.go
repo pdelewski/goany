@@ -32,14 +32,14 @@ var e2eTestCases = []TestCase{
 	{"containers", "../examples/containers", true, true, true, true, true, true, false},
 	{"uql", "../examples/uql", true, true, true, true, true, true, false},
 	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, false},
-	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false, false, false},         // JS transpile only (needs browser)
-	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false, false, false},               // JS transpile only (needs browser)
-	{"gui-demo", "../examples/gui-demo", true, true, true, true, false, false, false},                         // JS transpile only (needs browser)
-	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, true, true, false, false, false},       // JS transpile only (needs browser)
-	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, true, true, false, false, false},             // JS transpile only (needs browser)
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false, false, false}, // JS transpile only (needs browser)
-	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, true, true, false, false, false},               // JS transpile only (needs browser)
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false, false, false},         // JS transpile only (needs browser) - uses RunLoopWithState API
+	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false, true, false},          // JS transpile only (needs browser), Java transpile only (needs native lib)
+	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false, true, false},               // JS transpile only (needs browser), Java transpile only (needs native lib)
+	{"gui-demo", "../examples/gui-demo", true, true, true, true, false, false, false},                         // JS transpile only (needs browser), Java disabled (2D array literal issue)
+	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, true, true, false, false, false},       // JS transpile only (needs browser), Java disabled (2D array literal issue)
+	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, true, true, false, false, false},             // JS transpile only (needs browser), Java disabled (2D array literal issue)
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false, false, false}, // JS transpile only (needs browser), Java disabled (2D array literal issue)
+	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, true, true, false, false, false},               // JS transpile only (needs browser), Java disabled (2D array literal issue)
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false, false, false},         // JS transpile only (needs browser), Java disabled (2D array literal issue)
 	{"http-client", "../examples/http/client", true, true, true, true, false, true, false},
 	{"http-server", "../examples/http/server", true, true, true, true, false, true, false},
 	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true},
