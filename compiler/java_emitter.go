@@ -1959,12 +1959,37 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 		// Only convert if: we're inside call arguments AND not in the Fun part of a nested call
 		if je.inCallExprArgs && je.inCallExprFunDepth == 0 && je.pkg != nil && je.pkg.TypesInfo != nil {
 			if obj := je.pkg.TypesInfo.Uses[e]; obj != nil {
-				if _, isFunc := obj.Type().(*types.Signature); isFunc {
-					// This is a function reference - emit as method reference
+				if sig, isFunc := obj.Type().(*types.Signature); isFunc {
+					// This is a function reference
 					className := je.OutputName
 					// Sanitize class name (replace hyphens with underscores)
 					className = strings.ReplaceAll(className, "-", "_")
-					str = je.emitAsString(className+"::"+name, indent)
+
+					// Check if function returns multiple values - need to wrap in lambda
+					// that converts result struct to Object[] for BiFunction compatibility
+					if sig.Results() != nil && sig.Results().Len() > 1 {
+						// Generate lambda that wraps multi-return function
+						// (arg0, arg1, ...) -> { var r = ClassName.funcName(arg0, arg1, ...); return new Object[]{r._0, r._1, ...}; }
+						numParams := sig.Params().Len()
+						paramNames := make([]string, numParams)
+						for i := 0; i < numParams; i++ {
+							paramNames[i] = fmt.Sprintf("_arg%d", i)
+						}
+						numResults := sig.Results().Len()
+						resultFields := make([]string, numResults)
+						for i := 0; i < numResults; i++ {
+							resultFields[i] = fmt.Sprintf("_r._%d", i)
+						}
+						lambda := fmt.Sprintf("(%s) -> { var _r = %s.%s(%s); return new Object[]{%s}; }",
+							strings.Join(paramNames, ", "),
+							className, name,
+							strings.Join(paramNames, ", "),
+							strings.Join(resultFields, ", "))
+						str = je.emitAsString(lambda, indent)
+					} else {
+						// Single return value - use method reference
+						str = je.emitAsString(className+"::"+name, indent)
+					}
 					je.emitToken(str, Identifier, 0)
 					return
 				}
@@ -2029,7 +2054,8 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 				// Direct LHS assignment: tokens[0] = ... (no cast needed)
 				// Field access on LHS: ((Type)ctx[0]).Field = ... (cast needed for field access)
 				// Read access: ((ArrayList<Token>)tokens[0]) (cast needed)
-				needsCast := !je.inAssignLhs || je.inSelectorX
+				// Slice index assignment on LHS: ((ArrayList<T>)arr[0]).set(i, v) (cast needed for .set() call)
+				needsCast := !je.inAssignLhs || je.inSelectorX || je.isSliceIndexAssign
 				if capturedType != "" && needsCast {
 					je.emitToken("(("+capturedType+")", LeftParen, 0)
 				}
@@ -2041,7 +2067,8 @@ func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
 		if isCapturedAccess {
 			je.emitToken("[0]", LeftBracket, 0)
 			// Emit cast suffix for read access and field access (even on LHS for field access)
-			needsCast := !je.inAssignLhs || je.inSelectorX
+			// Slice index assignment on LHS: ((ArrayList<T>)arr[0]).set(i, v) (cast needed for .set() call)
+			needsCast := !je.inAssignLhs || je.inSelectorX || je.isSliceIndexAssign
 			if capturedType != "" && needsCast {
 				je.emitToken(")", RightParen, 0)
 			}

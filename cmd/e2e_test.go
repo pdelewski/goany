@@ -37,9 +37,9 @@ var e2eTestCases = []TestCase{
 	{"gui-demo", "../examples/gui-demo", true, true, true, true, false, true, false},                          // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, true, true, false, true, false},        // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, true, true, false, true, false},              // JS transpile only (needs browser), Java transpile only (needs native lib)
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false, false, false}, // JS transpile only (needs browser), Java disabled (symbol issues)
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, true, true, false, true, false}, // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, true, true, false, true, false},                // JS transpile only (needs browser), Java transpile only (needs native lib)
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false, false, false},         // JS transpile only (needs browser), Java disabled (method reference type issue)
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, true, true, false, true, false}, // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"http-client", "../examples/http/client", true, true, true, true, false, true, false},
 	{"http-server", "../examples/http/server", true, true, true, true, false, true, false},
 	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true},
