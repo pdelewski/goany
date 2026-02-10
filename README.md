@@ -4,7 +4,7 @@
 
 Copyright (c) 2024-2026 Przemyslaw Delewski
 
-A Go language transpiler that generates portable code for multiple target platforms. Write your code once in Go and transpile it to C++, C#, Rust, or JavaScript.
+A Go language transpiler that generates portable code for multiple target platforms. Write your code once in Go and transpile it to C++, C#, Rust, JavaScript, or Java.
 
 [**▶ Try the C64 Emulator Demo WIP (runs in browser)**](https://pdelewski.github.io/goany/docs/demos/c64.html)
 
@@ -20,6 +20,7 @@ This project provides a foundation for writing portable libraries in Go that can
 - **C#** (.NET) - generates `.cs` files
 - **Rust** - generates `.rs` files
 - **JavaScript** - generates `.js` files (runs in browser with Canvas API)
+- **Java** - generates `.java` files
 
 ## Project Goals
 
@@ -27,7 +28,7 @@ The main aim of goany is to provide a tool for writing **portable applications a
 
 ### Key Objectives
 
-1. **Cross-language portability** - Write code once and transpile it to C++, Rust, C#/.NET, and JavaScript, enabling code reuse across different ecosystems and platforms.
+1. **Cross-language portability** - Write code once and transpile it to C++, Rust, C#/.NET, JavaScript, and Java, enabling code reuse across different ecosystems and platforms.
 
 2. **Near 1-to-1 translation** - The generated code maintains almost direct correspondence to the original source, making it readable, debuggable, and easy to understand.
 
@@ -55,6 +56,7 @@ This design allows you to develop and test your code using Go's excellent toolin
 | **.NET 9 SDK** | C# backend tests | [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/9.0) (optional) |
 | **Rust** | Rust backend tests | [rustup.rs](https://rustup.rs/) (optional) |
 | **Node.js** | JavaScript backend tests | [nodejs.org](https://nodejs.org/) (optional) |
+| **Java 21+** | Java backend tests | [adoptium.net](https://adoptium.net/) (optional) |
 | **SDL2** | Graphics with `-graphics-runtime=sdl2` | See below (optional) |
 
 ### Linux / macOS
@@ -182,7 +184,7 @@ make
 |------|-------------|---------|
 | `-source` | Source directory containing Go files | (required) |
 | `-output` | Output file name (without extension) | (required for transpilation) |
-| `-backend` | Backend(s) to use: `all`, `cpp`, `cs`, `rust`, `js` | `all` |
+| `-backend` | Backend(s) to use: `all`, `cpp`, `cs`, `rust`, `js`, `java` | `all` |
 | `-link-runtime` | Path to runtime for linking (generates build files with include paths) | (none) |
 | `-graphics-runtime` | Graphics backend: `tigr`, `sdl2`, `none` | `tigr` |
 | `-check-sema` | Check syntax and semantics only, no transpilation | `false` |
@@ -210,6 +212,11 @@ Transpile to Rust only:
 Transpile to C# and Rust:
 ```bash
 ./goany -source=../examples/uql -output=uql -backend=cs,rust
+```
+
+Transpile to Java:
+```bash
+./goany -source=../examples/uql -output=uql -backend=java
 ```
 
 Transpile to JavaScript (runs in browser):
@@ -252,7 +259,7 @@ See [docs/supported-features.md](docs/supported-features.md) for detailed docume
 | Directory | Description |
 |-----------|-------------|
 | `cmd/` | CLI entry point (`main.go`, `Makefile`) |
-| `compiler/` | Backend emitters (`cpp_emitter.go`, `csharp_emitter.go`, `rust_emitter.go`, `js_emitter.go`) |
+| `compiler/` | Backend emitters (`cpp_emitter.go`, `csharp_emitter.go`, `rust_emitter.go`, `js_emitter.go`, `java_emitter.go`) |
 | `runtime/` | Runtime libraries (graphics for Canvas/SDL2/TIGR) |
 | `examples/` | Example projects (`uql`, `contlib`, `graphics-demo`, `mos6502`) |
 | `scripts/` | Utility scripts (`setup-deps.sh`) |
