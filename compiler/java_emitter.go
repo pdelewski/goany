@@ -5378,6 +5378,9 @@ func (je *JavaEmitter) GeneratePomXml() error {
 	}
 	defer file.Close()
 
+	// Sanitize output name for Java class name (replace hyphens with underscores)
+	mainClass := strings.ReplaceAll(je.OutputName, "-", "_")
+
 	pom := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -5414,7 +5417,7 @@ func (je *JavaEmitter) GeneratePomXml() error {
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>Api</mainClass>
+                            <mainClass>%s</mainClass>
                         </manifest>
                     </archive>
                 </configuration>
@@ -5424,13 +5427,13 @@ func (je *JavaEmitter) GeneratePomXml() error {
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.1.0</version>
                 <configuration>
-                    <mainClass>Api</mainClass>
+                    <mainClass>%s</mainClass>
                 </configuration>
             </plugin>
         </plugins>
     </build>
 </project>
-`, je.OutputName)
+`, je.OutputName, mainClass, mainClass)
 
 	_, err = file.WriteString(pom)
 	if err != nil {
