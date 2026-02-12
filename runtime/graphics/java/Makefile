@@ -1,6 +1,7 @@
-# Makefile for building the Java graphics JNI native library
+# Makefile for building the Java graphics application
+# Builds both the JNI native library and compiles Java sources
 # Requires JAVA_HOME to be set
-# All source files (tigr.c, screen_helper.c, graphics_jni.c) are expected in the current directory
+# All source files (tigr.c, screen_helper.c, graphics_jni.c, *.java) are expected in the current directory
 
 JAVA_HOME ?= $(shell /usr/libexec/java_home 2>/dev/null || echo $$JAVA_HOME)
 
@@ -27,14 +28,19 @@ else
 endif
 
 SOURCES = graphics_jni.c tigr.c screen_helper.c
+JAVA_SOURCES = $(wildcard *.java)
 
-all: $(TARGET)
+all: $(TARGET) java
 
 $(TARGET): $(SOURCES)
 	@echo "Building $(TARGET) with JAVA_HOME=$(JAVA_HOME)"
 	$(CC) $(CFLAGS) -o $@ $(SOURCES) $(LDFLAGS)
 
-clean:
-	rm -f $(TARGET)
+java: $(JAVA_SOURCES)
+	@echo "Compiling Java sources..."
+	javac $(JAVA_SOURCES)
 
-.PHONY: all clean
+clean:
+	rm -f $(TARGET) *.class
+
+.PHONY: all java clean
