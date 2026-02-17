@@ -23,6 +23,7 @@ const TokenAssign int = 18
 const TokenAt int = 19
 const TokenStar int = 20
 const TokenDoubleStar int = 21
+const TokenArrow int = 22 // -> for type hints
 
 // Token represents a lexical token
 type Token struct {
@@ -113,6 +114,27 @@ func isKeyword(s string) bool {
 	if s == "lambda" {
 		return true
 	}
+	if s == "class" {
+		return true
+	}
+	if s == "try" {
+		return true
+	}
+	if s == "except" {
+		return true
+	}
+	if s == "finally" {
+		return true
+	}
+	if s == "with" {
+		return true
+	}
+	if s == "yield" {
+		return true
+	}
+	if s == "raise" {
+		return true
+	}
 	return false
 }
 
@@ -183,6 +205,9 @@ func TokenTypeName(tokenType int) string {
 	}
 	if tokenType == TokenDoubleStar {
 		return "DOUBLESTAR"
+	}
+	if tokenType == TokenArrow {
+		return "ARROW"
 	}
 	return "UNKNOWN"
 }

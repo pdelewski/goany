@@ -33,6 +33,15 @@ const NodeLambda int = 29
 const NodeStarArg int = 30
 const NodeKwArg int = 31
 const NodeDecorator int = 32
+const NodeClass int = 33
+const NodeTry int = 34
+const NodeExcept int = 35
+const NodeFinally int = 36
+const NodeWith int = 37
+const NodeYield int = 38
+const NodeListComp int = 39
+const NodeTypeHint int = 40
+const NodeRaise int = 41
 
 // Node represents an AST node
 type Node struct {
@@ -186,6 +195,33 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeDecorator {
 		return "Decorator"
+	}
+	if nodeType == NodeClass {
+		return "Class"
+	}
+	if nodeType == NodeTry {
+		return "Try"
+	}
+	if nodeType == NodeExcept {
+		return "Except"
+	}
+	if nodeType == NodeFinally {
+		return "Finally"
+	}
+	if nodeType == NodeWith {
+		return "With"
+	}
+	if nodeType == NodeYield {
+		return "Yield"
+	}
+	if nodeType == NodeListComp {
+		return "ListComp"
+	}
+	if nodeType == NodeTypeHint {
+		return "TypeHint"
+	}
+	if nodeType == NodeRaise {
+		return "Raise"
 	}
 	return "Unknown"
 }

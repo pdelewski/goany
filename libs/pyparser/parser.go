@@ -47,6 +47,11 @@ func parseStatement(tokens []Token, pos int) (Node, int) {
 		return parseFunctionDef(tokens, pos)
 	}
 
+	// class statement
+	if tokenType == TokenKeyword && tokenValue == "class" {
+		return parseClass(tokens, pos)
+	}
+
 	// return statement
 	if tokenType == TokenKeyword && tokenValue == "return" {
 		return parseReturn(tokens, pos)
@@ -109,6 +114,26 @@ func parseStatement(tokens []Token, pos int) (Node, int) {
 	// from...import statement
 	if tokenType == TokenKeyword && tokenValue == "from" {
 		return parseImportFrom(tokens, pos)
+	}
+
+	// try statement
+	if tokenType == TokenKeyword && tokenValue == "try" {
+		return parseTry(tokens, pos)
+	}
+
+	// with statement
+	if tokenType == TokenKeyword && tokenValue == "with" {
+		return parseWith(tokens, pos)
+	}
+
+	// yield statement
+	if tokenType == TokenKeyword && tokenValue == "yield" {
+		return parseYield(tokens, pos)
+	}
+
+	// raise statement
+	if tokenType == TokenKeyword && tokenValue == "raise" {
+		return parseRaise(tokens, pos)
 	}
 
 	// decorator
@@ -828,22 +853,88 @@ func parseSubscript(valueNode Node, tokens []Token, pos int) (Node, int) {
 	return node, pos
 }
 
-// parseListLiteral parses a list literal [...]
+// parseListLiteral parses a list literal [...] or list comprehension [expr for x in iter]
 func parseListLiteral(tokens []Token, pos int) (Node, int) {
-	node := NewNode(NodeList)
-	node = SetLine(node, peekToken(tokens, pos).Line)
+	startLine := peekToken(tokens, pos).Line
 
 	// Skip '['
 	pos = pos + 1
 
-	for peekTokenType(tokens, pos) != TokenRBracket && peekTokenType(tokens, pos) != TokenEOF {
+	// Check for empty list
+	if peekTokenType(tokens, pos) == TokenRBracket {
+		pos = pos + 1
+		emptyList := NewNode(NodeList)
+		emptyList = SetLine(emptyList, startLine)
+		return emptyList, pos
+	}
+
+	// Parse first expression
+	var firstExpr Node
+	firstExpr, pos = parseExpression(tokens, pos)
+
+	// Check if this is a list comprehension
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "for" {
+		return parseListComprehension(firstExpr, tokens, pos, startLine)
+	}
+
+	// Regular list
+	node := NewNode(NodeList)
+	node = SetLine(node, startLine)
+	node = AddChild(node, firstExpr)
+
+	// Parse remaining elements
+	for peekTokenType(tokens, pos) == TokenComma {
+		pos = pos + 1 // Skip comma
+		if peekTokenType(tokens, pos) == TokenRBracket {
+			break
+		}
 		var elem Node
 		elem, pos = parseExpression(tokens, pos)
 		node = AddChild(node, elem)
+	}
 
-		if peekTokenType(tokens, pos) == TokenComma {
-			pos = pos + 1
-		}
+	// Skip ']'
+	if peekTokenType(tokens, pos) == TokenRBracket {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseListComprehension parses a list comprehension [expr for x in iter if cond]
+func parseListComprehension(expr Node, tokens []Token, pos int, startLine int) (Node, int) {
+	node := NewNode(NodeListComp)
+	node = SetLine(node, startLine)
+
+	// Add the expression
+	node = AddChild(node, expr)
+
+	// Skip 'for'
+	pos = pos + 1
+
+	// Loop variable
+	if peekTokenType(tokens, pos) == TokenIdentifier {
+		varNode := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+		node = AddChild(node, varNode)
+		pos = pos + 1
+	}
+
+	// Skip 'in'
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "in" {
+		pos = pos + 1
+	}
+
+	// Iterable
+	var iterable Node
+	iterable, pos = parseExpression(tokens, pos)
+	node = AddChild(node, iterable)
+
+	// Optional 'if' condition
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "if" {
+		pos = pos + 1
+		var condition Node
+		condition, pos = parseExpression(tokens, pos)
+		node = AddChild(node, condition)
 	}
 
 	// Skip ']'
@@ -1069,4 +1160,271 @@ func parseDecorated(tokens []Token, pos int) (Node, int) {
 	funcDef.Children = newChildren
 
 	return funcDef, pos
+}
+
+// parseClass parses a class definition
+// class ClassName:
+// class ClassName(BaseClass):
+func parseClass(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeClass)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'class'
+	pos = pos + 1
+
+	// Class name
+	if peekTokenType(tokens, pos) == TokenIdentifier {
+		node.Name = peekTokenValue(tokens, pos)
+		pos = pos + 1
+	}
+
+	// Base classes (optional)
+	baseList := NewNode(NodeList)
+	if peekTokenType(tokens, pos) == TokenLParen {
+		pos = pos + 1
+		for peekTokenType(tokens, pos) != TokenRParen && peekTokenType(tokens, pos) != TokenEOF {
+			if peekTokenType(tokens, pos) == TokenIdentifier {
+				baseNode := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+				baseList = AddChild(baseList, baseNode)
+				pos = pos + 1
+			}
+			if peekTokenType(tokens, pos) == TokenComma {
+				pos = pos + 1
+			}
+		}
+		if peekTokenType(tokens, pos) == TokenRParen {
+			pos = pos + 1
+		}
+	}
+	node = AddChild(node, baseList)
+
+	// Colon
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	// Body (indented block)
+	var body Node
+	body, pos = parseBlock(tokens, pos)
+	node = AddChild(node, body)
+
+	return node, pos
+}
+
+// parseTry parses a try/except/finally statement
+// try:
+//     ...
+// except Exception:
+//     ...
+// finally:
+//     ...
+func parseTry(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeTry)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'try'
+	pos = pos + 1
+
+	// Colon
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	// Try body
+	var tryBody Node
+	tryBody, pos = parseBlock(tokens, pos)
+	node = AddChild(node, tryBody)
+
+	// Handle except clauses
+	for peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "except" {
+		var exceptNode Node
+		exceptNode, pos = parseExcept(tokens, pos)
+		node = AddChild(node, exceptNode)
+	}
+
+	// Handle finally clause
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "finally" {
+		var finallyNode Node
+		finallyNode, pos = parseFinally(tokens, pos)
+		node = AddChild(node, finallyNode)
+	}
+
+	return node, pos
+}
+
+// parseExcept parses an except clause
+// except Exception as e:
+func parseExcept(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeExcept)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'except'
+	pos = pos + 1
+
+	// Exception type (optional)
+	if peekTokenType(tokens, pos) == TokenIdentifier {
+		node.Name = peekTokenValue(tokens, pos)
+		pos = pos + 1
+
+		// Check for 'as' alias
+		if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
+			pos = pos + 1
+			if peekTokenType(tokens, pos) == TokenIdentifier {
+				node.Value = peekTokenValue(tokens, pos) // Store alias in Value
+				pos = pos + 1
+			}
+		}
+	}
+
+	// Colon
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	// Body
+	var body Node
+	body, pos = parseBlock(tokens, pos)
+	node = AddChild(node, body)
+
+	return node, pos
+}
+
+// parseFinally parses a finally clause
+func parseFinally(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeFinally)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'finally'
+	pos = pos + 1
+
+	// Colon
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	// Body
+	var body Node
+	body, pos = parseBlock(tokens, pos)
+	node = AddChild(node, body)
+
+	return node, pos
+}
+
+// parseWith parses a with statement
+// with open("file") as f:
+func parseWith(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeWith)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'with'
+	pos = pos + 1
+
+	// Context expression
+	var contextExpr Node
+	contextExpr, pos = parseExpression(tokens, pos)
+	node = AddChild(node, contextExpr)
+
+	// Check for 'as' alias
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
+		pos = pos + 1
+		if peekTokenType(tokens, pos) == TokenIdentifier {
+			alias := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+			node = AddChild(node, alias)
+			pos = pos + 1
+		}
+	}
+
+	// Colon
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	// Body
+	var body Node
+	body, pos = parseBlock(tokens, pos)
+	node = AddChild(node, body)
+
+	return node, pos
+}
+
+// parseYield parses a yield statement/expression
+// yield value
+// yield from iterable
+func parseYield(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeYield)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'yield'
+	pos = pos + 1
+
+	// Check for 'from' (yield from)
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "from" {
+		node.Op = "from"
+		pos = pos + 1
+	}
+
+	// Yield value (optional)
+	if peekTokenType(tokens, pos) != TokenNewline && peekTokenType(tokens, pos) != TokenEOF {
+		var expr Node
+		expr, pos = parseExpression(tokens, pos)
+		node = AddChild(node, expr)
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseRaise parses a raise statement
+// raise Exception
+// raise Exception("message")
+// raise
+func parseRaise(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeRaise)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'raise'
+	pos = pos + 1
+
+	// Exception (optional - bare raise re-raises current exception)
+	if peekTokenType(tokens, pos) != TokenNewline && peekTokenType(tokens, pos) != TokenEOF {
+		var expr Node
+		expr, pos = parseExpression(tokens, pos)
+		node = AddChild(node, expr)
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	return node, pos
 }
