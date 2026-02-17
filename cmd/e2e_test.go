@@ -32,6 +32,7 @@ var e2eTestCases = []TestCase{
 	{"containers", "../examples/containers", true, true, true, true, true, true, false},
 	{"uql", "../examples/uql", true, true, true, true, true, true, false},
 	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, false},
+	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true},
 	{"graphics-minimal", "../examples/graphics-minimal", true, true, true, true, false, true, false},          // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"graphics-demo", "../examples/graphics-demo", true, true, true, true, false, true, false},               // JS transpile only (needs browser), Java transpile only (needs native lib)
 	{"gui-demo", "../examples/gui-demo", true, true, true, true, false, true, false},                          // JS transpile only (needs browser), Java transpile only (needs native lib)
