@@ -37,6 +37,7 @@ const TokenLeftShift int = 32  // <<
 const TokenRightShift int = 33 // >>
 const TokenWalrus int = 34     // := (walrus operator)
 const TokenColonEqual int = 35 // := alias
+const TokenEllipsis int = 36   // ...
 
 // Token represents a lexical token
 type Token struct {
@@ -166,6 +167,12 @@ func isKeyword(s string) bool {
 	if s == "await" {
 		return true
 	}
+	if s == "match" {
+		return true
+	}
+	if s == "case" {
+		return true
+	}
 	return false
 }
 
@@ -278,6 +285,9 @@ func TokenTypeName(tokenType int) string {
 	}
 	if tokenType == TokenColonEqual {
 		return "COLONEQUAL"
+	}
+	if tokenType == TokenEllipsis {
+		return "ELLIPSIS"
 	}
 	return "UNKNOWN"
 }

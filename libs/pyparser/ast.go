@@ -59,6 +59,15 @@ const NodeNamedExpr int = 55   // Named expression (walrus operator)
 const NodeFString int = 56     // f-string
 const NodeFormattedValue int = 57 // Formatted value in f-string
 const NodeAnnotatedAssign int = 58 // Annotated assignment (x: int = 1)
+const NodeDefault int = 59         // Parameter with default value
+const NodeKeywordArg int = 60      // Keyword argument in call (a=1)
+const NodeTernary int = 61         // Conditional expression (x if c else y)
+const NodeEllipsis int = 62        // Ellipsis literal (...)
+const NodeBytes int = 63           // Byte string (b"...")
+const NodeMatch int = 64           // Match statement
+const NodeMatchCase int = 65       // Case in match statement
+const NodeMatchPattern int = 66    // Pattern in match case
+const NodeComplex int = 67         // Complex number (3+4j)
 
 // Node represents an AST node
 type Node struct {
@@ -290,6 +299,33 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeAnnotatedAssign {
 		return "AnnotatedAssign"
+	}
+	if nodeType == NodeDefault {
+		return "Default"
+	}
+	if nodeType == NodeKeywordArg {
+		return "KeywordArg"
+	}
+	if nodeType == NodeTernary {
+		return "Ternary"
+	}
+	if nodeType == NodeEllipsis {
+		return "Ellipsis"
+	}
+	if nodeType == NodeBytes {
+		return "Bytes"
+	}
+	if nodeType == NodeMatch {
+		return "Match"
+	}
+	if nodeType == NodeMatchCase {
+		return "MatchCase"
+	}
+	if nodeType == NodeMatchPattern {
+		return "MatchPattern"
+	}
+	if nodeType == NodeComplex {
+		return "Complex"
 	}
 	return "Unknown"
 }

@@ -352,5 +352,84 @@ x, y, z = func()`
 	ast42 := pyparser.Parse(code42)
 	fmt.Println(pyparser.PrintAST(ast42))
 
+	// Test 43: Default parameter values
+	code43 := `def greet(name, greeting='Hello'):
+    print(greeting, name)`
+
+	fmt.Println("=== Test 43: Default Parameters ===")
+	ast43 := pyparser.Parse(code43)
+	fmt.Println(pyparser.PrintAST(ast43))
+
+	// Test 44: Keyword arguments in calls
+	code44 := `result = func(a, b=2, c=3)`
+
+	fmt.Println("=== Test 44: Keyword Arguments ===")
+	ast44 := pyparser.Parse(code44)
+	fmt.Println(pyparser.PrintAST(ast44))
+
+	// Test 45: Ternary expression
+	code45 := `x = a if condition else b`
+
+	fmt.Println("=== Test 45: Ternary Expression ===")
+	ast45 := pyparser.Parse(code45)
+	fmt.Println(pyparser.PrintAST(ast45))
+
+	// Test 46: Multiple assignment targets
+	code46 := `a = b = c = 10`
+
+	fmt.Println("=== Test 46: Multiple Assignment ===")
+	ast46 := pyparser.Parse(code46)
+	fmt.Println(pyparser.PrintAST(ast46))
+
+	// Test 47: Ellipsis
+	code47 := `def stub():
+    ...`
+
+	fmt.Println("=== Test 47: Ellipsis ===")
+	ast47 := pyparser.Parse(code47)
+	fmt.Println(pyparser.PrintAST(ast47))
+
+	// Test 48: Multiple inheritance
+	code48 := `class Child(Parent1, Parent2, Parent3):
+    pass`
+
+	fmt.Println("=== Test 48: Multiple Inheritance ===")
+	ast48 := pyparser.Parse(code48)
+	fmt.Println(pyparser.PrintAST(ast48))
+
+	// Test 49: Function with type hints and defaults
+	code49 := `def process(data: list, count: int = 10) -> bool:
+    return True`
+
+	fmt.Println("=== Test 49: Full Function Signature ===")
+	ast49 := pyparser.Parse(code49)
+	fmt.Println(pyparser.PrintAST(ast49))
+
+	// Test 50: Match statement
+	code50 := `match command:
+    case 1:
+        x = 1
+    case 2:
+        x = 2
+    case _:
+        x = 0`
+
+	fmt.Println("=== Test 50: Match Statement ===")
+	ast50 := pyparser.Parse(code50)
+	fmt.Println(pyparser.PrintAST(ast50))
+
+	// Test 51: Match with patterns
+	code51 := `match point:
+    case (0, 0):
+        origin = True
+    case (x, y) if x == y:
+        diagonal = True
+    case (x, y):
+        other = True`
+
+	fmt.Println("=== Test 51: Match Patterns ===")
+	ast51 := pyparser.Parse(code51)
+	fmt.Println(pyparser.PrintAST(ast51))
+
 	fmt.Println("=== All Tests Completed ===")
 }

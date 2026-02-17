@@ -131,6 +131,11 @@ func parseStatement(tokens []Token, pos int) (Node, int) {
 		return parseWith(tokens, pos)
 	}
 
+	// match statement (Python 3.10+)
+	if tokenType == TokenKeyword && tokenValue == "match" {
+		return parseMatch(tokens, pos)
+	}
+
 	// yield statement
 	if tokenType == TokenKeyword && tokenValue == "yield" {
 		return parseYield(tokens, pos)
@@ -233,16 +238,47 @@ func parseFunctionDef(tokens []Token, pos int) (Node, int) {
 					pos = pos + 1
 				}
 			} else if peekTokenType(tokens, pos) == TokenStar {
-				// Check for *args
+				// Check for *args or positional-only separator
 				pos = pos + 1
 				if peekTokenType(tokens, pos) == TokenIdentifier {
 					param := NewNodeWithName(NodeStarArg, peekTokenValue(tokens, pos))
 					paramList = AddChild(paramList, param)
 					pos = pos + 1
 				}
+				// If just * without name, it's a keyword-only separator (skip it)
 			} else if peekTokenType(tokens, pos) == TokenIdentifier {
-				param := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
-				paramList = AddChild(paramList, param)
+				paramName := peekTokenValue(tokens, pos)
+				pos = pos + 1
+				// Check for type annotation
+				var paramAnnotation Node
+				hasAnnotation := false
+				if peekTokenType(tokens, pos) == TokenColon {
+					pos = pos + 1
+					paramAnnotation, pos = parseExpression(tokens, pos)
+					hasAnnotation = true
+				}
+				// Check for default value
+				if peekTokenType(tokens, pos) == TokenAssign {
+					pos = pos + 1
+					var defaultValue Node
+					defaultValue, pos = parseExpression(tokens, pos)
+					// Create a Default node with name and default value
+					param := NewNodeWithName(NodeDefault, paramName)
+					if hasAnnotation {
+						param = AddChild(param, paramAnnotation)
+					}
+					param = AddChild(param, defaultValue)
+					paramList = AddChild(paramList, param)
+				} else {
+					// No default value
+					param := NewNodeWithName(NodeName, paramName)
+					if hasAnnotation {
+						param = AddChild(param, paramAnnotation)
+					}
+					paramList = AddChild(paramList, param)
+				}
+			} else if peekTokenType(tokens, pos) == TokenOperator && peekTokenValue(tokens, pos) == "/" {
+				// Positional-only separator
 				pos = pos + 1
 			}
 			if peekTokenType(tokens, pos) == TokenComma {
@@ -491,17 +527,27 @@ func parseAssignment(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeAssign)
 	node = SetLine(node, peekToken(tokens, pos).Line)
 
-	// Target
-	target := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
-	node = AddChild(node, target)
-	pos = pos + 1
-
-	// Skip '='
-	if peekTokenType(tokens, pos) == TokenAssign {
+	// Collect all targets (for chained assignments like a = b = c = 1)
+	for {
+		// Target
+		target := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+		node = AddChild(node, target)
 		pos = pos + 1
+
+		// Skip '='
+		if peekTokenType(tokens, pos) == TokenAssign {
+			pos = pos + 1
+		}
+
+		// Check if there's another target (identifier followed by =)
+		if peekTokenType(tokens, pos) == TokenIdentifier && peekTokenType(tokens, pos+1) == TokenAssign {
+			// Continue collecting targets
+			continue
+		}
+		break
 	}
 
-	// Value
+	// Value (last child)
 	var value Node
 	value, pos = parseExpression(tokens, pos)
 	node = AddChild(node, value)
@@ -595,6 +641,24 @@ func parseExpression(tokens []Token, pos int) (Node, int) {
 		node = AddChild(node, left)
 		node = AddChild(node, right)
 		left = node
+	}
+
+	// Check for ternary expression: value if condition else alternative
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "if" {
+		pos = pos + 1 // Skip 'if'
+		var condition Node
+		condition, pos = parseExpression(tokens, pos)
+		if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "else" {
+			pos = pos + 1 // Skip 'else'
+			var alternative Node
+			alternative, pos = parseExpression(tokens, pos)
+			node := NewNode(NodeTernary)
+			node = SetLine(node, left.Line)
+			node = AddChild(node, left)       // true value
+			node = AddChild(node, condition)  // condition
+			node = AddChild(node, alternative) // false value
+			return node, pos
+		}
 	}
 
 	return left, pos
@@ -948,6 +1012,14 @@ func parseAtom(tokens []Token, pos int) (Node, int) {
 		return node, pos
 	}
 
+	// Ellipsis (...)
+	if tokenType == TokenEllipsis {
+		node := NewNode(NodeEllipsis)
+		node = SetLine(node, peekToken(tokens, pos).Line)
+		pos = pos + 1
+		return node, pos
+	}
+
 	// Lambda expression
 	if tokenType == TokenKeyword && tokenValue == "lambda" {
 		return parseLambda(tokens, pos)
@@ -1054,6 +1126,14 @@ func parseCall(funcNode Node, tokens []Token, pos int) (Node, int) {
 			expr, pos = parseExpression(tokens, pos)
 			arg = NewNode(NodeStarArg)
 			arg = AddChild(arg, expr)
+		} else if peekTokenType(tokens, pos) == TokenIdentifier && peekTokenType(tokens, pos+1) == TokenAssign {
+			// Keyword argument: name=value
+			kwName := peekTokenValue(tokens, pos)
+			pos = pos + 2 // Skip name and =
+			var kwValue Node
+			kwValue, pos = parseExpression(tokens, pos)
+			arg = NewNodeWithName(NodeKeywordArg, kwName)
+			arg = AddChild(arg, kwValue)
 		} else {
 			arg, pos = parseExpression(tokens, pos)
 		}
@@ -2344,4 +2424,242 @@ func parseAnnotatedAssignment(tokens []Token, pos int) (Node, int) {
 	}
 
 	return node, pos
+}
+
+// parseMatch parses a match statement (Python 3.10+)
+// match subject:
+//
+//	case pattern1:
+//	    body1
+//	case pattern2 if guard:
+//	    body2
+func parseMatch(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeMatch)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'match'
+	pos = pos + 1
+
+	// Parse subject expression
+	var subject Node
+	subject, pos = parseExpression(tokens, pos)
+	node = AddChild(node, subject)
+
+	// Colon
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	// Skip INDENT
+	if peekTokenType(tokens, pos) == TokenIndent {
+		pos = pos + 1
+	}
+
+	// Parse case clauses
+	for peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "case" {
+		var caseNode Node
+		caseNode, pos = parseMatchCase(tokens, pos)
+		node = AddChild(node, caseNode)
+	}
+
+	// Skip DEDENT
+	if peekTokenType(tokens, pos) == TokenDedent {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseMatchCase parses a single case clause
+func parseMatchCase(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeMatchCase)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'case'
+	pos = pos + 1
+
+	// Parse pattern
+	var pattern Node
+	pattern, pos = parseMatchPattern(tokens, pos)
+	node = AddChild(node, pattern)
+
+	// Check for guard (if condition)
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "if" {
+		pos = pos + 1
+		var guard Node
+		guard, pos = parseExpression(tokens, pos)
+		node = AddChild(node, guard)
+	}
+
+	// Colon
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	// Body
+	var body Node
+	body, pos = parseBlock(tokens, pos)
+	node = AddChild(node, body)
+
+	return node, pos
+}
+
+// parseMatchPattern parses a pattern in a case clause
+// Supports: literals, identifiers (capture), wildcards (_), sequences, mappings, class patterns
+func parseMatchPattern(tokens []Token, pos int) (Node, int) {
+	tokenType := peekTokenType(tokens, pos)
+	tokenValue := peekTokenValue(tokens, pos)
+
+	// Wildcard pattern (_)
+	if tokenType == TokenIdentifier && tokenValue == "_" {
+		wildcardNode := NewNode(NodeMatchPattern)
+		wildcardNode.Op = "wildcard"
+		wildcardNode = SetLine(wildcardNode, peekToken(tokens, pos).Line)
+		pos = pos + 1
+		return wildcardNode, pos
+	}
+
+	// Literal patterns: numbers, strings, True, False, None
+	if tokenType == TokenNumber {
+		numPatternNode := NewNode(NodeMatchPattern)
+		numPatternNode.Op = "literal"
+		numPatternNode = SetLine(numPatternNode, peekToken(tokens, pos).Line)
+		numValue := NewNodeWithValue(NodeNum, tokenValue)
+		numPatternNode = AddChild(numPatternNode, numValue)
+		pos = pos + 1
+		return numPatternNode, pos
+	}
+
+	if tokenType == TokenString {
+		strPatternNode := NewNode(NodeMatchPattern)
+		strPatternNode.Op = "literal"
+		strPatternNode = SetLine(strPatternNode, peekToken(tokens, pos).Line)
+		strValue := NewNodeWithValue(NodeStr, tokenValue)
+		strPatternNode = AddChild(strPatternNode, strValue)
+		pos = pos + 1
+		return strPatternNode, pos
+	}
+
+	if tokenType == TokenKeyword && (tokenValue == "True" || tokenValue == "False") {
+		boolPatternNode := NewNode(NodeMatchPattern)
+		boolPatternNode.Op = "literal"
+		boolPatternNode = SetLine(boolPatternNode, peekToken(tokens, pos).Line)
+		boolValue := NewNodeWithValue(NodeBool, tokenValue)
+		boolPatternNode = AddChild(boolPatternNode, boolValue)
+		pos = pos + 1
+		return boolPatternNode, pos
+	}
+
+	if tokenType == TokenKeyword && tokenValue == "None" {
+		nonePatternNode := NewNode(NodeMatchPattern)
+		nonePatternNode.Op = "literal"
+		nonePatternNode = SetLine(nonePatternNode, peekToken(tokens, pos).Line)
+		noneValue := NewNode(NodeNone)
+		nonePatternNode = AddChild(nonePatternNode, noneValue)
+		pos = pos + 1
+		return nonePatternNode, pos
+	}
+
+	// Sequence pattern [a, b, c] or (a, b, c)
+	if tokenType == TokenLBracket || tokenType == TokenLParen {
+		seqPatternNode := NewNode(NodeMatchPattern)
+		seqPatternNode.Op = "sequence"
+		seqPatternNode = SetLine(seqPatternNode, peekToken(tokens, pos).Line)
+		closingToken := TokenRBracket
+		if tokenType == TokenLParen {
+			closingToken = TokenRParen
+		}
+		pos = pos + 1
+		for peekTokenType(tokens, pos) != closingToken && peekTokenType(tokens, pos) != TokenEOF {
+			var elemPattern Node
+			elemPattern, pos = parseMatchPattern(tokens, pos)
+			seqPatternNode = AddChild(seqPatternNode, elemPattern)
+			if peekTokenType(tokens, pos) == TokenComma {
+				pos = pos + 1
+			}
+		}
+		if peekTokenType(tokens, pos) == closingToken {
+			pos = pos + 1
+		}
+		return seqPatternNode, pos
+	}
+
+	// Mapping pattern {key: pattern, ...}
+	if tokenType == TokenLBrace {
+		mapPatternNode := NewNode(NodeMatchPattern)
+		mapPatternNode.Op = "mapping"
+		mapPatternNode = SetLine(mapPatternNode, peekToken(tokens, pos).Line)
+		pos = pos + 1
+		for peekTokenType(tokens, pos) != TokenRBrace && peekTokenType(tokens, pos) != TokenEOF {
+			// Key
+			var keyPattern Node
+			keyPattern, pos = parseMatchPattern(tokens, pos)
+			// Colon
+			if peekTokenType(tokens, pos) == TokenColon {
+				pos = pos + 1
+			}
+			// Value pattern
+			var valuePattern Node
+			valuePattern, pos = parseMatchPattern(tokens, pos)
+			// Create entry node
+			mapEntryNode := NewNode(NodeDictEntry)
+			mapEntryNode = AddChild(mapEntryNode, keyPattern)
+			mapEntryNode = AddChild(mapEntryNode, valuePattern)
+			mapPatternNode = AddChild(mapPatternNode, mapEntryNode)
+			if peekTokenType(tokens, pos) == TokenComma {
+				pos = pos + 1
+			}
+		}
+		if peekTokenType(tokens, pos) == TokenRBrace {
+			pos = pos + 1
+		}
+		return mapPatternNode, pos
+	}
+
+	// Identifier (capture pattern) or class pattern
+	if tokenType == TokenIdentifier {
+		patternName := tokenValue
+		pos = pos + 1
+		// Check for class pattern: ClassName(...)
+		if peekTokenType(tokens, pos) == TokenLParen {
+			classPatternNode := NewNode(NodeMatchPattern)
+			classPatternNode.Op = "class"
+			classPatternNode.Name = patternName
+			classPatternNode = SetLine(classPatternNode, peekToken(tokens, pos-1).Line)
+			pos = pos + 1 // Skip (
+			for peekTokenType(tokens, pos) != TokenRParen && peekTokenType(tokens, pos) != TokenEOF {
+				var argPattern Node
+				argPattern, pos = parseMatchPattern(tokens, pos)
+				classPatternNode = AddChild(classPatternNode, argPattern)
+				if peekTokenType(tokens, pos) == TokenComma {
+					pos = pos + 1
+				}
+			}
+			if peekTokenType(tokens, pos) == TokenRParen {
+				pos = pos + 1
+			}
+			return classPatternNode, pos
+		}
+		// Simple capture pattern
+		capturePatternNode := NewNode(NodeMatchPattern)
+		capturePatternNode.Op = "capture"
+		capturePatternNode.Name = patternName
+		capturePatternNode = SetLine(capturePatternNode, peekToken(tokens, pos-1).Line)
+		return capturePatternNode, pos
+	}
+
+	// Default: create empty pattern
+	defaultPatternNode := NewNode(NodeMatchPattern)
+	defaultPatternNode = SetLine(defaultPatternNode, peekToken(tokens, pos).Line)
+	return defaultPatternNode, pos
 }

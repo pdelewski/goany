@@ -391,6 +391,14 @@ func Tokenize(input string) []Token {
 			continue
 		}
 
+		// Three-character operators (ellipsis)
+		if pos+2 < len(input) && ch == int('.') && int(input[pos+1]) == int('.') && int(input[pos+2]) == int('.') {
+			tokens = append(tokens, NewToken(TokenEllipsis, "...", line, col))
+			pos = pos + 3
+			col = col + 3
+			continue
+		}
+
 		// Two-character operators
 		if pos+1 < len(input) {
 			twoChar := charToString(ch) + charToString(int(input[pos+1]))
