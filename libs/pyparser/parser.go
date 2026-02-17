@@ -238,14 +238,17 @@ func parseFunctionDef(tokens []Token, pos int) (Node, int) {
 					pos = pos + 1
 				}
 			} else if peekTokenType(tokens, pos) == TokenStar {
-				// Check for *args or positional-only separator
+				// Check for *args or keyword-only separator
 				pos = pos + 1
 				if peekTokenType(tokens, pos) == TokenIdentifier {
 					param := NewNodeWithName(NodeStarArg, peekTokenValue(tokens, pos))
 					paramList = AddChild(paramList, param)
 					pos = pos + 1
+				} else {
+					// Just * without name - keyword-only separator
+					marker := NewNode(NodeKwOnlyMarker)
+					paramList = AddChild(paramList, marker)
 				}
-				// If just * without name, it's a keyword-only separator (skip it)
 			} else if peekTokenType(tokens, pos) == TokenIdentifier {
 				paramName := peekTokenValue(tokens, pos)
 				pos = pos + 1
@@ -279,6 +282,8 @@ func parseFunctionDef(tokens []Token, pos int) (Node, int) {
 				}
 			} else if peekTokenType(tokens, pos) == TokenOperator && peekTokenValue(tokens, pos) == "/" {
 				// Positional-only separator
+				marker := NewNode(NodePosOnlyMarker)
+				paramList = AddChild(paramList, marker)
 				pos = pos + 1
 			}
 			if peekTokenType(tokens, pos) == TokenComma {
@@ -448,7 +453,7 @@ func parseElse(tokens []Token, pos int) (Node, int) {
 	return node, pos
 }
 
-// parseFor parses a for statement
+// parseFor parses a for statement (including optional else clause)
 func parseFor(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeFor)
 	node = SetLine(node, peekToken(tokens, pos).Line)
@@ -456,11 +461,27 @@ func parseFor(tokens []Token, pos int) (Node, int) {
 	// Skip 'for'
 	pos = pos + 1
 
-	// Loop variable
+	// Loop variable(s) - could be tuple unpacking: for a, b in items
 	if peekTokenType(tokens, pos) == TokenIdentifier {
-		varNode := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
-		node = AddChild(node, varNode)
+		firstName := peekTokenValue(tokens, pos)
 		pos = pos + 1
+
+		// Check for tuple unpacking
+		if peekTokenType(tokens, pos) == TokenComma {
+			tupleNode := NewNode(NodeTuple)
+			tupleNode = AddChild(tupleNode, NewNodeWithName(NodeName, firstName))
+			for peekTokenType(tokens, pos) == TokenComma {
+				pos = pos + 1
+				if peekTokenType(tokens, pos) == TokenIdentifier {
+					tupleNode = AddChild(tupleNode, NewNodeWithName(NodeName, peekTokenValue(tokens, pos)))
+					pos = pos + 1
+				}
+			}
+			node = AddChild(node, tupleNode)
+		} else {
+			varNode := NewNodeWithName(NodeName, firstName)
+			node = AddChild(node, varNode)
+		}
 	}
 
 	// Skip 'in'
@@ -488,10 +509,17 @@ func parseFor(tokens []Token, pos int) (Node, int) {
 	body, pos = parseBlock(tokens, pos)
 	node = AddChild(node, body)
 
+	// Optional else clause
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "else" {
+		var elseNode Node
+		elseNode, pos = parseElse(tokens, pos)
+		node = AddChild(node, elseNode)
+	}
+
 	return node, pos
 }
 
-// parseWhile parses a while statement
+// parseWhile parses a while statement (including optional else clause)
 func parseWhile(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeWhile)
 	node = SetLine(node, peekToken(tokens, pos).Line)
@@ -518,6 +546,13 @@ func parseWhile(tokens []Token, pos int) (Node, int) {
 	var body Node
 	body, pos = parseBlock(tokens, pos)
 	node = AddChild(node, body)
+
+	// Optional else clause
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "else" {
+		var elseNode Node
+		elseNode, pos = parseElse(tokens, pos)
+		node = AddChild(node, elseNode)
+	}
 
 	return node, pos
 }
@@ -1805,10 +1840,12 @@ func parseClass(tokens []Token, pos int) (Node, int) {
 	return node, pos
 }
 
-// parseTry parses a try/except/finally statement
+// parseTry parses a try/except/else/finally statement
 // try:
 //     ...
 // except Exception:
+//     ...
+// else:
 //     ...
 // finally:
 //     ...
@@ -1841,6 +1878,13 @@ func parseTry(tokens []Token, pos int) (Node, int) {
 		node = AddChild(node, exceptNode)
 	}
 
+	// Handle else clause (runs if no exception occurred)
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "else" {
+		var elseNode Node
+		elseNode, pos = parseElse(tokens, pos)
+		node = AddChild(node, elseNode)
+	}
+
 	// Handle finally clause
 	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "finally" {
 		var finallyNode Node
@@ -1853,6 +1897,8 @@ func parseTry(tokens []Token, pos int) (Node, int) {
 
 // parseExcept parses an except clause
 // except Exception as e:
+// except (TypeError, ValueError) as e:
+// except *ExceptionGroup as eg:  (Python 3.11+)
 func parseExcept(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeExcept)
 	node = SetLine(node, peekToken(tokens, pos).Line)
@@ -1860,18 +1906,42 @@ func parseExcept(tokens []Token, pos int) (Node, int) {
 	// Skip 'except'
 	pos = pos + 1
 
-	// Exception type (optional)
-	if peekTokenType(tokens, pos) == TokenIdentifier {
-		node.Name = peekTokenValue(tokens, pos)
+	// Check for except* (exception group handling)
+	if peekTokenType(tokens, pos) == TokenStar {
+		node.Op = "*"
 		pos = pos + 1
+	}
 
-		// Check for 'as' alias
-		if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
-			pos = pos + 1
+	// Exception type (optional) - could be single or tuple of types
+	if peekTokenType(tokens, pos) == TokenLParen {
+		// Multiple exception types: except (TypeError, ValueError)
+		pos = pos + 1
+		exceptTypes := NewNode(NodeTuple)
+		for peekTokenType(tokens, pos) != TokenRParen && peekTokenType(tokens, pos) != TokenEOF {
 			if peekTokenType(tokens, pos) == TokenIdentifier {
-				node.Value = peekTokenValue(tokens, pos) // Store alias in Value
+				exceptTypes = AddChild(exceptTypes, NewNodeWithName(NodeName, peekTokenValue(tokens, pos)))
 				pos = pos + 1
 			}
+			if peekTokenType(tokens, pos) == TokenComma {
+				pos = pos + 1
+			}
+		}
+		if peekTokenType(tokens, pos) == TokenRParen {
+			pos = pos + 1
+		}
+		node = AddChild(node, exceptTypes)
+	} else if peekTokenType(tokens, pos) == TokenIdentifier {
+		// Single exception type
+		node.Name = peekTokenValue(tokens, pos)
+		pos = pos + 1
+	}
+
+	// Check for 'as' alias
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
+		pos = pos + 1
+		if peekTokenType(tokens, pos) == TokenIdentifier {
+			node.Value = peekTokenValue(tokens, pos) // Store alias in Value
+			pos = pos + 1
 		}
 	}
 
@@ -2006,6 +2076,7 @@ func parseYield(tokens []Token, pos int) (Node, int) {
 // parseRaise parses a raise statement
 // raise Exception
 // raise Exception("message")
+// raise Exception from cause
 // raise
 func parseRaise(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeRaise)
@@ -2015,10 +2086,20 @@ func parseRaise(tokens []Token, pos int) (Node, int) {
 	pos = pos + 1
 
 	// Exception (optional - bare raise re-raises current exception)
-	if peekTokenType(tokens, pos) != TokenNewline && peekTokenType(tokens, pos) != TokenEOF {
+	if peekTokenType(tokens, pos) != TokenNewline && peekTokenType(tokens, pos) != TokenEOF &&
+		!(peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "from") {
 		var expr Node
 		expr, pos = parseExpression(tokens, pos)
 		node = AddChild(node, expr)
+	}
+
+	// Check for 'from' (exception chaining)
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "from" {
+		pos = pos + 1
+		node.Op = "from"
+		var cause Node
+		cause, pos = parseExpression(tokens, pos)
+		node = AddChild(node, cause)
 	}
 
 	// Skip newline
@@ -2475,7 +2556,9 @@ func parseMatch(tokens []Token, pos int) (Node, int) {
 	return node, pos
 }
 
-// parseMatchCase parses a single case clause
+// parseMatchCase parses a single case clause (with OR pattern support)
+// case 1 | 2 | 3:
+// case pattern if guard:
 func parseMatchCase(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeMatchCase)
 	node = SetLine(node, peekToken(tokens, pos).Line)
@@ -2483,9 +2566,9 @@ func parseMatchCase(tokens []Token, pos int) (Node, int) {
 	// Skip 'case'
 	pos = pos + 1
 
-	// Parse pattern
+	// Parse pattern (with OR patterns)
 	var pattern Node
-	pattern, pos = parseMatchPattern(tokens, pos)
+	pattern, pos = parseMatchOrPattern(tokens, pos)
 	node = AddChild(node, pattern)
 
 	// Check for guard (if condition)
@@ -2512,6 +2595,30 @@ func parseMatchCase(tokens []Token, pos int) (Node, int) {
 	node = AddChild(node, body)
 
 	return node, pos
+}
+
+// parseMatchOrPattern parses patterns with OR: pattern1 | pattern2 | pattern3
+func parseMatchOrPattern(tokens []Token, pos int) (Node, int) {
+	var firstPattern Node
+	firstPattern, pos = parseMatchPattern(tokens, pos)
+
+	// Check for OR patterns
+	if peekTokenType(tokens, pos) == TokenPipe {
+		orNode := NewNode(NodeMatchPattern)
+		orNode.Op = "or"
+		orNode = SetLine(orNode, firstPattern.Line)
+		orNode = AddChild(orNode, firstPattern)
+
+		for peekTokenType(tokens, pos) == TokenPipe {
+			pos = pos + 1 // Skip |
+			var nextPattern Node
+			nextPattern, pos = parseMatchPattern(tokens, pos)
+			orNode = AddChild(orNode, nextPattern)
+		}
+		return orNode, pos
+	}
+
+	return firstPattern, pos
 }
 
 // parseMatchPattern parses a pattern in a case clause

@@ -1359,8 +1359,12 @@ func (jse *JSEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
 	case token.STRING:
 		// Handle raw strings
 		if strings.HasPrefix(node.Value, "`") {
-			// Convert to template literal
-			jse.emitToFile(node.Value)
+			// Convert Go raw string to JavaScript template literal
+			// Go raw strings preserve backslashes literally, but JS template literals
+			// interpret escape sequences like \n. We need to escape backslashes.
+			content := node.Value[1 : len(node.Value)-1] // Remove surrounding backticks
+			escaped := strings.ReplaceAll(content, "\\", "\\\\")
+			jse.emitToFile("`" + escaped + "`")
 		} else {
 			jse.emitToFile(node.Value)
 		}

@@ -27,6 +27,192 @@ func isWhitespace(ch int) bool {
 	return ch == int(' ') || ch == int('\t')
 }
 
+func isHexDigit(ch int) bool {
+	if ch >= int('0') && ch <= int('9') {
+		return true
+	}
+	if ch >= int('a') && ch <= int('f') {
+		return true
+	}
+	if ch >= int('A') && ch <= int('F') {
+		return true
+	}
+	return false
+}
+
+func isOctalDigit(ch int) bool {
+	return ch >= int('0') && ch <= int('7')
+}
+
+func toLower(s string) string {
+	result := ""
+	for i := 0; i < len(s); i++ {
+		ch := int(s[i])
+		if ch >= int('A') && ch <= int('Z') {
+			ch = ch + 32
+		}
+		result = result + charToString(ch)
+	}
+	return result
+}
+
+// tokenizeString handles all string types including triple-quoted, raw, byte, f-strings
+func tokenizeString(input string, pos int, col int, line int, prefix string) (Token, int, int, int) {
+	strStartCol := col
+	strStartLine := line
+	quote := int(input[pos])
+	isTriple := false
+	isRaw := false
+	isFString := false
+	isByte := false
+
+	// Check prefix flags
+	for i := 0; i < len(prefix); i++ {
+		ch := int(prefix[i])
+		if ch == int('r') {
+			isRaw = true
+		} else if ch == int('f') {
+			isFString = true
+		} else if ch == int('b') {
+			isByte = true
+		}
+	}
+
+	// Check for triple quotes
+	if pos+2 < len(input) && int(input[pos+1]) == quote && int(input[pos+2]) == quote {
+		isTriple = true
+		pos = pos + 3
+		col = col + 3
+	} else {
+		pos = pos + 1
+		col = col + 1
+	}
+
+	value := ""
+	if isFString {
+		value = "f:"
+	} else if isByte {
+		value = "b:"
+	} else if isRaw {
+		value = "r:"
+	}
+
+	// Parse string content
+	for pos < len(input) {
+		ch := int(input[pos])
+
+		// Check for end of string
+		if isTriple {
+			if ch == quote && pos+2 < len(input) && int(input[pos+1]) == quote && int(input[pos+2]) == quote {
+				pos = pos + 3
+				col = col + 3
+				break
+			}
+		} else {
+			if ch == quote {
+				pos = pos + 1
+				col = col + 1
+				break
+			}
+		}
+
+		// Handle newlines in triple-quoted strings
+		if ch == int('\n') {
+			if isTriple {
+				value = value + "\n"
+				pos = pos + 1
+				line = line + 1
+				col = 1
+				continue
+			} else {
+				// Unterminated string
+				break
+			}
+		}
+
+		// Handle escape sequences (unless raw string)
+		if ch == int('\\') && !isRaw && pos+1 < len(input) {
+			pos = pos + 1
+			col = col + 1
+			escaped := int(input[pos])
+			if escaped == int('n') {
+				value = value + "\n"
+			} else if escaped == int('t') {
+				value = value + "\t"
+			} else if escaped == int('r') {
+				value = value + "\r"
+			} else if escaped == int('\\') {
+				value = value + "\\"
+			} else if escaped == int('"') {
+				value = value + "\""
+			} else if escaped == int('\'') {
+				value = value + "'"
+			} else if escaped == int('0') {
+				value = value + charToString(0)
+			} else if escaped == int('\n') {
+				// Line continuation
+				line = line + 1
+				col = 0
+			} else {
+				value = value + charToString(escaped)
+			}
+			pos = pos + 1
+			col = col + 1
+			continue
+		}
+
+		// Handle f-string expressions
+		if isFString && ch == int('{') {
+			if pos+1 < len(input) && int(input[pos+1]) == int('{') {
+				// Escaped brace
+				value = value + "{"
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			// Parse expression inside braces
+			value = value + "|EXPR:"
+			pos = pos + 1
+			col = col + 1
+			braceDepth := 1
+			for pos < len(input) && braceDepth > 0 {
+				exprCh := int(input[pos])
+				if exprCh == int('{') {
+					braceDepth = braceDepth + 1
+				} else if exprCh == int('}') {
+					braceDepth = braceDepth - 1
+					if braceDepth == 0 {
+						pos = pos + 1
+						col = col + 1
+						break
+					}
+				}
+				value = value + charToString(exprCh)
+				pos = pos + 1
+				col = col + 1
+			}
+			value = value + "|STR:"
+			continue
+		}
+
+		if isFString && ch == int('}') {
+			if pos+1 < len(input) && int(input[pos+1]) == int('}') {
+				// Escaped brace
+				value = value + "}"
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+		}
+
+		value = value + charToString(ch)
+		pos = pos + 1
+		col = col + 1
+	}
+
+	return NewToken(TokenString, value, strStartLine, strStartCol), pos, col, line
+}
+
 func charToString(ch int) string {
 	// Lookup table for printable ASCII characters
 	if ch == 32 {
@@ -321,7 +507,7 @@ func Tokenize(input string) []Token {
 			continue
 		}
 
-		// Identifiers and keywords
+		// Identifiers and keywords (also handles string prefixes like r, b, f, rf, rb, br, fr)
 		if isLetter(ch) {
 			identStartCol := col
 			value := ""
@@ -330,6 +516,22 @@ func Tokenize(input string) []Token {
 				pos = pos + 1
 				col = col + 1
 			}
+
+			// Check for string prefix (r, b, f, rf, rb, br, fr, R, B, F, etc.)
+			if pos < len(input) && (int(input[pos]) == int('"') || int(input[pos]) == int('\'')) {
+				lowerValue := toLower(value)
+				if lowerValue == "r" || lowerValue == "b" || lowerValue == "f" ||
+					lowerValue == "rf" || lowerValue == "fr" || lowerValue == "rb" ||
+					lowerValue == "br" {
+					// This is a prefixed string
+					prefix := lowerValue
+					var strToken Token
+					strToken, pos, col, line = tokenizeString(input, pos, col, line, prefix)
+					tokens = append(tokens, strToken)
+					continue
+				}
+			}
+
 			if isKeyword(value) {
 				tokens = append(tokens, NewToken(TokenKeyword, value, line, identStartCol))
 			} else {
@@ -338,56 +540,98 @@ func Tokenize(input string) []Token {
 			continue
 		}
 
-		// Numbers
+		// Numbers (including hex 0x, octal 0o, binary 0b, underscores, complex j)
 		if isDigit(ch) {
 			numStartCol := col
 			value := ""
-			for pos < len(input) && (isDigit(int(input[pos])) || int(input[pos]) == int('.')) {
-				value = value + charToString(int(input[pos]))
-				pos = pos + 1
-				col = col + 1
+
+			// Check for hex, octal, binary prefixes
+			if ch == int('0') && pos+1 < len(input) {
+				nextCh := int(input[pos+1])
+				if nextCh == int('x') || nextCh == int('X') {
+					// Hexadecimal
+					value = "0x"
+					pos = pos + 2
+					col = col + 2
+					for pos < len(input) && (isHexDigit(int(input[pos])) || int(input[pos]) == int('_')) {
+						if int(input[pos]) != int('_') {
+							value = value + charToString(int(input[pos]))
+						}
+						pos = pos + 1
+						col = col + 1
+					}
+					tokens = append(tokens, NewToken(TokenNumber, value, line, numStartCol))
+					continue
+				} else if nextCh == int('o') || nextCh == int('O') {
+					// Octal
+					value = "0o"
+					pos = pos + 2
+					col = col + 2
+					for pos < len(input) && (isOctalDigit(int(input[pos])) || int(input[pos]) == int('_')) {
+						if int(input[pos]) != int('_') {
+							value = value + charToString(int(input[pos]))
+						}
+						pos = pos + 1
+						col = col + 1
+					}
+					tokens = append(tokens, NewToken(TokenNumber, value, line, numStartCol))
+					continue
+				} else if nextCh == int('b') || nextCh == int('B') {
+					// Binary
+					value = "0b"
+					pos = pos + 2
+					col = col + 2
+					for pos < len(input) && (int(input[pos]) == int('0') || int(input[pos]) == int('1') || int(input[pos]) == int('_')) {
+						if int(input[pos]) != int('_') {
+							value = value + charToString(int(input[pos]))
+						}
+						pos = pos + 1
+						col = col + 1
+					}
+					tokens = append(tokens, NewToken(TokenNumber, value, line, numStartCol))
+					continue
+				}
+			}
+
+			// Regular decimal number (with underscores, decimal point, exponent, complex)
+			for pos < len(input) {
+				currCh := int(input[pos])
+				if isDigit(currCh) || currCh == int('.') || currCh == int('_') {
+					if currCh != int('_') {
+						value = value + charToString(currCh)
+					}
+					pos = pos + 1
+					col = col + 1
+				} else if currCh == int('e') || currCh == int('E') {
+					// Exponent
+					value = value + charToString(currCh)
+					pos = pos + 1
+					col = col + 1
+					// Optional sign after exponent
+					if pos < len(input) && (int(input[pos]) == int('+') || int(input[pos]) == int('-')) {
+						value = value + charToString(int(input[pos]))
+						pos = pos + 1
+						col = col + 1
+					}
+				} else if currCh == int('j') || currCh == int('J') {
+					// Complex number
+					value = value + "j"
+					pos = pos + 1
+					col = col + 1
+					break
+				} else {
+					break
+				}
 			}
 			tokens = append(tokens, NewToken(TokenNumber, value, line, numStartCol))
 			continue
 		}
 
-		// String literals
+		// String literals (including triple-quoted)
 		if ch == int('"') || ch == int('\'') {
-			quote := ch
-			strStartCol := col
-			value := ""
-			pos = pos + 1 // Skip opening quote
-			col = col + 1
-			for pos < len(input) && int(input[pos]) != quote {
-				if int(input[pos]) == int('\\') && pos+1 < len(input) {
-					// Handle escape sequences
-					pos = pos + 1
-					col = col + 1
-					escaped := int(input[pos])
-					if escaped == int('n') {
-						value = value + "\n"
-					} else if escaped == int('t') {
-						value = value + "\t"
-					} else if escaped == int('\\') {
-						value = value + "\\"
-					} else if escaped == int('"') {
-						value = value + "\""
-					} else if escaped == int('\'') {
-						value = value + "'"
-					} else {
-						value = value + charToString(escaped)
-					}
-				} else {
-					value = value + charToString(int(input[pos]))
-				}
-				pos = pos + 1
-				col = col + 1
-			}
-			if pos < len(input) {
-				pos = pos + 1 // Skip closing quote
-				col = col + 1
-			}
-			tokens = append(tokens, NewToken(TokenString, value, line, strStartCol))
+			var strToken Token
+			strToken, pos, col, line = tokenizeString(input, pos, col, line, "")
+			tokens = append(tokens, strToken)
 			continue
 		}
 

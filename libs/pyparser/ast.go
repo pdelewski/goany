@@ -68,6 +68,8 @@ const NodeMatch int = 64           // Match statement
 const NodeMatchCase int = 65       // Case in match statement
 const NodeMatchPattern int = 66    // Pattern in match case
 const NodeComplex int = 67         // Complex number (3+4j)
+const NodePosOnlyMarker int = 68   // Positional-only marker (/)
+const NodeKwOnlyMarker int = 69    // Keyword-only marker (*)
 
 // Node represents an AST node
 type Node struct {
@@ -326,6 +328,12 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeComplex {
 		return "Complex"
+	}
+	if nodeType == NodePosOnlyMarker {
+		return "PosOnlyMarker"
+	}
+	if nodeType == NodeKwOnlyMarker {
+		return "KwOnlyMarker"
 	}
 	return "Unknown"
 }

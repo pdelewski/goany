@@ -431,5 +431,102 @@ x, y, z = func()`
 	ast51 := pyparser.Parse(code51)
 	fmt.Println(pyparser.PrintAST(ast51))
 
+	// Test 52: Raw strings and byte strings
+	code52 := `raw = r'\n is not a newline'
+msg = b'hello bytes'`
+
+	fmt.Println("=== Test 52: Raw and Byte Strings ===")
+	ast52 := pyparser.Parse(code52)
+	fmt.Println(pyparser.PrintAST(ast52))
+
+	// Test 53: Hex, octal, binary numbers
+	code53 := `h = 0xFF
+o = 0o77
+b = 0b1010
+big = 1_000_000
+c = 3.14j`
+
+	fmt.Println("=== Test 53: Number Formats ===")
+	ast53 := pyparser.Parse(code53)
+	fmt.Println(pyparser.PrintAST(ast53))
+
+	// Test 54: Loop else clause
+	code54 := `for i in range(10):
+    if i == 5:
+        break
+else:
+    print('completed')
+while x > 0:
+    x = x - 1
+else:
+    print('done')`
+
+	fmt.Println("=== Test 54: Loop Else ===")
+	ast54 := pyparser.Parse(code54)
+	fmt.Println(pyparser.PrintAST(ast54))
+
+	// Test 55: Multiple except types
+	code55 := `try:
+    x = 1
+except (TypeError, ValueError) as e:
+    handle(e)
+else:
+    success()
+finally:
+    cleanup()`
+
+	fmt.Println("=== Test 55: Multiple Except Types ===")
+	ast55 := pyparser.Parse(code55)
+	fmt.Println(pyparser.PrintAST(ast55))
+
+	// Test 56: Exception chaining
+	code56 := `raise ValueError('bad') from original_error`
+
+	fmt.Println("=== Test 56: Exception Chaining ===")
+	ast56 := pyparser.Parse(code56)
+	fmt.Println(pyparser.PrintAST(ast56))
+
+	// Test 57: List comprehension
+	code57 := `evens = [x for x in items if x > 0]`
+
+	fmt.Println("=== Test 57: List Comprehension ===")
+	ast57 := pyparser.Parse(code57)
+	fmt.Println(pyparser.PrintAST(ast57))
+
+	// Test 58: Starred unpacking
+	code58 := `first, *rest = items
+a, b, c = 1, 2, 3`
+
+	fmt.Println("=== Test 58: Starred Unpacking ===")
+	ast58 := pyparser.Parse(code58)
+	fmt.Println(pyparser.PrintAST(ast58))
+
+	// Test 59: Positional-only and keyword-only params
+	code59 := `def func(pos1, pos2, /, both, *, kw1, kw2):
+    pass`
+
+	fmt.Println("=== Test 59: Positional/Keyword-Only Params ===")
+	ast59 := pyparser.Parse(code59)
+	fmt.Println(pyparser.PrintAST(ast59))
+
+	// Test 60: Match OR patterns
+	code60 := `match status:
+    case 200 | 201 | 204:
+        success = True
+    case 400 | 404 | 500:
+        error = True`
+
+	fmt.Println("=== Test 60: Match OR Patterns ===")
+	ast60 := pyparser.Parse(code60)
+	fmt.Println(pyparser.PrintAST(ast60))
+
+	// Test 61: Tuple unpacking in for loop
+	code61 := `for k, v in items.items():
+    print(k, v)`
+
+	fmt.Println("=== Test 61: Tuple Unpacking in For ===")
+	ast61 := pyparser.Parse(code61)
+	fmt.Println(pyparser.PrintAST(ast61))
+
 	fmt.Println("=== All Tests Completed ===")
 }
