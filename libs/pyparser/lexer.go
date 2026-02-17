@@ -256,7 +256,6 @@ func Tokenize(input string) []Token {
 		// Handle indentation at line start
 		if atLineStart {
 			indent := 0
-			startPos := pos
 			for pos < len(input) {
 				ch = int(input[pos])
 				if ch == int(' ') {
