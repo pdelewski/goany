@@ -35,6 +35,8 @@ const TokenCaret int = 30      // ^
 const TokenTilde int = 31      // ~
 const TokenLeftShift int = 32  // <<
 const TokenRightShift int = 33 // >>
+const TokenWalrus int = 34     // := (walrus operator)
+const TokenColonEqual int = 35 // := alias
 
 // Token represents a lexical token
 type Token struct {
@@ -158,6 +160,12 @@ func isKeyword(s string) bool {
 	if s == "del" {
 		return true
 	}
+	if s == "async" {
+		return true
+	}
+	if s == "await" {
+		return true
+	}
 	return false
 }
 
@@ -264,6 +272,12 @@ func TokenTypeName(tokenType int) string {
 	}
 	if tokenType == TokenRightShift {
 		return "RIGHTSHIFT"
+	}
+	if tokenType == TokenWalrus {
+		return "WALRUS"
+	}
+	if tokenType == TokenColonEqual {
+		return "COLONEQUAL"
 	}
 	return "UNKNOWN"
 }

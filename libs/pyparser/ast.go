@@ -53,6 +53,12 @@ const NodeAssert int = 49      // Assert statement
 const NodeGlobal int = 50      // Global statement
 const NodeNonlocal int = 51    // Nonlocal statement
 const NodeDelete int = 52      // Del statement
+const NodeAsyncFunctionDef int = 53 // Async function definition
+const NodeAwait int = 54       // Await expression
+const NodeNamedExpr int = 55   // Named expression (walrus operator)
+const NodeFString int = 56     // f-string
+const NodeFormattedValue int = 57 // Formatted value in f-string
+const NodeAnnotatedAssign int = 58 // Annotated assignment (x: int = 1)
 
 // Node represents an AST node
 type Node struct {
@@ -266,6 +272,24 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeDelete {
 		return "Delete"
+	}
+	if nodeType == NodeAsyncFunctionDef {
+		return "AsyncFunctionDef"
+	}
+	if nodeType == NodeAwait {
+		return "Await"
+	}
+	if nodeType == NodeNamedExpr {
+		return "NamedExpr"
+	}
+	if nodeType == NodeFString {
+		return "FString"
+	}
+	if nodeType == NodeFormattedValue {
+		return "FormattedValue"
+	}
+	if nodeType == NodeAnnotatedAssign {
+		return "AnnotatedAssign"
 	}
 	return "Unknown"
 }

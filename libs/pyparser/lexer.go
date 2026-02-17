@@ -454,6 +454,12 @@ func Tokenize(input string) []Token {
 				col = col + 2
 				continue
 			}
+			if twoChar == ":=" {
+				tokens = append(tokens, NewToken(TokenWalrus, ":=", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
 		}
 
 		// Single-character tokens

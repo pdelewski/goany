@@ -52,6 +52,11 @@ func parseStatement(tokens []Token, pos int) (Node, int) {
 		return parseClass(tokens, pos)
 	}
 
+	// async function or async with or async for
+	if tokenType == TokenKeyword && tokenValue == "async" {
+		return parseAsync(tokens, pos)
+	}
+
 	// return statement
 	if tokenType == TokenKeyword && tokenValue == "return" {
 		return parseReturn(tokens, pos)
@@ -176,10 +181,24 @@ func parseStatement(tokens []Token, pos int) (Node, int) {
 			nextType == TokenPercentAssign {
 			return parseAugmentedAssignment(tokens, pos)
 		}
+		// Check for tuple unpacking assignment (a, b = ...)
+		if nextType == TokenComma {
+			return parseTupleUnpackingAssignment(tokens, pos)
+		}
+		// Check for annotated assignment (x: int = 1)
+		if nextType == TokenColon {
+			// Look further to see if there's an = after the type
+			return parseAnnotatedAssignment(tokens, pos)
+		}
 		// Check if next token is =
 		if nextType == TokenAssign {
 			return parseAssignment(tokens, pos)
 		}
+	}
+
+	// Check for starred unpacking (*a, b = ...)
+	if tokenType == TokenStar {
+		return parseTupleUnpackingAssignment(tokens, pos)
 	}
 
 	// Expression statement
@@ -235,6 +254,17 @@ func parseFunctionDef(tokens []Token, pos int) (Node, int) {
 		}
 	}
 	node = AddChild(node, paramList)
+
+	// Return type annotation (-> type)
+	if peekTokenType(tokens, pos) == TokenArrow {
+		pos = pos + 1
+		var returnType Node
+		returnType, pos = parseExpression(tokens, pos)
+		// Store return type as a child with special marker
+		returnTypeNode := NewNode(NodeTypeHint)
+		returnTypeNode = AddChild(returnTypeNode, returnType)
+		node = AddChild(node, returnTypeNode)
+	}
 
 	// Colon
 	if peekTokenType(tokens, pos) == TokenColon {
@@ -534,8 +564,25 @@ func parseBlock(tokens []Token, pos int) (Node, int) {
 	return block, pos
 }
 
-// parseExpression parses an expression (handles 'or')
+// parseExpression parses an expression (handles 'or' and walrus operator)
 func parseExpression(tokens []Token, pos int) (Node, int) {
+	// Check for walrus operator (named expression)
+	// identifier := expression
+	if peekTokenType(tokens, pos) == TokenIdentifier && peekTokenType(tokens, pos+1) == TokenWalrus {
+		name := peekTokenValue(tokens, pos)
+		startLine := peekToken(tokens, pos).Line
+		pos = pos + 2 // Skip identifier and :=
+
+		var value Node
+		value, pos = parseExpression(tokens, pos)
+
+		node := NewNode(NodeNamedExpr)
+		node = SetLine(node, startLine)
+		node.Name = name
+		node = AddChild(node, value)
+		return node, pos
+	}
+
 	var left Node
 	left, pos = parseAndExpr(tokens, pos)
 
@@ -585,7 +632,8 @@ func parseNotExpr(tokens []Token, pos int) (Node, int) {
 	return parseComparison(tokens, pos)
 }
 
-// parseComparison parses comparison expressions
+// parseComparison parses comparison expressions including chained comparisons
+// e.g., 1 < x < 10 becomes Compare with multiple ops
 func parseComparison(tokens []Token, pos int) (Node, int) {
 	var left Node
 	left, pos = parseBitwiseOr(tokens, pos)
@@ -596,13 +644,33 @@ func parseComparison(tokens []Token, pos int) (Node, int) {
 
 	if tokenType == TokenOperator {
 		if tokenValue == "==" || tokenValue == "!=" || tokenValue == "<" || tokenValue == ">" || tokenValue == "<=" || tokenValue == ">=" {
+			// First comparison
 			op := tokenValue
 			pos = pos + 1
 			var right Node
-			right, pos = parseArithExpr(tokens, pos)
+			right, pos = parseBitwiseOr(tokens, pos)
 			node := NewNodeWithOp(NodeCompare, op)
 			node = AddChild(node, left)
 			node = AddChild(node, right)
+
+			// Check for chained comparisons
+			for {
+				tokenType = peekTokenType(tokens, pos)
+				tokenValue = peekTokenValue(tokens, pos)
+				if tokenType == TokenOperator {
+					if tokenValue == "==" || tokenValue == "!=" || tokenValue == "<" || tokenValue == ">" || tokenValue == "<=" || tokenValue == ">=" {
+						// Store the operator in the node (append to Op)
+						node.Op = node.Op + "," + tokenValue
+						pos = pos + 1
+						var nextRight Node
+						nextRight, pos = parseBitwiseOr(tokens, pos)
+						node = AddChild(node, nextRight)
+						continue
+					}
+				}
+				break
+			}
+
 			return node, pos
 		}
 	}
@@ -771,7 +839,7 @@ func parseTerm(tokens []Token, pos int) (Node, int) {
 	return left, pos
 }
 
-// parseUnary parses unary operators (-, +, ~)
+// parseUnary parses unary operators (-, +, ~, await)
 func parseUnary(tokens []Token, pos int) (Node, int) {
 	if peekTokenType(tokens, pos) == TokenOperator {
 		op := peekTokenValue(tokens, pos)
@@ -790,6 +858,15 @@ func parseUnary(tokens []Token, pos int) (Node, int) {
 		var operand Node
 		operand, pos = parseUnary(tokens, pos)
 		node := NewNodeWithOp(NodeUnaryOp, "~")
+		node = AddChild(node, operand)
+		return node, pos
+	}
+	// Await expression
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "await" {
+		pos = pos + 1
+		var operand Node
+		operand, pos = parseUnary(tokens, pos)
+		node := NewNode(NodeAwait)
 		node = AddChild(node, operand)
 		return node, pos
 	}
@@ -842,8 +919,13 @@ func parseAtom(tokens []Token, pos int) (Node, int) {
 		return node, pos
 	}
 
-	// String
+	// String (including f-strings)
 	if tokenType == TokenString {
+		// Check if it's an f-string
+		if len(tokenValue) > 2 && tokenValue[0] == 'f' && tokenValue[1] == ':' {
+			fstrContent := extractAfterIndex(tokenValue, 2)
+			return parseFString(fstrContent, peekToken(tokens, pos).Line, tokens, pos)
+		}
 		node := NewNodeWithValue(NodeStr, tokenValue)
 		node = SetLine(node, peekToken(tokens, pos).Line)
 		pos = pos + 1
@@ -1757,8 +1839,9 @@ func parseFinally(tokens []Token, pos int) (Node, int) {
 	return node, pos
 }
 
-// parseWith parses a with statement
+// parseWith parses a with statement (supports multiple context managers)
 // with open("file") as f:
+// with open("a") as a, open("b") as b:
 func parseWith(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeWith)
 	node = SetLine(node, peekToken(tokens, pos).Line)
@@ -1766,19 +1849,29 @@ func parseWith(tokens []Token, pos int) (Node, int) {
 	// Skip 'with'
 	pos = pos + 1
 
-	// Context expression
-	var contextExpr Node
-	contextExpr, pos = parseExpression(tokens, pos)
-	node = AddChild(node, contextExpr)
+	// Parse context managers (can be multiple, separated by commas)
+	for {
+		// Context expression
+		var contextExpr Node
+		contextExpr, pos = parseExpression(tokens, pos)
+		node = AddChild(node, contextExpr)
 
-	// Check for 'as' alias
-	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
-		pos = pos + 1
-		if peekTokenType(tokens, pos) == TokenIdentifier {
-			alias := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
-			node = AddChild(node, alias)
+		// Check for 'as' alias
+		if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
 			pos = pos + 1
+			if peekTokenType(tokens, pos) == TokenIdentifier {
+				alias := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+				node = AddChild(node, alias)
+				pos = pos + 1
+			}
 		}
+
+		// Check for more context managers
+		if peekTokenType(tokens, pos) == TokenComma {
+			pos = pos + 1
+			continue
+		}
+		break
 	}
 
 	// Colon
@@ -2011,6 +2104,238 @@ func parseDelete(tokens []Token, pos int) (Node, int) {
 		} else {
 			break
 		}
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseAsync parses async def, async with, async for
+func parseAsync(tokens []Token, pos int) (Node, int) {
+	startLine := peekToken(tokens, pos).Line
+
+	// Skip 'async'
+	pos = pos + 1
+
+	// Check what follows
+	if peekTokenType(tokens, pos) == TokenKeyword {
+		keyword := peekTokenValue(tokens, pos)
+		if keyword == "def" {
+			// Async function definition
+			var funcDef Node
+			funcDef, pos = parseFunctionDef(tokens, pos)
+			// Change the node type to AsyncFunctionDef
+			funcDef.Type = NodeAsyncFunctionDef
+			return funcDef, pos
+		}
+		if keyword == "with" {
+			// Async with - parse as regular with and mark it
+			var withNode Node
+			withNode, pos = parseWith(tokens, pos)
+			withNode.Op = "async"
+			return withNode, pos
+		}
+		if keyword == "for" {
+			// Async for - parse as regular for and mark it
+			var forNode Node
+			forNode, pos = parseFor(tokens, pos)
+			forNode.Op = "async"
+			return forNode, pos
+		}
+	}
+
+	// Fallback - shouldn't happen
+	node := NewNode(NodeExpr)
+	node = SetLine(node, startLine)
+	return node, pos
+}
+
+// parseTupleUnpackingAssignment parses tuple unpacking assignment
+// a, b = 1, 2
+// a, *rest = [1, 2, 3, 4]
+func parseTupleUnpackingAssignment(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeAssign)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Parse left-hand side targets
+	targets := NewNode(NodeTuple)
+	for {
+		// Check for starred target
+		if peekTokenType(tokens, pos) == TokenStar {
+			pos = pos + 1
+			if peekTokenType(tokens, pos) == TokenIdentifier {
+				starTarget := NewNodeWithName(NodeStarArg, peekTokenValue(tokens, pos))
+				targets = AddChild(targets, starTarget)
+				pos = pos + 1
+			}
+		} else if peekTokenType(tokens, pos) == TokenIdentifier {
+			target := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+			targets = AddChild(targets, target)
+			pos = pos + 1
+		} else {
+			break
+		}
+
+		if peekTokenType(tokens, pos) == TokenComma {
+			pos = pos + 1
+		} else {
+			break
+		}
+	}
+	node = AddChild(node, targets)
+
+	// Skip '='
+	if peekTokenType(tokens, pos) == TokenAssign {
+		pos = pos + 1
+	}
+
+	// Parse right-hand side value(s)
+	// Could be multiple values like: a, b = 1, 2
+	var firstValue Node
+	firstValue, pos = parseExpression(tokens, pos)
+
+	// Check if there are more values (comma-separated)
+	if peekTokenType(tokens, pos) == TokenComma {
+		// Multiple values - create a tuple
+		values := NewNode(NodeTuple)
+		values = AddChild(values, firstValue)
+		for peekTokenType(tokens, pos) == TokenComma {
+			pos = pos + 1 // Skip comma
+			var nextValue Node
+			nextValue, pos = parseExpression(tokens, pos)
+			values = AddChild(values, nextValue)
+		}
+		node = AddChild(node, values)
+	} else {
+		// Single value
+		node = AddChild(node, firstValue)
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseFString parses an f-string value into an FString node
+// Simplified version that stores f-string parts without recursively parsing expressions
+// The fstrValue format is: STR:text|EXPR:code|STR:more text|...
+func parseFString(fstrValue string, startLine int, tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeFString)
+	node = SetLine(node, startLine)
+
+	// Skip the f-string token
+	pos = pos + 1
+
+	// Parse the parts - simplified without recursive parsing
+	currentPart := ""
+	inExpr := false
+
+	i := 0
+	for i < len(fstrValue) {
+		ch := fstrValue[i]
+		if ch == '|' {
+			// Process accumulated part
+			if currentPart != "" {
+				if !inExpr {
+					// It's a STR: part
+					if len(currentPart) > 4 {
+						content := extractAfterIndex(currentPart, 4)
+						strNode := NewNodeWithValue(NodeStr, content)
+						node = AddChild(node, strNode)
+					}
+				} else {
+					// It's an EXPR: part - store expression as string for now
+					if len(currentPart) > 5 {
+						exprStr := extractAfterIndex(currentPart, 5)
+						formattedNode := NewNode(NodeFormattedValue)
+						formattedNode.Value = exprStr
+						node = AddChild(node, formattedNode)
+					}
+				}
+				currentPart = ""
+			}
+			i = i + 1
+			continue
+		}
+
+		// Check if this starts a new part type
+		if currentPart == "" {
+			if ch == 'S' {
+				inExpr = false
+			} else if ch == 'E' {
+				inExpr = true
+			}
+		}
+
+		currentPart = currentPart + charToString(int(ch))
+		i = i + 1
+	}
+
+	// Process final part
+	if currentPart != "" {
+		if !inExpr {
+			if len(currentPart) > 4 {
+				content := extractAfterIndex(currentPart, 4)
+				strNode := NewNodeWithValue(NodeStr, content)
+				node = AddChild(node, strNode)
+			}
+		} else {
+			if len(currentPart) > 5 {
+				exprStr := extractAfterIndex(currentPart, 5)
+				formattedNode := NewNode(NodeFormattedValue)
+				formattedNode.Value = exprStr
+				node = AddChild(node, formattedNode)
+			}
+		}
+	}
+
+	return node, pos
+}
+
+// extractAfterIndex extracts substring starting from given index
+func extractAfterIndex(s string, startIndex int) string {
+	result := ""
+	for i := startIndex; i < len(s); i++ {
+		result = result + charToString(int(s[i]))
+	}
+	return result
+}
+
+// parseAnnotatedAssignment parses annotated assignment
+// x: int = 1
+// x: int
+func parseAnnotatedAssignment(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeAnnotatedAssign)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Target name
+	target := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+	node = AddChild(node, target)
+	pos = pos + 1
+
+	// Skip ':'
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Type annotation
+	var annotation Node
+	annotation, pos = parseExpression(tokens, pos)
+	node = AddChild(node, annotation)
+
+	// Optional value
+	if peekTokenType(tokens, pos) == TokenAssign {
+		pos = pos + 1
+		var value Node
+		value, pos = parseExpression(tokens, pos)
+		node = AddChild(node, value)
 	}
 
 	// Skip newline

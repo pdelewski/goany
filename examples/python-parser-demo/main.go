@@ -289,5 +289,68 @@ del items[0]`
 	ast34 := pyparser.Parse(code34)
 	fmt.Println(pyparser.PrintAST(ast34))
 
+	// Test 35: Tuple unpacking assignment
+	code35 := `a, b = 1, 2
+x, y, z = func()`
+
+	fmt.Println("=== Test 35: Tuple Unpacking ===")
+	ast35 := pyparser.Parse(code35)
+	fmt.Println(pyparser.PrintAST(ast35))
+
+	// Test 36: Chained comparisons
+	code36 := `if 0 < x < 10:
+    y = x`
+
+	fmt.Println("=== Test 36: Chained Comparisons ===")
+	ast36 := pyparser.Parse(code36)
+	fmt.Println(pyparser.PrintAST(ast36))
+
+	// Test 37: Type annotations - simple variable only
+	code37 := `x: int = 10`
+
+	fmt.Println("=== Test 37: Type Annotations ===")
+	ast37 := pyparser.Parse(code37)
+	fmt.Println(pyparser.PrintAST(ast37))
+
+	// Test 38: Async function
+	code38 := `async def fetch_data():
+    return 1`
+
+	fmt.Println("=== Test 38: Async Function ===")
+	ast38 := pyparser.Parse(code38)
+	fmt.Println(pyparser.PrintAST(ast38))
+
+	// Test 39: Await expression
+	code39 := `async def main():
+    result = await fetch_data()`
+
+	fmt.Println("=== Test 39: Await Expression ===")
+	ast39 := pyparser.Parse(code39)
+	fmt.Println(pyparser.PrintAST(ast39))
+
+	// Test 40: Walrus operator
+	code40 := `if (n := len(items)) > 10:
+    print(n)`
+
+	fmt.Println("=== Test 40: Walrus Operator ===")
+	ast40 := pyparser.Parse(code40)
+	fmt.Println(pyparser.PrintAST(ast40))
+
+	// Test 41: Starred expression in assignment
+	code41 := `first, *rest = items
+*head, last = items`
+
+	fmt.Println("=== Test 41: Starred Expression ===")
+	ast41 := pyparser.Parse(code41)
+	fmt.Println(pyparser.PrintAST(ast41))
+
+	// Test 42: Multiple context managers
+	code42 := `with open(f1) as a, open(f2) as b:
+    pass`
+
+	fmt.Println("=== Test 42: Multiple Context Managers ===")
+	ast42 := pyparser.Parse(code42)
+	fmt.Println(pyparser.PrintAST(ast42))
+
 	fmt.Println("=== All Tests Completed ===")
 }
