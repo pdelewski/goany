@@ -42,6 +42,17 @@ const NodeYield int = 38
 const NodeListComp int = 39
 const NodeTypeHint int = 40
 const NodeRaise int = 41
+const NodeAugAssign int = 42   // Augmented assignment (+=, -=, etc.)
+const NodeSlice int = 43       // Slice expression
+const NodeTuple int = 44       // Tuple literal/unpacking
+const NodeSet int = 45         // Set literal
+const NodeSetComp int = 46     // Set comprehension
+const NodeDictComp int = 47    // Dict comprehension
+const NodeGeneratorExp int = 48 // Generator expression
+const NodeAssert int = 49      // Assert statement
+const NodeGlobal int = 50      // Global statement
+const NodeNonlocal int = 51    // Nonlocal statement
+const NodeDelete int = 52      // Del statement
 
 // Node represents an AST node
 type Node struct {
@@ -222,6 +233,39 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeRaise {
 		return "Raise"
+	}
+	if nodeType == NodeAugAssign {
+		return "AugAssign"
+	}
+	if nodeType == NodeSlice {
+		return "Slice"
+	}
+	if nodeType == NodeTuple {
+		return "Tuple"
+	}
+	if nodeType == NodeSet {
+		return "Set"
+	}
+	if nodeType == NodeSetComp {
+		return "SetComp"
+	}
+	if nodeType == NodeDictComp {
+		return "DictComp"
+	}
+	if nodeType == NodeGeneratorExp {
+		return "GeneratorExp"
+	}
+	if nodeType == NodeAssert {
+		return "Assert"
+	}
+	if nodeType == NodeGlobal {
+		return "Global"
+	}
+	if nodeType == NodeNonlocal {
+		return "Nonlocal"
+	}
+	if nodeType == NodeDelete {
+		return "Delete"
 	}
 	return "Unknown"
 }

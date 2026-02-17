@@ -412,6 +412,48 @@ func Tokenize(input string) []Token {
 				col = col + 2
 				continue
 			}
+			if twoChar == "+=" {
+				tokens = append(tokens, NewToken(TokenPlusAssign, "+=", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			if twoChar == "-=" {
+				tokens = append(tokens, NewToken(TokenMinusAssign, "-=", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			if twoChar == "*=" {
+				tokens = append(tokens, NewToken(TokenStarAssign, "*=", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			if twoChar == "/=" {
+				tokens = append(tokens, NewToken(TokenSlashAssign, "/=", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			if twoChar == "%=" {
+				tokens = append(tokens, NewToken(TokenPercentAssign, "%=", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			if twoChar == "<<" {
+				tokens = append(tokens, NewToken(TokenLeftShift, "<<", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			if twoChar == ">>" {
+				tokens = append(tokens, NewToken(TokenRightShift, ">>", line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
 		}
 
 		// Single-character tokens
@@ -442,6 +484,14 @@ func Tokenize(input string) []Token {
 			tokens = append(tokens, NewToken(TokenStar, "*", line, charStartCol))
 		} else if ch == int('+') || ch == int('-') || ch == int('/') || ch == int('%') || ch == int('<') || ch == int('>') {
 			tokens = append(tokens, NewToken(TokenOperator, charToString(ch), line, charStartCol))
+		} else if ch == int('&') {
+			tokens = append(tokens, NewToken(TokenAmpersand, "&", line, charStartCol))
+		} else if ch == int('|') {
+			tokens = append(tokens, NewToken(TokenPipe, "|", line, charStartCol))
+		} else if ch == int('^') {
+			tokens = append(tokens, NewToken(TokenCaret, "^", line, charStartCol))
+		} else if ch == int('~') {
+			tokens = append(tokens, NewToken(TokenTilde, "~", line, charStartCol))
 		} else {
 			// Unknown character - skip it
 		}

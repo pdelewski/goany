@@ -23,7 +23,18 @@ const TokenAssign int = 18
 const TokenAt int = 19
 const TokenStar int = 20
 const TokenDoubleStar int = 21
-const TokenArrow int = 22 // -> for type hints
+const TokenArrow int = 22      // -> for type hints
+const TokenPlusAssign int = 23 // +=
+const TokenMinusAssign int = 24 // -=
+const TokenStarAssign int = 25 // *=
+const TokenSlashAssign int = 26 // /=
+const TokenPercentAssign int = 27 // %=
+const TokenAmpersand int = 28  // &
+const TokenPipe int = 29       // |
+const TokenCaret int = 30      // ^
+const TokenTilde int = 31      // ~
+const TokenLeftShift int = 32  // <<
+const TokenRightShift int = 33 // >>
 
 // Token represents a lexical token
 type Token struct {
@@ -135,6 +146,18 @@ func isKeyword(s string) bool {
 	if s == "raise" {
 		return true
 	}
+	if s == "global" {
+		return true
+	}
+	if s == "nonlocal" {
+		return true
+	}
+	if s == "assert" {
+		return true
+	}
+	if s == "del" {
+		return true
+	}
 	return false
 }
 
@@ -208,6 +231,39 @@ func TokenTypeName(tokenType int) string {
 	}
 	if tokenType == TokenArrow {
 		return "ARROW"
+	}
+	if tokenType == TokenPlusAssign {
+		return "PLUSASSIGN"
+	}
+	if tokenType == TokenMinusAssign {
+		return "MINUSASSIGN"
+	}
+	if tokenType == TokenStarAssign {
+		return "STARASSIGN"
+	}
+	if tokenType == TokenSlashAssign {
+		return "SLASHASSIGN"
+	}
+	if tokenType == TokenPercentAssign {
+		return "PERCENTASSIGN"
+	}
+	if tokenType == TokenAmpersand {
+		return "AMPERSAND"
+	}
+	if tokenType == TokenPipe {
+		return "PIPE"
+	}
+	if tokenType == TokenCaret {
+		return "CARET"
+	}
+	if tokenType == TokenTilde {
+		return "TILDE"
+	}
+	if tokenType == TokenLeftShift {
+		return "LEFTSHIFT"
+	}
+	if tokenType == TokenRightShift {
+		return "RIGHTSHIFT"
 	}
 	return "UNKNOWN"
 }

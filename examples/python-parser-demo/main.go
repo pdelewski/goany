@@ -196,5 +196,98 @@ finally:
 	ast23 := pyparser.Parse(code23)
 	fmt.Println(pyparser.PrintAST(ast23))
 
+	// Test 24: Augmented assignment
+	code24 := `x += 1
+y -= 2
+z *= 3`
+
+	fmt.Println("=== Test 24: Augmented Assignment ===")
+	ast24 := pyparser.Parse(code24)
+	fmt.Println(pyparser.PrintAST(ast24))
+
+	// Test 25: Slice syntax
+	code25 := `a = items[1:3]
+b = items[::2]
+c = items[1:]`
+
+	fmt.Println("=== Test 25: Slice Syntax ===")
+	ast25 := pyparser.Parse(code25)
+	fmt.Println(pyparser.PrintAST(ast25))
+
+	// Test 26: Set literal
+	code26 := `s = {1, 2, 3}`
+
+	fmt.Println("=== Test 26: Set Literal ===")
+	ast26 := pyparser.Parse(code26)
+	fmt.Println(pyparser.PrintAST(ast26))
+
+	// Test 27: Set comprehension
+	code27 := `s = {x * 2 for x in range(5)}`
+
+	fmt.Println("=== Test 27: Set Comprehension ===")
+	ast27 := pyparser.Parse(code27)
+	fmt.Println(pyparser.PrintAST(ast27))
+
+	// Test 28: Dict comprehension
+	code28 := `d = {k: v for k, v in items}`
+
+	fmt.Println("=== Test 28: Dict Comprehension ===")
+	ast28 := pyparser.Parse(code28)
+	fmt.Println(pyparser.PrintAST(ast28))
+
+	// Test 29: Generator expression
+	code29 := `g = (x * x for x in range(10))`
+
+	fmt.Println("=== Test 29: Generator Expression ===")
+	ast29 := pyparser.Parse(code29)
+	fmt.Println(pyparser.PrintAST(ast29))
+
+	// Test 30: Tuple literal
+	code30 := `t = (1, 2, 3)`
+
+	fmt.Println("=== Test 30: Tuple Literal ===")
+	ast30 := pyparser.Parse(code30)
+	fmt.Println(pyparser.PrintAST(ast30))
+
+	// Test 31: Bitwise operators
+	code31 := `a = x & y
+b = x | y
+c = x ^ y
+d = ~x
+e = x << 2
+f = x >> 1`
+
+	fmt.Println("=== Test 31: Bitwise Operators ===")
+	ast31 := pyparser.Parse(code31)
+	fmt.Println(pyparser.PrintAST(ast31))
+
+	// Test 32: Assert statement
+	code32 := `assert x > 0
+assert y != 0, message`
+
+	fmt.Println("=== Test 32: Assert Statement ===")
+	ast32 := pyparser.Parse(code32)
+	fmt.Println(pyparser.PrintAST(ast32))
+
+	// Test 33: Global and nonlocal
+	code33 := `def outer():
+    x = 1
+    def inner():
+        nonlocal x
+        global y
+        x = 2`
+
+	fmt.Println("=== Test 33: Global/Nonlocal ===")
+	ast33 := pyparser.Parse(code33)
+	fmt.Println(pyparser.PrintAST(ast33))
+
+	// Test 34: Del statement
+	code34 := `del x
+del items[0]`
+
+	fmt.Println("=== Test 34: Del Statement ===")
+	ast34 := pyparser.Parse(code34)
+	fmt.Println(pyparser.PrintAST(ast34))
+
 	fmt.Println("=== All Tests Completed ===")
 }
