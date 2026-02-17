@@ -394,8 +394,14 @@ func Tokenize(input string) []Token {
 		// Two-character operators
 		if pos+1 < len(input) {
 			twoChar := charToString(ch) + charToString(int(input[pos+1]))
-			if twoChar == "==" || twoChar == "!=" || twoChar == "<=" || twoChar == ">=" || twoChar == "//" || twoChar == "**" {
+			if twoChar == "==" || twoChar == "!=" || twoChar == "<=" || twoChar == ">=" || twoChar == "//" {
 				tokens = append(tokens, NewToken(TokenOperator, twoChar, line, col))
+				pos = pos + 2
+				col = col + 2
+				continue
+			}
+			if twoChar == "**" {
+				tokens = append(tokens, NewToken(TokenDoubleStar, "**", line, col))
 				pos = pos + 2
 				col = col + 2
 				continue
@@ -424,7 +430,11 @@ func Tokenize(input string) []Token {
 			tokens = append(tokens, NewToken(TokenDot, ".", line, charStartCol))
 		} else if ch == int('=') {
 			tokens = append(tokens, NewToken(TokenAssign, "=", line, charStartCol))
-		} else if ch == int('+') || ch == int('-') || ch == int('*') || ch == int('/') || ch == int('%') || ch == int('<') || ch == int('>') {
+		} else if ch == int('@') {
+			tokens = append(tokens, NewToken(TokenAt, "@", line, charStartCol))
+		} else if ch == int('*') {
+			tokens = append(tokens, NewToken(TokenStar, "*", line, charStartCol))
+		} else if ch == int('+') || ch == int('-') || ch == int('/') || ch == int('%') || ch == int('<') || ch == int('>') {
 			tokens = append(tokens, NewToken(TokenOperator, charToString(ch), line, charStartCol))
 		} else {
 			// Unknown character - skip it
