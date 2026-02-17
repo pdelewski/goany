@@ -129,5 +129,404 @@ def func():
 	ast15 := pyparser.Parse(code15)
 	fmt.Println(pyparser.PrintAST(ast15))
 
+	// Test 16: Class definition
+	code16 := `class MyClass:
+    def __init__(self):
+        pass`
+
+	fmt.Println("=== Test 16: Class Definition ===")
+	ast16 := pyparser.Parse(code16)
+	fmt.Println(pyparser.PrintAST(ast16))
+
+	// Test 17: Class with base class
+	code17 := `class Child(Parent):
+    pass`
+
+	fmt.Println("=== Test 17: Class with Inheritance ===")
+	ast17 := pyparser.Parse(code17)
+	fmt.Println(pyparser.PrintAST(ast17))
+
+	// Test 18: Try/except/finally
+	code18 := `try:
+    x = 1
+except Exception as e:
+    x = 0
+finally:
+    cleanup()`
+
+	fmt.Println("=== Test 18: Try/Except/Finally ===")
+	ast18 := pyparser.Parse(code18)
+	fmt.Println(pyparser.PrintAST(ast18))
+
+	// Test 19: With statement
+	code19 := `with open(filename) as f:
+    data = f.read()`
+
+	fmt.Println("=== Test 19: With Statement ===")
+	ast19 := pyparser.Parse(code19)
+	fmt.Println(pyparser.PrintAST(ast19))
+
+	// Test 20: List comprehension
+	code20 := `squares = [x * x for x in range(10)]`
+
+	fmt.Println("=== Test 20: List Comprehension ===")
+	ast20 := pyparser.Parse(code20)
+	fmt.Println(pyparser.PrintAST(ast20))
+
+	// Test 21: List comprehension with condition
+	code21 := `evens = [x for x in range(10) if x % 2 == 0]`
+
+	fmt.Println("=== Test 21: List Comprehension with Condition ===")
+	ast21 := pyparser.Parse(code21)
+	fmt.Println(pyparser.PrintAST(ast21))
+
+	// Test 22: Yield statement
+	code22 := `def gen():
+    yield 1
+    yield 2`
+
+	fmt.Println("=== Test 22: Yield Statement ===")
+	ast22 := pyparser.Parse(code22)
+	fmt.Println(pyparser.PrintAST(ast22))
+
+	// Test 23: Raise statement
+	code23 := `raise ValueError(message)`
+
+	fmt.Println("=== Test 23: Raise Statement ===")
+	ast23 := pyparser.Parse(code23)
+	fmt.Println(pyparser.PrintAST(ast23))
+
+	// Test 24: Augmented assignment
+	code24 := `x += 1
+y -= 2
+z *= 3`
+
+	fmt.Println("=== Test 24: Augmented Assignment ===")
+	ast24 := pyparser.Parse(code24)
+	fmt.Println(pyparser.PrintAST(ast24))
+
+	// Test 25: Slice syntax
+	code25 := `a = items[1:3]
+b = items[::2]
+c = items[1:]`
+
+	fmt.Println("=== Test 25: Slice Syntax ===")
+	ast25 := pyparser.Parse(code25)
+	fmt.Println(pyparser.PrintAST(ast25))
+
+	// Test 26: Set literal
+	code26 := `s = {1, 2, 3}`
+
+	fmt.Println("=== Test 26: Set Literal ===")
+	ast26 := pyparser.Parse(code26)
+	fmt.Println(pyparser.PrintAST(ast26))
+
+	// Test 27: Set comprehension
+	code27 := `s = {x * 2 for x in range(5)}`
+
+	fmt.Println("=== Test 27: Set Comprehension ===")
+	ast27 := pyparser.Parse(code27)
+	fmt.Println(pyparser.PrintAST(ast27))
+
+	// Test 28: Dict comprehension
+	code28 := `d = {k: v for k, v in items}`
+
+	fmt.Println("=== Test 28: Dict Comprehension ===")
+	ast28 := pyparser.Parse(code28)
+	fmt.Println(pyparser.PrintAST(ast28))
+
+	// Test 29: Generator expression
+	code29 := `g = (x * x for x in range(10))`
+
+	fmt.Println("=== Test 29: Generator Expression ===")
+	ast29 := pyparser.Parse(code29)
+	fmt.Println(pyparser.PrintAST(ast29))
+
+	// Test 30: Tuple literal
+	code30 := `t = (1, 2, 3)`
+
+	fmt.Println("=== Test 30: Tuple Literal ===")
+	ast30 := pyparser.Parse(code30)
+	fmt.Println(pyparser.PrintAST(ast30))
+
+	// Test 31: Bitwise operators
+	code31 := `a = x & y
+b = x | y
+c = x ^ y
+d = ~x
+e = x << 2
+f = x >> 1`
+
+	fmt.Println("=== Test 31: Bitwise Operators ===")
+	ast31 := pyparser.Parse(code31)
+	fmt.Println(pyparser.PrintAST(ast31))
+
+	// Test 32: Assert statement
+	code32 := `assert x > 0
+assert y != 0, message`
+
+	fmt.Println("=== Test 32: Assert Statement ===")
+	ast32 := pyparser.Parse(code32)
+	fmt.Println(pyparser.PrintAST(ast32))
+
+	// Test 33: Global and nonlocal
+	code33 := `def outer():
+    x = 1
+    def inner():
+        nonlocal x
+        global y
+        x = 2`
+
+	fmt.Println("=== Test 33: Global/Nonlocal ===")
+	ast33 := pyparser.Parse(code33)
+	fmt.Println(pyparser.PrintAST(ast33))
+
+	// Test 34: Del statement
+	code34 := `del x
+del items[0]`
+
+	fmt.Println("=== Test 34: Del Statement ===")
+	ast34 := pyparser.Parse(code34)
+	fmt.Println(pyparser.PrintAST(ast34))
+
+	// Test 35: Tuple unpacking assignment
+	code35 := `a, b = 1, 2
+x, y, z = func()`
+
+	fmt.Println("=== Test 35: Tuple Unpacking ===")
+	ast35 := pyparser.Parse(code35)
+	fmt.Println(pyparser.PrintAST(ast35))
+
+	// Test 36: Chained comparisons
+	code36 := `if 0 < x < 10:
+    y = x`
+
+	fmt.Println("=== Test 36: Chained Comparisons ===")
+	ast36 := pyparser.Parse(code36)
+	fmt.Println(pyparser.PrintAST(ast36))
+
+	// Test 37: Type annotations - simple variable only
+	code37 := `x: int = 10`
+
+	fmt.Println("=== Test 37: Type Annotations ===")
+	ast37 := pyparser.Parse(code37)
+	fmt.Println(pyparser.PrintAST(ast37))
+
+	// Test 38: Async function
+	code38 := `async def fetch_data():
+    return 1`
+
+	fmt.Println("=== Test 38: Async Function ===")
+	ast38 := pyparser.Parse(code38)
+	fmt.Println(pyparser.PrintAST(ast38))
+
+	// Test 39: Await expression
+	code39 := `async def main():
+    result = await fetch_data()`
+
+	fmt.Println("=== Test 39: Await Expression ===")
+	ast39 := pyparser.Parse(code39)
+	fmt.Println(pyparser.PrintAST(ast39))
+
+	// Test 40: Walrus operator
+	code40 := `if (n := len(items)) > 10:
+    print(n)`
+
+	fmt.Println("=== Test 40: Walrus Operator ===")
+	ast40 := pyparser.Parse(code40)
+	fmt.Println(pyparser.PrintAST(ast40))
+
+	// Test 41: Starred expression in assignment
+	code41 := `first, *rest = items
+*head, last = items`
+
+	fmt.Println("=== Test 41: Starred Expression ===")
+	ast41 := pyparser.Parse(code41)
+	fmt.Println(pyparser.PrintAST(ast41))
+
+	// Test 42: Multiple context managers
+	code42 := `with open(f1) as a, open(f2) as b:
+    pass`
+
+	fmt.Println("=== Test 42: Multiple Context Managers ===")
+	ast42 := pyparser.Parse(code42)
+	fmt.Println(pyparser.PrintAST(ast42))
+
+	// Test 43: Default parameter values
+	code43 := `def greet(name, greeting='Hello'):
+    print(greeting, name)`
+
+	fmt.Println("=== Test 43: Default Parameters ===")
+	ast43 := pyparser.Parse(code43)
+	fmt.Println(pyparser.PrintAST(ast43))
+
+	// Test 44: Keyword arguments in calls
+	code44 := `result = func(a, b=2, c=3)`
+
+	fmt.Println("=== Test 44: Keyword Arguments ===")
+	ast44 := pyparser.Parse(code44)
+	fmt.Println(pyparser.PrintAST(ast44))
+
+	// Test 45: Ternary expression
+	code45 := `x = a if condition else b`
+
+	fmt.Println("=== Test 45: Ternary Expression ===")
+	ast45 := pyparser.Parse(code45)
+	fmt.Println(pyparser.PrintAST(ast45))
+
+	// Test 46: Multiple assignment targets
+	code46 := `a = b = c = 10`
+
+	fmt.Println("=== Test 46: Multiple Assignment ===")
+	ast46 := pyparser.Parse(code46)
+	fmt.Println(pyparser.PrintAST(ast46))
+
+	// Test 47: Ellipsis
+	code47 := `def stub():
+    ...`
+
+	fmt.Println("=== Test 47: Ellipsis ===")
+	ast47 := pyparser.Parse(code47)
+	fmt.Println(pyparser.PrintAST(ast47))
+
+	// Test 48: Multiple inheritance
+	code48 := `class Child(Parent1, Parent2, Parent3):
+    pass`
+
+	fmt.Println("=== Test 48: Multiple Inheritance ===")
+	ast48 := pyparser.Parse(code48)
+	fmt.Println(pyparser.PrintAST(ast48))
+
+	// Test 49: Function with type hints and defaults
+	code49 := `def process(data: list, count: int = 10) -> bool:
+    return True`
+
+	fmt.Println("=== Test 49: Full Function Signature ===")
+	ast49 := pyparser.Parse(code49)
+	fmt.Println(pyparser.PrintAST(ast49))
+
+	// Test 50: Match statement
+	code50 := `match command:
+    case 1:
+        x = 1
+    case 2:
+        x = 2
+    case _:
+        x = 0`
+
+	fmt.Println("=== Test 50: Match Statement ===")
+	ast50 := pyparser.Parse(code50)
+	fmt.Println(pyparser.PrintAST(ast50))
+
+	// Test 51: Match with patterns
+	code51 := `match point:
+    case (0, 0):
+        origin = True
+    case (x, y) if x == y:
+        diagonal = True
+    case (x, y):
+        other = True`
+
+	fmt.Println("=== Test 51: Match Patterns ===")
+	ast51 := pyparser.Parse(code51)
+	fmt.Println(pyparser.PrintAST(ast51))
+
+	// Test 52: Raw strings and byte strings
+	code52 := `raw = r'\n is not a newline'
+msg = b'hello bytes'`
+
+	fmt.Println("=== Test 52: Raw and Byte Strings ===")
+	ast52 := pyparser.Parse(code52)
+	fmt.Println(pyparser.PrintAST(ast52))
+
+	// Test 53: Hex, octal, binary numbers
+	code53 := `h = 0xFF
+o = 0o77
+b = 0b1010
+big = 1_000_000
+c = 3.14j`
+
+	fmt.Println("=== Test 53: Number Formats ===")
+	ast53 := pyparser.Parse(code53)
+	fmt.Println(pyparser.PrintAST(ast53))
+
+	// Test 54: Loop else clause
+	code54 := `for i in range(10):
+    if i == 5:
+        break
+else:
+    print('completed')
+while x > 0:
+    x = x - 1
+else:
+    print('done')`
+
+	fmt.Println("=== Test 54: Loop Else ===")
+	ast54 := pyparser.Parse(code54)
+	fmt.Println(pyparser.PrintAST(ast54))
+
+	// Test 55: Multiple except types
+	code55 := `try:
+    x = 1
+except (TypeError, ValueError) as e:
+    handle(e)
+else:
+    success()
+finally:
+    cleanup()`
+
+	fmt.Println("=== Test 55: Multiple Except Types ===")
+	ast55 := pyparser.Parse(code55)
+	fmt.Println(pyparser.PrintAST(ast55))
+
+	// Test 56: Exception chaining
+	code56 := `raise ValueError('bad') from original_error`
+
+	fmt.Println("=== Test 56: Exception Chaining ===")
+	ast56 := pyparser.Parse(code56)
+	fmt.Println(pyparser.PrintAST(ast56))
+
+	// Test 57: List comprehension
+	code57 := `evens = [x for x in items if x > 0]`
+
+	fmt.Println("=== Test 57: List Comprehension ===")
+	ast57 := pyparser.Parse(code57)
+	fmt.Println(pyparser.PrintAST(ast57))
+
+	// Test 58: Starred unpacking
+	code58 := `first, *rest = items
+a, b, c = 1, 2, 3`
+
+	fmt.Println("=== Test 58: Starred Unpacking ===")
+	ast58 := pyparser.Parse(code58)
+	fmt.Println(pyparser.PrintAST(ast58))
+
+	// Test 59: Positional-only and keyword-only params
+	code59 := `def func(pos1, pos2, /, both, *, kw1, kw2):
+    pass`
+
+	fmt.Println("=== Test 59: Positional/Keyword-Only Params ===")
+	ast59 := pyparser.Parse(code59)
+	fmt.Println(pyparser.PrintAST(ast59))
+
+	// Test 60: Match OR patterns
+	code60 := `match status:
+    case 200 | 201 | 204:
+        success = True
+    case 400 | 404 | 500:
+        error = True`
+
+	fmt.Println("=== Test 60: Match OR Patterns ===")
+	ast60 := pyparser.Parse(code60)
+	fmt.Println(pyparser.PrintAST(ast60))
+
+	// Test 61: Tuple unpacking in for loop
+	code61 := `for k, v in items.items():
+    print(k, v)`
+
+	fmt.Println("=== Test 61: Tuple Unpacking in For ===")
+	ast61 := pyparser.Parse(code61)
+	fmt.Println(pyparser.PrintAST(ast61))
+
 	fmt.Println("=== All Tests Completed ===")
 }

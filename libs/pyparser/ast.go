@@ -33,6 +33,43 @@ const NodeLambda int = 29
 const NodeStarArg int = 30
 const NodeKwArg int = 31
 const NodeDecorator int = 32
+const NodeClass int = 33
+const NodeTry int = 34
+const NodeExcept int = 35
+const NodeFinally int = 36
+const NodeWith int = 37
+const NodeYield int = 38
+const NodeListComp int = 39
+const NodeTypeHint int = 40
+const NodeRaise int = 41
+const NodeAugAssign int = 42   // Augmented assignment (+=, -=, etc.)
+const NodeSlice int = 43       // Slice expression
+const NodeTuple int = 44       // Tuple literal/unpacking
+const NodeSet int = 45         // Set literal
+const NodeSetComp int = 46     // Set comprehension
+const NodeDictComp int = 47    // Dict comprehension
+const NodeGeneratorExp int = 48 // Generator expression
+const NodeAssert int = 49      // Assert statement
+const NodeGlobal int = 50      // Global statement
+const NodeNonlocal int = 51    // Nonlocal statement
+const NodeDelete int = 52      // Del statement
+const NodeAsyncFunctionDef int = 53 // Async function definition
+const NodeAwait int = 54       // Await expression
+const NodeNamedExpr int = 55   // Named expression (walrus operator)
+const NodeFString int = 56     // f-string
+const NodeFormattedValue int = 57 // Formatted value in f-string
+const NodeAnnotatedAssign int = 58 // Annotated assignment (x: int = 1)
+const NodeDefault int = 59         // Parameter with default value
+const NodeKeywordArg int = 60      // Keyword argument in call (a=1)
+const NodeTernary int = 61         // Conditional expression (x if c else y)
+const NodeEllipsis int = 62        // Ellipsis literal (...)
+const NodeBytes int = 63           // Byte string (b"...")
+const NodeMatch int = 64           // Match statement
+const NodeMatchCase int = 65       // Case in match statement
+const NodeMatchPattern int = 66    // Pattern in match case
+const NodeComplex int = 67         // Complex number (3+4j)
+const NodePosOnlyMarker int = 68   // Positional-only marker (/)
+const NodeKwOnlyMarker int = 69    // Keyword-only marker (*)
 
 // Node represents an AST node
 type Node struct {
@@ -186,6 +223,117 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeDecorator {
 		return "Decorator"
+	}
+	if nodeType == NodeClass {
+		return "Class"
+	}
+	if nodeType == NodeTry {
+		return "Try"
+	}
+	if nodeType == NodeExcept {
+		return "Except"
+	}
+	if nodeType == NodeFinally {
+		return "Finally"
+	}
+	if nodeType == NodeWith {
+		return "With"
+	}
+	if nodeType == NodeYield {
+		return "Yield"
+	}
+	if nodeType == NodeListComp {
+		return "ListComp"
+	}
+	if nodeType == NodeTypeHint {
+		return "TypeHint"
+	}
+	if nodeType == NodeRaise {
+		return "Raise"
+	}
+	if nodeType == NodeAugAssign {
+		return "AugAssign"
+	}
+	if nodeType == NodeSlice {
+		return "Slice"
+	}
+	if nodeType == NodeTuple {
+		return "Tuple"
+	}
+	if nodeType == NodeSet {
+		return "Set"
+	}
+	if nodeType == NodeSetComp {
+		return "SetComp"
+	}
+	if nodeType == NodeDictComp {
+		return "DictComp"
+	}
+	if nodeType == NodeGeneratorExp {
+		return "GeneratorExp"
+	}
+	if nodeType == NodeAssert {
+		return "Assert"
+	}
+	if nodeType == NodeGlobal {
+		return "Global"
+	}
+	if nodeType == NodeNonlocal {
+		return "Nonlocal"
+	}
+	if nodeType == NodeDelete {
+		return "Delete"
+	}
+	if nodeType == NodeAsyncFunctionDef {
+		return "AsyncFunctionDef"
+	}
+	if nodeType == NodeAwait {
+		return "Await"
+	}
+	if nodeType == NodeNamedExpr {
+		return "NamedExpr"
+	}
+	if nodeType == NodeFString {
+		return "FString"
+	}
+	if nodeType == NodeFormattedValue {
+		return "FormattedValue"
+	}
+	if nodeType == NodeAnnotatedAssign {
+		return "AnnotatedAssign"
+	}
+	if nodeType == NodeDefault {
+		return "Default"
+	}
+	if nodeType == NodeKeywordArg {
+		return "KeywordArg"
+	}
+	if nodeType == NodeTernary {
+		return "Ternary"
+	}
+	if nodeType == NodeEllipsis {
+		return "Ellipsis"
+	}
+	if nodeType == NodeBytes {
+		return "Bytes"
+	}
+	if nodeType == NodeMatch {
+		return "Match"
+	}
+	if nodeType == NodeMatchCase {
+		return "MatchCase"
+	}
+	if nodeType == NodeMatchPattern {
+		return "MatchPattern"
+	}
+	if nodeType == NodeComplex {
+		return "Complex"
+	}
+	if nodeType == NodePosOnlyMarker {
+		return "PosOnlyMarker"
+	}
+	if nodeType == NodeKwOnlyMarker {
+		return "KwOnlyMarker"
 	}
 	return "Unknown"
 }
