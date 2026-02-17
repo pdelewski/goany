@@ -20,6 +20,9 @@ const TokenLBrace int = 15
 const TokenRBrace int = 16
 const TokenDot int = 17
 const TokenAssign int = 18
+const TokenAt int = 19
+const TokenStar int = 20
+const TokenDoubleStar int = 21
 
 // Token represents a lexical token
 type Token struct {
@@ -98,6 +101,18 @@ func isKeyword(s string) bool {
 	if s == "range" {
 		return true
 	}
+	if s == "import" {
+		return true
+	}
+	if s == "from" {
+		return true
+	}
+	if s == "as" {
+		return true
+	}
+	if s == "lambda" {
+		return true
+	}
 	return false
 }
 
@@ -159,6 +174,15 @@ func TokenTypeName(tokenType int) string {
 	}
 	if tokenType == TokenAssign {
 		return "ASSIGN"
+	}
+	if tokenType == TokenAt {
+		return "AT"
+	}
+	if tokenType == TokenStar {
+		return "STAR"
+	}
+	if tokenType == TokenDoubleStar {
+		return "DOUBLESTAR"
 	}
 	return "UNKNOWN"
 }

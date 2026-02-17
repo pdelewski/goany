@@ -101,6 +101,21 @@ func parseStatement(tokens []Token, pos int) (Node, int) {
 		return node, pos
 	}
 
+	// import statement
+	if tokenType == TokenKeyword && tokenValue == "import" {
+		return parseImport(tokens, pos)
+	}
+
+	// from...import statement
+	if tokenType == TokenKeyword && tokenValue == "from" {
+		return parseImportFrom(tokens, pos)
+	}
+
+	// decorator
+	if tokenType == TokenAt {
+		return parseDecorated(tokens, pos)
+	}
+
 	// print statement (treat as function call)
 	if tokenType == TokenKeyword && tokenValue == "print" {
 		return parseExpressionStatement(tokens, pos)
@@ -138,7 +153,23 @@ func parseFunctionDef(tokens []Token, pos int) (Node, int) {
 	if peekTokenType(tokens, pos) == TokenLParen {
 		pos = pos + 1
 		for peekTokenType(tokens, pos) != TokenRParen && peekTokenType(tokens, pos) != TokenEOF {
-			if peekTokenType(tokens, pos) == TokenIdentifier {
+			// Check for **kwargs
+			if peekTokenType(tokens, pos) == TokenDoubleStar {
+				pos = pos + 1
+				if peekTokenType(tokens, pos) == TokenIdentifier {
+					param := NewNodeWithName(NodeKwArg, peekTokenValue(tokens, pos))
+					paramList = AddChild(paramList, param)
+					pos = pos + 1
+				}
+			} else if peekTokenType(tokens, pos) == TokenStar {
+				// Check for *args
+				pos = pos + 1
+				if peekTokenType(tokens, pos) == TokenIdentifier {
+					param := NewNodeWithName(NodeStarArg, peekTokenValue(tokens, pos))
+					paramList = AddChild(paramList, param)
+					pos = pos + 1
+				}
+			} else if peekTokenType(tokens, pos) == TokenIdentifier {
 				param := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
 				paramList = AddChild(paramList, param)
 				pos = pos + 1
@@ -554,18 +585,50 @@ func parseTerm(tokens []Token, pos int) (Node, int) {
 	var left Node
 	left, pos = parseUnary(tokens, pos)
 
-	for peekTokenType(tokens, pos) == TokenOperator {
+	for {
+		tokenType := peekTokenType(tokens, pos)
 		op := peekTokenValue(tokens, pos)
-		if op != "*" && op != "/" && op != "%" && op != "//" {
-			break
+
+		// Handle * (TokenStar) for multiplication
+		if tokenType == TokenStar {
+			pos = pos + 1
+			var right Node
+			right, pos = parseUnary(tokens, pos)
+			node := NewNodeWithOp(NodeBinOp, "*")
+			node = AddChild(node, left)
+			node = AddChild(node, right)
+			left = node
+			continue
 		}
-		pos = pos + 1
-		var right Node
-		right, pos = parseUnary(tokens, pos)
-		node := NewNodeWithOp(NodeBinOp, op)
-		node = AddChild(node, left)
-		node = AddChild(node, right)
-		left = node
+
+		// Handle ** (TokenDoubleStar) for power
+		if tokenType == TokenDoubleStar {
+			pos = pos + 1
+			var right Node
+			right, pos = parseUnary(tokens, pos)
+			node := NewNodeWithOp(NodeBinOp, "**")
+			node = AddChild(node, left)
+			node = AddChild(node, right)
+			left = node
+			continue
+		}
+
+		// Handle /, %, // as operators
+		if tokenType == TokenOperator {
+			if op != "/" && op != "%" && op != "//" {
+				break
+			}
+			pos = pos + 1
+			var right Node
+			right, pos = parseUnary(tokens, pos)
+			node := NewNodeWithOp(NodeBinOp, op)
+			node = AddChild(node, left)
+			node = AddChild(node, right)
+			left = node
+			continue
+		}
+
+		break
 	}
 
 	return left, pos
@@ -657,6 +720,11 @@ func parseAtom(tokens []Token, pos int) (Node, int) {
 		return node, pos
 	}
 
+	// Lambda expression
+	if tokenType == TokenKeyword && tokenValue == "lambda" {
+		return parseLambda(tokens, pos)
+	}
+
 	// Identifier (including keywords like print, range that are used as functions)
 	if tokenType == TokenIdentifier || (tokenType == TokenKeyword && (tokenValue == "print" || tokenValue == "range")) {
 		node := NewNodeWithName(NodeName, tokenValue)
@@ -703,7 +771,25 @@ func parseCall(funcNode Node, tokens []Token, pos int) (Node, int) {
 	args := NewNode(NodeList)
 	for peekTokenType(tokens, pos) != TokenRParen && peekTokenType(tokens, pos) != TokenEOF {
 		var arg Node
-		arg, pos = parseExpression(tokens, pos)
+
+		// Check for **kwargs spread
+		if peekTokenType(tokens, pos) == TokenDoubleStar {
+			pos = pos + 1
+			var expr Node
+			expr, pos = parseExpression(tokens, pos)
+			arg = NewNode(NodeKwArg)
+			arg = AddChild(arg, expr)
+		} else if peekTokenType(tokens, pos) == TokenStar {
+			// Check for *args spread
+			pos = pos + 1
+			var expr Node
+			expr, pos = parseExpression(tokens, pos)
+			arg = NewNode(NodeStarArg)
+			arg = AddChild(arg, expr)
+		} else {
+			arg, pos = parseExpression(tokens, pos)
+		}
+
 		args = AddChild(args, arg)
 
 		if peekTokenType(tokens, pos) == TokenComma {
@@ -770,8 +856,7 @@ func parseListLiteral(tokens []Token, pos int) (Node, int) {
 
 // parseDictLiteral parses a dict literal {...}
 func parseDictLiteral(tokens []Token, pos int) (Node, int) {
-	node := NewNode(NodeList) // Use List with pairs
-	node.Name = "dict"        // Mark as dict
+	node := NewNode(NodeDict)
 	node = SetLine(node, peekToken(tokens, pos).Line)
 
 	// Skip '{'
@@ -791,11 +876,11 @@ func parseDictLiteral(tokens []Token, pos int) (Node, int) {
 		var value Node
 		value, pos = parseExpression(tokens, pos)
 
-		// Create a pair node
-		pair := NewNode(NodeList)
-		pair = AddChild(pair, key)
-		pair = AddChild(pair, value)
-		node = AddChild(node, pair)
+		// Create a DictEntry node
+		entry := NewNode(NodeDictEntry)
+		entry = AddChild(entry, key)
+		entry = AddChild(entry, value)
+		node = AddChild(node, entry)
 
 		if peekTokenType(tokens, pos) == TokenComma {
 			pos = pos + 1
@@ -808,4 +893,180 @@ func parseDictLiteral(tokens []Token, pos int) (Node, int) {
 	}
 
 	return node, pos
+}
+
+// parseImport parses an import statement
+// import x, y, z
+// import x as alias
+func parseImport(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeImport)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'import'
+	pos = pos + 1
+
+	// Parse module names
+	for {
+		if peekTokenType(tokens, pos) == TokenIdentifier {
+			name := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+			pos = pos + 1
+
+			// Check for 'as' alias
+			if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
+				pos = pos + 1
+				if peekTokenType(tokens, pos) == TokenIdentifier {
+					name.Value = peekTokenValue(tokens, pos) // Store alias in Value
+					pos = pos + 1
+				}
+			}
+
+			node = AddChild(node, name)
+		}
+
+		if peekTokenType(tokens, pos) == TokenComma {
+			pos = pos + 1
+		} else {
+			break
+		}
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseImportFrom parses a from...import statement
+// from module import x, y, z
+// from module import x as alias
+func parseImportFrom(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeImportFrom)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'from'
+	pos = pos + 1
+
+	// Module name
+	if peekTokenType(tokens, pos) == TokenIdentifier {
+		node.Name = peekTokenValue(tokens, pos)
+		pos = pos + 1
+	}
+
+	// Skip 'import'
+	if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "import" {
+		pos = pos + 1
+	}
+
+	// Parse imported names
+	for {
+		if peekTokenType(tokens, pos) == TokenIdentifier {
+			name := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+			pos = pos + 1
+
+			// Check for 'as' alias
+			if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "as" {
+				pos = pos + 1
+				if peekTokenType(tokens, pos) == TokenIdentifier {
+					name.Value = peekTokenValue(tokens, pos) // Store alias in Value
+					pos = pos + 1
+				}
+			}
+
+			node = AddChild(node, name)
+		}
+
+		if peekTokenType(tokens, pos) == TokenComma {
+			pos = pos + 1
+		} else {
+			break
+		}
+	}
+
+	// Skip newline
+	if peekTokenType(tokens, pos) == TokenNewline {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseLambda parses a lambda expression
+// lambda x, y: x + y
+func parseLambda(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeLambda)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	// Skip 'lambda'
+	pos = pos + 1
+
+	// Parameters
+	paramList := NewNode(NodeList)
+	for peekTokenType(tokens, pos) != TokenColon && peekTokenType(tokens, pos) != TokenEOF {
+		if peekTokenType(tokens, pos) == TokenIdentifier {
+			param := NewNodeWithName(NodeName, peekTokenValue(tokens, pos))
+			paramList = AddChild(paramList, param)
+			pos = pos + 1
+		}
+		if peekTokenType(tokens, pos) == TokenComma {
+			pos = pos + 1
+		}
+	}
+	node = AddChild(node, paramList)
+
+	// Skip ':'
+	if peekTokenType(tokens, pos) == TokenColon {
+		pos = pos + 1
+	}
+
+	// Body expression
+	var body Node
+	body, pos = parseExpression(tokens, pos)
+	node = AddChild(node, body)
+
+	return node, pos
+}
+
+// parseDecorated parses a decorated function definition
+// @decorator
+// def func(): ...
+func parseDecorated(tokens []Token, pos int) (Node, int) {
+	// Collect decorators
+	var decorators []Node
+	for peekTokenType(tokens, pos) == TokenAt {
+		pos = pos + 1 // Skip '@'
+
+		decorator := NewNode(NodeDecorator)
+		decorator = SetLine(decorator, peekToken(tokens, pos).Line)
+
+		// Decorator name (could be a dotted name or call)
+		var decoratorExpr Node
+		decoratorExpr, pos = parsePrimary(tokens, pos)
+		decorator = AddChild(decorator, decoratorExpr)
+
+		decorators = append(decorators, decorator)
+
+		// Skip newline after decorator
+		if peekTokenType(tokens, pos) == TokenNewline {
+			pos = pos + 1
+		}
+	}
+
+	// Parse the function definition
+	var funcDef Node
+	funcDef, pos = parseFunctionDef(tokens, pos)
+
+	// Add decorators as first children of the function
+	// We'll store them by prepending to Children
+	newChildren := make([]Node, 0)
+	for i := 0; i < len(decorators); i++ {
+		newChildren = append(newChildren, decorators[i])
+	}
+	for i := 0; i < len(funcDef.Children); i++ {
+		newChildren = append(newChildren, funcDef.Children[i])
+	}
+	funcDef.Children = newChildren
+
+	return funcDef, pos
 }

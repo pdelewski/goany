@@ -90,5 +90,44 @@ else:
 	ast10 := pyparser.Parse(code10)
 	fmt.Println(pyparser.PrintAST(ast10))
 
+	// Test 11: Dict literal
+	code11 := `data = {'name': 'John', 'age': 30}`
+
+	fmt.Println("=== Test 11: Dict Literal ===")
+	ast11 := pyparser.Parse(code11)
+	fmt.Println(pyparser.PrintAST(ast11))
+
+	// Test 12: Import statements
+	code12 := `import os
+from math import sqrt, pow`
+
+	fmt.Println("=== Test 12: Import Statements ===")
+	ast12 := pyparser.Parse(code12)
+	fmt.Println(pyparser.PrintAST(ast12))
+
+	// Test 13: Lambda expression
+	code13 := `f = lambda x, y: x + y`
+
+	fmt.Println("=== Test 13: Lambda Expression ===")
+	ast13 := pyparser.Parse(code13)
+	fmt.Println(pyparser.PrintAST(ast13))
+
+	// Test 14: *args and **kwargs
+	code14 := `def func(*args, **kwargs):
+    pass`
+
+	fmt.Println("=== Test 14: *args/**kwargs ===")
+	ast14 := pyparser.Parse(code14)
+	fmt.Println(pyparser.PrintAST(ast14))
+
+	// Test 15: Decorator
+	code15 := `@decorator
+def func():
+    pass`
+
+	fmt.Println("=== Test 15: Decorator ===")
+	ast15 := pyparser.Parse(code15)
+	fmt.Println(pyparser.PrintAST(ast15))
+
 	fmt.Println("=== All Tests Completed ===")
 }

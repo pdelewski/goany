@@ -25,6 +25,14 @@ const NodeNone int = 21
 const NodeCompare int = 22
 const NodeElif int = 23
 const NodeElse int = 24
+const NodeDict int = 25
+const NodeDictEntry int = 26
+const NodeImport int = 27
+const NodeImportFrom int = 28
+const NodeLambda int = 29
+const NodeStarArg int = 30
+const NodeKwArg int = 31
+const NodeDecorator int = 32
 
 // Node represents an AST node
 type Node struct {
@@ -154,6 +162,30 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeElse {
 		return "Else"
+	}
+	if nodeType == NodeDict {
+		return "Dict"
+	}
+	if nodeType == NodeDictEntry {
+		return "DictEntry"
+	}
+	if nodeType == NodeImport {
+		return "Import"
+	}
+	if nodeType == NodeImportFrom {
+		return "ImportFrom"
+	}
+	if nodeType == NodeLambda {
+		return "Lambda"
+	}
+	if nodeType == NodeStarArg {
+		return "StarArg"
+	}
+	if nodeType == NodeKwArg {
+		return "KwArg"
+	}
+	if nodeType == NodeDecorator {
+		return "Decorator"
 	}
 	return "Unknown"
 }
