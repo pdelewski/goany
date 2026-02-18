@@ -494,6 +494,92 @@ func testAppend() {
 	}
 }
 
+// Test nil slice declaration followed by append
+// This is a common Go pattern: var slice []Type; slice = append(slice, item)
+func testNilSliceAppend() {
+	// Test 1: Basic nil slice with append
+	var nilSlice []int
+	nilSlice = append(nilSlice, 1)
+	nilSlice = append(nilSlice, 2)
+	nilSlice = append(nilSlice, 3)
+	if len(nilSlice) == 3 && nilSlice[0] == 1 && nilSlice[1] == 2 && nilSlice[2] == 3 {
+		fmt.Println("PASS: nil slice append")
+	} else {
+		panic("FAIL: nil slice append")
+	}
+
+	// Test 2: Nil string slice with append
+	var strSlice []string
+	strSlice = append(strSlice, "hello")
+	strSlice = append(strSlice, "world")
+	if len(strSlice) == 2 && strSlice[0] == "hello" && strSlice[1] == "world" {
+		fmt.Println("PASS: nil string slice append")
+	} else {
+		panic("FAIL: nil string slice append")
+	}
+
+	// Test 3: make with zero capacity
+	makeSlice := make([]int, 0)
+	makeSlice = append(makeSlice, 10)
+	makeSlice = append(makeSlice, 20)
+	if len(makeSlice) == 2 && makeSlice[0] == 10 && makeSlice[1] == 20 {
+		fmt.Println("PASS: make zero capacity append")
+	} else {
+		panic("FAIL: make zero capacity append")
+	}
+
+	// Test 4: Nil slice in loop
+	var loopSlice []int
+	for i := 0; i < 5; i++ {
+		loopSlice = append(loopSlice, i*2)
+	}
+	if len(loopSlice) == 5 && loopSlice[0] == 0 && loopSlice[4] == 8 {
+		fmt.Println("PASS: nil slice loop append")
+	} else {
+		panic("FAIL: nil slice loop append")
+	}
+}
+
+// Struct with slice field that starts nil
+type SliceContainer struct {
+	Items []int
+	Names []string
+}
+
+// Test struct with nil slice fields and append
+func testStructNilSliceField() {
+	// Test 1: Struct with nil slice field
+	container := SliceContainer{}
+	container.Items = append(container.Items, 1)
+	container.Items = append(container.Items, 2)
+	if len(container.Items) == 2 && container.Items[0] == 1 && container.Items[1] == 2 {
+		fmt.Println("PASS: struct nil slice field append")
+	} else {
+		panic("FAIL: struct nil slice field append")
+	}
+
+	// Test 2: Struct with multiple nil slice fields
+	container.Names = append(container.Names, "Alice")
+	container.Names = append(container.Names, "Bob")
+	if len(container.Names) == 2 && container.Names[0] == "Alice" {
+		fmt.Println("PASS: struct multiple nil slice fields")
+	} else {
+		panic("FAIL: struct multiple nil slice fields")
+	}
+
+	// Test 3: Struct initialized with empty slice literals
+	container2 := SliceContainer{
+		Items: []int{},
+		Names: []string{},
+	}
+	container2.Items = append(container2.Items, 100)
+	if len(container2.Items) == 1 && container2.Items[0] == 100 {
+		fmt.Println("PASS: struct empty slice literal field")
+	} else {
+		panic("FAIL: struct empty slice literal field")
+	}
+}
+
 // Struct initialization
 func testStructInitialization() {
 	// Empty struct
@@ -1390,6 +1476,8 @@ func main() {
 	testPrintFunctions()
 	testTypeConversions()
 	testAppend()
+	testNilSliceAppend()
+	testStructNilSliceField()
 	testStructInitialization()
 	testNestedIf()
 	testInt32Int64Types()
