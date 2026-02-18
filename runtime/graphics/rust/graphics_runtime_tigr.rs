@@ -102,7 +102,7 @@ thread_local! {
 
 // --- Public API types ---
 
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, Hash, PartialEq, Eq)]
 pub struct Color {
     pub R: u8,
     pub G: u8,
@@ -110,7 +110,7 @@ pub struct Color {
     pub A: u8,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Rect {
     pub X: i32,
     pub Y: i32,
@@ -118,7 +118,7 @@ pub struct Rect {
     pub Height: i32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Window {
     pub handle: i64,    // Tigr*
     pub renderer: i64,  // Same as handle for tigr

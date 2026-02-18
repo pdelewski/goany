@@ -2288,7 +2288,7 @@ func (cppe *CPPEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	}
 }
 
-// structHasOnlyPrimitiveFields checks if a struct has only primitive fields (no slices, maps, etc.)
+// structHasOnlyPrimitiveFields checks if a struct has only hashable fields (primitives or structs with primitive fields)
 func (cppe *CPPEmitter) structHasOnlyPrimitiveFields(structName string) bool {
 	for _, file := range cppe.pkg.Syntax {
 		for _, decl := range file.Decls {
@@ -2300,8 +2300,7 @@ func (cppe *CPPEmitter) structHasOnlyPrimitiveFields(structName string) bool {
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
 										fieldType := cppe.pkg.TypesInfo.Types[field.Type].Type
-										// Only allow basic/primitive types (int, string, bool, float, etc.)
-										if _, isBasic := fieldType.Underlying().(*types.Basic); !isBasic {
+										if !cppe.isHashableType(fieldType, make(map[string]bool)) {
 											return false
 										}
 									}
@@ -2313,6 +2312,33 @@ func (cppe *CPPEmitter) structHasOnlyPrimitiveFields(structName string) bool {
 				}
 			}
 		}
+	}
+	return false
+}
+
+// isHashableType checks if a type can have operator== and std::hash in C++ (recursively)
+func (cppe *CPPEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
+	if named, ok := t.(*types.Named); ok {
+		name := named.Obj().Name()
+		if named.Obj().Pkg() != nil {
+			name = named.Obj().Pkg().Path() + "." + name
+		}
+		if visited[name] {
+			return false
+		}
+		visited[name] = true
+	}
+	underlying := t.Underlying()
+	if _, isBasic := underlying.(*types.Basic); isBasic {
+		return true
+	}
+	if structType, isStruct := underlying.(*types.Struct); isStruct {
+		for i := 0; i < structType.NumFields(); i++ {
+			if !cppe.isHashableType(structType.Field(i).Type(), visited) {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

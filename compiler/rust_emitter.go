@@ -2910,11 +2910,17 @@ func (re *RustEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
 		// Rc<dyn Any> implements Clone (cheap ref count bump), so struct can derive Clone
 		str = re.emitAsString("#[derive(Clone, Debug)]\n", indent+2)
 	} else {
-		// Check if struct only has primitive/Copy types (can derive Copy)
+		// Check if struct can derive Copy and/or Hash independently
 		canCopy := re.structCanDeriveCopy(node.Name)
-		if canCopy {
-			// Structs with only primitives can also derive Hash/PartialEq/Eq (useful for map keys)
+		canHash := re.structCanDeriveHash(node.Name)
+		if canCopy && canHash {
 			str = re.emitAsString("#[derive(Default, Clone, Copy, Debug, Hash, PartialEq, Eq)]\n", indent+2)
+		} else if canCopy {
+			// Copy but not Hash (e.g. struct with float fields)
+			str = re.emitAsString("#[derive(Default, Clone, Copy, Debug)]\n", indent+2)
+		} else if canHash {
+			// Hash but not Copy (e.g. struct with string fields)
+			str = re.emitAsString("#[derive(Default, Clone, Debug, Hash, PartialEq, Eq)]\n", indent+2)
 		} else {
 			// Add derive macros for Default (needed for ..Default::default() in struct init)
 			str = re.emitAsString("#[derive(Default, Clone, Debug)]\n", indent+2)
@@ -2995,8 +3001,8 @@ func (re *RustEmitter) structHasInterfaceFieldsRecursive(structName string, visi
 	return false
 }
 
-// structCanDeriveCopy checks if a struct only contains primitive/Copy fields
-func (re *RustEmitter) structCanDeriveCopy(structName string) bool {
+// structCanDeriveHash checks if a struct can derive Hash/PartialEq/Eq (all fields are recursively hashable)
+func (re *RustEmitter) structCanDeriveHash(structName string) bool {
 	for _, file := range re.pkg.Syntax {
 		for _, decl := range file.Decls {
 			if genDecl, ok := decl.(*ast.GenDecl); ok {
@@ -3007,30 +3013,7 @@ func (re *RustEmitter) structCanDeriveCopy(structName string) bool {
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
 										fieldType := re.pkg.TypesInfo.Types[field.Type].Type
-										typeStr := fieldType.String()
-										// If field is a slice/array, String, or interface{}, can't derive Copy
-										if strings.HasPrefix(typeStr, "[]") ||
-											typeStr == "string" ||
-											strings.Contains(typeStr, "interface") {
-											return false
-										}
-										// If field is a function type (will become Box<dyn Fn...>), can't derive Copy
-										if strings.HasPrefix(typeStr, "func(") {
-											return false
-										}
-										// If field is a map type, can't derive Copy
-										if _, isMap := fieldType.Underlying().(*types.Map); isMap {
-											return false
-										}
-										// If field is a struct type, can't safely derive Copy
-										// (the nested struct might have non-Copy fields)
-										if named, ok := fieldType.(*types.Named); ok {
-											if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-												return false
-											}
-										}
-										// Check underlying type for function signatures
-										if _, isSig := fieldType.Underlying().(*types.Signature); isSig {
+										if !re.isHashableType(fieldType, make(map[string]bool)) {
 											return false
 										}
 									}
@@ -3043,6 +3026,99 @@ func (re *RustEmitter) structCanDeriveCopy(structName string) bool {
 			}
 		}
 	}
+	return false
+}
+
+// isHashableType checks if a type can derive Hash/PartialEq/Eq in Rust (recursively)
+func (re *RustEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
+	if named, ok := t.(*types.Named); ok {
+		name := named.Obj().Name()
+		if named.Obj().Pkg() != nil {
+			name = named.Obj().Pkg().Path() + "." + name
+		}
+		if visited[name] {
+			return false
+		}
+		visited[name] = true
+	}
+	underlying := t.Underlying()
+	if basic, isBasic := underlying.(*types.Basic); isBasic {
+		// f32/f64 don't implement Hash or Eq in Rust (due to NaN)
+		if basic.Kind() == types.Float32 || basic.Kind() == types.Float64 {
+			return false
+		}
+		return true
+	}
+	if structType, isStruct := underlying.(*types.Struct); isStruct {
+		for i := 0; i < structType.NumFields(); i++ {
+			if !re.isHashableType(structType.Field(i).Type(), visited) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// structCanDeriveCopy checks if a struct only contains primitive/Copy fields (recursively)
+func (re *RustEmitter) structCanDeriveCopy(structName string) bool {
+	for _, file := range re.pkg.Syntax {
+		for _, decl := range file.Decls {
+			if genDecl, ok := decl.(*ast.GenDecl); ok {
+				for _, spec := range genDecl.Specs {
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						if typeSpec.Name.Name == structName {
+							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
+								if structType.Fields != nil {
+									for _, field := range structType.Fields.List {
+										fieldType := re.pkg.TypesInfo.Types[field.Type].Type
+										if !re.isCopyableType(fieldType, make(map[string]bool)) {
+											return false
+										}
+									}
+								}
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isCopyableType checks if a type can derive Copy in Rust (recursively)
+func (re *RustEmitter) isCopyableType(t types.Type, visited map[string]bool) bool {
+	if named, ok := t.(*types.Named); ok {
+		name := named.Obj().Name()
+		if named.Obj().Pkg() != nil {
+			name = named.Obj().Pkg().Path() + "." + name
+		}
+		if visited[name] {
+			return false
+		}
+		visited[name] = true
+	}
+	underlying := t.Underlying()
+	// Basic types (int, bool, float, etc.) are Copy
+	if basic, isBasic := underlying.(*types.Basic); isBasic {
+		// string is not Copy in Rust (becomes String)
+		if basic.Kind() == types.String {
+			return false
+		}
+		return true
+	}
+	// Structs: recursively check all fields
+	if structType, isStruct := underlying.(*types.Struct); isStruct {
+		for i := 0; i < structType.NumFields(); i++ {
+			if !re.isCopyableType(structType.Field(i).Type(), visited) {
+				return false
+			}
+		}
+		return true
+	}
+	// Slices, maps, interfaces, functions, channels are not Copy
 	return false
 }
 

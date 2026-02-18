@@ -307,17 +307,11 @@ func (sema *SemaChecker) isComparableKeyType(t types.Type, visited map[string]bo
 		return false
 	}
 
-	// Check struct types - all fields must be primitive types (no nested structs)
+	// Check struct types - all fields must be comparable (recursively)
 	if structType, isStruct := t.(*types.Struct); isStruct {
 		for i := 0; i < structType.NumFields(); i++ {
 			field := structType.Field(i)
-			fieldType := field.Type()
-			// Resolve named types to their underlying type
-			if named, ok := fieldType.(*types.Named); ok {
-				fieldType = named.Underlying()
-			}
-			// Only allow basic/primitive types as struct fields for map keys
-			if _, isBasic := fieldType.(*types.Basic); !isBasic {
+			if !sema.isComparableKeyType(field.Type(), visited) {
 				return false
 			}
 		}

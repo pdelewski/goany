@@ -1740,6 +1740,71 @@ func testStructMapKeys() {
 	fmt.Println("All struct map key tests passed!")
 }
 
+// Inner is a simple struct used as a field in Outer
+type Inner struct {
+	A int
+	B int
+}
+
+// Outer contains an Inner struct - tests nested struct map keys
+type Outer struct {
+	I Inner
+	C int
+}
+
+// testNestedStructMapKeys tests using structs with nested struct fields as map keys
+func testNestedStructMapKeys() {
+	fmt.Println("Testing nested struct map keys...")
+
+	m := make(map[Outer]string)
+
+	o1 := Outer{I: Inner{A: 1, B: 2}, C: 10}
+	o2 := Outer{I: Inner{A: 3, B: 4}, C: 20}
+	o3 := Outer{I: Inner{A: 1, B: 2}, C: 10} // Same as o1
+
+	m[o1] = "first"
+	m[o2] = "second"
+
+	// Test retrieval
+	if m[o1] == "first" {
+		fmt.Println("PASS: nested struct key retrieval")
+	} else {
+		panic("FAIL: nested struct key retrieval")
+	}
+
+	// Test that equal nested structs map to same key
+	if m[o3] == "first" {
+		fmt.Println("PASS: equal nested struct keys")
+	} else {
+		panic("FAIL: equal nested struct keys")
+	}
+
+	// Test map length
+	if len(m) == 2 {
+		fmt.Println("PASS: nested struct key map length")
+	} else {
+		panic("FAIL: nested struct key map length")
+	}
+
+	// Test update via equal key
+	m[o3] = "updated"
+	if m[o1] == "updated" {
+		fmt.Println("PASS: nested struct key update")
+	} else {
+		panic("FAIL: nested struct key update")
+	}
+
+	// Test delete
+	delete(m, o1)
+	if len(m) == 1 {
+		fmt.Println("PASS: nested struct key delete")
+	} else {
+		panic("FAIL: nested struct key delete")
+	}
+
+	fmt.Println("All nested struct map key tests passed!")
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1788,6 +1853,7 @@ func main() {
 	testBuiltinFunctions()
 	testMultiVariablePatterns()
 	testStructMapKeys()
+	testNestedStructMapKeys()
 
 	fmt.Println("=== Done ===")
 }
