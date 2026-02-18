@@ -917,12 +917,14 @@ func (sema *SemaChecker) PreVisitGenStructInfo(info GenTypeInfo, indent int) {
 		return
 	}
 	sema.checkStructEmbedding(info.Struct)
+	sema.checkFieldNameMatchesType(info.Struct)
 }
 
 // PreVisitStructType checks for struct embedding (anonymous fields) which is not supported
 // This handles struct types that appear in expressions (e.g., composite literals)
 func (sema *SemaChecker) PreVisitStructType(node *ast.StructType, indent int) {
 	sema.checkStructEmbedding(node)
+	sema.checkFieldNameMatchesType(node)
 }
 
 // checkStructEmbedding validates that a struct has no embedded (anonymous) fields
@@ -948,6 +950,35 @@ func (sema *SemaChecker) checkStructEmbedding(node *ast.StructType) {
 					fmt.Sprintf("Instead of: type MyStruct struct { %s }", typeName),
 					fmt.Sprintf("Use named field: type MyStruct struct { field %s }", typeName),
 				})
+		}
+	}
+}
+
+// checkFieldNameMatchesType detects when a struct field has the same name as its type
+// This causes C++ compilation errors: "declaration of 'Type Field' changes meaning of 'Type'"
+// Only applies to same-package types; qualified types (pkg.Type) are fine in C++ (pkg::Type Field)
+func (sema *SemaChecker) checkFieldNameMatchesType(node *ast.StructType) {
+	if node.Fields == nil {
+		return
+	}
+	for _, field := range node.Fields.List {
+		// Only check simple identifiers (same-package types)
+		// Qualified types like pkg.Type become pkg::Type in C++ which doesn't conflict
+		ident, ok := field.Type.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		typeName := ident.Name
+		// Check if any field name matches the type name
+		for _, name := range field.Names {
+			if name.Name == typeName {
+				sema.reportSemaError(field.Pos(),
+					"field name matches type name",
+					fmt.Sprintf("Field '%s' has the same name as its type '%s'.\n  This causes C++ compilation errors (-Wchanges-meaning).", name.Name, typeName),
+					[]string{
+						fmt.Sprintf("Rename the field, e.g.: %s %s -> Val %s", name.Name, typeName, typeName),
+					})
+			}
 		}
 	}
 }

@@ -20,7 +20,7 @@ func Eval(code string) Value {
 func EvalWithEnv(code string, store EnvStore, envIdx int) (EnvStore, Value) {
 	ast := pyparser.Parse(code)
 	result := evalNode(ast, store, envIdx)
-	return result.store, result.val.Value
+	return result.store, result.val.Val
 }
 
 // evalResult holds the evaluation result with environment
@@ -131,7 +131,7 @@ func evalModule(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 			return result
 		}
 		store = result.store
-		lastVal = result.val.Value
+		lastVal = result.val.Val
 		i = i + 1
 	}
 	return newEvalResult(store, lastVal)
@@ -182,7 +182,7 @@ func evalReturn(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 		return newEvalResultWithControl(store, NewReturnResult(NewNone()))
 	}
 	result := evalNode(node.Children[0], store, envIdx)
-	return newEvalResultWithControl(result.store, NewReturnResult(result.val.Value))
+	return newEvalResultWithControl(result.store, NewReturnResult(result.val.Val))
 }
 
 // evalIf evaluates an if/elif/else statement
@@ -196,7 +196,7 @@ func evalIf(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	condResult := evalNode(node.Children[0], store, envIdx)
 	store = condResult.store
 
-	if ValueToBool(condResult.val.Value) {
+	if ValueToBool(condResult.val.Val) {
 		// Execute then-body (node.Children[1] is a NodeList)
 		bodyNode := node.Children[1]
 		i := 0
@@ -220,7 +220,7 @@ func evalIf(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 			if len(child.Children) >= 2 {
 				elifCondResult := evalNode(child.Children[0], store, envIdx)
 				store = elifCondResult.store
-				if ValueToBool(elifCondResult.val.Value) {
+				if ValueToBool(elifCondResult.val.Val) {
 					// Execute elif body
 					elifBody := child.Children[1]
 					j := 0
@@ -273,7 +273,7 @@ func evalWhile(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 		condResult := evalNode(node.Children[0], store, envIdx)
 		store = condResult.store
 
-		if !ValueToBool(condResult.val.Value) {
+		if !ValueToBool(condResult.val.Val) {
 			break
 		}
 
@@ -313,7 +313,7 @@ func evalFor(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	targetNode := node.Children[0]
 	iterableResult := evalNode(node.Children[1], store, envIdx)
 	store = iterableResult.store
-	iterable := iterableResult.val.Value
+	iterable := iterableResult.val.Val
 
 	// Get items to iterate over
 	var items []Value
@@ -381,7 +381,7 @@ func evalAssign(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	target := node.Children[0]
 	valueResult := evalNode(node.Children[1], store, envIdx)
 	store = valueResult.store
-	val := valueResult.val.Value
+	val := valueResult.val.Val
 
 	if target.Type == pyparser.NodeName {
 		// Simple variable assignment
@@ -403,12 +403,12 @@ func evalSubscriptAssign(target pyparser.Node, val Value, store EnvStore, envIdx
 	// Get the container
 	containerResult := evalNode(target.Children[0], store, envIdx)
 	store = containerResult.store
-	container := containerResult.val.Value
+	container := containerResult.val.Val
 
 	// Get the index/key
 	indexResult := evalNode(target.Children[1], store, envIdx)
 	store = indexResult.store
-	index := indexResult.val.Value
+	index := indexResult.val.Val
 
 	// Get the variable name to update
 	varName := ""
@@ -453,7 +453,7 @@ func evalAugAssign(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	} else if target.Type == pyparser.NodeSubscript {
 		result := evalSubscript(target, store, envIdx)
 		store = result.store
-		currentVal = result.val.Value
+		currentVal = result.val.Val
 	} else {
 		return newEvalResult(store, NewNone())
 	}
@@ -461,7 +461,7 @@ func evalAugAssign(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	// Evaluate the right side
 	valueResult := evalNode(node.Children[1], store, envIdx)
 	store = valueResult.store
-	rightVal := valueResult.val.Value
+	rightVal := valueResult.val.Val
 
 	// Apply operation
 	var newVal Value
@@ -517,7 +517,7 @@ func evalBinOp(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 
 	leftResult := evalNode(node.Children[0], store, envIdx)
 	store = leftResult.store
-	left := leftResult.val.Value
+	left := leftResult.val.Val
 
 	// Short-circuit evaluation for and/or
 	if node.Op == "and" {
@@ -525,20 +525,20 @@ func evalBinOp(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 			return newEvalResult(store, left)
 		}
 		andResult := evalNode(node.Children[1], store, envIdx)
-		return newEvalResult(andResult.store, andResult.val.Value)
+		return newEvalResult(andResult.store, andResult.val.Val)
 	}
 	if node.Op == "or" {
 		if ValueToBool(left) {
 			return newEvalResult(store, left)
 		}
 		orResult := evalNode(node.Children[1], store, envIdx)
-		return newEvalResult(orResult.store, orResult.val.Value)
+		return newEvalResult(orResult.store, orResult.val.Val)
 	}
 
 	// Evaluate right side
 	rightResult := evalNode(node.Children[1], store, envIdx)
 	store = rightResult.store
-	right := rightResult.val.Value
+	right := rightResult.val.Val
 
 	result := applyBinOp(node.Op, left, right)
 	return newEvalResult(store, result)
@@ -656,7 +656,7 @@ func evalUnaryOp(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 
 	operandResult := evalNode(node.Children[0], store, envIdx)
 	store = operandResult.store
-	operand := operandResult.val.Value
+	operand := operandResult.val.Val
 
 	if node.Op == "-" {
 		if operand.Type == ValueInt {
@@ -685,11 +685,11 @@ func evalCompare(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 
 	leftResult := evalNode(node.Children[0], store, envIdx)
 	store = leftResult.store
-	left := leftResult.val.Value
+	left := leftResult.val.Val
 
 	rightResult := evalNode(node.Children[1], store, envIdx)
 	store = rightResult.store
-	right := rightResult.val.Value
+	right := rightResult.val.Val
 
 	result := applyCompare(node.Op, left, right)
 	return newEvalResult(store, NewBool(result))
@@ -790,7 +790,7 @@ func evalArgsFromNode(node pyparser.Node, store EnvStore, envIdx int) evalArgsRe
 		for i < len(argsNode.Children) {
 			argResult := evalNode(argsNode.Children[i], store, envIdx)
 			store = argResult.store
-			args = append(args, argResult.val.Value)
+			args = append(args, argResult.val.Val)
 			i = i + 1
 		}
 	}
@@ -831,7 +831,7 @@ func evalCall(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 		// Evaluate function expression
 		funcResult := evalNode(funcNode, store, envIdx)
 		store = funcResult.store
-		funcVal = funcResult.val.Value
+		funcVal = funcResult.val.Val
 	}
 
 	// Handle builtin function value
@@ -865,7 +865,7 @@ func evalCall(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 			result := evalNode(funcVal.FuncBody[j], store, newEnvIdx)
 			store = result.store
 			if result.val.Control == ControlReturn {
-				return newEvalResult(store, result.val.Value)
+				return newEvalResult(store, result.val.Val)
 			}
 			j = j + 1
 		}
@@ -887,7 +887,7 @@ func evalMethodCall(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 
 	objResult := evalNode(funcNode.Children[0], store, envIdx)
 	store = objResult.store
-	obj := objResult.val.Value
+	obj := objResult.val.Val
 
 	methodNameNode := funcNode.Children[1]
 	methodName := ""
@@ -1075,11 +1075,11 @@ func evalSubscript(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	// Regular subscript
 	containerResult := evalNode(node.Children[0], store, envIdx)
 	store = containerResult.store
-	container := containerResult.val.Value
+	container := containerResult.val.Val
 
 	indexResult := evalNode(node.Children[1], store, envIdx)
 	store = indexResult.store
-	index := indexResult.val.Value
+	index := indexResult.val.Val
 
 	if container.Type == ValueList && index.Type == ValueInt {
 		return newEvalResult(store, ListGet(container, index.IntVal))
@@ -1212,7 +1212,7 @@ func evalList(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	for i < len(node.Children) {
 		itemResult := evalNode(node.Children[i], store, envIdx)
 		store = itemResult.store
-		items = append(items, itemResult.val.Value)
+		items = append(items, itemResult.val.Val)
 		i = i + 1
 	}
 	return newEvalResult(store, NewList(items))
@@ -1230,8 +1230,8 @@ func evalDict(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 			store = keyResult.store
 			valResult := evalNode(entry.Children[1], store, envIdx)
 			store = valResult.store
-			keys = append(keys, keyResult.val.Value)
-			vals = append(vals, valResult.val.Value)
+			keys = append(keys, keyResult.val.Val)
+			vals = append(vals, valResult.val.Val)
 		}
 		i = i + 1
 	}
@@ -1248,7 +1248,7 @@ func evalTernary(node pyparser.Node, store EnvStore, envIdx int) evalResult {
 	condResult := evalNode(node.Children[1], store, envIdx)
 	store = condResult.store
 
-	if ValueToBool(condResult.val.Value) {
+	if ValueToBool(condResult.val.Val) {
 		return evalNode(node.Children[0], store, envIdx)
 	}
 	return evalNode(node.Children[2], store, envIdx)

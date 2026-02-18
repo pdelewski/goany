@@ -2,8 +2,8 @@ package pyinterp
 
 // Variable represents a named variable in scope
 type Variable struct {
-	Name  string
-	Value Value
+	Name string
+	Val  Value
 }
 
 // Environment represents a scope with variables
@@ -61,7 +61,7 @@ func EnvGet(store EnvStore, envIdx int, name string) (Value, bool) {
 	for currentIdx >= 0 {
 		varIdx := envFindVar(store, currentIdx, name)
 		if varIdx >= 0 {
-			return store.Envs[currentIdx].Vars[varIdx].Value, true
+			return store.Envs[currentIdx].Vars[varIdx].Val, true
 		}
 		currentIdx = store.Envs[currentIdx].Parent
 	}
@@ -80,7 +80,7 @@ func EnvSet(store EnvStore, envIdx int, name string, val Value) EnvStore {
 			// Found it, update in place (C# compatible way)
 			env := store.Envs[currentIdx]
 			v := env.Vars[varIdx]
-			v.Value = val
+			v.Val = val
 			env.Vars[varIdx] = v
 			store.Envs[currentIdx] = env
 			return store
@@ -103,13 +103,13 @@ func EnvDefine(store EnvStore, envIdx int, name string, val Value) EnvStore {
 		// Update existing (C# compatible way)
 		existEnv := store.Envs[envIdx]
 		v := existEnv.Vars[varIdx]
-		v.Value = val
+		v.Val = val
 		existEnv.Vars[varIdx] = v
 		store.Envs[envIdx] = existEnv
 		return store
 	}
 	// Add new variable
-	newVar := Variable{Name: name, Value: val}
+	newVar := Variable{Name: name, Val: val}
 	currEnv := store.Envs[envIdx]
 	currEnv.Vars = append(currEnv.Vars, newVar)
 	store.Envs[envIdx] = currEnv
@@ -127,12 +127,12 @@ func EnvSetLocal(store EnvStore, envIdx int, name string, val Value) EnvStore {
 		// C# compatible way
 		existEnv := store.Envs[envIdx]
 		v := existEnv.Vars[varIdx]
-		v.Value = val
+		v.Val = val
 		existEnv.Vars[varIdx] = v
 		store.Envs[envIdx] = existEnv
 		return store
 	}
-	newVar := Variable{Name: name, Value: val}
+	newVar := Variable{Name: name, Val: val}
 	currEnv := store.Envs[envIdx]
 	currEnv.Vars = append(currEnv.Vars, newVar)
 	store.Envs[envIdx] = currEnv

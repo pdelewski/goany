@@ -42,7 +42,7 @@ type Value struct {
 
 // Result wraps a Value with control flow information
 type Result struct {
-	Value   Value
+	Val     Value
 	Control int
 }
 
@@ -115,22 +115,22 @@ func NewRange(start int, end int, step int) Value {
 
 // NewResult creates a normal result (no control flow)
 func NewResult(val Value) Result {
-	return Result{Value: val, Control: ControlNone}
+	return Result{Val: val, Control: ControlNone}
 }
 
 // NewReturnResult creates a return control flow result
 func NewReturnResult(val Value) Result {
-	return Result{Value: val, Control: ControlReturn}
+	return Result{Val: val, Control: ControlReturn}
 }
 
 // NewBreakResult creates a break control flow result
 func NewBreakResult() Result {
-	return Result{Value: NewNone(), Control: ControlBreak}
+	return Result{Val: NewNone(), Control: ControlBreak}
 }
 
 // NewContinueResult creates a continue control flow result
 func NewContinueResult() Result {
-	return Result{Value: NewNone(), Control: ControlContinue}
+	return Result{Val: NewNone(), Control: ControlContinue}
 }
 
 // ValueTypeName returns the type name as a string
