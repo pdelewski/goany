@@ -5,8 +5,10 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	goanyrt "goany/runtime"
@@ -127,6 +129,8 @@ type JSEmitter struct {
 	mixedAssignIndent      int               // Indent level
 	mixedAssignFinalTarget string            // Final assignment target expression
 	mixedTempCounter       int               // Global counter for unique temp variable names
+	// Struct map key support
+	structKeyTypes         map[string]bool   // Struct types used as map keys
 }
 
 // jsMixedIndexOp represents a single index operation in a mixed chain
@@ -244,6 +248,17 @@ func (jse *JSEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 					return 12 // KEY_TYPE_FLOAT32
 				case types.Float64:
 					return 13 // KEY_TYPE_FLOAT64
+				}
+			}
+			// Check for struct types
+			if named, ok := tv.Type.(*types.Named); ok {
+				if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+					// Track this struct type as being used as a map key
+					if jse.structKeyTypes == nil {
+						jse.structKeyTypes = make(map[string]bool)
+					}
+					jse.structKeyTypes[named.Obj().Name()] = true
+					return 100 // KEY_TYPE_STRUCT
 				}
 			}
 		}
@@ -688,9 +703,53 @@ func (jse *JSEmitter) PostVisitProgram(indent int) {
 	jse.file.WriteString("\n// Run main\nmain();\n")
 	jse.file.Close()
 
+	// Replace placeholder struct key functions with working implementations
+	if len(jse.structKeyTypes) > 0 {
+		jse.replaceStructKeyFunctions()
+	}
+
 	// Create HTML wrapper if graphics runtime is enabled
 	if jse.LinkRuntime != "" {
 		jse.createHTMLWrapper()
+	}
+}
+
+// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
+func (jse *JSEmitter) replaceStructKeyFunctions() {
+	outputPath := jse.Output
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("Warning: could not read file for struct key replacement: %v", err)
+		return
+	}
+
+	// In JavaScript, use JSON.stringify for hashing and comparison
+	// Use regex to handle varying whitespace in generated code
+	newContent := string(content)
+
+	// Replace hashStructKey function
+	hashPattern := regexp.MustCompile(`(?s)hashStructKey:\s*function\s*\(key\)\s*\{\s*return 0;\s*\}`)
+	newHashBody := `hashStructKey: function (key) {
+    // Use JSON.stringify as a hash key (simple but effective for struct keys)
+    let s = JSON.stringify(key);
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) | 0;
+    }
+    if (h < 0) h = -h;
+    return h;
+  }`
+	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
+
+	// Replace structKeysEqual function
+	equalPattern := regexp.MustCompile(`(?s)structKeysEqual:\s*function\s*\(a,\s*b\)\s*\{\s*return false;\s*\}`)
+	newEqualBody := `structKeysEqual: function (a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }`
+	newContent = equalPattern.ReplaceAllString(newContent, newEqualBody)
+
+	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
+		log.Printf("Warning: could not write struct key replacements: %v", err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	goanyrt "goany/runtime"
@@ -154,6 +155,8 @@ type CSharpEmitter struct {
 	mixedAssignFinalTarget string
 	// Variable declaration value tracking
 	hasDeclValue bool // True if current declaration has an explicit initialization value
+	// Struct map key support
+	structKeyTypes map[string]bool // Struct types used as map keys
 }
 
 func (*CSharpEmitter) lowerToBuiltins(selector string) string {
@@ -373,6 +376,23 @@ func (cse *CSharpEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 			return 12 // KeyTypeFloat32
 		case "float64":
 			return 13 // KeyTypeFloat64
+		default:
+			// Check if it's a struct type
+			if cse.pkg != nil && cse.pkg.TypesInfo != nil {
+				tv := cse.pkg.TypesInfo.Types[mapType.Key]
+				if tv.Type != nil {
+					if named, ok := tv.Type.(*types.Named); ok {
+						if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+							// Track this struct type as being used as a map key
+							if cse.structKeyTypes == nil {
+								cse.structKeyTypes = make(map[string]bool)
+							}
+							cse.structKeyTypes[named.Obj().Name()] = true
+							return 100 // KeyTypeStruct
+						}
+					}
+				}
+			}
 		}
 	}
 	return 0
@@ -712,6 +732,11 @@ func (cse *CSharpEmitter) PostVisitProgram(indent int) {
 	emitTokensToFile(cse.file, cse.gir.tokenSlice)
 	cse.file.Close()
 
+	// Replace placeholder struct key functions with working implementations
+	if len(cse.structKeyTypes) > 0 {
+		cse.replaceStructKeyFunctions()
+	}
+
 	// Generate .NET project files if link-runtime is enabled
 	if cse.LinkRuntime != "" {
 		if err := cse.GenerateCsproj(); err != nil {
@@ -720,6 +745,43 @@ func (cse *CSharpEmitter) PostVisitProgram(indent int) {
 		if err := cse.CopyRuntimePackages(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
+	}
+}
+
+// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
+func (cse *CSharpEmitter) replaceStructKeyFunctions() {
+	outputPath := cse.OutputDir + "/" + cse.OutputName + ".cs"
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("Warning: could not read file for struct key replacement: %v", err)
+		return
+	}
+
+	// In C#, we can use built-in GetHashCode() and Equals() for value types (structs)
+	// Use regex to handle varying whitespace in generated code
+	newContent := string(content)
+
+	// Replace hashStructKey function - match any whitespace pattern
+	// Use Math.Abs to ensure non-negative hash values
+	hashPattern := regexp.MustCompile(`(?s)public static int hashStructKey\(object key\)\s*\{\s*return 0;\s*\}`)
+	newHashBody := `public static int hashStructKey(object key)
+    {
+        var h = key.GetHashCode();
+        if (h < 0) h = -h;
+        return h;
+    }`
+	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
+
+	// Replace structKeysEqual function - match any whitespace pattern
+	equalPattern := regexp.MustCompile(`(?s)public static bool structKeysEqual\(object a, object b\)\s*\{\s*return false;\s*\}`)
+	newEqualBody := `public static bool structKeysEqual(object a, object b)
+    {
+        return a.Equals(b);
+    }`
+	newContent = equalPattern.ReplaceAllString(newContent, newEqualBody)
+
+	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
+		log.Printf("Warning: could not write struct key replacements: %v", err)
 	}
 }
 

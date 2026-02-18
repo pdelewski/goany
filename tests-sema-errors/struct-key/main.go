@@ -1,12 +1,16 @@
 package main
 
-// ERROR: Structs as map keys are not supported
-// Only primitive types (string, int, bool, etc.) can be map keys.
-type Point struct {
-	X, Y int
+// ERROR: Structs with non-primitive fields cannot be used as map keys
+// Only structs with primitive fields (int, string, bool, floats) are allowed.
+type Inner struct {
+	X int
+}
+
+type Outer struct {
+	I Inner // struct field - not a primitive type
 }
 
 func main() {
-	m := make(map[Point]string) // error: struct key type not allowed
+	m := make(map[Outer]string) // error: struct with non-primitive field as key
 	_ = m
 }

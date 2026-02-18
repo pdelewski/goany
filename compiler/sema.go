@@ -271,21 +271,61 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 
 	// Check for unsupported key types
 	if tv, ok := sema.pkg.TypesInfo.Types[node.Key]; ok && tv.Type != nil {
-		if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
-			switch basic.Kind() {
-			case types.String, types.Int, types.Bool,
-				types.Int8, types.Int16, types.Int32, types.Int64,
-				types.Uint8, types.Uint16, types.Uint32, types.Uint64,
-				types.Float32, types.Float64:
-				return // supported key types
-			}
+		if sema.isComparableKeyType(tv.Type, make(map[string]bool)) {
+			return // supported key type
 		}
-		// If not a basic type or unsupported basic type, error
+		// If not a supported key type, error
 		sema.reportSemaError(node.Pos(),
 			"unsupported map key type",
-			fmt.Sprintf("Map key type '%s' is not supported.\n  Supported key types: string, int, bool, int8-int64, uint8-uint64, float32, float64.", tv.Type.String()),
-			[]string{"Use a supported primitive type as the key."})
+			fmt.Sprintf("Map key type '%s' is not supported.\n  Supported key types: primitives (string, int, bool, floats) or structs with only primitive fields.", tv.Type.String()),
+			[]string{"Use a supported primitive type or a simple struct as the key."})
 	}
+}
+
+// isComparableKeyType checks if a type can be used as a map key
+// Supports: primitives (string, int, bool, floats) and structs with comparable fields
+func (sema *SemaChecker) isComparableKeyType(t types.Type, visited map[string]bool) bool {
+	// Handle named types
+	if named, ok := t.(*types.Named); ok {
+		typeName := named.Obj().Pkg().Path() + "." + named.Obj().Name()
+		if visited[typeName] {
+			return false // Recursive type, not allowed
+		}
+		visited[typeName] = true
+		return sema.isComparableKeyType(named.Underlying(), visited)
+	}
+
+	// Check basic types (primitives)
+	if basic, isBasic := t.(*types.Basic); isBasic {
+		switch basic.Kind() {
+		case types.String, types.Int, types.Bool,
+			types.Int8, types.Int16, types.Int32, types.Int64,
+			types.Uint8, types.Uint16, types.Uint32, types.Uint64,
+			types.Float32, types.Float64:
+			return true
+		}
+		return false
+	}
+
+	// Check struct types - all fields must be primitive types (no nested structs)
+	if structType, isStruct := t.(*types.Struct); isStruct {
+		for i := 0; i < structType.NumFields(); i++ {
+			field := structType.Field(i)
+			fieldType := field.Type()
+			// Resolve named types to their underlying type
+			if named, ok := fieldType.(*types.Named); ok {
+				fieldType = named.Underlying()
+			}
+			// Only allow basic/primitive types as struct fields for map keys
+			if _, isBasic := fieldType.(*types.Basic); !isBasic {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Other types (slices, maps, channels, functions, interfaces) are not comparable
+	return false
 }
 
 // Note: Structural checks for DeferStmt, GoStmt, ChanType, SelectStmt, LabeledStmt

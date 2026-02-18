@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -286,6 +287,8 @@ type JavaEmitter struct {
 	suppressClosureTypeEmit bool              // Suppress type emission for closure-captured variables (we emit Object[] instead)
 	inAssignLhs             bool              // True when processing LHS of assignment (skip cast for captured vars)
 	inSelectorX             bool              // True when processing X part of a SelectorExpr (need cast for field access)
+	// Struct map key support
+	structKeyTypes          map[string]bool   // Struct types used as map keys
 }
 
 // Helper functions
@@ -1056,6 +1059,17 @@ func (je *JavaEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 	case "float64":
 		return 13 // KeyTypeFloat64
 	default:
+		// Check for struct types
+		if named, ok := tv.Type.(*types.Named); ok {
+			if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+				// Track this struct type as being used as a map key
+				if je.structKeyTypes == nil {
+					je.structKeyTypes = make(map[string]bool)
+				}
+				je.structKeyTypes[named.Obj().Name()] = true
+				return 100 // KeyTypeStruct
+			}
+		}
 		return 1 // Default to string
 	}
 }
@@ -1748,6 +1762,11 @@ func (je *JavaEmitter) PostVisitProgram(indent int) {
 	emitTokensToFile(je.file, je.gir.tokenSlice)
 	je.file.Close()
 
+	// Replace placeholder struct key functions with working implementations
+	if len(je.structKeyTypes) > 0 {
+		je.replaceStructKeyFunctions()
+	}
+
 	// Generate build files if link-runtime is enabled
 	if je.LinkRuntime != "" {
 		if err := je.GeneratePomXml(); err != nil {
@@ -1756,6 +1775,41 @@ func (je *JavaEmitter) PostVisitProgram(indent int) {
 		if err := je.CopyRuntimePackages(); err != nil {
 			log.Printf("Warning: %v", err)
 		}
+	}
+}
+
+// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
+func (je *JavaEmitter) replaceStructKeyFunctions() {
+	outputPath := je.Output
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("Warning: could not read file for struct key replacement: %v", err)
+		return
+	}
+
+	// In Java, use Objects.hash() and Objects.equals() for struct keys
+	// Use regex to handle varying whitespace in generated code
+	newContent := string(content)
+
+	// Replace hashStructKey function - match placeholder that returns 0
+	hashPattern := regexp.MustCompile(`(?s)static\s+int\s+hashStructKey\s*\(\s*Object\s+key\s*\)\s*\{\s*return\s+0;\s*\}`)
+	newHashBody := `static int hashStructKey(Object key) {
+        // Use Object's hashCode - works for any struct since Java auto-generates hashCode based on fields
+        int h = key.hashCode();
+        if (h < 0) h = -h;
+        return h;
+    }`
+	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
+
+	// Replace structKeysEqual function - match placeholder that returns false
+	equalPattern := regexp.MustCompile(`(?s)static\s+boolean\s+structKeysEqual\s*\(\s*Object\s+a\s*,\s*Object\s+b\s*\)\s*\{\s*return\s+false;\s*\}`)
+	newEqualBody := `static boolean structKeysEqual(Object a, Object b) {
+        return a.equals(b);
+    }`
+	newContent = equalPattern.ReplaceAllString(newContent, newEqualBody)
+
+	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
+		log.Printf("Warning: could not write struct key replacements: %v", err)
 	}
 }
 
@@ -2835,6 +2889,39 @@ func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			}
 			copyConstructor += "        }\n"
 			je.emitToPackage(copyConstructor)
+
+			// Generate hashCode() method for struct map key support
+			hashCode := fmt.Sprintf("        @Override\n        public int hashCode() {\n            return java.util.Objects.hash(")
+			for i, f := range fields {
+				if i > 0 {
+					hashCode += ", "
+				}
+				hashCode += fmt.Sprintf("this.%s", f.name)
+			}
+			hashCode += ");\n        }\n"
+			je.emitToPackage(hashCode)
+
+			// Generate equals() method for struct map key support
+			equals := fmt.Sprintf("        @Override\n        public boolean equals(Object obj) {\n")
+			equals += fmt.Sprintf("            if (this == obj) return true;\n")
+			equals += fmt.Sprintf("            if (obj == null || getClass() != obj.getClass()) return false;\n")
+			equals += fmt.Sprintf("            %s other = (%s) obj;\n", node.Name, node.Name)
+			equals += fmt.Sprintf("            return ")
+			for i, f := range fields {
+				if i > 0 {
+					equals += " && "
+				}
+				if isJavaPrimitiveType(f.javaType) {
+					equals += fmt.Sprintf("this.%s == other.%s", f.name, f.name)
+				} else {
+					equals += fmt.Sprintf("java.util.Objects.equals(this.%s, other.%s)", f.name, f.name)
+				}
+			}
+			if len(fields) == 0 {
+				equals += "true"
+			}
+			equals += ";\n        }\n"
+			je.emitToPackage(equals)
 		}
 
 		str := je.emitAsString("}\n\n", indent+2)

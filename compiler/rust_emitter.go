@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	goanyrt "goany/runtime"
@@ -274,6 +275,8 @@ type RustEmitter struct {
 	typeAssertCommaOkIndent  int
 	// Variable declaration value tracking
 	hasDeclValue bool // True if current declaration has an explicit initialization value
+	// Struct map key support
+	structKeyTypes map[string]string // Track struct types used as map keys: name -> Rust path (e.g., "super::Point" or "super::types::MyStruct")
 }
 
 func (*RustEmitter) lowerToBuiltins(selector string) string {
@@ -352,6 +355,32 @@ func (re *RustEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 			return 12 // KeyTypeFloat32
 		case "float64":
 			return 13 // KeyTypeFloat64
+		default:
+			// Check if it's a struct type
+			if re.pkg != nil && re.pkg.TypesInfo != nil {
+				if tv, ok := re.pkg.TypesInfo.Types[ident]; ok {
+					if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
+						// Track this struct type as used for map keys
+						if re.structKeyTypes == nil {
+							re.structKeyTypes = make(map[string]string)
+						}
+						// Build the Rust path: from inside hmap module, we use super:: to get to root,
+						// then add the package name if it's not the main package
+						// Use the package where the struct is DEFINED, not the current package
+						rustPath := "super::" + ident.Name
+						if named, ok := tv.Type.(*types.Named); ok {
+							if structPkg := named.Obj().Pkg(); structPkg != nil {
+								pkgName := structPkg.Name()
+								if pkgName != "" && pkgName != "main" {
+									rustPath = "super::" + pkgName + "::" + ident.Name
+								}
+							}
+						}
+						re.structKeyTypes[ident.Name] = rustPath
+						return 100 // KeyTypeStruct
+					}
+				}
+			}
 		}
 	}
 	return 0
@@ -1770,6 +1799,11 @@ func (re *RustEmitter) PostVisitProgram(indent int) {
 	emitTokensToFile(re.file, re.gir.tokenSlice)
 	re.file.Close()
 
+	// Replace struct key placeholder functions if any struct types are used as map keys
+	if len(re.structKeyTypes) > 0 {
+		re.replaceStructKeyFunctions()
+	}
+
 	// Generate Cargo project files if link-runtime is enabled
 	if re.LinkRuntime != "" {
 		if err := re.GenerateCargoToml(); err != nil {
@@ -1788,6 +1822,69 @@ func (re *RustEmitter) PostVisitProgram(indent int) {
 	}
 	if re.OptimizeRefs && re.RefOptCount > 0 {
 		fmt.Printf("  Rust: %d clone(s) removed by reference optimization\n", re.RefOptCount)
+	}
+}
+
+// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
+func (re *RustEmitter) replaceStructKeyFunctions() {
+	outputPath := re.Output
+	// For Cargo projects, the actual file is in src/main.rs
+	if re.LinkRuntime != "" {
+		outputPath = filepath.Join(re.OutputDir, "src", "main.rs")
+	}
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("Warning: could not read file for struct key replacement: %v", err)
+		return
+	}
+
+	newContent := string(content)
+
+	// Generate hashStructKey function body with downcasts for each struct type
+	// The stored paths already include the correct module prefix (e.g., "super::Point" or "super::types::MyStruct")
+	var hashCases strings.Builder
+	for _, rustPath := range re.structKeyTypes {
+		hashCases.WriteString(fmt.Sprintf(`
+        if let Some(s) = key.downcast_ref::<%s>() {
+            use std::hash::{Hash, Hasher};
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
+            s.hash(&mut hasher);
+            let h = (hasher.finish() %% (i32::MAX as u64)) as i32;
+            return h;
+        }`, rustPath))
+	}
+
+	newHashBody := fmt.Sprintf(`pub fn hashStructKey(key: Rc<dyn Any>) -> i32 {%s
+        return 0;
+    }`, hashCases.String())
+
+	// Replace hashStructKey function using regex
+	hashPattern := regexp.MustCompile(`(?s)pub fn hashStructKey\s*\([^)]*\)\s*->\s*i32\s*\{\s*return 0;\s*\}`)
+	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
+
+	// Generate structKeysEqual function body with downcasts for each struct type
+	// The stored paths already include the correct module prefix
+	var equalCases strings.Builder
+	for _, rustPath := range re.structKeyTypes {
+		equalCases.WriteString(fmt.Sprintf(`
+        if let (Some(sa), Some(sb)) = (a.downcast_ref::<%s>(), b.downcast_ref::<%s>()) {
+            return sa == sb;
+        }`, rustPath, rustPath))
+	}
+
+	newEqualBody := fmt.Sprintf(`pub fn structKeysEqual(a: Rc<dyn Any>, b: Rc<dyn Any>) -> bool {%s
+        return false;
+    }`, equalCases.String())
+
+	// Replace structKeysEqual function using regex
+	equalPattern := regexp.MustCompile(`(?s)pub fn structKeysEqual\s*\([^)]*\)\s*->\s*bool\s*\{\s*return false;\s*\}`)
+	newContent = equalPattern.ReplaceAllString(newContent, newEqualBody)
+
+	// Write back the modified content
+	err = os.WriteFile(outputPath, []byte(newContent), 0644)
+	if err != nil {
+		log.Printf("Warning: could not write file after struct key replacement: %v", err)
 	}
 }
 
@@ -2816,7 +2913,8 @@ func (re *RustEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
 		// Check if struct only has primitive/Copy types (can derive Copy)
 		canCopy := re.structCanDeriveCopy(node.Name)
 		if canCopy {
-			str = re.emitAsString("#[derive(Default, Clone, Copy, Debug)]\n", indent+2)
+			// Structs with only primitives can also derive Hash/PartialEq/Eq (useful for map keys)
+			str = re.emitAsString("#[derive(Default, Clone, Copy, Debug, Hash, PartialEq, Eq)]\n", indent+2)
 		} else {
 			// Add derive macros for Default (needed for ..Default::default() in struct init)
 			str = re.emitAsString("#[derive(Default, Clone, Debug)]\n", indent+2)

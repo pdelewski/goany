@@ -1679,6 +1679,67 @@ func testMultiVariablePatterns() {
 	fmt.Println("All multi-variable pattern tests passed!")
 }
 
+// Point is a simple struct with primitive fields only - can be used as map key
+type Point struct {
+	X int
+	Y int
+}
+
+// testStructMapKeys tests using structs as map keys
+func testStructMapKeys() {
+	fmt.Println("Testing struct map keys...")
+
+	// Create a map with struct keys
+	m := make(map[Point]string)
+
+	// Add some entries
+	p1 := Point{X: 1, Y: 2}
+	p2 := Point{X: 3, Y: 4}
+	p3 := Point{X: 1, Y: 2} // Same as p1
+
+	m[p1] = "first"
+	m[p2] = "second"
+
+	// Test retrieval
+	if m[p1] == "first" {
+		fmt.Println("PASS: struct key retrieval")
+	} else {
+		panic("FAIL: struct key retrieval")
+	}
+
+	// Test that equal structs map to same key
+	if m[p3] == "first" {
+		fmt.Println("PASS: equal struct keys")
+	} else {
+		panic("FAIL: equal struct keys")
+	}
+
+	// Test map length
+	if len(m) == 2 {
+		fmt.Println("PASS: struct key map length")
+	} else {
+		panic("FAIL: struct key map length")
+	}
+
+	// Test update
+	m[p1] = "updated"
+	if m[p3] == "updated" {
+		fmt.Println("PASS: struct key update")
+	} else {
+		panic("FAIL: struct key update")
+	}
+
+	// Test delete
+	delete(m, p1)
+	if len(m) == 1 {
+		fmt.Println("PASS: struct key delete")
+	} else {
+		panic("FAIL: struct key delete")
+	}
+
+	fmt.Println("All struct map key tests passed!")
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1726,6 +1787,7 @@ func main() {
 	testMixedNestedComposites()
 	testBuiltinFunctions()
 	testMultiVariablePatterns()
+	testStructMapKeys()
 
 	fmt.Println("=== Done ===")
 }

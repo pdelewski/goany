@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	goanyrt "goany/runtime"
@@ -47,6 +48,13 @@ type mixedIndexOp struct {
 	valueCppType string // C++ type of the value at this level
 	tempVarName  string // Temp variable name (only for map access)
 	mapVarExpr   string // The expression to call hashMapGet on
+}
+
+// pendingHashSpec stores info for deferred hash specialization generation
+type pendingHashSpec struct {
+	structName string   // Struct name (unqualified)
+	pkgName    string   // Package/namespace name (empty for main)
+	fieldNames []string // Field names of the struct
 }
 
 type CPPEmitter struct {
@@ -128,6 +136,8 @@ type CPPEmitter struct {
 	isMapLenCall           bool   // len() call on a map
 	pendingMapInit         bool   // var m map[K]V needs default init
 	pendingMapKeyType      int    // Key type for pending init
+	structKeyTypes         map[string]string // Struct types used as map keys: name -> qualified C++ name (e.g., "::Point" or "::pkgname::MyStruct")
+	pendingHashSpecs       []pendingHashSpec // Deferred hash specializations to emit after namespace close
 	hasDeclValue           bool   // True if current declaration has an explicit initialization value
 	suppressEmit           bool   // When true, emitToFile does nothing
 	isSliceMakeCall        bool   // Inside make([]T, n) call
@@ -321,6 +331,28 @@ func (cppe *CPPEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 				case types.Float64:
 					return 13
 				}
+			}
+			// Check for struct type - use KeyTypeStruct (100)
+			if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
+				// Track this struct type for hash/equality generation
+				if named, ok := tv.Type.(*types.Named); ok {
+					if cppe.structKeyTypes == nil {
+						cppe.structKeyTypes = make(map[string]string)
+					}
+					structName := named.Obj().Name()
+					// Build C++ name - for structs in main package use just the name
+					// For structs in other packages, use pkgname::StructName
+					// Use the package where the struct is DEFINED, not the current package
+					qualifiedName := structName
+					if structPkg := named.Obj().Pkg(); structPkg != nil {
+						pkgName := structPkg.Name()
+						if pkgName != "" && pkgName != "main" {
+							qualifiedName = pkgName + "::" + structName
+						}
+					}
+					cppe.structKeyTypes[structName] = qualifiedName
+				}
+				return 100
 			}
 		}
 	}
@@ -638,7 +670,15 @@ std::vector<std::string>& append(std::vector<std::string> &vec, const char *elem
 }
 
 func (cppe *CPPEmitter) PostVisitProgram(indent int) {
+	// Emit pending hash specializations for main package (no namespace)
+	cppe.emitPendingHashSpecs("")
+
 	cppe.file.Close()
+
+	// Replace placeholder struct key functions with working implementations
+	if len(cppe.structKeyTypes) > 0 {
+		cppe.replaceStructKeyFunctions()
+	}
 
 	// Generate Makefile if link-runtime is enabled
 	if err := cppe.GenerateMakefile(); err != nil {
@@ -650,9 +690,67 @@ func (cppe *CPPEmitter) PostVisitProgram(indent int) {
 	}
 }
 
+// replaceStructKeyFunctions replaces placeholder hash/equality functions with struct-specific implementations
+func (cppe *CPPEmitter) replaceStructKeyFunctions() {
+	outputPath := cppe.OutputDir + "/" + cppe.OutputName + ".cpp"
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("Warning: could not read file for struct key replacement: %v", err)
+		return
+	}
+
+	// Generate struct-specific hash function
+	// Use qualified names (e.g., "::Point") to reference structs from within hmap namespace
+	var hashCode strings.Builder
+	hashCode.WriteString("int hashStructKey(std::any key)\n{\n")
+	for _, qualifiedName := range cppe.structKeyTypes {
+		hashCode.WriteString(fmt.Sprintf("    if (key.type() == typeid(%s)) {\n", qualifiedName))
+		hashCode.WriteString(fmt.Sprintf("        int h = static_cast<int>(std::hash<%s>{}(std::any_cast<%s>(key)));\n", qualifiedName, qualifiedName))
+		hashCode.WriteString("        if (h < 0) h = -h;\n")
+		hashCode.WriteString("        return h;\n")
+		hashCode.WriteString("    }\n")
+	}
+	hashCode.WriteString("    return 0;\n}")
+
+	// Generate struct-specific equality function
+	var eqCode strings.Builder
+	eqCode.WriteString("bool structKeysEqual(std::any a, std::any b)\n{\n")
+	eqCode.WriteString("    if (a.type() != b.type()) return false;\n")
+	for _, qualifiedName := range cppe.structKeyTypes {
+		eqCode.WriteString(fmt.Sprintf("    if (a.type() == typeid(%s)) {\n", qualifiedName))
+		eqCode.WriteString(fmt.Sprintf("        return std::any_cast<%s>(a) == std::any_cast<%s>(b);\n", qualifiedName, qualifiedName))
+		eqCode.WriteString("    }\n")
+	}
+	eqCode.WriteString("    return false;\n}")
+
+	newContent := string(content)
+
+	// Replace placeholder hashStructKey with a version that calls the real implementation defined later
+	hashPattern := regexp.MustCompile(`(?s)int hashStructKey\(std::any key\)\s*\{\s*return 0;\s*\}`)
+	newContent = hashPattern.ReplaceAllString(newContent, "int hashStructKey(std::any key);\n")
+
+	// Replace placeholder structKeysEqual with a forward declaration
+	eqPattern := regexp.MustCompile(`(?s)bool structKeysEqual\(std::any a, std::any b\)\s*\{\s*return false;\s*\}`)
+	newContent = eqPattern.ReplaceAllString(newContent, "bool structKeysEqual(std::any a, std::any b);\n")
+
+	// Append the real implementations at the end of the file (after all struct definitions)
+	newContent += "\n// Struct map key support - implementations after struct definitions\n"
+	newContent += "namespace hmap {\n"
+	newContent += hashCode.String() + "\n"
+	newContent += eqCode.String() + "\n"
+	newContent += "} // namespace hmap\n"
+
+	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
+		log.Printf("Warning: could not write struct key replacements: %v", err)
+	}
+}
+
 func (cppe *CPPEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	cppe.pkg = pkg
 	name := pkg.Name
+	if cppe.structKeyTypes == nil {
+		cppe.structKeyTypes = make(map[string]string)
+	}
 	DebugLogPrintf("CPPEmitter: PreVisitPackage: %s (path: %s)", name, pkg.PkgPath)
 	if name == "main" {
 		return
@@ -681,6 +779,9 @@ func (cppe *CPPEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 		fmt.Println("Error writing to file:", err)
 		return
 	}
+
+	// Emit pending hash specializations for this package (now that namespace is closed)
+	cppe.emitPendingHashSpecs(name)
 }
 
 func (cppe *CPPEmitter) PreVisitBasicLit(e *ast.BasicLit, indent int) {
@@ -2178,6 +2279,119 @@ func (cppe *CPPEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	err := cppe.emitToFile(str)
 	if err != nil {
 		fmt.Println("Error writing to file:", err)
+	}
+
+	// Generate operator== and std::hash for structs with primitive fields
+	// This enables using them as map keys
+	if node.Struct != nil && cppe.structHasOnlyPrimitiveFields(node.Name) {
+		cppe.generateStructHashAndEquality(node)
+	}
+}
+
+// structHasOnlyPrimitiveFields checks if a struct has only primitive fields (no slices, maps, etc.)
+func (cppe *CPPEmitter) structHasOnlyPrimitiveFields(structName string) bool {
+	for _, file := range cppe.pkg.Syntax {
+		for _, decl := range file.Decls {
+			if genDecl, ok := decl.(*ast.GenDecl); ok {
+				for _, spec := range genDecl.Specs {
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						if typeSpec.Name.Name == structName {
+							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
+								if structType.Fields != nil {
+									for _, field := range structType.Fields.List {
+										fieldType := cppe.pkg.TypesInfo.Types[field.Type].Type
+										// Only allow basic/primitive types (int, string, bool, float, etc.)
+										if _, isBasic := fieldType.Underlying().(*types.Basic); !isBasic {
+											return false
+										}
+									}
+								}
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// generateStructHashAndEquality stores struct info for deferred hash/equality generation
+// The actual generation happens in emitPendingHashSpecs after namespace close
+func (cppe *CPPEmitter) generateStructHashAndEquality(node GenTypeInfo) {
+	structName := node.Name
+	pkgName := ""
+	if cppe.pkg != nil && cppe.pkg.Name != "main" {
+		pkgName = cppe.pkg.Name
+	}
+
+	// Collect field names
+	var fieldNames []string
+	if node.Struct.Fields != nil {
+		for _, field := range node.Struct.Fields.List {
+			for _, name := range field.Names {
+				fieldNames = append(fieldNames, name.Name)
+			}
+		}
+	}
+
+	// Store for later emission (after namespace close)
+	cppe.pendingHashSpecs = append(cppe.pendingHashSpecs, pendingHashSpec{
+		structName: structName,
+		pkgName:    pkgName,
+		fieldNames: fieldNames,
+	})
+}
+
+// emitPendingHashSpecs emits all pending hash specializations for a package
+// Called after namespace close so hash specs are at global scope
+func (cppe *CPPEmitter) emitPendingHashSpecs(pkgName string) {
+	var specsForPkg []pendingHashSpec
+	var remaining []pendingHashSpec
+
+	for _, spec := range cppe.pendingHashSpecs {
+		if spec.pkgName == pkgName {
+			specsForPkg = append(specsForPkg, spec)
+		} else {
+			remaining = append(remaining, spec)
+		}
+	}
+	cppe.pendingHashSpecs = remaining
+
+	for _, spec := range specsForPkg {
+		// Fully qualified name for non-main packages
+		qualifiedName := spec.structName
+		if spec.pkgName != "" {
+			qualifiedName = spec.pkgName + "::" + spec.structName
+		}
+
+		// Generate operator== at global scope
+		cppe.emitToFile(fmt.Sprintf("inline bool operator==(const %s& a, const %s& b) {\n", qualifiedName, qualifiedName))
+		cppe.emitToFile("    return ")
+		for i, fieldName := range spec.fieldNames {
+			if i > 0 {
+				cppe.emitToFile(" && ")
+			}
+			cppe.emitToFile(fmt.Sprintf("a.%s == b.%s", fieldName, fieldName))
+		}
+		if len(spec.fieldNames) == 0 {
+			cppe.emitToFile("true")
+		}
+		cppe.emitToFile(";\n}\n\n")
+
+		// Generate std::hash specialization at global scope
+		cppe.emitToFile("namespace std {\n")
+		cppe.emitToFile(fmt.Sprintf("    template<> struct hash<%s> {\n", qualifiedName))
+		cppe.emitToFile(fmt.Sprintf("        size_t operator()(const %s& s) const {\n", qualifiedName))
+		cppe.emitToFile("            size_t h = 0;\n")
+		for _, fieldName := range spec.fieldNames {
+			cppe.emitToFile(fmt.Sprintf("            h ^= std::hash<decltype(s.%s)>{}(s.%s) + 0x9e3779b9 + (h << 6) + (h >> 2);\n", fieldName, fieldName))
+		}
+		cppe.emitToFile("            return h;\n")
+		cppe.emitToFile("        }\n")
+		cppe.emitToFile("    };\n")
+		cppe.emitToFile("}\n\n")
 	}
 }
 
