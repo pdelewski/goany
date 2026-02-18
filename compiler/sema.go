@@ -1535,6 +1535,19 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 			return
 		}
 
+		// Check for variadic append - append(slice, elem1, elem2, ...) with more than 2 args
+		if ident.Name == "append" && len(node.Args) > 2 {
+			sema.reportSemaError(node.Pos(),
+				"variadic append is not supported",
+				fmt.Sprintf("append() with %d arguments is not allowed.\n  The C++ backend only supports appending one element at a time.", len(node.Args)),
+				[]string{
+					"Use multiple append calls instead:",
+					"  slice = append(slice, elem1)",
+					"  slice = append(slice, elem2)",
+				})
+			return
+		}
+
 		// Supported builtins - skip further argument checks
 		supportedBuiltins := map[string]bool{
 			"len": true, "append": true, "make": true, "delete": true,
