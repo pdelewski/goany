@@ -1601,6 +1601,84 @@ func testBuiltinFunctions() {
 	fmt.Println("All builtin function tests passed!")
 }
 
+// Helper function for testing multi-return
+func getMultipleValues() (int, string, bool) {
+	return 42, "hello", true
+}
+
+// Helper function returning two ints
+func getTwoInts() (int, int) {
+	return 10, 20
+}
+
+// testMultiVariablePatterns tests the supported multi-variable assignment patterns
+// Supported: map comma-ok, type assertion comma-ok, function multi-return
+// NOT supported: a, b := 1, 2 (literal tuple unpacking)
+func testMultiVariablePatterns() {
+	fmt.Println("Testing multi-variable patterns...")
+
+	// Pattern 1: Function returning multiple values
+	a, b, c := getMultipleValues()
+	if a == 42 && b == "hello" && c == true {
+		fmt.Println("PASS: function multi-return (3 values)")
+	} else {
+		panic("FAIL: function multi-return (3 values)")
+	}
+
+	// Pattern 2: Function returning two values
+	x, y := getTwoInts()
+	if x == 10 && y == 20 {
+		fmt.Println("PASS: function multi-return (2 values)")
+	} else {
+		panic("FAIL: function multi-return (2 values)")
+	}
+
+	// Pattern 3: Map comma-ok idiom
+	m := make(map[string]int)
+	m["key"] = 100
+	val, ok := m["key"]
+	if val == 100 && ok {
+		fmt.Println("PASS: map comma-ok (found)")
+	} else {
+		panic("FAIL: map comma-ok (found)")
+	}
+
+	val2, ok2 := m["missing"]
+	if val2 == 0 && !ok2 {
+		fmt.Println("PASS: map comma-ok (missing)")
+	} else {
+		panic("FAIL: map comma-ok (missing)")
+	}
+
+	// Pattern 4: Type assertion comma-ok
+	var iface interface{}
+	iface = 999
+	intVal, isInt := iface.(int)
+	if intVal == 999 && isInt {
+		fmt.Println("PASS: type assertion comma-ok (success)")
+	} else {
+		panic("FAIL: type assertion comma-ok (success)")
+	}
+
+	// Type assertion that should fail - just print result
+	// (backends may differ on exact behavior for failed assertions)
+	strVal, isStr := iface.(string)
+	fmt.Println(strVal)
+	fmt.Println(isStr)
+
+	// Pattern 5: Reassignment with function multi-return
+	x, y = getTwoInts()
+	x = x + 1
+	y = y + 1
+	if x == 11 && y == 21 {
+		fmt.Println("PASS: reassignment with multi-return")
+	} else {
+		panic("FAIL: reassignment with multi-return")
+	}
+
+	fmt.Println("All multi-variable pattern tests passed!")
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1647,6 +1725,7 @@ func main() {
 	testNestedMaps()
 	testMixedNestedComposites()
 	testBuiltinFunctions()
+	testMultiVariablePatterns()
 
 	fmt.Println("=== Done ===")
 }

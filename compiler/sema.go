@@ -728,7 +728,46 @@ func (sema *SemaChecker) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 // where x is both borrowed (for +=) and moved (in x + a) in the same statement
 // Also checks for slice self-assignment: slice[i] = slice[j]
 // Also checks for variable shadowing (C# compatibility)
+// Also checks for multiple variable declaration/assignment which generates invalid code
 func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Check for multiple variable declaration/assignment (generates invalid C++ code)
+	// Exception: allow comma-ok idiom (v, ok := m[key] or v, ok := x.(T))
+	if len(node.Lhs) > 1 && len(node.Rhs) > 0 {
+		isCommaOk := false
+		// Check if RHS is a single expression that returns multiple values (comma-ok idiom)
+		if len(node.Rhs) == 1 {
+			switch rhs := node.Rhs[0].(type) {
+			case *ast.IndexExpr:
+				// v, ok := m[key] - map access with comma-ok
+				if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+					if tv, ok := sema.pkg.TypesInfo.Types[rhs.X]; ok && tv.Type != nil {
+						if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+							isCommaOk = true
+						}
+					}
+				}
+			case *ast.TypeAssertExpr:
+				// v, ok := x.(T) - type assertion with comma-ok
+				isCommaOk = true
+			case *ast.CallExpr:
+				// Function call returning multiple values - allow this
+				isCommaOk = true
+			}
+		}
+
+		if !isCommaOk {
+			sema.reportSemaError(node.Pos(),
+				"multiple variable declaration/assignment is not supported",
+				fmt.Sprintf("Assignment with %d variables on the left side generates invalid code.\n  The C++ backend cannot correctly handle multiple variable declarations or tuple unpacking.", len(node.Lhs)),
+				[]string{
+					"Use separate declarations/assignments:",
+					"  a := 1",
+					"  b := 2",
+				})
+			return
+		}
+	}
+
 	// Check for variable shadowing (C# does not allow shadowing within the same function)
 	sema.checkVariableShadowing(node)
 

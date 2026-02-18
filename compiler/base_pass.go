@@ -644,6 +644,14 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitSelectStmt)
 		v.emitter.PostVisitSelectStmt(stmt, indent)
+	case *ast.LabeledStmt:
+		v.emitter.GetGoFIR().emitToFileBuffer("", PreVisitLabeledStmt)
+		v.emitter.PreVisitLabeledStmt(stmt, indent)
+		if stmt.Stmt != nil {
+			v.traverseStmt(stmt.Stmt, indent)
+		}
+		v.emitter.GetGoFIR().emitToFileBuffer("", PostVisitLabeledStmt)
+		v.emitter.PostVisitLabeledStmt(stmt, indent)
 	default:
 		DebugPrintf("<Other statement type>\n")
 	}

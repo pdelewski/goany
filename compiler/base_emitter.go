@@ -151,6 +151,8 @@ const (
 	PostVisitSendStmt VisitMethod = "PostVisitSendStmt"
 	PreVisitSelectStmt VisitMethod = "PreVisitSelectStmt"
 	PostVisitSelectStmt VisitMethod = "PostVisitSelectStmt"
+	PreVisitLabeledStmt VisitMethod = "PreVisitLabeledStmt"
+	PostVisitLabeledStmt VisitMethod = "PostVisitLabeledStmt"
 	PreVisitIncDecStmt VisitMethod = "PreVisitIncDecStmt"
 	PostVisitIncDecStmt VisitMethod = "PostVisitIncDecStmt"
 	PreVisitAssignStmt VisitMethod = "PreVisitAssignStmt"
@@ -392,6 +394,8 @@ func (v *BaseEmitter) PreVisitSendStmt(node *ast.SendStmt, indent int) {}
 func (v *BaseEmitter) PostVisitSendStmt(node *ast.SendStmt, indent int) {}
 func (v *BaseEmitter) PreVisitSelectStmt(node *ast.SelectStmt, indent int) {}
 func (v *BaseEmitter) PostVisitSelectStmt(node *ast.SelectStmt, indent int) {}
+func (v *BaseEmitter) PreVisitLabeledStmt(node *ast.LabeledStmt, indent int) {}
+func (v *BaseEmitter) PostVisitLabeledStmt(node *ast.LabeledStmt, indent int) {}
 func (v *BaseEmitter) PreVisitIncDecStmt(node *ast.IncDecStmt, indent int) {}
 func (v *BaseEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {}
 func (v *BaseEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {}
