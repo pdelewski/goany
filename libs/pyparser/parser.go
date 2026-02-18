@@ -206,6 +206,31 @@ func parseStatement(tokens []Token, pos int) (Node, int) {
 		return parseTupleUnpackingAssignment(tokens, pos)
 	}
 
+	// Check for subscript/attribute assignment (e.g., data['key'] = value, obj.attr = value)
+	// Parse the left-hand side and check if followed by =
+	if tokenType == TokenIdentifier {
+		savedPos := pos
+		var target Node
+		target, pos = parsePrimary(tokens, pos)
+		if peekTokenType(tokens, pos) == TokenAssign {
+			// This is a subscript or attribute assignment
+			pos = pos + 1 // Skip '='
+			var value Node
+			value, pos = parseExpression(tokens, pos)
+			node := NewNode(NodeAssign)
+			node = SetLine(node, peekToken(tokens, savedPos).Line)
+			node = AddChild(node, target)
+			node = AddChild(node, value)
+			// Skip newline
+			if peekTokenType(tokens, pos) == TokenNewline {
+				pos = pos + 1
+			}
+			return node, pos
+		}
+		// Not an assignment, restore position
+		pos = savedPos
+	}
+
 	// Expression statement
 	return parseExpressionStatement(tokens, pos)
 }
@@ -733,6 +758,7 @@ func parseNotExpr(tokens []Token, pos int) (Node, int) {
 
 // parseComparison parses comparison expressions including chained comparisons
 // e.g., 1 < x < 10 becomes Compare with multiple ops
+// Also handles 'in' and 'not in' membership tests
 func parseComparison(tokens []Token, pos int) (Node, int) {
 	var left Node
 	left, pos = parseBitwiseOr(tokens, pos)
@@ -740,6 +766,48 @@ func parseComparison(tokens []Token, pos int) (Node, int) {
 	// Check for comparison operators
 	tokenType := peekTokenType(tokens, pos)
 	tokenValue := peekTokenValue(tokens, pos)
+
+	// Check for 'in' or 'not in'
+	if tokenType == TokenKeyword && tokenValue == "in" {
+		pos = pos + 1
+		var right Node
+		right, pos = parseBitwiseOr(tokens, pos)
+		node := NewNodeWithOp(NodeCompare, "in")
+		node = AddChild(node, left)
+		node = AddChild(node, right)
+		return node, pos
+	}
+
+	// Check for 'not in'
+	if tokenType == TokenKeyword && tokenValue == "not" {
+		nextPos := pos + 1
+		if peekTokenType(tokens, nextPos) == TokenKeyword && peekTokenValue(tokens, nextPos) == "in" {
+			pos = pos + 2 // Skip 'not' and 'in'
+			var right Node
+			right, pos = parseBitwiseOr(tokens, pos)
+			node := NewNodeWithOp(NodeCompare, "not in")
+			node = AddChild(node, left)
+			node = AddChild(node, right)
+			return node, pos
+		}
+	}
+
+	// Check for 'is' or 'is not'
+	if tokenType == TokenKeyword && tokenValue == "is" {
+		pos = pos + 1
+		op := "is"
+		// Check for 'is not'
+		if peekTokenType(tokens, pos) == TokenKeyword && peekTokenValue(tokens, pos) == "not" {
+			pos = pos + 1
+			op = "is not"
+		}
+		var right Node
+		right, pos = parseBitwiseOr(tokens, pos)
+		node := NewNodeWithOp(NodeCompare, op)
+		node = AddChild(node, left)
+		node = AddChild(node, right)
+		return node, pos
+	}
 
 	if tokenType == TokenOperator {
 		if tokenValue == "==" || tokenValue == "!=" || tokenValue == "<" || tokenValue == ">" || tokenValue == "<=" || tokenValue == ">=" {
