@@ -333,6 +333,10 @@ type Emitter interface {
 	PreVisitSelectStmt(node *ast.SelectStmt, indent int)
 	// PostVisitSelectStmt is called after visiting a select statement.
 	PostVisitSelectStmt(node *ast.SelectStmt, indent int)
+	// PreVisitLabeledStmt is called before visiting a labeled statement.
+	PreVisitLabeledStmt(node *ast.LabeledStmt, indent int)
+	// PostVisitLabeledStmt is called after visiting a labeled statement.
+	PostVisitLabeledStmt(node *ast.LabeledStmt, indent int)
 	// PreVisitIncDecStmt is called before visiting an increment/decrement statement.
 	PreVisitIncDecStmt(node *ast.IncDecStmt, indent int)
 	// PostVisitIncDecStmt is called after visiting an increment/decrement statement.

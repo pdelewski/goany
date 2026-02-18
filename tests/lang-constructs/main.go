@@ -494,6 +494,92 @@ func testAppend() {
 	}
 }
 
+// Test nil slice declaration followed by append
+// This is a common Go pattern: var slice []Type; slice = append(slice, item)
+func testNilSliceAppend() {
+	// Test 1: Basic nil slice with append
+	var nilSlice []int
+	nilSlice = append(nilSlice, 1)
+	nilSlice = append(nilSlice, 2)
+	nilSlice = append(nilSlice, 3)
+	if len(nilSlice) == 3 && nilSlice[0] == 1 && nilSlice[1] == 2 && nilSlice[2] == 3 {
+		fmt.Println("PASS: nil slice append")
+	} else {
+		panic("FAIL: nil slice append")
+	}
+
+	// Test 2: Nil string slice with append
+	var strSlice []string
+	strSlice = append(strSlice, "hello")
+	strSlice = append(strSlice, "world")
+	if len(strSlice) == 2 && strSlice[0] == "hello" && strSlice[1] == "world" {
+		fmt.Println("PASS: nil string slice append")
+	} else {
+		panic("FAIL: nil string slice append")
+	}
+
+	// Test 3: make with zero capacity
+	makeSlice := make([]int, 0)
+	makeSlice = append(makeSlice, 10)
+	makeSlice = append(makeSlice, 20)
+	if len(makeSlice) == 2 && makeSlice[0] == 10 && makeSlice[1] == 20 {
+		fmt.Println("PASS: make zero capacity append")
+	} else {
+		panic("FAIL: make zero capacity append")
+	}
+
+	// Test 4: Nil slice in loop
+	var loopSlice []int
+	for i := 0; i < 5; i++ {
+		loopSlice = append(loopSlice, i*2)
+	}
+	if len(loopSlice) == 5 && loopSlice[0] == 0 && loopSlice[4] == 8 {
+		fmt.Println("PASS: nil slice loop append")
+	} else {
+		panic("FAIL: nil slice loop append")
+	}
+}
+
+// Struct with slice field that starts nil
+type SliceContainer struct {
+	Items []int
+	Names []string
+}
+
+// Test struct with nil slice fields and append
+func testStructNilSliceField() {
+	// Test 1: Struct with nil slice field
+	container := SliceContainer{}
+	container.Items = append(container.Items, 1)
+	container.Items = append(container.Items, 2)
+	if len(container.Items) == 2 && container.Items[0] == 1 && container.Items[1] == 2 {
+		fmt.Println("PASS: struct nil slice field append")
+	} else {
+		panic("FAIL: struct nil slice field append")
+	}
+
+	// Test 2: Struct with multiple nil slice fields
+	container.Names = append(container.Names, "Alice")
+	container.Names = append(container.Names, "Bob")
+	if len(container.Names) == 2 && container.Names[0] == "Alice" {
+		fmt.Println("PASS: struct multiple nil slice fields")
+	} else {
+		panic("FAIL: struct multiple nil slice fields")
+	}
+
+	// Test 3: Struct initialized with empty slice literals
+	container2 := SliceContainer{
+		Items: []int{},
+		Names: []string{},
+	}
+	container2.Items = append(container2.Items, 100)
+	if len(container2.Items) == 1 && container2.Items[0] == 100 {
+		fmt.Println("PASS: struct empty slice literal field")
+	} else {
+		panic("FAIL: struct empty slice literal field")
+	}
+}
+
 // Struct initialization
 func testStructInitialization() {
 	// Empty struct
@@ -1374,6 +1460,225 @@ func testMixedNestedComposites() {
 	}
 }
 
+// testBuiltinFunctions tests all supported Go builtin functions
+// Supported: len, append, make, delete, panic
+// NOT supported: cap, copy, new, close, recover, complex, real, imag
+func testBuiltinFunctions() {
+	fmt.Println("Testing builtin functions...")
+
+	// Test len() on slices
+	slice := []int{1, 2, 3, 4, 5}
+	if len(slice) == 5 {
+		fmt.Println("PASS: len() on slice")
+	} else {
+		panic("FAIL: len() on slice")
+	}
+
+	// Test len() on strings
+	str := "hello"
+	if len(str) == 5 {
+		fmt.Println("PASS: len() on string")
+	} else {
+		panic("FAIL: len() on string")
+	}
+
+	// Test len() on maps
+	m := make(map[string]int)
+	m["a"] = 1
+	m["b"] = 2
+	if len(m) == 2 {
+		fmt.Println("PASS: len() on map")
+	} else {
+		panic("FAIL: len() on map")
+	}
+
+	// Test append() - basic
+	s := []int{1, 2}
+	s = append(s, 3)
+	if len(s) == 3 && s[2] == 3 {
+		fmt.Println("PASS: append() basic")
+	} else {
+		panic("FAIL: append() basic")
+	}
+
+	// Test append() - sequential appends
+	s2 := []int{1}
+	s2 = append(s2, 2)
+	s2 = append(s2, 3)
+	s2 = append(s2, 4)
+	if len(s2) == 4 && s2[3] == 4 {
+		fmt.Println("PASS: append() sequential")
+	} else {
+		panic("FAIL: append() sequential")
+	}
+
+	// Test make() - slice with length (just verify length, don't check zero value)
+	sliceWithLen := make([]int, 5)
+	if len(sliceWithLen) == 5 {
+		// Note: Java initializes with null, other backends with 0
+		// Just verify the length is correct
+		fmt.Println("PASS: make() slice with length")
+	} else {
+		panic("FAIL: make() slice with length")
+	}
+
+	// Test make() - map
+	mapMade := make(map[string]bool)
+	mapMade["test"] = true
+	if mapMade["test"] == true {
+		fmt.Println("PASS: make() map")
+	} else {
+		panic("FAIL: make() map")
+	}
+
+	// Test delete() on map
+	m2 := make(map[string]int)
+	m2["x"] = 10
+	m2["y"] = 20
+	delete(m2, "x")
+	if len(m2) == 1 {
+		fmt.Println("PASS: delete() on map")
+	} else {
+		panic("FAIL: delete() on map")
+	}
+
+	// Test delete() on non-existent key (should not panic)
+	delete(m2, "nonexistent")
+	fmt.Println("PASS: delete() non-existent key")
+
+	// Test len() on empty slice
+	emptySlice := []string{}
+	if len(emptySlice) == 0 {
+		fmt.Println("PASS: len() on empty slice")
+	} else {
+		panic("FAIL: len() on empty slice")
+	}
+
+	// Test len() on nil slice (declared but not initialized)
+	var nilSlice []int
+	if len(nilSlice) == 0 {
+		fmt.Println("PASS: len() on nil slice")
+	} else {
+		panic("FAIL: len() on nil slice")
+	}
+
+	// Test append() on nil slice
+	var nilSlice2 []int
+	nilSlice2 = append(nilSlice2, 42)
+	if len(nilSlice2) == 1 && nilSlice2[0] == 42 {
+		fmt.Println("PASS: append() on nil slice")
+	} else {
+		panic("FAIL: append() on nil slice")
+	}
+
+	// Test len() on empty map
+	emptyMap := make(map[int]int)
+	if len(emptyMap) == 0 {
+		fmt.Println("PASS: len() on empty map")
+	} else {
+		panic("FAIL: len() on empty map")
+	}
+
+	// Test make() slice with zero length
+	zeroSlice := make([]int, 0)
+	if len(zeroSlice) == 0 {
+		fmt.Println("PASS: make() slice with zero length")
+	} else {
+		panic("FAIL: make() slice with zero length")
+	}
+
+	// Test chained append
+	var chain []int
+	chain = append(chain, 1)
+	chain = append(chain, 2)
+	chain = append(chain, 3)
+	if len(chain) == 3 && chain[0] == 1 && chain[1] == 2 && chain[2] == 3 {
+		fmt.Println("PASS: chained append()")
+	} else {
+		panic("FAIL: chained append()")
+	}
+
+	fmt.Println("All builtin function tests passed!")
+}
+
+// Helper function for testing multi-return
+func getMultipleValues() (int, string, bool) {
+	return 42, "hello", true
+}
+
+// Helper function returning two ints
+func getTwoInts() (int, int) {
+	return 10, 20
+}
+
+// testMultiVariablePatterns tests the supported multi-variable assignment patterns
+// Supported: map comma-ok, type assertion comma-ok, function multi-return
+// NOT supported: a, b := 1, 2 (literal tuple unpacking)
+func testMultiVariablePatterns() {
+	fmt.Println("Testing multi-variable patterns...")
+
+	// Pattern 1: Function returning multiple values
+	a, b, c := getMultipleValues()
+	if a == 42 && b == "hello" && c == true {
+		fmt.Println("PASS: function multi-return (3 values)")
+	} else {
+		panic("FAIL: function multi-return (3 values)")
+	}
+
+	// Pattern 2: Function returning two values
+	x, y := getTwoInts()
+	if x == 10 && y == 20 {
+		fmt.Println("PASS: function multi-return (2 values)")
+	} else {
+		panic("FAIL: function multi-return (2 values)")
+	}
+
+	// Pattern 3: Map comma-ok idiom
+	m := make(map[string]int)
+	m["key"] = 100
+	val, ok := m["key"]
+	if val == 100 && ok {
+		fmt.Println("PASS: map comma-ok (found)")
+	} else {
+		panic("FAIL: map comma-ok (found)")
+	}
+
+	val2, ok2 := m["missing"]
+	if val2 == 0 && !ok2 {
+		fmt.Println("PASS: map comma-ok (missing)")
+	} else {
+		panic("FAIL: map comma-ok (missing)")
+	}
+
+	// Pattern 4: Type assertion comma-ok
+	var iface interface{}
+	iface = 999
+	intVal, isInt := iface.(int)
+	if intVal == 999 && isInt {
+		fmt.Println("PASS: type assertion comma-ok (success)")
+	} else {
+		panic("FAIL: type assertion comma-ok (success)")
+	}
+
+	// Type assertion that should fail - just print result
+	// (backends may differ on exact behavior for failed assertions)
+	strVal, isStr := iface.(string)
+	fmt.Println(strVal)
+	fmt.Println(isStr)
+
+	// Pattern 5: Reassignment with function multi-return
+	x, y = getTwoInts()
+	x = x + 1
+	y = y + 1
+	if x == 11 && y == 21 {
+		fmt.Println("PASS: reassignment with multi-return")
+	} else {
+		panic("FAIL: reassignment with multi-return")
+	}
+
+	fmt.Println("All multi-variable pattern tests passed!")
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1390,6 +1695,8 @@ func main() {
 	testPrintFunctions()
 	testTypeConversions()
 	testAppend()
+	testNilSliceAppend()
+	testStructNilSliceField()
 	testStructInitialization()
 	testNestedIf()
 	testInt32Int64Types()
@@ -1417,6 +1724,8 @@ func main() {
 	testNestedSlices()
 	testNestedMaps()
 	testMixedNestedComposites()
+	testBuiltinFunctions()
+	testMultiVariablePatterns()
 
 	fmt.Println("=== Done ===")
 }

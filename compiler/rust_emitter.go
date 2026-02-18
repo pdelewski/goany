@@ -3903,17 +3903,33 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if re.isTypeAssertCommaOk {
 		expr := re.capturedMapKey
 		typeName := re.typeAssertCommaOkType
-		decl := ""
+		// Handle blank identifier (_) - use temp variable since _ can't be used as a value
+		okName := re.typeAssertCommaOkOkName
+		valName := re.typeAssertCommaOkValName
+		okNameForCondition := okName
+		if okName == "_" {
+			okNameForCondition = "__ulang_ok"
+			okName = "__ulang_ok" // Use temp name for declaration too
+		}
+		// Determine declaration prefix for each variable
+		// Use "let " for blank identifier (_), "let mut " for named variables
+		declOk := ""
+		declVal := ""
 		if re.typeAssertCommaOkIsDecl {
-			decl = "let mut "
+			declOk = "let "
+			if valName == "_" {
+				declVal = "let "
+			} else {
+				declVal = "let mut "
+			}
 		}
 		indentStr := re.emitAsString("", re.typeAssertCommaOkIndent)
 		re.suppressMapEmit = false
 		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_expr = %s.clone();", indentStr, expr), EmptyVisitMethod)
 		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: bool = __ulang_expr.downcast_ref::<%s>().is_some();",
-			indentStr, decl, re.typeAssertCommaOkOkName, typeName), EmptyVisitMethod)
+			indentStr, declOk, okName, typeName), EmptyVisitMethod)
 		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: %s = if %s { __ulang_expr.downcast_ref::<%s>().unwrap().clone() } else { Default::default() };",
-			indentStr, decl, re.typeAssertCommaOkValName, typeName, re.typeAssertCommaOkOkName,
+			indentStr, declVal, valName, typeName, okNameForCondition,
 			typeName), EmptyVisitMethod)
 		re.isTypeAssertCommaOk = false
 		re.capturedMapKey = ""
@@ -3926,9 +3942,25 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Handle comma-ok: val, ok := m[key]
 	if re.isMapCommaOk {
 		key := re.capturedMapKey
-		decl := ""
+		// Handle blank identifier (_) - use temp variable since _ can't be used as a value
+		okName := re.mapCommaOkOkName
+		valName := re.mapCommaOkValName
+		okNameForCondition := okName
+		if okName == "_" {
+			okNameForCondition = "__ulang_ok"
+			okName = "__ulang_ok" // Use temp name for declaration too
+		}
+		// Determine declaration prefix for each variable
+		// Use "let " for blank identifier (_), "let mut " for named variables
+		declOk := ""
+		declVal := ""
 		if re.mapCommaOkIsDecl {
-			decl = "let mut "
+			declOk = "let "
+			if valName == "_" {
+				declVal = "let "
+			} else {
+				declVal = "let mut "
+			}
 		}
 		indentStr := re.emitAsString("", re.mapCommaOkIndent)
 		re.suppressMapEmit = false
@@ -3942,9 +3974,9 @@ func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		// Use temp variable to avoid double evaluation/move of key (with cast if needed)
 		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_key = %s%s;", indentStr, key, re.mapKeyCastSuffix), EmptyVisitMethod)
 		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: bool = hmap::hashMapContains(%s, Rc::new(__ulang_key.clone()));",
-			indentStr, decl, re.mapCommaOkOkName, mapRef), EmptyVisitMethod)
+			indentStr, declOk, okName, mapRef), EmptyVisitMethod)
 		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: %s = if %s { hmap::hashMapGet(%s, Rc::new(__ulang_key)).downcast_ref::<%s>().unwrap().clone() } else { Default::default() };",
-			indentStr, decl, re.mapCommaOkValName, valType, re.mapCommaOkOkName,
+			indentStr, declVal, valName, valType, okNameForCondition,
 			mapRef, valType), EmptyVisitMethod)
 		re.isMapCommaOk = false
 		re.capturedMapKey = ""

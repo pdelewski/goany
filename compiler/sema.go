@@ -237,13 +237,29 @@ func (sema *SemaChecker) PreVisitStarExpr(node *ast.StarExpr, indent int) {
 		[]string{"Use value types or slices instead."})
 }
 
-// PreVisitUnaryExpr checks for address-of operator (&x) which is not supported
+// PreVisitUnaryExpr checks for unsupported unary operators
 func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	if node.Op == token.AND {
 		sema.reportSemaError(node.Pos(),
 			"address-of operator is not supported",
 			"The address-of operator (&x) is not allowed.\n  goany targets languages with different memory models.",
 			[]string{"Use value types or redesign without pointers."})
+	}
+	if node.Op == token.ARROW {
+		sema.reportSemaError(node.Pos(),
+			"channel receive is not supported",
+			"Channel receive operator (<-ch) is not allowed.\n  Channels are not supported in goany.",
+			[]string{"Redesign without channels, or use a different synchronization mechanism."})
+	}
+}
+
+// PreVisitSliceExpr checks for three-index slice expressions (s[low:high:max])
+func (sema *SemaChecker) PreVisitSliceExpr(node *ast.SliceExpr, indent int) {
+	if node.Slice3 {
+		sema.reportSemaError(node.Pos(),
+			"three-index slice expression is not supported",
+			"Full slice expression with capacity (s[low:high:max]) is not allowed.\n  This controls capacity which has no equivalent in target languages.",
+			[]string{"Use standard two-index slicing: s[low:high]"})
 	}
 }
 
@@ -728,7 +744,46 @@ func (sema *SemaChecker) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 // where x is both borrowed (for +=) and moved (in x + a) in the same statement
 // Also checks for slice self-assignment: slice[i] = slice[j]
 // Also checks for variable shadowing (C# compatibility)
+// Also checks for multiple variable declaration/assignment which generates invalid code
 func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Check for multiple variable declaration/assignment (generates invalid C++ code)
+	// Exception: allow comma-ok idiom (v, ok := m[key] or v, ok := x.(T))
+	if len(node.Lhs) > 1 && len(node.Rhs) > 0 {
+		isCommaOk := false
+		// Check if RHS is a single expression that returns multiple values (comma-ok idiom)
+		if len(node.Rhs) == 1 {
+			switch rhs := node.Rhs[0].(type) {
+			case *ast.IndexExpr:
+				// v, ok := m[key] - map access with comma-ok
+				if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+					if tv, ok := sema.pkg.TypesInfo.Types[rhs.X]; ok && tv.Type != nil {
+						if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
+							isCommaOk = true
+						}
+					}
+				}
+			case *ast.TypeAssertExpr:
+				// v, ok := x.(T) - type assertion with comma-ok
+				isCommaOk = true
+			case *ast.CallExpr:
+				// Function call returning multiple values - allow this
+				isCommaOk = true
+			}
+		}
+
+		if !isCommaOk {
+			sema.reportSemaError(node.Pos(),
+				"multiple variable declaration/assignment is not supported",
+				fmt.Sprintf("Assignment with %d variables on the left side generates invalid code.\n  The C++ backend cannot correctly handle multiple variable declarations or tuple unpacking.", len(node.Lhs)),
+				[]string{
+					"Use separate declarations/assignments:",
+					"  a := 1",
+					"  b := 2",
+				})
+			return
+		}
+	}
+
 	// Check for variable shadowing (C# does not allow shadowing within the same function)
 	sema.checkVariableShadowing(node)
 
@@ -862,12 +917,14 @@ func (sema *SemaChecker) PreVisitGenStructInfo(info GenTypeInfo, indent int) {
 		return
 	}
 	sema.checkStructEmbedding(info.Struct)
+	sema.checkFieldNameMatchesType(info.Struct)
 }
 
 // PreVisitStructType checks for struct embedding (anonymous fields) which is not supported
 // This handles struct types that appear in expressions (e.g., composite literals)
 func (sema *SemaChecker) PreVisitStructType(node *ast.StructType, indent int) {
 	sema.checkStructEmbedding(node)
+	sema.checkFieldNameMatchesType(node)
 }
 
 // checkStructEmbedding validates that a struct has no embedded (anonymous) fields
@@ -893,6 +950,35 @@ func (sema *SemaChecker) checkStructEmbedding(node *ast.StructType) {
 					fmt.Sprintf("Instead of: type MyStruct struct { %s }", typeName),
 					fmt.Sprintf("Use named field: type MyStruct struct { field %s }", typeName),
 				})
+		}
+	}
+}
+
+// checkFieldNameMatchesType detects when a struct field has the same name as its type
+// This causes C++ compilation errors: "declaration of 'Type Field' changes meaning of 'Type'"
+// Only applies to same-package types; qualified types (pkg.Type) are fine in C++ (pkg::Type Field)
+func (sema *SemaChecker) checkFieldNameMatchesType(node *ast.StructType) {
+	if node.Fields == nil {
+		return
+	}
+	for _, field := range node.Fields.List {
+		// Only check simple identifiers (same-package types)
+		// Qualified types like pkg.Type become pkg::Type in C++ which doesn't conflict
+		ident, ok := field.Type.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		typeName := ident.Name
+		// Check if any field name matches the type name
+		for _, name := range field.Names {
+			if name.Name == typeName {
+				sema.reportSemaError(field.Pos(),
+					"field name matches type name",
+					fmt.Sprintf("Field '%s' has the same name as its type '%s'.\n  This causes C++ compilation errors (-Wchanges-meaning).", name.Name, typeName),
+					[]string{
+						fmt.Sprintf("Rename the field, e.g.: %s %s -> Val %s", name.Name, typeName, typeName),
+					})
+			}
 		}
 	}
 }
@@ -1514,15 +1600,46 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		return
 	}
 
-	// Skip built-in functions - they handle arguments specially
+	// Check for built-in functions
 	if ident, ok := node.Fun.(*ast.Ident); ok {
-		builtins := map[string]bool{
-			"len": true, "cap": true, "append": true, "copy": true,
-			"make": true, "new": true, "delete": true, "close": true,
-			"panic": true, "recover": true, "print": true, "println": true,
-			"complex": true, "real": true, "imag": true,
+		// Unsupported builtins - emit an error
+		unsupportedBuiltins := map[string]string{
+			"cap":     "Use len() instead for slice length, or track capacity separately if needed.",
+			"copy":    "Use manual element-by-element copy or slice assignment instead.",
+			"new":     "Use composite literal with address-of operator: &Type{} instead of new(Type).",
+			"close":   "Channel operations are not supported in transpiled code.",
+			"recover": "Panic recovery is not supported in transpiled code. Use explicit error handling.",
+			"complex": "Complex numbers are not supported in transpiled code.",
+			"real":    "Complex numbers are not supported in transpiled code.",
+			"imag":    "Complex numbers are not supported in transpiled code.",
 		}
-		if builtins[ident.Name] {
+		if suggestion, unsupported := unsupportedBuiltins[ident.Name]; unsupported {
+			sema.reportSemaError(node.Pos(),
+				fmt.Sprintf("unsupported builtin function '%s'", ident.Name),
+				fmt.Sprintf("The builtin function '%s' is not supported by the transpiler backends.", ident.Name),
+				[]string{suggestion})
+			return
+		}
+
+		// Check for variadic append - append(slice, elem1, elem2, ...) with more than 2 args
+		if ident.Name == "append" && len(node.Args) > 2 {
+			sema.reportSemaError(node.Pos(),
+				"variadic append is not supported",
+				fmt.Sprintf("append() with %d arguments is not allowed.\n  The C++ backend only supports appending one element at a time.", len(node.Args)),
+				[]string{
+					"Use multiple append calls instead:",
+					"  slice = append(slice, elem1)",
+					"  slice = append(slice, elem2)",
+				})
+			return
+		}
+
+		// Supported builtins - skip further argument checks
+		supportedBuiltins := map[string]bool{
+			"len": true, "append": true, "make": true, "delete": true,
+			"panic": true, "print": true, "println": true,
+		}
+		if supportedBuiltins[ident.Name] {
 			return
 		}
 	}

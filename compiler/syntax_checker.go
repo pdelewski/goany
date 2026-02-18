@@ -112,4 +112,21 @@ func (sc *SyntaxChecker) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 		sc.reportSyntaxError(node.Pos(), "unsupported construct",
 			fmt.Sprintf("Labeled %s statements are not supported.\n  Use structured control flow instead.", node.Tok))
 	}
+	if node.Tok == token.FALLTHROUGH {
+		sc.reportSyntaxError(node.Pos(), "unsupported construct",
+			"Fallthrough in switch statements is not supported.\n  Use explicit case values or restructure the switch logic.")
+	}
+}
+
+func (sc *SyntaxChecker) PreVisitLabeledStmt(node *ast.LabeledStmt, indent int) {
+	sc.reportSyntaxError(node.Pos(), "unsupported construct",
+		fmt.Sprintf("Labeled statements ('%s:') are not supported.\n  The transpiler cannot generate correct code for labeled blocks.\n  Use structured control flow instead.", node.Label.Name))
+}
+
+func (sc *SyntaxChecker) PreVisitArrayType(node ast.ArrayType, indent int) {
+	// Fixed-size arrays [N]T are not supported, only slices []T
+	if node.Len != nil {
+		sc.reportSyntaxError(node.Pos(), "unsupported construct",
+			"Fixed-size arrays ([N]T) are not supported.\n  Use slices ([]T) instead.")
+	}
 }
