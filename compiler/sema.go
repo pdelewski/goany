@@ -1514,15 +1514,33 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		return
 	}
 
-	// Skip built-in functions - they handle arguments specially
+	// Check for built-in functions
 	if ident, ok := node.Fun.(*ast.Ident); ok {
-		builtins := map[string]bool{
-			"len": true, "cap": true, "append": true, "copy": true,
-			"make": true, "new": true, "delete": true, "close": true,
-			"panic": true, "recover": true, "print": true, "println": true,
-			"complex": true, "real": true, "imag": true,
+		// Unsupported builtins - emit an error
+		unsupportedBuiltins := map[string]string{
+			"cap":     "Use len() instead for slice length, or track capacity separately if needed.",
+			"copy":    "Use manual element-by-element copy or slice assignment instead.",
+			"new":     "Use composite literal with address-of operator: &Type{} instead of new(Type).",
+			"close":   "Channel operations are not supported in transpiled code.",
+			"recover": "Panic recovery is not supported in transpiled code. Use explicit error handling.",
+			"complex": "Complex numbers are not supported in transpiled code.",
+			"real":    "Complex numbers are not supported in transpiled code.",
+			"imag":    "Complex numbers are not supported in transpiled code.",
 		}
-		if builtins[ident.Name] {
+		if suggestion, unsupported := unsupportedBuiltins[ident.Name]; unsupported {
+			sema.reportSemaError(node.Pos(),
+				fmt.Sprintf("unsupported builtin function '%s'", ident.Name),
+				fmt.Sprintf("The builtin function '%s' is not supported by the transpiler backends.", ident.Name),
+				[]string{suggestion})
+			return
+		}
+
+		// Supported builtins - skip further argument checks
+		supportedBuiltins := map[string]bool{
+			"len": true, "append": true, "make": true, "delete": true,
+			"panic": true, "print": true, "println": true,
+		}
+		if supportedBuiltins[ident.Name] {
 			return
 		}
 	}

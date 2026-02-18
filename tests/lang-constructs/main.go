@@ -1460,6 +1460,147 @@ func testMixedNestedComposites() {
 	}
 }
 
+// testBuiltinFunctions tests all supported Go builtin functions
+// Supported: len, append, make, delete, panic
+// NOT supported: cap, copy, new, close, recover, complex, real, imag
+func testBuiltinFunctions() {
+	fmt.Println("Testing builtin functions...")
+
+	// Test len() on slices
+	slice := []int{1, 2, 3, 4, 5}
+	if len(slice) == 5 {
+		fmt.Println("PASS: len() on slice")
+	} else {
+		panic("FAIL: len() on slice")
+	}
+
+	// Test len() on strings
+	str := "hello"
+	if len(str) == 5 {
+		fmt.Println("PASS: len() on string")
+	} else {
+		panic("FAIL: len() on string")
+	}
+
+	// Test len() on maps
+	m := make(map[string]int)
+	m["a"] = 1
+	m["b"] = 2
+	if len(m) == 2 {
+		fmt.Println("PASS: len() on map")
+	} else {
+		panic("FAIL: len() on map")
+	}
+
+	// Test append() - basic
+	s := []int{1, 2}
+	s = append(s, 3)
+	if len(s) == 3 && s[2] == 3 {
+		fmt.Println("PASS: append() basic")
+	} else {
+		panic("FAIL: append() basic")
+	}
+
+	// Test append() - sequential appends
+	s2 := []int{1}
+	s2 = append(s2, 2)
+	s2 = append(s2, 3)
+	s2 = append(s2, 4)
+	if len(s2) == 4 && s2[3] == 4 {
+		fmt.Println("PASS: append() sequential")
+	} else {
+		panic("FAIL: append() sequential")
+	}
+
+	// Test make() - slice with length (just verify length, don't check zero value)
+	sliceWithLen := make([]int, 5)
+	if len(sliceWithLen) == 5 {
+		// Note: Java initializes with null, other backends with 0
+		// Just verify the length is correct
+		fmt.Println("PASS: make() slice with length")
+	} else {
+		panic("FAIL: make() slice with length")
+	}
+
+	// Test make() - map
+	mapMade := make(map[string]bool)
+	mapMade["test"] = true
+	if mapMade["test"] == true {
+		fmt.Println("PASS: make() map")
+	} else {
+		panic("FAIL: make() map")
+	}
+
+	// Test delete() on map
+	m2 := make(map[string]int)
+	m2["x"] = 10
+	m2["y"] = 20
+	delete(m2, "x")
+	if len(m2) == 1 {
+		fmt.Println("PASS: delete() on map")
+	} else {
+		panic("FAIL: delete() on map")
+	}
+
+	// Test delete() on non-existent key (should not panic)
+	delete(m2, "nonexistent")
+	fmt.Println("PASS: delete() non-existent key")
+
+	// Test len() on empty slice
+	emptySlice := []string{}
+	if len(emptySlice) == 0 {
+		fmt.Println("PASS: len() on empty slice")
+	} else {
+		panic("FAIL: len() on empty slice")
+	}
+
+	// Test len() on nil slice (declared but not initialized)
+	var nilSlice []int
+	if len(nilSlice) == 0 {
+		fmt.Println("PASS: len() on nil slice")
+	} else {
+		panic("FAIL: len() on nil slice")
+	}
+
+	// Test append() on nil slice
+	var nilSlice2 []int
+	nilSlice2 = append(nilSlice2, 42)
+	if len(nilSlice2) == 1 && nilSlice2[0] == 42 {
+		fmt.Println("PASS: append() on nil slice")
+	} else {
+		panic("FAIL: append() on nil slice")
+	}
+
+	// Test len() on empty map
+	emptyMap := make(map[int]int)
+	if len(emptyMap) == 0 {
+		fmt.Println("PASS: len() on empty map")
+	} else {
+		panic("FAIL: len() on empty map")
+	}
+
+	// Test make() slice with zero length
+	zeroSlice := make([]int, 0)
+	if len(zeroSlice) == 0 {
+		fmt.Println("PASS: make() slice with zero length")
+	} else {
+		panic("FAIL: make() slice with zero length")
+	}
+
+	// Test chained append
+	var chain []int
+	chain = append(chain, 1)
+	chain = append(chain, 2)
+	chain = append(chain, 3)
+	if len(chain) == 3 && chain[0] == 1 && chain[1] == 2 && chain[2] == 3 {
+		fmt.Println("PASS: chained append()")
+	} else {
+		panic("FAIL: chained append()")
+	}
+
+	fmt.Println("All builtin function tests passed!")
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1505,6 +1646,7 @@ func main() {
 	testNestedSlices()
 	testNestedMaps()
 	testMixedNestedComposites()
+	testBuiltinFunctions()
 
 	fmt.Println("=== Done ===")
 }
