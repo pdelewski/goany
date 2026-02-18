@@ -237,13 +237,29 @@ func (sema *SemaChecker) PreVisitStarExpr(node *ast.StarExpr, indent int) {
 		[]string{"Use value types or slices instead."})
 }
 
-// PreVisitUnaryExpr checks for address-of operator (&x) which is not supported
+// PreVisitUnaryExpr checks for unsupported unary operators
 func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	if node.Op == token.AND {
 		sema.reportSemaError(node.Pos(),
 			"address-of operator is not supported",
 			"The address-of operator (&x) is not allowed.\n  goany targets languages with different memory models.",
 			[]string{"Use value types or redesign without pointers."})
+	}
+	if node.Op == token.ARROW {
+		sema.reportSemaError(node.Pos(),
+			"channel receive is not supported",
+			"Channel receive operator (<-ch) is not allowed.\n  Channels are not supported in goany.",
+			[]string{"Redesign without channels, or use a different synchronization mechanism."})
+	}
+}
+
+// PreVisitSliceExpr checks for three-index slice expressions (s[low:high:max])
+func (sema *SemaChecker) PreVisitSliceExpr(node *ast.SliceExpr, indent int) {
+	if node.Slice3 {
+		sema.reportSemaError(node.Pos(),
+			"three-index slice expression is not supported",
+			"Full slice expression with capacity (s[low:high:max]) is not allowed.\n  This controls capacity which has no equivalent in target languages.",
+			[]string{"Use standard two-index slicing: s[low:high]"})
 	}
 }
 
