@@ -1,5 +1,7 @@
 package compiler
 
+import "go/types"
+
 // TokenType represents different types of tokens in the code generation
 type TokenType int
 
@@ -100,6 +102,8 @@ const (
 type Token struct {
 	Type    TokenType
 	Content string
+	GoType  types.Type // Go type info for shift/reduce backends, nil if N/A
+	Tag     int        // Fragment tag (TagExpr, TagStmt, etc.), 0 if unset
 }
 
 // TokenTypeNames provides string representations for token types
