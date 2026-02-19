@@ -108,13 +108,10 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		"--optimize-moves",
 		"--optimize-refs",
 	}
-	// Add opt-in backends (JS, JsPrim, and Java are not included in "all")
+	// Add opt-in backends (JS and Java are not included in "all")
 	optInBackends := []string{}
 	if tc.JsEnabled {
 		optInBackends = append(optInBackends, "js")
-	}
-	if tc.JsPrimEnabled {
-		optInBackends = append(optInBackends, "jsprim")
 	}
 	if tc.JavaEnabled {
 		optInBackends = append(optInBackends, "java")
