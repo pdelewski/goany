@@ -34,6 +34,7 @@ var e2eTestCases = []TestCase{
 	{"uql", "../examples/uql", true, true, true, true, true, true, true, false},
 	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false},
 	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true},
+	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true},
 	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false},   // Dotnet/JS/Java: transpile only (needs graphics)
 	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false},         // Dotnet/JS/Java: transpile only (needs graphics)
 	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false},                   // Dotnet/JS/Java: transpile only (needs graphics)
