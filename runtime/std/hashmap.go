@@ -14,6 +14,7 @@ const KeyTypeUint32 int = 10
 const KeyTypeUint64 int = 11
 const KeyTypeFloat32 int = 12
 const KeyTypeFloat64 int = 13
+const KeyTypeStruct int = 100
 
 // HashMap implements a hash table with open addressing and linear probing.
 // Keys and values are stored as interface{} to support all types.
@@ -79,6 +80,14 @@ func hashFloat32(f float32) int {
 	return hashFloat64(float64(f))
 }
 
+// hashStructKey is a placeholder - struct-specific hash functions are generated
+// The generated code will replace calls to this with type-specific hash functions
+func hashStructKey(key interface{}) int {
+	// Default implementation uses a simple hash
+	// This gets replaced by generated code for each struct type
+	return 0
+}
+
 func hashMapHash(key interface{}, keyType int, capacity int) int {
 	h := 0
 	if keyType == KeyTypeString {
@@ -119,6 +128,9 @@ func hashMapHash(key interface{}, keyType int, capacity int) int {
 	}
 	if keyType == KeyTypeFloat64 {
 		h = hashFloat64(key.(float64))
+	}
+	if keyType == KeyTypeStruct {
+		h = hashStructKey(key)
 	}
 	return h % capacity
 }
@@ -163,6 +175,16 @@ func keysEqual(a interface{}, b interface{}, keyType int) bool {
 	if keyType == KeyTypeFloat64 {
 		return a.(float64) == b.(float64)
 	}
+	if keyType == KeyTypeStruct {
+		return structKeysEqual(a, b)
+	}
+	return false
+}
+
+// structKeysEqual is a placeholder - struct-specific equality functions are generated
+// The generated code will replace calls to this with type-specific equality functions
+func structKeysEqual(a interface{}, b interface{}) bool {
+	// Default implementation - gets replaced by generated code
 	return false
 }
 

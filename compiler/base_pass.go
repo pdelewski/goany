@@ -769,6 +769,25 @@ func (v *BasePassVisitor) buildTypesGraph() map[string][]string {
 						}
 					}
 				}
+			} else if arrType, ok := node.Type.(*ast.ArrayType); ok {
+				// Non-struct type alias (e.g., type AST []Statement)
+				aliasType := v.pkg.Name + "::" + node.Name.Name
+				switch elt := arrType.Elt.(type) {
+				case *ast.Ident:
+					if _, ok := primTypes[elt.Name]; !ok {
+						elemType := v.pkg.Name + "::" + elt.Name
+						if elemType != aliasType {
+							typesGraph[elemType] = append(typesGraph[elemType], aliasType)
+						}
+					}
+				case *ast.SelectorExpr:
+					if pkgIdent, ok := elt.X.(*ast.Ident); ok {
+						elemType := pkgIdent.Name + "::" + elt.Sel.Name
+						if elemType != aliasType {
+							typesGraph[elemType] = append(typesGraph[elemType], aliasType)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -822,7 +841,7 @@ func (v *BasePassVisitor) gen(precedence map[string]int) {
 					Other:      node,
 					IsExternal: false,
 					Pkg:        v.pkg.Name,
-					BaseType:   v.pkg.Name + "::" + trimBeforeChar(v.GetBaseTypeNameFromSlices(node), '.'),
+					BaseType:   v.pkg.Name + "::" + node.Name.Name,
 				})
 			}
 

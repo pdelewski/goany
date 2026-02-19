@@ -1679,6 +1679,132 @@ func testMultiVariablePatterns() {
 	fmt.Println("All multi-variable pattern tests passed!")
 }
 
+// Point is a simple struct with primitive fields only - can be used as map key
+type Point struct {
+	X int
+	Y int
+}
+
+// testStructMapKeys tests using structs as map keys
+func testStructMapKeys() {
+	fmt.Println("Testing struct map keys...")
+
+	// Create a map with struct keys
+	m := make(map[Point]string)
+
+	// Add some entries
+	p1 := Point{X: 1, Y: 2}
+	p2 := Point{X: 3, Y: 4}
+	p3 := Point{X: 1, Y: 2} // Same as p1
+
+	m[p1] = "first"
+	m[p2] = "second"
+
+	// Test retrieval
+	if m[p1] == "first" {
+		fmt.Println("PASS: struct key retrieval")
+	} else {
+		panic("FAIL: struct key retrieval")
+	}
+
+	// Test that equal structs map to same key
+	if m[p3] == "first" {
+		fmt.Println("PASS: equal struct keys")
+	} else {
+		panic("FAIL: equal struct keys")
+	}
+
+	// Test map length
+	if len(m) == 2 {
+		fmt.Println("PASS: struct key map length")
+	} else {
+		panic("FAIL: struct key map length")
+	}
+
+	// Test update
+	m[p1] = "updated"
+	if m[p3] == "updated" {
+		fmt.Println("PASS: struct key update")
+	} else {
+		panic("FAIL: struct key update")
+	}
+
+	// Test delete
+	delete(m, p1)
+	if len(m) == 1 {
+		fmt.Println("PASS: struct key delete")
+	} else {
+		panic("FAIL: struct key delete")
+	}
+
+	fmt.Println("All struct map key tests passed!")
+}
+
+// Inner is a simple struct used as a field in Outer
+type Inner struct {
+	A int
+	B int
+}
+
+// Outer contains an Inner struct - tests nested struct map keys
+type Outer struct {
+	I Inner
+	C int
+}
+
+// testNestedStructMapKeys tests using structs with nested struct fields as map keys
+func testNestedStructMapKeys() {
+	fmt.Println("Testing nested struct map keys...")
+
+	m := make(map[Outer]string)
+
+	o1 := Outer{I: Inner{A: 1, B: 2}, C: 10}
+	o2 := Outer{I: Inner{A: 3, B: 4}, C: 20}
+	o3 := Outer{I: Inner{A: 1, B: 2}, C: 10} // Same as o1
+
+	m[o1] = "first"
+	m[o2] = "second"
+
+	// Test retrieval
+	if m[o1] == "first" {
+		fmt.Println("PASS: nested struct key retrieval")
+	} else {
+		panic("FAIL: nested struct key retrieval")
+	}
+
+	// Test that equal nested structs map to same key
+	if m[o3] == "first" {
+		fmt.Println("PASS: equal nested struct keys")
+	} else {
+		panic("FAIL: equal nested struct keys")
+	}
+
+	// Test map length
+	if len(m) == 2 {
+		fmt.Println("PASS: nested struct key map length")
+	} else {
+		panic("FAIL: nested struct key map length")
+	}
+
+	// Test update via equal key
+	m[o3] = "updated"
+	if m[o1] == "updated" {
+		fmt.Println("PASS: nested struct key update")
+	} else {
+		panic("FAIL: nested struct key update")
+	}
+
+	// Test delete
+	delete(m, o1)
+	if len(m) == 1 {
+		fmt.Println("PASS: nested struct key delete")
+	} else {
+		panic("FAIL: nested struct key delete")
+	}
+
+	fmt.Println("All nested struct map key tests passed!")
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1726,6 +1852,8 @@ func main() {
 	testMixedNestedComposites()
 	testBuiltinFunctions()
 	testMultiVariablePatterns()
+	testStructMapKeys()
+	testNestedStructMapKeys()
 
 	fmt.Println("=== Done ===")
 }

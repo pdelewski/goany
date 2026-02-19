@@ -1,12 +1,11 @@
 package main
 
-// ERROR: Structs as map keys are not supported
-// Only primitive types (string, int, bool, etc.) can be map keys.
-type Point struct {
-	X, Y int
+// ERROR: Structs with non-comparable fields cannot be used as map keys
+type BadKey struct {
+	Values []int // slice field - not supported as map key
 }
 
 func main() {
-	m := make(map[Point]string) // error: struct key type not allowed
+	m := make(map[BadKey]string) // error: slice field makes struct non-comparable
 	_ = m
 }
