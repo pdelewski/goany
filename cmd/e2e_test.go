@@ -116,6 +116,9 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 	if tc.JavaEnabled {
 		optInBackends = append(optInBackends, "java")
 	}
+	if tc.JsPrimEnabled {
+		optInBackends = append(optInBackends, "jsprim")
+	}
 	if len(optInBackends) > 0 {
 		args = append(args, fmt.Sprintf("--backend=all,%s", joinStrings(optInBackends, ",")))
 	}
