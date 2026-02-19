@@ -1039,6 +1039,9 @@ func Tokenize(input string) []Token {
 		} else if ch == int('!') {
 			tokens = append(tokens, NewToken(TokenNot, "!", line, charStartCol))
 			lastTokenType = TokenNot
+		} else if ch == int('~') {
+			tokens = append(tokens, NewToken(TokenTilde, "~", line, charStartCol))
+			lastTokenType = TokenTilde
 		}
 		lastKeywordValue = ""
 		pos = pos + 1

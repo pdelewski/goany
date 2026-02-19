@@ -54,6 +54,7 @@ const TokenGreaterEqual int = 49 // >=
 const TokenNot int = 50          // !
 const TokenEllipsis int = 51    // ...
 const TokenKeyword int = 52
+const TokenTilde int = 57       // ~
 
 // Token represents a lexical token
 type Token struct {
@@ -313,6 +314,9 @@ func TokenTypeName(tokenType int) string {
 	}
 	if tokenType == TokenKeyword {
 		return "KEYWORD"
+	}
+	if tokenType == TokenTilde {
+		return "TILDE"
 	}
 	return "UNKNOWN"
 }

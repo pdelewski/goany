@@ -365,5 +365,49 @@ func main() {
 	ast30 := goparser.Parse(code30)
 	fmt.Println(goparser.PrintAST(ast30))
 
+	// Test 31: Generic function
+	code31 := `package main
+
+func Max[T Comparable](a T, b T) T {
+	return a
+}`
+
+	fmt.Println("=== Test 31: Generic Function ===")
+	ast31 := goparser.Parse(code31)
+	fmt.Println(goparser.PrintAST(ast31))
+
+	// Test 32: Generic type
+	code32 := `package main
+
+type Stack[T any] struct {
+	items []T
+}`
+
+	fmt.Println("=== Test 32: Generic Type ===")
+	ast32 := goparser.Parse(code32)
+	fmt.Println(goparser.PrintAST(ast32))
+
+	// Test 33: Multi-param generic function
+	code33 := `package main
+
+func Map[T any, U any](s []T) []U {
+	return nil
+}`
+
+	fmt.Println("=== Test 33: Multi-Param Generic Function ===")
+	ast33 := goparser.Parse(code33)
+	fmt.Println(goparser.PrintAST(ast33))
+
+	// Test 34: Constraint union in interface
+	code34 := `package main
+
+type Number interface {
+	int | float64
+}`
+
+	fmt.Println("=== Test 34: Constraint Union Interface ===")
+	ast34 := goparser.Parse(code34)
+	fmt.Println(goparser.PrintAST(ast34))
+
 	fmt.Println("=== All Tests Completed ===")
 }

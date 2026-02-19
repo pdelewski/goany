@@ -219,6 +219,14 @@ func parseFuncDecl(tokens []Token, pos int) (Node, int) {
 	}
 	node = SetLine(node, startLine)
 
+	// Type parameters: func Name[T any](...) ...
+	if peekTokenType(tokens, pos) == TokenLBracket {
+		pos = pos + 1
+		var typeParams Node
+		typeParams, pos = parseTypeParamList(tokens, pos)
+		node = AddChild(node, typeParams)
+	}
+
 	// Parameters
 	var paramList Node
 	paramList, pos = parseParamList(tokens, pos)
@@ -528,6 +536,86 @@ func parseTypeExpr(tokens []Token, pos int) (Node, int) {
 	return NewNode(NodeName), pos
 }
 
+// parseTypeParamList parses type parameters inside [...] after the opening [ has been consumed
+func parseTypeParamList(tokens []Token, pos int) (Node, int) {
+	node := NewNode(NodeTypeParamList)
+	node = SetLine(node, peekToken(tokens, pos).Line)
+
+	for peekTokenType(tokens, pos) != TokenRBracket && peekTokenType(tokens, pos) != TokenEOF {
+		param := NewNode(NodeTypeParam)
+		param = SetLine(param, peekToken(tokens, pos).Line)
+
+		// Parse parameter name
+		if peekTokenType(tokens, pos) == TokenIdentifier {
+			param.Name = peekTokenValue(tokens, pos)
+			pos = pos + 1
+		}
+
+		// Parse constraint
+		if peekTokenType(tokens, pos) != TokenComma && peekTokenType(tokens, pos) != TokenRBracket {
+			var constraint Node
+			constraint, pos = parseTypeConstraint(tokens, pos)
+			param = AddChild(param, constraint)
+		}
+
+		node = AddChild(node, param)
+
+		if peekTokenType(tokens, pos) == TokenComma {
+			pos = pos + 1
+		}
+	}
+
+	// Consume ]
+	if peekTokenType(tokens, pos) == TokenRBracket {
+		pos = pos + 1
+	}
+
+	return node, pos
+}
+
+// parseTypeConstraint parses a type constraint after a type param name
+func parseTypeConstraint(tokens []Token, pos int) (Node, int) {
+	// Check for ~ (approximate constraint)
+	if peekTokenType(tokens, pos) == TokenTilde {
+		pos = pos + 1
+		var typeExpr Node
+		typeExpr, pos = parseTypeExpr(tokens, pos)
+		node := NewNodeWithOp(NodeConstraint, "~")
+		node = AddChild(node, typeExpr)
+		return node, pos
+	}
+
+	// Parse type expression
+	var firstType Node
+	firstType, pos = parseTypeExpr(tokens, pos)
+
+	// Check for | (union constraint)
+	if peekTokenType(tokens, pos) == TokenPipe {
+		node := NewNode(NodeConstraint)
+		node = AddChild(node, firstType)
+		for peekTokenType(tokens, pos) == TokenPipe {
+			pos = pos + 1
+			// Check for ~ in union element
+			if peekTokenType(tokens, pos) == TokenTilde {
+				pos = pos + 1
+				var approxType Node
+				approxType, pos = parseTypeExpr(tokens, pos)
+				approxNode := NewNodeWithOp(NodeConstraint, "~")
+				approxNode = AddChild(approxNode, approxType)
+				node = AddChild(node, approxNode)
+			} else {
+				var nextType Node
+				nextType, pos = parseTypeExpr(tokens, pos)
+				node = AddChild(node, nextType)
+			}
+		}
+		return node, pos
+	}
+
+	// Single type - return directly
+	return firstType, pos
+}
+
 // parseStructType parses a struct type definition
 func parseStructType(tokens []Token, pos int) (Node, int) {
 	node := NewNode(NodeStructType)
@@ -646,7 +734,7 @@ func parseInterfaceType(tokens []Token, pos int) (Node, int) {
 					}
 					node = AddChild(node, method)
 				} else {
-					// Embedded interface type
+					// Embedded interface type or union constraint
 					embeddedType := NewNodeWithName(NodeName, methodNameForEmbed)
 					if peekTokenType(tokens, pos) == TokenDot {
 						pos = pos + 1
@@ -658,7 +746,29 @@ func parseInterfaceType(tokens []Token, pos int) (Node, int) {
 							pos = pos + 1
 						}
 					}
-					node = AddChild(node, embeddedType)
+					// Check for union constraint: ident | ident
+					if peekTokenType(tokens, pos) == TokenPipe {
+						constraintNode := NewNode(NodeConstraint)
+						constraintNode = AddChild(constraintNode, embeddedType)
+						for peekTokenType(tokens, pos) == TokenPipe {
+							pos = pos + 1
+							if peekTokenType(tokens, pos) == TokenTilde {
+								pos = pos + 1
+								var approxType Node
+								approxType, pos = parseTypeExpr(tokens, pos)
+								approxNode := NewNodeWithOp(NodeConstraint, "~")
+								approxNode = AddChild(approxNode, approxType)
+								constraintNode = AddChild(constraintNode, approxNode)
+							} else {
+								var nextType Node
+								nextType, pos = parseTypeExpr(tokens, pos)
+								constraintNode = AddChild(constraintNode, nextType)
+							}
+						}
+						node = AddChild(node, constraintNode)
+					} else {
+						node = AddChild(node, embeddedType)
+					}
 				}
 			}
 
@@ -855,6 +965,14 @@ func parseTypeSpec(tokens []Token, pos int, startLine int) (Node, int) {
 	if peekTokenType(tokens, pos) == TokenIdentifier {
 		node.Name = peekTokenValue(tokens, pos)
 		pos = pos + 1
+	}
+
+	// Type parameters: type Name[T any] ...
+	if peekTokenType(tokens, pos) == TokenLBracket {
+		pos = pos + 1
+		var typeParams Node
+		typeParams, pos = parseTypeParamList(tokens, pos)
+		node = AddChild(node, typeParams)
 	}
 
 	// Parse the underlying type
@@ -2109,6 +2227,27 @@ func parsePrimary(tokens []Token, pos int) (Node, int) {
 
 			var indexExpr Node
 			indexExpr, pos = parseExpression(tokens, pos)
+
+			// Comma → multi-arg type instantiation: Func[T, U]
+			if peekTokenType(tokens, pos) == TokenComma {
+				typeArgs := NewNode(NodeTypeArgs)
+				typeArgs = AddChild(typeArgs, indexExpr)
+				for peekTokenType(tokens, pos) == TokenComma {
+					pos = pos + 1
+					var arg Node
+					arg, pos = parseExpression(tokens, pos)
+					typeArgs = AddChild(typeArgs, arg)
+				}
+				if peekTokenType(tokens, pos) == TokenRBracket {
+					pos = pos + 1
+				}
+				instNode := NewNode(NodeIndex)
+				instNode = SetLine(instNode, left.Line)
+				instNode = AddChild(instNode, left)
+				instNode = AddChild(instNode, typeArgs)
+				left = instNode
+				continue
+			}
 
 			if peekTokenType(tokens, pos) == TokenColon {
 				// Slice expression

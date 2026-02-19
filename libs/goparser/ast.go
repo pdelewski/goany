@@ -68,6 +68,10 @@ const NodeBlankIdent int = 64
 const NodeIota int = 65
 const NodeExprList int = 66
 const NodeReceiver int = 67
+const NodeTypeParamList int = 68
+const NodeTypeParam int = 69
+const NodeConstraint int = 70
+const NodeTypeArgs int = 71
 
 // Node represents an AST node
 type Node struct {
@@ -326,6 +330,18 @@ func NodeTypeName(nodeType int) string {
 	}
 	if nodeType == NodeReceiver {
 		return "Receiver"
+	}
+	if nodeType == NodeTypeParamList {
+		return "TypeParamList"
+	}
+	if nodeType == NodeTypeParam {
+		return "TypeParam"
+	}
+	if nodeType == NodeConstraint {
+		return "Constraint"
+	}
+	if nodeType == NodeTypeArgs {
+		return "TypeArgs"
 	}
 	return "Unknown"
 }
