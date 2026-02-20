@@ -151,6 +151,19 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 			t.Fatalf("C++ (prim) compilation failed: %v\nOutput: %s", err, output)
 		}
 		t.Logf("C++ (prim) compilation output: %s", output)
+
+		// Run cppprim binary for runnable tests (same condition as DotnetRunnable)
+		if tc.DotnetRunnable {
+			t.Logf("Running C++ (prim) for %s", tc.Name)
+			binaryName := tc.Name + "-cppprim"
+			cmd = exec.Command(filepath.Join(outputDir, binaryName))
+			cmd.Dir = outputDir
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("C++ (prim) execution failed: %v\nOutput: %s", err, output)
+			}
+			t.Logf("C++ (prim) execution output: %s", output)
+		}
 	}
 
 	// Step 3: Compile C# using dotnet build

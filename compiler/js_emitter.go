@@ -2051,19 +2051,19 @@ func (e *JSEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitCaseClause))
 	ind := jsIndent(indent / 2)
 
-	caseExprs := ""
-	idx := 0
-	if idx < len(tokens) {
-		caseExprs = tokens[idx].Content
-		idx++
-	}
-
 	var sb strings.Builder
+	idx := 0
 	if len(node.List) == 0 {
-		// Default case
+		// Default case: PushCode("") is a no-op (empty tokens are dropped),
+		// so all tokens on the stack are body statements.
 		sb.WriteString(ind + "default:\n")
 	} else {
-		// Regular case - handle multiple values
+		// Regular case: token[0] is case expressions, rest is body
+		caseExprs := ""
+		if idx < len(tokens) {
+			caseExprs = tokens[idx].Content
+			idx++
+		}
 		vals := strings.Split(caseExprs, ", ")
 		for _, v := range vals {
 			sb.WriteString(fmt.Sprintf("%scase %s:\n", ind, v))

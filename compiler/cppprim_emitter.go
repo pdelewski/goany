@@ -49,6 +49,9 @@ type CPPPrimEmitter struct {
 	ifCondStack []string
 	ifBodyStack []string
 	ifElseStack []string
+	// Move optimization guards
+	currentAssignLhsNames     map[string]bool
+	currentCallArgIdentsStack []map[string]int
 	// C++-specific
 	forwardDecl      bool
 	funcLitDepth     int
@@ -58,6 +61,131 @@ type CPPPrimEmitter struct {
 
 func (e *CPPPrimEmitter) SetFile(file *os.File) { e.file = file }
 func (e *CPPPrimEmitter) GetFile() *os.File     { return e.file }
+
+// canMoveArg checks if a call argument identifier can be moved instead of copied.
+// A move is safe only when: (1) the variable is the LHS of the enclosing assignment
+// (so it gets reassigned immediately), and (2) it doesn't appear multiple times
+// in the same call's arguments.
+func (e *CPPPrimEmitter) canMoveArg(varName string) bool {
+	if !e.OptimizeMoves {
+		return false
+	}
+	if e.funcLitDepth > 0 {
+		return false
+	}
+	if e.currentAssignLhsNames == nil || !e.currentAssignLhsNames[varName] {
+		return false
+	}
+	if len(e.currentCallArgIdentsStack) > 0 {
+		outermostCounts := e.currentCallArgIdentsStack[0]
+		if outermostCounts[varName] > 1 {
+			return false
+		}
+	}
+	e.MoveOptCount++
+	return true
+}
+
+func (e *CPPPrimEmitter) collectCallArgIdentCounts(args []ast.Expr) map[string]int {
+	counts := make(map[string]int)
+	for _, arg := range args {
+		e.countIdentsInExpr(arg, counts)
+	}
+	return counts
+}
+
+func (e *CPPPrimEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) {
+	if expr == nil {
+		return
+	}
+	switch n := expr.(type) {
+	case *ast.Ident:
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if obj := e.pkg.TypesInfo.ObjectOf(n); obj != nil {
+				if _, isTypeName := obj.(*types.TypeName); isTypeName {
+					return
+				}
+				if _, isPkgName := obj.(*types.PkgName); isPkgName {
+					return
+				}
+			}
+		}
+		counts[n.Name]++
+	case *ast.SelectorExpr:
+		e.countIdentsInExpr(n.X, counts)
+	case *ast.CallExpr:
+		for _, arg := range n.Args {
+			e.countIdentsInExpr(arg, counts)
+		}
+		e.countIdentsInExpr(n.Fun, counts)
+	case *ast.IndexExpr:
+		e.countIdentsInExpr(n.X, counts)
+		e.countIdentsInExpr(n.Index, counts)
+	case *ast.BinaryExpr:
+		e.countIdentsInExpr(n.X, counts)
+		e.countIdentsInExpr(n.Y, counts)
+	case *ast.UnaryExpr:
+		e.countIdentsInExpr(n.X, counts)
+	case *ast.ParenExpr:
+		e.countIdentsInExpr(n.X, counts)
+	case *ast.TypeAssertExpr:
+		e.countIdentsInExpr(n.X, counts)
+	case *ast.CompositeLit:
+		for _, elt := range n.Elts {
+			e.countIdentsInExpr(elt, counts)
+		}
+	case *ast.KeyValueExpr:
+		e.countIdentsInExpr(n.Value, counts)
+	}
+}
+
+// analyzeLhsIndexChain walks a chain of IndexExpr from outermost to root variable,
+// returning the operations and whether there's an intermediate map access that needs
+// read-modify-write semantics.
+func (e *CPPPrimEmitter) analyzeLhsIndexChain(expr ast.Expr) (ops []mixedIndexOp, hasIntermediateMap bool) {
+	var chain []ast.Expr
+	current := expr
+	for {
+		indexExpr, ok := current.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append(chain, indexExpr)
+		current = indexExpr.X
+	}
+	// Reverse: chain[0] = innermost (closest to root), chain[len-1] = outermost
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	hasIntermediateMap = false
+	for i, node := range chain {
+		ie := node.(*ast.IndexExpr)
+		tv := e.pkg.TypesInfo.Types[ie.X]
+		if tv.Type == nil {
+			continue
+		}
+		isLast := (i == len(chain)-1)
+		if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+			op := mixedIndexOp{
+				accessType:   "map",
+				keyExpr:      exprToCppString(ie.Index),
+				valueCppType: getCppTypeName(mapType.Elem()),
+			}
+			op.keyCastPfx, op.keyCastSfx = getCppKeyCast(mapType.Key())
+			if !isLast {
+				hasIntermediateMap = true
+			}
+			ops = append(ops, op)
+		} else {
+			op := mixedIndexOp{
+				accessType: "slice",
+				keyExpr:    exprToCppString(ie.Index),
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops, hasIntermediateMap
+}
 
 // cppIndent returns indentation string for the given level.
 func cppIndent(indent int) string {
@@ -161,62 +289,6 @@ func (e *CPPPrimEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 		}
 	}
 	return 1
-}
-
-// collectCallArgIdentCounts counts how many times each base identifier
-// appears across all arguments of a function call
-func (e *CPPPrimEmitter) collectCallArgIdentCounts(args []ast.Expr) map[string]int {
-	counts := make(map[string]int)
-	for _, arg := range args {
-		e.countIdentsInExpr(arg, counts)
-	}
-	return counts
-}
-
-// countIdentsInExpr recursively counts identifier occurrences in an expression
-func (e *CPPPrimEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) {
-	if expr == nil {
-		return
-	}
-	switch n := expr.(type) {
-	case *ast.Ident:
-		if e.pkg != nil && e.pkg.TypesInfo != nil {
-			if obj := e.pkg.TypesInfo.ObjectOf(n); obj != nil {
-				if _, isTypeName := obj.(*types.TypeName); isTypeName {
-					return
-				}
-				if _, isPkgName := obj.(*types.PkgName); isPkgName {
-					return
-				}
-			}
-		}
-		counts[n.Name]++
-	case *ast.SelectorExpr:
-		e.countIdentsInExpr(n.X, counts)
-	case *ast.CallExpr:
-		for _, arg := range n.Args {
-			e.countIdentsInExpr(arg, counts)
-		}
-		e.countIdentsInExpr(n.Fun, counts)
-	case *ast.IndexExpr:
-		e.countIdentsInExpr(n.X, counts)
-		e.countIdentsInExpr(n.Index, counts)
-	case *ast.BinaryExpr:
-		e.countIdentsInExpr(n.X, counts)
-		e.countIdentsInExpr(n.Y, counts)
-	case *ast.UnaryExpr:
-		e.countIdentsInExpr(n.X, counts)
-	case *ast.ParenExpr:
-		e.countIdentsInExpr(n.X, counts)
-	case *ast.TypeAssertExpr:
-		e.countIdentsInExpr(n.X, counts)
-	case *ast.CompositeLit:
-		for _, elt := range n.Elts {
-			e.countIdentsInExpr(elt, counts)
-		}
-	case *ast.KeyValueExpr:
-		e.countIdentsInExpr(n.Value, counts)
-	}
 }
 
 // exprContainsIdent checks if an expression references a given identifier
@@ -536,19 +608,26 @@ func (e *CPPPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent i
 			if tv != nil {
 				if named, ok := tv.(*types.Named); ok {
 					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-						argCode = "std::move(" + argCode + ")"
-						e.MoveOptCount++
+						if e.canMoveArg(ident.Name) {
+							argCode = "std::move(" + argCode + ")"
+						}
 					}
 				}
 			}
-			_ = ident
 		}
 	}
 
 	e.fs.PushCode(argCode)
 }
 
+func (e *CPPPrimEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
+	e.currentCallArgIdentsStack = append(e.currentCallArgIdentsStack, e.collectCallArgIdentCounts(node))
+}
+
 func (e *CPPPrimEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
+	if len(e.currentCallArgIdentsStack) > 0 {
+		e.currentCallArgIdentsStack = e.currentCallArgIdentsStack[:len(e.currentCallArgIdentsStack)-1]
+	}
 	argTokens := e.fs.Reduce(string(PreVisitCallExprArgs))
 	var args []string
 	for _, t := range argTokens {
@@ -1398,6 +1477,13 @@ func (e *CPPPrimEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	e.indent = indent
 	e.mapAssignVar = ""
 	e.mapAssignKey = ""
+	// Capture LHS variable names for move optimization
+	e.currentAssignLhsNames = make(map[string]bool)
+	for _, lhs := range node.Lhs {
+		if ident, ok := lhs.(*ast.Ident); ok {
+			e.currentAssignLhsNames[ident.Name] = true
+		}
+	}
 }
 
 func (e *CPPPrimEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
@@ -1442,6 +1528,7 @@ func (e *CPPPrimEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int
 }
 
 func (e *CPPPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	e.currentAssignLhsNames = nil
 	tokens := e.fs.Reduce(string(PreVisitAssignStmt))
 	lhsStr := ""
 	rhsStr := ""
@@ -1470,6 +1557,85 @@ func (e *CPPPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 	if allBlank {
 		return
+	}
+
+	// Mixed index chain: e.g., mapOfSlices["first"][0] = 100
+	// Needs read-modify-write when intermediate access is a map
+	if len(node.Lhs) == 1 {
+		if _, isIndex := node.Lhs[0].(*ast.IndexExpr); isIndex && e.pkg != nil && e.pkg.TypesInfo != nil {
+			ops, hasIntermediateMap := e.analyzeLhsIndexChain(node.Lhs[0])
+			if hasIntermediateMap && len(ops) >= 2 {
+				// Find root variable
+				rootExpr := node.Lhs[0]
+				for {
+					if ie, ok := rootExpr.(*ast.IndexExpr); ok {
+						rootExpr = ie.X
+					} else {
+						break
+					}
+				}
+				rootVar := exprToString(rootExpr)
+
+				// Assign temp var names to map accesses
+				currentVar := rootVar
+				for i := range ops {
+					if ops[i].accessType == "map" {
+						ops[i].mapVarExpr = currentVar
+						ops[i].tempVarName = fmt.Sprintf("__nested_inner_%d", e.nestedMapCounter)
+						e.nestedMapCounter++
+						currentVar = ops[i].tempVarName
+					} else {
+						ops[i].mapVarExpr = currentVar
+						currentVar = currentVar + "[" + ops[i].keyExpr + "]"
+					}
+				}
+
+				lastIdx := len(ops) - 1
+				var sb strings.Builder
+
+				// Prologue: extract temp variables for INTERMEDIATE map accesses only
+				for i, op := range ops {
+					if op.accessType == "map" && i < lastIdx {
+						key := op.keyExpr
+						if op.keyCastPfx != "" {
+							key = op.keyCastPfx + key + op.keyCastSfx
+						}
+						sb.WriteString(fmt.Sprintf("%sauto %s = std::any_cast<%s>(hmap::hashMapGet(%s, %s));\n",
+							ind, op.tempVarName, op.valueCppType, op.mapVarExpr, key))
+					}
+				}
+
+				// Assignment depends on whether the last op is a map or slice access
+				lastOp := ops[lastIdx]
+				if lastOp.accessType == "map" {
+					// Last op is map: use hashMapSet directly
+					key := lastOp.keyExpr
+					if lastOp.keyCastPfx != "" {
+						key = lastOp.keyCastPfx + key + lastOp.keyCastSfx
+					}
+					sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
+						ind, lastOp.mapVarExpr, lastOp.mapVarExpr, key, rhsStr))
+				} else {
+					// Last op is slice: assign to slice element
+					sb.WriteString(fmt.Sprintf("%s%s %s %s;\n", ind, currentVar, tokStr, rhsStr))
+				}
+
+				// Epilogue: write back INTERMEDIATE map entries in reverse
+				for i := lastIdx - 1; i >= 0; i-- {
+					op := ops[i]
+					if op.accessType == "map" {
+						key := op.keyExpr
+						if op.keyCastPfx != "" {
+							key = op.keyCastPfx + key + op.keyCastSfx
+						}
+						sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
+							ind, op.mapVarExpr, op.mapVarExpr, key, op.tempVarName))
+					}
+				}
+				e.fs.PushCode(sb.String())
+				return
+			}
+		}
 	}
 
 	// Map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
@@ -2030,17 +2196,19 @@ func (e *CPPPrimEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitCaseClause))
 	ind := cppIndent(indent)
 
-	caseExprs := ""
-	idx := 0
-	if idx < len(tokens) {
-		caseExprs = tokens[idx].Content
-		idx++
-	}
-
 	var sb strings.Builder
+	idx := 0
 	if len(node.List) == 0 {
+		// Default case: PushCode("") is a no-op (empty tokens are dropped),
+		// so all tokens on the stack are body statements.
 		sb.WriteString(ind + "  default:\n")
 	} else {
+		// Regular case: token[0] is case expressions, rest is body
+		caseExprs := ""
+		if idx < len(tokens) {
+			caseExprs = tokens[idx].Content
+			idx++
+		}
 		vals := strings.Split(caseExprs, ", ")
 		for _, v := range vals {
 			sb.WriteString(fmt.Sprintf("%s  case %s:\n", ind, v))
