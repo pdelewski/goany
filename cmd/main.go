@@ -128,9 +128,8 @@ func main() {
 	useCpp := useAll || backendSet["cpp"]
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
-	useJs := backendSet["js"]         // JS is opt-in, not included in "all"
-	useJsPrim := backendSet["jsprim"] // JsPrim is opt-in, not included in "all"
-	useJava := backendSet["java"]     // Java is opt-in, not included in "all"
+	useJs := backendSet["js"]     // JS is opt-in, not included in "all"
+	useJava := backendSet["java"] // Java is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -215,18 +214,6 @@ func main() {
 		}}
 		passes = append(passes, jsBackend)
 		programFiles = append(programFiles, "js")
-	}
-	if useJsPrim {
-		jsprimBackend := &compiler.BasePass{PassName: "JsPrimGen", Emitter: &compiler.JSPrimEmitter{
-			Emitter:         &compiler.BaseEmitter{},
-			Output:          output + ".jsprim.js",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-		}}
-		passes = append(passes, jsprimBackend)
-		programFiles = append(programFiles, "jsprim.js")
 	}
 	if useJava {
 		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{

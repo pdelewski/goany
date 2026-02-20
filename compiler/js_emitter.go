@@ -17,257 +17,130 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-var jsTypesMap = map[string]string{
-	"int8":   "number",
-	"int16":  "number",
-	"int32":  "number",
-	"int64":  "number",
-	"int":    "number",
-	"uint8":  "number",
-	"uint16": "number",
-	"uint32": "number",
-	"uint64": "number",
-	"float32": "number",
-	"float64": "number",
-	"bool":   "boolean",
-	"string": "string",
-	"any":    "any",
-}
-
+// JSEmitter implements the Emitter interface using a shift/reduce architecture.
+// PreVisit methods push markers, PostVisit methods reduce and push results.
 type JSEmitter struct {
+	fs              *FragmentStack
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string          // Path to runtime directory (empty = disabled)
-	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
+	LinkRuntime     string
+	RuntimePackages map[string]string
 	file            *os.File
 	Emitter
-	pkg                   *packages.Package
-	insideForPostCond     bool
-	assignmentToken       string
-	forwardDecl           bool
-	currentPackage        string
-	// Key-value range loop support
-	isKeyValueRange       bool
-	rangeKeyName          string
-	rangeValueName        string
-	rangeCollectionExpr   string
-	captureRangeExpr      bool
-	suppressRangeEmit     bool
-	rangeStmtIndent       int
-	pendingRangeValueDecl bool  // Emit value declaration in next block
-	// For loop support
-	sawIncrement          bool
-	sawDecrement          bool
-	forLoopInclusive      bool
-	forLoopReverse        bool
-	isInfiniteLoop        bool
-	// Multi-value support
-	inMultiValueReturn    bool
-	multiValueReturnIndex int
-	numFuncResults        int
-	// Type suppression for JavaScript (no type annotations)
-	suppressTypeEmit      bool
-	// For loop init section (suppress semicolon after assignment)
-	insideForInit         bool
-	// Pending slice/struct/basic type initialization
-	pendingSliceInit      bool
-	pendingStructInit     bool
-	pendingStructType     *types.Struct // Store struct type for full initialization
-	pendingBasicInit      *types.Basic  // Store basic type for proper initialization
-	// Namespace handling for non-main packages
-	inNamespace           bool
-	// Track when inside a function literal (closure) where 'this' has different meaning
-	inFuncLit             bool
-	// Integer division handling
-	intDivision           bool
-	// String indexing - use charCodeAt for string[i] to return number like Go
-	isStringIndex         bool
-	// Map support
-	isMapMakeCall    bool   // Inside make(map[K]V) call
-	mapMakeKeyType   int    // Key type constant for make call
-	isMapIndex       bool   // IndexExpr on a map (for read: m[k])
-	mapIndexDepth    int    // Depth of nested map reads (0 = not nested, 1+ = nested)
-	isMapAssign      bool   // Assignment to map index (m[k] = v)
-	mapAssignVarName string // Variable name for map assignment
-	mapAssignIndent  int    // Indent level for map assignment
-	captureMapKey    bool   // Capturing map key expression
-	capturedMapKey   string // Captured key expression text
-	isDeleteCall     bool   // Inside delete(m, k) call
-	deleteMapVarName string // Variable name for delete
-	isMapLenCall     bool   // len() call on a map
-	// Nested map assignment: m["outer"]["inner"] = v
-	isNestedMapAssign     bool
-	nestedMapOuterVarName string
-	nestedMapOuterKey     string
-	nestedMapCounter      int
-	nestedMapVarName      string
-	pendingMapInit   bool   // var m map[K]V needs default init
-	pendingMapKeyType int   // Key type for pending init
-	hasDeclValue     bool   // True if current declaration has an explicit initialization value
-	// Comma-ok idiom: val, ok := m[key]
-	isMapCommaOk      bool
-	mapCommaOkValName string
-	mapCommaOkOkName  string
-	mapCommaOkMapName string
-	mapCommaOkZeroVal string
-	mapCommaOkIsDecl  bool
-	mapCommaOkIndent  int
-	// Type assertion comma-ok: val, ok := x.(Type)
-	isTypeAssertCommaOk      bool
-	typeAssertCommaOkValName string
-	typeAssertCommaOkOkName  string
-	typeAssertCommaOkIsDecl  bool
-	typeAssertCommaOkIndent  int
-	// Slice make support: make([]T, n) → new Array(n).fill(default)
-	isSliceMakeCall  bool   // Inside make([]T, n) call
-	sliceMakeDefault string // Default fill value for the slice element type
-	suppressEmit     bool   // When true, emitToFile does nothing
-	// Mixed nested composites: []map[string]int, map[string][]int, etc.
-	indexAccessTypeStack   []string          // Stack of access types: "map" or "slice" for each IndexExpr level
-	isMixedIndexAssign     bool              // Assignment involves intermediate map access on LHS
-	mixedIndexAssignOps    []jsMixedIndexOp  // Chain of operations from root to outermost
-	mixedAssignIndent      int               // Indent level
-	mixedAssignFinalTarget string            // Final assignment target expression
-	mixedTempCounter       int               // Global counter for unique temp variable names
-	// Struct map key support
-	structKeyTypes         map[string]bool   // Struct types used as map keys
+	pkg            *packages.Package
+	currentPackage string
+	inNamespace    bool
+	indent         int
+	numFuncResults int
+	// Minimal state for map assignment detection
+	lastIndexXCode   string
+	lastIndexKeyCode string
+	mapAssignVar     string
+	mapAssignKey     string
+	structKeyTypes   map[string]bool
+	// For loop components (stacks for nesting support)
+	forInitStack []string
+	forCondStack []string
+	forPostStack []string
+	// If statement components (stacks for nesting support)
+	ifInitStack []string
+	ifCondStack []string
+	ifBodyStack []string
+	ifElseStack []string
 }
 
-// jsMixedIndexOp represents a single index operation in a mixed chain
-type jsMixedIndexOp struct {
-	accessType  string // "map" or "slice"
-	keyExpr     string // Key/index expression
-	tempVarName string // Temp variable name (only for map access)
-	mapVarExpr  string // The expression to call hashMapGet on
+func (e *JSEmitter) SetFile(file *os.File) { e.file = file }
+func (e *JSEmitter) GetFile() *os.File     { return e.file }
+
+// indentStr returns indentation string for the given level.
+func jsIndent(indent int) string {
+	return strings.Repeat("  ", indent)
 }
 
-// exprToJsString converts a simple expression (BasicLit, Ident, IndexExpr, SelectorExpr) to its JS string representation
-func exprToJsString(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.BasicLit:
-		return e.Value
-	case *ast.Ident:
-		return e.Name
-	case *ast.IndexExpr:
-		xStr := exprToJsString(e.X)
-		indexStr := exprToJsString(e.Index)
-		if xStr != "" && indexStr != "" {
-			return xStr + "[" + indexStr + "]"
-		}
-		return ""
-	case *ast.SelectorExpr:
-		xStr := exprToJsString(e.X)
-		if xStr != "" {
-			return xStr + "." + e.Sel.Name
-		}
-		return ""
-	default:
-		return ""
+// concatTokenContents concatenates Content fields of tokens.
+func concatTokenContents(tokens []Token) string {
+	var sb strings.Builder
+	for _, t := range tokens {
+		sb.WriteString(t.Content)
 	}
+	return sb.String()
 }
 
-// analyzeLhsIndexChainJs walks an IndexExpr chain and returns operations from root to outermost.
-// Returns true if any intermediate map access was found (requiring temp var extraction).
-func (jse *JSEmitter) analyzeLhsIndexChainJs(expr ast.Expr) (ops []jsMixedIndexOp, hasIntermediateMap bool) {
-	// Collect the chain from outermost to root
-	var chain []ast.Expr
-	current := expr
-	for {
-		indexExpr, ok := current.(*ast.IndexExpr)
-		if !ok {
-			break
-		}
-		chain = append(chain, indexExpr)
-		current = indexExpr.X
+// jsDefaultForGoType returns JS default value for a Go type.
+func jsDefaultForGoType(t types.Type) string {
+	if t == nil {
+		return "null"
 	}
-	// chain[0] is outermost, chain[len-1] is innermost (closest to root variable)
-	// Reverse to get root to outermost order
-	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
-		chain[i], chain[j] = chain[j], chain[i]
-	}
-	// Now chain[0] is innermost (root[k1]), chain[len-1] is outermost ([kN])
-	hasIntermediateMap = false
-	for i, node := range chain {
-		ie := node.(*ast.IndexExpr)
-		tv := jse.pkg.TypesInfo.Types[ie.X]
-		if tv.Type == nil {
-			continue
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		switch {
+		case u.Info()&types.IsString != 0:
+			return `""`
+		case u.Info()&types.IsBoolean != 0:
+			return "false"
+		case u.Info()&types.IsNumeric != 0:
+			return "0"
 		}
-		isLast := (i == len(chain)-1)
-		if _, ok := tv.Type.Underlying().(*types.Map); ok {
-			keyExpr := exprToJsString(ie.Index)
-			op := jsMixedIndexOp{
-				accessType: "map",
-				keyExpr:    keyExpr,
-			}
-			if !isLast {
-				hasIntermediateMap = true
-			}
-			ops = append(ops, op)
-		} else {
-			// Slice or array access
-			op := jsMixedIndexOp{
-				accessType: "slice",
-				keyExpr:    exprToJsString(ie.Index),
-			}
-			ops = append(ops, op)
+	case *types.Slice:
+		return "[]"
+	case *types.Map:
+		return "null"
+	case *types.Struct:
+		// If the original type is named, produce new StructName()
+		if named, ok := t.(*types.Named); ok {
+			return fmt.Sprintf("new %s()", named.Obj().Name())
 		}
+		return "null"
 	}
-	return ops, hasIntermediateMap
+	return "null"
 }
 
-// getMapKeyTypeConst returns the key type constant for a map type AST node
-func (jse *JSEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
-	if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-		if tv, ok := jse.pkg.TypesInfo.Types[mapType.Key]; ok && tv.Type != nil {
-			if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
-				switch basic.Kind() {
-				case types.String:
-					return 1 // KEY_TYPE_STRING
-				case types.Int:
-					return 2 // KEY_TYPE_INT
-				case types.Bool:
-					return 3 // KEY_TYPE_BOOL
-				case types.Int8:
-					return 4 // KEY_TYPE_INT8
-				case types.Int16:
-					return 5 // KEY_TYPE_INT16
-				case types.Int32:
-					return 6 // KEY_TYPE_INT32
-				case types.Int64:
-					return 7 // KEY_TYPE_INT64
-				case types.Uint8:
-					return 8 // KEY_TYPE_UINT8
-				case types.Uint16:
-					return 9 // KEY_TYPE_UINT16
-				case types.Uint32:
-					return 10 // KEY_TYPE_UINT32
-				case types.Uint64:
-					return 11 // KEY_TYPE_UINT64
-				case types.Float32:
-					return 12 // KEY_TYPE_FLOAT32
-				case types.Float64:
-					return 13 // KEY_TYPE_FLOAT64
-				}
-			}
-			// Check for struct types
-			if named, ok := tv.Type.(*types.Named); ok {
-				if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-					// Track this struct type as being used as a map key
-					if jse.structKeyTypes == nil {
-						jse.structKeyTypes = make(map[string]bool)
-					}
-					jse.structKeyTypes[named.Obj().Name()] = true
-					return 100 // KEY_TYPE_STRUCT
-				}
-			}
+// jsMapKeyTypeConst returns the key type constant for a map's key type.
+func jsMapKeyTypeConst(t *types.Map) int {
+	if t == nil {
+		return 1
+	}
+	if basic, ok := t.Key().Underlying().(*types.Basic); ok {
+		switch basic.Kind() {
+		case types.String:
+			return 1
+		case types.Int:
+			return 2
+		case types.Bool:
+			return 3
+		case types.Int8:
+			return 4
+		case types.Int16:
+			return 5
+		case types.Int32:
+			return 6
+		case types.Int64:
+			return 7
+		case types.Uint8:
+			return 8
+		case types.Uint16:
+			return 9
+		case types.Uint32:
+			return 10
+		case types.Uint64:
+			return 11
+		case types.Float32:
+			return 12
+		case types.Float64:
+			return 13
 		}
 	}
-	return 1 // Default to string
+	if named, ok := t.Key().(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			return 100
+		}
+	}
+	return 1
 }
 
-func (*JSEmitter) lowerToBuiltins(selector string) string {
+// lowerBuiltin maps Go stdlib selectors to JS equivalents.
+func jsLowerBuiltin(selector string) string {
 	switch selector {
 	case "fmt":
 		return ""
@@ -276,9 +149,9 @@ func (*JSEmitter) lowerToBuiltins(selector string) string {
 	case "Println":
 		return "console.log"
 	case "Printf":
-		return "printf" // Uses process.stdout.write (no newline)
+		return "printf"
 	case "Print":
-		return "print" // Uses process.stdout.write (no newline)
+		return "print"
 	case "len":
 		return "len"
 	case "panic":
@@ -287,148 +160,43 @@ func (*JSEmitter) lowerToBuiltins(selector string) string {
 	return selector
 }
 
-func (jse *JSEmitter) emitToFile(s string) error {
-	if jse.captureRangeExpr {
-		jse.rangeCollectionExpr += s
+// isMapTypeExpr checks if an expression has map type via TypesInfo.
+func (e *JSEmitter) isMapTypeExpr(expr ast.Expr) bool {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return false
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	if tv.Type == nil {
+		return false
+	}
+	_, ok := tv.Type.Underlying().(*types.Map)
+	return ok
+}
+
+// getExprGoType returns the Go type for an expression, or nil.
+func (e *JSEmitter) getExprGoType(expr ast.Expr) types.Type {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
 		return nil
 	}
-	if jse.captureMapKey {
-		jse.capturedMapKey += s
-		return nil
-	}
-	if jse.suppressEmit {
-		return nil
-	}
-	if jse.suppressRangeEmit {
-		return nil
-	}
-	return emitToFile(jse.file, s)
+	tv := e.pkg.TypesInfo.Types[expr]
+	return tv.Type
 }
 
-func (jse *JSEmitter) emitAsString(s string, indent int) string {
-	return strings.Repeat("  ", indent) + s
-}
-
-func (jse *JSEmitter) SetFile(file *os.File) {
-	jse.file = file
-}
-
-func (jse *JSEmitter) GetFile() *os.File {
-	return jse.file
-}
-
-func (jse *JSEmitter) PreVisitProgram(indent int) {
-	outputFile := jse.Output
-	var err error
-	jse.file, err = os.Create(outputFile)
-	jse.SetFile(jse.file)
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
-	}
-
-	// Write JavaScript header with runtime helpers
-	jse.file.WriteString(`// Generated JavaScript code
-"use strict";
-
-// Runtime helpers
-function len(arr) {
-  if (typeof arr === 'string') return arr.length;
-  if (Array.isArray(arr)) return arr.length;
-  return 0;
-}
-
-function append(arr, ...items) {
-  // Handle nil/undefined slices like Go does
-  if (arr == null) arr = [];
-  // Clone plain objects to preserve Go's value semantics for structs
-  // Use push for O(1) amortized instead of spread which is O(n)
-  for (const item of items) {
-    if (item && typeof item === 'object' && !Array.isArray(item)) {
-      arr.push({...item});
-    } else {
-      arr.push(item);
-    }
-  }
-  return arr;
-}
-
-function stringFormat(fmt, ...args) {
-  let i = 0;
-  return fmt.replace(/%[sdvfxc%]/g, (match) => {
-    if (match === '%%') return '%';
-    if (i >= args.length) return match;
-    const arg = args[i++];
-    switch (match) {
-      case '%s': return String(arg);
-      case '%d': return parseInt(arg, 10);
-      case '%f': return parseFloat(arg);
-      case '%v': return String(arg);
-      case '%x': return parseInt(arg, 10).toString(16);
-      case '%c': return String.fromCharCode(arg);
-      default: return arg;
-    }
-  });
-}
-
-// printf - like fmt.Printf (no newline)
-function printf(fmt, ...args) {
-  const str = stringFormat(fmt, ...args);
-  if (typeof process !== 'undefined' && process.stdout) {
-    process.stdout.write(str);
-  } else {
-    // Browser fallback - accumulate output
-    if (typeof window !== 'undefined') {
-      window._printBuffer = (window._printBuffer || '') + str;
-    }
+// jsGraphicsRuntime is the inline Canvas-based graphics runtime for browser JS.
+var jsGraphicsRuntime = `// Graphics runtime for Canvas
+class Color {
+  constructor(R = 0, G = 0, B = 0, A = 0) {
+    this.R = R; this.G = G; this.B = B; this.A = A;
   }
 }
-
-// print - like fmt.Print (no newline)
-function print(...args) {
-  const str = args.map(a => String(a)).join(' ');
-  if (typeof process !== 'undefined' && process.stdout) {
-    process.stdout.write(str);
-  } else {
-    if (typeof window !== 'undefined') {
-      window._printBuffer = (window._printBuffer || '') + str;
-    }
+class Rect {
+  constructor(x = 0, y = 0, width = 0, height = 0) {
+    this.x = x; this.y = y; this.width = width; this.height = height;
   }
 }
-
-function make(type, length, capacity) {
-  if (Array.isArray(type)) {
-    return new Array(length || 0).fill(type[0] === 'number' ? 0 : null);
-  }
-  return [];
-}
-
-// Type conversion functions
-// Handle string-to-int conversion for character codes (Go rune semantics)
-function int8(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
-function int16(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
-function int32(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
-function int64(v) { return typeof v === 'string' ? v.charCodeAt(0) : v; }  // BigInt not used for simplicity
-function int(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
-function uint8(v) { return typeof v === 'string' ? v.charCodeAt(0) & 0xFF : (v | 0) & 0xFF; }
-function uint16(v) { return typeof v === 'string' ? v.charCodeAt(0) & 0xFFFF : (v | 0) & 0xFFFF; }
-function uint32(v) { return typeof v === 'string' ? v.charCodeAt(0) >>> 0 : (v | 0) >>> 0; }
-function uint64(v) { return typeof v === 'string' ? v.charCodeAt(0) : v; }  // BigInt not used for simplicity
-function float32(v) { return v; }
-function float64(v) { return v; }
-function string(v) { return String(v); }
-function bool(v) { return Boolean(v); }
-
-`)
-	// Include panic runtime
-	jse.file.WriteString("// GoAny panic runtime\n")
-	jse.file.WriteString(goanyrt.PanicJsSource)
-	jse.file.WriteString("\n")
-
-	// Include graphics runtime if graphics package is used
-	if _, hasGraphics := jse.RuntimePackages["graphics"]; hasGraphics {
-		jse.file.WriteString(`// Graphics runtime for Canvas
 const graphics = {
+  Color: Color,
+  Rect: Rect,
   canvas: null,
   ctx: null,
   running: true,
@@ -441,26 +209,15 @@ const graphics = {
   _setupEventListeners: function() {
     window.addEventListener('keydown', (e) => {
       this.keys[e.key] = true;
-      // Store ASCII code for GetLastKey
       if (e.key.length === 1) {
         this.lastKey = e.key.charCodeAt(0);
       } else {
-        // Map special keys to ASCII codes
         const specialKeys = {
-          'Enter': 13,
-          'Backspace': 8,
-          'Tab': 9,
-          'Escape': 27,
-          'ArrowUp': 38,
-          'ArrowDown': 40,
-          'ArrowLeft': 37,
-          'ArrowRight': 39,
-          'Delete': 127,
-          'Space': 32
+          'Enter': 13, 'Backspace': 8, 'Tab': 9, 'Escape': 27,
+          'ArrowUp': 38, 'ArrowDown': 40, 'ArrowLeft': 37, 'ArrowRight': 39,
+          'Delete': 127, 'Space': 32
         };
-        if (specialKeys[e.key]) {
-          this.lastKey = specialKeys[e.key];
-        }
+        if (specialKeys[e.key]) { this.lastKey = specialKeys[e.key]; }
       }
     });
     window.addEventListener('keyup', (e) => { this.keys[e.key] = false; });
@@ -480,13 +237,7 @@ const graphics = {
     this.ctx = this.canvas.getContext('2d');
     document.body.appendChild(this.canvas);
     document.title = title;
-
-    this.windowObj = {
-      canvas: this.canvas,
-      width: width,
-      height: height
-    };
-
+    this.windowObj = { canvas: this.canvas, width: width, height: height };
     this._setupEventListeners();
     return this.windowObj;
   },
@@ -495,7 +246,6 @@ const graphics = {
     document.body.style.margin = '0';
     document.body.style.padding = '0';
     document.body.style.overflow = 'hidden';
-
     this.canvas = document.createElement('canvas');
     this.canvas.width = window.innerWidth;
     this.canvas.height = window.innerHeight;
@@ -503,20 +253,13 @@ const graphics = {
     this.ctx = this.canvas.getContext('2d');
     document.body.appendChild(this.canvas);
     document.title = title;
-
-    this.windowObj = {
-      canvas: this.canvas,
-      width: this.canvas.width,
-      height: this.canvas.height
-    };
-
+    this.windowObj = { canvas: this.canvas, width: this.canvas.width, height: this.canvas.height };
     window.addEventListener('resize', () => {
       this.canvas.width = window.innerWidth;
       this.canvas.height = window.innerHeight;
       this.windowObj.width = this.canvas.width;
       this.windowObj.height = this.canvas.height;
     });
-
     this._setupEventListeners();
     return this.windowObj;
   },
@@ -525,65 +268,25 @@ const graphics = {
     return { R: r, G: g, B: b, A: a !== undefined ? a : 255 };
   },
 
-  // Color helper functions
   Red: function() { return { R: 255, G: 0, B: 0, A: 255 }; },
   Green: function() { return { R: 0, G: 255, B: 0, A: 255 }; },
   Blue: function() { return { R: 0, G: 0, B: 255, A: 255 }; },
   White: function() { return { R: 255, G: 255, B: 255, A: 255 }; },
   Black: function() { return { R: 0, G: 0, B: 0, A: 255 }; },
 
-  Clear: function(canvas, color) {
-    this.ctx.fillStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.fillRect(0, 0, canvas.width, canvas.height);
-  },
-
-  FillRect: function(canvas, rect, color) {
-    this.ctx.fillStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
-  },
-
-  DrawRect: function(canvas, rect, color) {
-    this.ctx.strokeStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
-  },
-
-  NewRect: function(x, y, width, height) {
+` + "  Clear: function(canvas, color) {\n    this.ctx.fillStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.fillRect(0, 0, canvas.width, canvas.height);\n  },\n\n" +
+	"  FillRect: function(canvas, rect, color) {\n    this.ctx.fillStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.fillRect(rect.x, rect.y, rect.width, rect.height);\n  },\n\n" +
+	"  DrawRect: function(canvas, rect, color) {\n    this.ctx.strokeStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);\n  },\n\n" +
+	`  NewRect: function(x, y, width, height) {
     return { x, y, width, height };
   },
 
-  FillCircle: function(canvas, centerX, centerY, radius, color) {
-    this.ctx.fillStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.beginPath();
-    this.ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    this.ctx.fill();
-  },
-
-  DrawCircle: function(canvas, centerX, centerY, radius, color) {
-    this.ctx.strokeStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.beginPath();
-    this.ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-    this.ctx.stroke();
-  },
-
-  DrawPoint: function(canvas, x, y, color) {
-    this.ctx.fillStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.fillRect(x, y, 1, 1);
-  },
-
-  DrawLine: function(canvas, x1, y1, x2, y2, color) {
-    this.ctx.strokeStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.beginPath();
-    this.ctx.moveTo(x1, y1);
-    this.ctx.lineTo(x2, y2);
-    this.ctx.stroke();
-  },
-
-  SetPixel: function(canvas, x, y, color) {
-    this.ctx.fillStyle = ` + "`rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`" + `;
-    this.ctx.fillRect(x, y, 1, 1);
-  },
-
-  PollEvents: function(canvas) {
+` + "  FillCircle: function(canvas, centerX, centerY, radius, color) {\n    this.ctx.fillStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.beginPath();\n    this.ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);\n    this.ctx.fill();\n  },\n\n" +
+	"  DrawCircle: function(canvas, centerX, centerY, radius, color) {\n    this.ctx.strokeStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.beginPath();\n    this.ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);\n    this.ctx.stroke();\n  },\n\n" +
+	"  DrawPoint: function(canvas, x, y, color) {\n    this.ctx.fillStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.fillRect(x, y, 1, 1);\n  },\n\n" +
+	"  DrawLine: function(canvas, x1, y1, x2, y2, color) {\n    this.ctx.strokeStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.beginPath();\n    this.ctx.moveTo(x1, y1);\n    this.ctx.lineTo(x2, y2);\n    this.ctx.stroke();\n  },\n\n" +
+	"  SetPixel: function(canvas, x, y, color) {\n    this.ctx.fillStyle = `rgba(${color.R}, ${color.G}, ${color.B}, ${color.A / 255})`;\n    this.ctx.fillRect(x, y, 1, 1);\n  },\n\n" +
+	`  PollEvents: function(canvas) {
     return [canvas, this.running];
   },
 
@@ -597,7 +300,7 @@ const graphics = {
 
   GetLastKey: function() {
     const key = this.lastKey;
-    this.lastKey = 0;  // Clear after reading (like native backends)
+    this.lastKey = 0;
     return key;
   },
 
@@ -606,7 +309,6 @@ const graphics = {
   },
 
   GetMouse: function(canvas) {
-    // Returns [x, y, buttons] like other backends
     return [this.mouseX, this.mouseY, this.mouseDown ? 1 : 0];
   },
 
@@ -641,20 +343,15 @@ const graphics = {
   },
 
   CloseWindow: function(canvas) {
-    // In browser context, don't immediately close - RunLoop is async
-    // The canvas will remain until the page is closed
+    // In browser context, don't immediately close
   },
 
   RunLoop: function(canvas, frameFunc) {
     const self = this;
     function loop() {
       if (!self.running) return;
-      // Poll events (update internal state)
       const result = frameFunc(canvas);
-      if (result === false) {
-        self.running = false;
-        return;
-      }
+      if (result === false) { self.running = false; return; }
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
@@ -664,109 +361,182 @@ const graphics = {
     const self = this;
     function loop() {
       if (!self.running) return;
-      // Call frameFunc with canvas and state, returns [newState, shouldContinue]
       const result = frameFunc(canvas, state);
       state = result[0];
-      if (result[1] === false) {
-        self.running = false;
-        return;
-      }
+      if (result[1] === false) { self.running = false; return; }
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
   }
 };
 
-`)
+`
+
+// ============================================================
+// Program / Package
+// ============================================================
+
+func (e *JSEmitter) PreVisitProgram(indent int) {
+	var err error
+	e.file, err = os.Create(e.Output)
+	if err != nil {
+		fmt.Println("Error opening file:", err)
+		return
 	}
+
+	e.fs = NewFragmentStack(e.GetGoFIR())
+
+	// Write JS header with runtime helpers
+	e.file.WriteString(`// Generated JavaScript code
+"use strict";
+
+// Runtime helpers
+function len(arr) {
+  if (typeof arr === 'string') return arr.length;
+  if (Array.isArray(arr)) return arr.length;
+  return 0;
+}
+
+function append(arr, ...items) {
+  if (arr == null) arr = [];
+  for (const item of items) {
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      arr.push({...item});
+    } else {
+      arr.push(item);
+    }
+  }
+  return arr;
+}
+
+function stringFormat(fmt, ...args) {
+  let i = 0;
+  return fmt.replace(/%[sdvfxc%]/g, (match) => {
+    if (match === '%%') return '%';
+    if (i >= args.length) return match;
+    const arg = args[i++];
+    switch (match) {
+      case '%s': return String(arg);
+      case '%d': return parseInt(arg, 10);
+      case '%f': return parseFloat(arg);
+      case '%v': return String(arg);
+      case '%x': return parseInt(arg, 10).toString(16);
+      case '%c': return String.fromCharCode(arg);
+      default: return arg;
+    }
+  });
+}
+
+function printf(fmt, ...args) {
+  const str = stringFormat(fmt, ...args);
+  if (typeof process !== 'undefined' && process.stdout) {
+    process.stdout.write(str);
+  } else {
+    if (typeof window !== 'undefined') {
+      window._printBuffer = (window._printBuffer || '') + str;
+    }
+  }
+}
+
+function print(...args) {
+  const str = args.map(a => String(a)).join(' ');
+  if (typeof process !== 'undefined' && process.stdout) {
+    process.stdout.write(str);
+  } else {
+    if (typeof window !== 'undefined') {
+      window._printBuffer = (window._printBuffer || '') + str;
+    }
+  }
+}
+
+function make(type, length, capacity) {
+  if (Array.isArray(type)) {
+    return new Array(length || 0).fill(type[0] === 'number' ? 0 : null);
+  }
+  return [];
+}
+
+// Type conversion functions
+function int8(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
+function int16(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
+function int32(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
+function int64(v) { return typeof v === 'string' ? v.charCodeAt(0) : v; }
+function int(v) { return typeof v === 'string' ? v.charCodeAt(0) | 0 : v | 0; }
+function uint8(v) { return typeof v === 'string' ? v.charCodeAt(0) & 0xFF : (v | 0) & 0xFF; }
+function uint16(v) { return typeof v === 'string' ? v.charCodeAt(0) & 0xFFFF : (v | 0) & 0xFFFF; }
+function uint32(v) { return typeof v === 'string' ? v.charCodeAt(0) >>> 0 : (v | 0) >>> 0; }
+function uint64(v) { return typeof v === 'string' ? v.charCodeAt(0) : v; }
+function float32(v) { return v; }
+function float64(v) { return v; }
+function string(v) { return String(v); }
+function bool(v) { return Boolean(v); }
+
+`)
+	// Include panic runtime
+	e.file.WriteString("// GoAny panic runtime\n")
+	e.file.WriteString(goanyrt.PanicJsSource)
+	e.file.WriteString("\n")
+
+	// Include graphics runtime if graphics package is used
+	if _, hasGraphics := e.RuntimePackages["graphics"]; hasGraphics {
+		e.file.WriteString(jsGraphicsRuntime)
+	}
+
 	// Include runtime packages from files (convention: X/js/X_runtime.js)
-	// Graphics is inlined above (Canvas API), so skip it in the file-based loop
-	if jse.LinkRuntime != "" {
-		for name, variant := range jse.RuntimePackages {
+	if e.LinkRuntime != "" {
+		for name, variant := range e.RuntimePackages {
 			if name == "graphics" || variant == "none" {
 				continue
 			}
-			runtimePath := filepath.Join(jse.LinkRuntime, name, "js", name+"_runtime.js")
+			runtimePath := filepath.Join(e.LinkRuntime, name, "js", name+"_runtime.js")
 			content, err := os.ReadFile(runtimePath)
 			if err != nil {
-				DebugLogPrintf("Skipping JS runtime for %s: %v", name, err)
+				DebugLogPrintf("Skipping JsPrim runtime for %s: %v", name, err)
 				continue
 			}
-			jse.file.WriteString(fmt.Sprintf("// %s runtime\n", name))
-			jse.file.Write(content)
-			jse.file.WriteString("\n")
+			e.file.WriteString(fmt.Sprintf("// %s runtime\n", name))
+			e.file.Write(content)
+			e.file.WriteString("\n")
 		}
 	}
 }
 
-func (jse *JSEmitter) PostVisitProgram(indent int) {
+func (e *JSEmitter) PostVisitProgram(indent int) {
+	// Reduce everything from program marker
+	tokens := e.fs.Reduce(string(PreVisitProgram))
+	// Write all accumulated code
+	for _, t := range tokens {
+		e.file.WriteString(t.Content)
+	}
 	// Add main() call at the end
-	jse.file.WriteString("\n// Run main\nmain();\n")
-	jse.file.Close()
+	e.file.WriteString("\n// Run main\nmain();\n")
+	e.file.Close()
 
 	// Replace placeholder struct key functions with working implementations
-	if len(jse.structKeyTypes) > 0 {
-		jse.replaceStructKeyFunctions()
+	if len(e.structKeyTypes) > 0 {
+		e.replaceStructKeyFunctions()
 	}
 
 	// Create HTML wrapper if graphics runtime is enabled
-	if jse.LinkRuntime != "" {
-		jse.createHTMLWrapper()
+	if _, hasGraphics := e.RuntimePackages["graphics"]; hasGraphics {
+		e.createHTMLWrapper()
 	}
 
 	// Auto-install npm dependencies if needed
-	jse.ensureNpmDependencies()
+	e.ensureNpmDependencies()
 }
 
-// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
-func (jse *JSEmitter) replaceStructKeyFunctions() {
-	outputPath := jse.Output
-	content, err := os.ReadFile(outputPath)
-	if err != nil {
-		log.Printf("Warning: could not read file for struct key replacement: %v", err)
-		return
-	}
-
-	// In JavaScript, use JSON.stringify for hashing and comparison
-	// Use regex to handle varying whitespace in generated code
-	newContent := string(content)
-
-	// Replace hashStructKey function
-	hashPattern := regexp.MustCompile(`(?s)hashStructKey:\s*function\s*\(key\)\s*\{\s*return 0;\s*\}`)
-	newHashBody := `hashStructKey: function (key) {
-    // Use JSON.stringify as a hash key (simple but effective for struct keys)
-    let s = JSON.stringify(key);
-    let h = 0;
-    for (let i = 0; i < s.length; i++) {
-      h = (h * 31 + s.charCodeAt(i)) | 0;
-    }
-    if (h < 0) h = -h;
-    return h;
-  }`
-	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
-
-	// Replace structKeysEqual function
-	equalPattern := regexp.MustCompile(`(?s)structKeysEqual:\s*function\s*\(a,\s*b\)\s*\{\s*return false;\s*\}`)
-	newEqualBody := `structKeysEqual: function (a, b) {
-    return JSON.stringify(a) === JSON.stringify(b);
-  }`
-	newContent = equalPattern.ReplaceAllString(newContent, newEqualBody)
-
-	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
-		log.Printf("Warning: could not write struct key replacements: %v", err)
-	}
-}
-
-func (jse *JSEmitter) createHTMLWrapper() {
-	htmlFile := strings.TrimSuffix(jse.Output, ".js") + ".html"
+// createHTMLWrapper generates an HTML file that loads the generated JS.
+func (e *JSEmitter) createHTMLWrapper() {
+	htmlFile := strings.TrimSuffix(e.Output, ".js") + ".html"
 	f, err := os.Create(htmlFile)
 	if err != nil {
-		fmt.Println("Error creating HTML file:", err)
+		log.Printf("Warning: could not create HTML wrapper: %v", err)
 		return
 	}
 	defer f.Close()
 
-	jsFileName := filepath.Base(jse.Output)
+	jsFileName := filepath.Base(e.Output)
 	f.WriteString(fmt.Sprintf(`<!DOCTYPE html>
 <html>
 <head>
@@ -781,2083 +551,1701 @@ func (jse *JSEmitter) createHTMLWrapper() {
   <script src="%s"></script>
 </body>
 </html>
-`, jse.OutputName, jsFileName))
+`, e.OutputName, jsFileName))
 }
 
-func (jse *JSEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
-	jse.pkg = pkg
-	jse.currentPackage = pkg.Name
-	// For non-main packages, create a namespace object
+// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
+func (e *JSEmitter) replaceStructKeyFunctions() {
+	content, err := os.ReadFile(e.Output)
+	if err != nil {
+		log.Printf("Warning: could not read file for struct key replacement: %v", err)
+		return
+	}
+
+	newContent := string(content)
+
+	// Replace hashStructKey function (handles both ES6 method shorthand and function format)
+	hashPattern := regexp.MustCompile(`(?s)hashStructKey\s*\(key\)\s*\{\s*return 0;\s*\}`)
+	newHashBody := `hashStructKey(key) {
+  let s = JSON.stringify(key);
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0;
+  }
+  if (h < 0) h = -h;
+  return h;
+}`
+	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
+
+	// Replace structKeysEqual function
+	equalPattern := regexp.MustCompile(`(?s)structKeysEqual\s*\(a,\s*b\)\s*\{\s*return false;\s*\}`)
+	newEqualBody := `structKeysEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}`
+	newContent = equalPattern.ReplaceAllString(newContent, newEqualBody)
+
+	if err := os.WriteFile(e.Output, []byte(newContent), 0644); err != nil {
+		log.Printf("Warning: could not write struct key replacements: %v", err)
+	}
+}
+
+func (e *JSEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
+	e.pkg = pkg
+	e.currentPackage = pkg.Name
 	if pkg.Name != "main" {
-		jse.inNamespace = true
-		jse.emitToFile(fmt.Sprintf("\nconst %s = {\n", pkg.Name))
+		e.inNamespace = true
+		// Write namespace opener directly - structs will be written before it
 	}
 }
 
-func (jse *JSEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
-	// Close the namespace object for non-main packages
+func (e *JSEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 	if pkg.Name != "main" {
-		jse.emitToFile("};\n")
-		jse.inNamespace = false
+		e.fs.PushCode("};\n")
+		e.inNamespace = false
 	}
+	// Don't reduce package marker - let tokens flow up to program
 }
 
-// PreVisitFuncDecl handles function declarations
-func (jse *JSEmitter) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if jse.inNamespace {
-		// Inside a namespace object, use method syntax
-		str := jse.emitAsString("\n", indent)
-		jse.emitToFile(str)
-	} else {
-		str := jse.emitAsString("\nfunction ", indent)
-		jse.emitToFile(str)
-	}
-}
+// ============================================================
+// Literals and Identifiers
+// ============================================================
 
-func (jse *JSEmitter) PreVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	if jse.forwardDecl {
-		return
+func (e *JSEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
+	val := node.Value
+	// Convert Go raw strings (backticks) to JS template literals
+	// Go raw strings preserve backslashes literally, but JS template literals
+	// interpret escape sequences like \n. We need to escape backslashes.
+	if node.Kind == token.STRING && len(val) > 1 && val[0] == '`' {
+		content := val[1 : len(val)-1]
+		escaped := strings.ReplaceAll(content, "\\", "\\\\")
+		val = "`" + escaped + "`"
 	}
-	// Count results for multi-value returns
-	if node.Type.Results != nil {
-		jse.numFuncResults = len(node.Type.Results.List)
-	} else {
-		jse.numFuncResults = 0
-	}
-}
-
-// Suppress return type emission (JavaScript doesn't have return types)
-func (jse *JSEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitFuncDeclName(node *ast.Ident, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if jse.inNamespace {
-		// Method syntax: name: function
-		jse.emitToFile(node.Name + ": function")
-	} else {
-		jse.emitToFile(node.Name)
-	}
-}
-
-func (jse *JSEmitter) PreVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile("(")
-}
-
-func (jse *JSEmitter) PreVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-}
-
-// Suppress parameter type emission (JavaScript doesn't have type annotations)
-func (jse *JSEmitter) PreVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	// Arg name is emitted via PreVisitIdent when traversed
-}
-
-func (jse *JSEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(") ")
-}
-
-func (jse *JSEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	// Nothing to do - closing paren is in PostVisitFuncDeclSignatureTypeParams
-}
-
-func (jse *JSEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if jse.inNamespace {
-		// Add comma after method in namespace object
-		jse.emitToFile(",\n")
-	} else {
-		jse.emitToFile("\n")
-	}
-}
-
-// JavaScript doesn't need forward declarations (function hoisting handles this)
-func (jse *JSEmitter) PreVisitFuncDeclSignatures(indent int) {
-	jse.forwardDecl = true
-}
-
-func (jse *JSEmitter) PostVisitFuncDeclSignatures(indent int) {
-	jse.forwardDecl = false
-}
-
-// Block statements
-func (jse *JSEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile("{\n")
-	// Emit pending range value declaration
-	if jse.pendingRangeValueDecl {
-		str := jse.emitAsString("let "+jse.rangeValueName+" = "+jse.rangeCollectionExpr+"["+jse.rangeKeyName+"];\n", indent+1)
-		jse.emitToFile(str)
-		jse.pendingRangeValueDecl = false
-	}
-}
-
-func (jse *JSEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	str := jse.emitAsString("}\n", indent)
-	jse.emitToFile(str)
-}
-
-// Assignment statements
-func (jse *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Detect comma-ok: val, ok := m[key]
-	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
-			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-				tv := jse.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						jse.isMapCommaOk = true
-						jse.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-						jse.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						jse.mapCommaOkMapName = exprToString(indexExpr.X)
-						jse.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
-						jse.mapCommaOkIndent = indent
-						// Determine JS zero value for the map value type
-						jse.mapCommaOkZeroVal = "null"
-						if basic, isBasic := mapType.Elem().Underlying().(*types.Basic); isBasic {
-							switch basic.Kind() {
-							case types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
-								types.Uint8, types.Uint16, types.Uint32, types.Uint64,
-								types.Float32, types.Float64:
-								jse.mapCommaOkZeroVal = "0"
-							case types.String:
-								jse.mapCommaOkZeroVal = "\"\""
-							case types.Bool:
-								jse.mapCommaOkZeroVal = "false"
-							}
-						}
-						jse.suppressEmit = true
-						return
-					}
-				}
-			}
-		}
-	}
-	// Detect type assertion comma-ok: val, ok := x.(Type)
-	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if _, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
-			jse.isTypeAssertCommaOk = true
-			jse.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-			jse.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-			jse.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
-			jse.typeAssertCommaOkIndent = indent
-			jse.suppressEmit = true
-			return
-		}
-	}
-	// Check for nested map assignment: m["outer"]["inner"] = v
-	if len(node.Lhs) == 1 {
-		if outerIndexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
-			// Check if X is also an IndexExpr (nested map access)
-			if innerIndexExpr, ok := outerIndexExpr.X.(*ast.IndexExpr); ok {
-				if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-					tv := jse.pkg.TypesInfo.Types[innerIndexExpr.X]
-					if tv.Type != nil {
-						if _, ok := tv.Type.Underlying().(*types.Map); ok {
-							// Also check outermost access type: only handle as nested map
-							// if the outermost is also a map access
-							tvOuter := jse.pkg.TypesInfo.Types[outerIndexExpr.X]
-							if tvOuter.Type != nil {
-								if _, ok := tvOuter.Type.Underlying().(*types.Map); ok {
-									// Map-then-map: m["outer"]["inner"] = v
-									jse.isNestedMapAssign = true
-									jse.isMapAssign = true
-									jse.mapAssignIndent = indent
-									jse.nestedMapOuterVarName = exprToJsString(innerIndexExpr.X)
-									jse.nestedMapOuterKey = exprToJsString(innerIndexExpr.Index)
-									jse.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", jse.nestedMapCounter)
-									jse.nestedMapCounter++
-									jse.mapAssignVarName = jse.nestedMapVarName
-									jse.suppressRangeEmit = true
-									return
-								}
-							}
-							// If outermost is slice, fall through to mixed index check
-						}
-					}
-				}
-			}
-		}
-	}
-	// Detect mixed index assignment: any combination with intermediate map access on LHS
-	// This handles patterns like: map[k][i] = v, map[k1][k2][i] = v, map[k][i][k2] = v, etc.
-	if len(node.Lhs) == 1 {
-		if _, ok := node.Lhs[0].(*ast.IndexExpr); ok {
-			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-				ops, hasIntermediateMap := jse.analyzeLhsIndexChainJs(node.Lhs[0])
-				if hasIntermediateMap && len(ops) > 0 {
-					jse.isMixedIndexAssign = true
-					jse.mixedAssignIndent = indent
-					jse.suppressRangeEmit = true
-
-					// Find the root variable name
-					rootExpr := node.Lhs[0]
-					for {
-						if ie, ok := rootExpr.(*ast.IndexExpr); ok {
-							rootExpr = ie.X
-						} else {
-							break
-						}
-					}
-					rootName := exprToJsString(rootExpr)
-
-					// Build map var expressions and temp var names
-					currentExpr := rootName
-					for i := 0; i < len(ops); i++ {
-						op := &ops[i]
-						isLast := (i == len(ops)-1)
-						if op.accessType == "map" {
-							op.mapVarExpr = currentExpr
-							if !isLast {
-								// Only create temp variable for intermediate map accesses
-								op.tempVarName = fmt.Sprintf("__temp_%d", jse.mixedTempCounter)
-								jse.mixedTempCounter++
-								currentExpr = op.tempVarName
-							}
-							// For last map access, mapVarExpr is the assignment target
-						} else {
-							// For slice access, append the index
-							currentExpr = currentExpr + "[" + op.keyExpr + "]"
-						}
-					}
-
-					// The final target
-					if ops[len(ops)-1].accessType == "map" {
-						jse.mixedAssignFinalTarget = ops[len(ops)-1].mapVarExpr
-					} else {
-						jse.mixedAssignFinalTarget = currentExpr
-					}
-
-					jse.mixedIndexAssignOps = ops
-					return
-				}
-			}
-		}
-	}
-	// Check for map assignment: m[k] = v (includes slice-then-map like slice[i][k] = v)
-	if len(node.Lhs) == 1 {
-		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
-			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-				tv := jse.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if _, ok := tv.Type.Underlying().(*types.Map); ok {
-						jse.isMapAssign = true
-						jse.mapAssignIndent = indent
-						jse.mapAssignVarName = exprToJsString(indexExpr.X)
-						jse.suppressRangeEmit = true // Suppress LHS output
-						return
-					}
-				}
-			}
-		}
-	}
-	// Check if all LHS are blank identifiers - if so, suppress the statement
-	allBlank := true
-	for _, lhs := range node.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			if ident.Name != "_" {
-				allBlank = false
-				break
-			}
+	// Convert Go character literals ('a') to numeric values for JS
+	// In Go, 'a' is a rune (int32 = 97). In JS, 'a' is a string.
+	if node.Kind == token.CHAR && len(val) >= 3 && val[0] == '\'' {
+		// Handle escape sequences
+		inner := val[1 : len(val)-1]
+		if len(inner) == 1 {
+			val = fmt.Sprintf("%d", inner[0])
+		} else if inner == "\\n" {
+			val = "10"
+		} else if inner == "\\t" {
+			val = "9"
+		} else if inner == "\\r" {
+			val = "13"
+		} else if inner == "\\\\" {
+			val = "92"
+		} else if inner == "\\'" {
+			val = "39"
+		} else if inner == "\\\"" {
+			val = "34"
+		} else if inner == "\\0" {
+			val = "0"
 		} else {
-			allBlank = false
-			break
+			// Fallback: use charCodeAt
+			val = fmt.Sprintf("'%s'.charCodeAt(0)", inner)
 		}
 	}
-	if allBlank {
-		jse.suppressRangeEmit = true // Reuse this flag to suppress entire statement
-	}
+	e.fs.Push(val, TagLiteral, nil)
 }
 
-func (jse *JSEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	assignmentToken := node.Tok.String()
-	if assignmentToken == ":=" && len(node.Lhs) == 1 {
-		str := jse.emitAsString("let ", indent)
-		jse.emitToFile(str)
-	} else if assignmentToken == ":=" && len(node.Lhs) > 1 {
-		str := jse.emitAsString("let [", indent)
-		jse.emitToFile(str)
-	} else if len(node.Lhs) > 1 {
-		// Multi-value assignment (not declaration) needs destructuring
-		str := jse.emitAsString("[", indent)
-		jse.emitToFile(str)
-	} else {
-		str := jse.emitAsString("", indent)
-		jse.emitToFile(str)
-	}
-	// Convert := to =, preserve compound operators
-	if assignmentToken != "+=" && assignmentToken != "-=" && assignmentToken != "*=" && assignmentToken != "/=" {
-		assignmentToken = "="
-	}
-	jse.assignmentToken = assignmentToken
-}
-
-func (jse *JSEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Close destructuring bracket for multi-value assignments
-	if len(node.Lhs) > 1 {
-		jse.emitToFile("]")
-	}
-}
-
-func (jse *JSEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Handle mixed index assignment preamble
-	if jse.isMixedIndexAssign {
-		jse.suppressRangeEmit = false
-		indentStr := jse.emitAsString("", jse.mixedAssignIndent)
-
-		// Emit preamble: extract temp variables for each intermediate map access
-		for i, op := range jse.mixedIndexAssignOps {
-			if op.accessType == "map" && i < len(jse.mixedIndexAssignOps)-1 {
-				// Intermediate map access: extract to temp variable
-				preamble := indentStr + "let " + op.tempVarName + " = hmap.hashMapGet(" +
-					op.mapVarExpr + ", " + op.keyExpr + ");\n"
-				jse.emitToFile(preamble)
-			}
-		}
-
-		// Emit the final assignment target
-		lastOp := jse.mixedIndexAssignOps[len(jse.mixedIndexAssignOps)-1]
-		if lastOp.accessType == "map" {
-			// Last is map: emit hashMapSet, assign back to parent expression (mapVarExpr)
-			assignStart := indentStr + lastOp.mapVarExpr + " = hmap.hashMapSet(" +
-				lastOp.mapVarExpr + ", " + lastOp.keyExpr + ", "
-			jse.emitToFile(assignStart)
-		} else {
-			// Last is slice: emit direct assignment
-			assignStart := indentStr + jse.mixedAssignFinalTarget + " = "
-			jse.emitToFile(assignStart)
-		}
-		return
-	}
-	if jse.isMapAssign {
-		// Turn off suppression
-		jse.suppressRangeEmit = false
-		// Handle nested map assignment: emit preamble to extract inner map
-		if jse.isNestedMapAssign {
-			preamble := jse.emitAsString("let "+jse.nestedMapVarName+" = hmap.hashMapGet("+
-				jse.nestedMapOuterVarName+", "+jse.nestedMapOuterKey+");\n", jse.mapAssignIndent)
-			jse.emitToFile(preamble)
-		}
-		str := jse.emitAsString(jse.mapAssignVarName+" = hmap.hashMapSet("+jse.mapAssignVarName+", "+jse.capturedMapKey+", ", jse.mapAssignIndent)
-		jse.emitToFile(str)
-		return
-	}
-	jse.emitToFile(" " + jse.assignmentToken + " ")
-}
-
-func (jse *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	// Handle mixed index assignment epilogue
-	if jse.isMixedIndexAssign {
-		lastOp := jse.mixedIndexAssignOps[len(jse.mixedIndexAssignOps)-1]
-		indentStr := jse.emitAsString("", jse.mixedAssignIndent)
-
-		if lastOp.accessType == "map" {
-			// Close hashMapSet call
-			jse.emitToFile(");\n")
-		} else {
-			// Close direct assignment
-			jse.emitToFile(";\n")
-		}
-
-		// Emit epilogue: set back temp variables in reverse order
-		for i := len(jse.mixedIndexAssignOps) - 1; i >= 0; i-- {
-			op := jse.mixedIndexAssignOps[i]
-			if op.accessType == "map" && i < len(jse.mixedIndexAssignOps)-1 {
-				// Set the updated temp var back into its parent map
-				epilogue := indentStr + op.mapVarExpr + " = hmap.hashMapSet(" +
-					op.mapVarExpr + ", " + op.keyExpr + ", " + op.tempVarName + ");\n"
-				jse.emitToFile(epilogue)
-			}
-		}
-
-		jse.isMixedIndexAssign = false
-		jse.mixedIndexAssignOps = nil
-		jse.mixedAssignFinalTarget = ""
-		jse.suppressRangeEmit = false
-		return
-	}
-	// Handle type assertion comma-ok: val, ok := x.(Type)
-	if jse.isTypeAssertCommaOk {
-		expr := jse.capturedMapKey
-		decl := ""
-		if jse.typeAssertCommaOkIsDecl {
-			decl = "let "
-		}
-		indentStr := jse.emitAsString("", jse.typeAssertCommaOkIndent)
-		jse.suppressEmit = false
-		jse.emitToFile(fmt.Sprintf("%s%s%s = true;\n", indentStr, decl, jse.typeAssertCommaOkOkName))
-		jse.emitToFile(fmt.Sprintf("%s%s%s = %s;\n", indentStr, decl, jse.typeAssertCommaOkValName, expr))
-		jse.isTypeAssertCommaOk = false
-		jse.capturedMapKey = ""
-		jse.captureMapKey = false
-		return
-	}
-	// Handle comma-ok: val, ok := m[key]
-	if jse.isMapCommaOk {
-		key := jse.capturedMapKey
-		decl := ""
-		if jse.mapCommaOkIsDecl {
-			decl = "let "
-		}
-		indentStr := jse.emitAsString("", jse.mapCommaOkIndent)
-		jse.suppressEmit = false
-		mapName := jse.mapCommaOkMapName
-		zeroVal := jse.mapCommaOkZeroVal
-		jse.emitToFile(fmt.Sprintf("%s%s%s = hmap.hashMapContains(%s, %s);\n",
-			indentStr, decl, jse.mapCommaOkOkName, mapName, key))
-		jse.emitToFile(fmt.Sprintf("%s%s%s = %s ? hmap.hashMapGet(%s, %s) : %s;\n",
-			indentStr, decl, jse.mapCommaOkValName, jse.mapCommaOkOkName,
-			mapName, key, zeroVal))
-		jse.isMapCommaOk = false
-		jse.capturedMapKey = ""
-		jse.captureMapKey = false
-		return
-	}
-	// Handle map assignment: close hashMapSet call
-	if jse.isMapAssign {
-		jse.emitToFile(");\n")
-		// Handle nested map: emit epilogue to store inner map back to outer
-		if jse.isNestedMapAssign {
-			epilogue := jse.emitAsString(jse.nestedMapOuterVarName+" = hmap.hashMapSet("+
-				jse.nestedMapOuterVarName+", "+jse.nestedMapOuterKey+", "+jse.nestedMapVarName+");\n", jse.mapAssignIndent)
-			jse.emitToFile(epilogue)
-			jse.isNestedMapAssign = false
-			jse.nestedMapOuterVarName = ""
-			jse.nestedMapOuterKey = ""
-		}
-		jse.isMapAssign = false
-		jse.mapAssignVarName = ""
-		jse.capturedMapKey = ""
-		return
-	}
-	// Check if this was a blank identifier assignment - reset suppression
-	allBlank := true
-	for _, lhs := range node.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			if ident.Name != "_" {
-				allBlank = false
-				break
-			}
-		} else {
-			allBlank = false
-			break
-		}
-	}
-	if allBlank {
-		jse.suppressRangeEmit = false
-		return // Don't emit anything for blank identifier assignments
-	}
-	if jse.forwardDecl {
-		return
-	}
-	// Don't emit semicolon inside for loop init or post conditions
-	if !jse.insideForPostCond && !jse.insideForInit {
-		jse.emitToFile(";\n")
-	}
-}
-
-func (jse *JSEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-}
-
-// Expression statements
-func (jse *JSEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(";\n")
-}
-
-// Identifiers
-func (jse *JSEmitter) PreVisitIdent(node *ast.Ident, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Skip type emissions in JavaScript
-	if jse.suppressTypeEmit {
-		return
-	}
+func (e *JSEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 	name := node.Name
-	// Handle map operation identifier replacements
-	if jse.isMapMakeCall && name == "make" {
-		jse.emitToFile("hmap.newHashMap")
-		return
-	}
-	if jse.isSliceMakeCall && name == "make" {
-		jse.emitToFile("new Array")
-		return
-	}
-	if jse.isDeleteCall && name == "delete" {
-		jse.emitToFile(jse.deleteMapVarName + " = hmap.hashMapDelete")
-		return
-	}
-	if jse.isMapLenCall && name == "len" {
-		jse.emitToFile("hmap.hashMapLen")
-		return
-	}
-	// Apply builtin lowering
-	lowered := jse.lowerToBuiltins(name)
-	// If lowered to empty string, don't emit (e.g., "fmt" package)
-	if lowered == "" {
-		return
-	}
-	// Handle special identifiers
-	switch lowered {
+	// Map Go builtins
+	switch name {
 	case "true", "false":
-		jse.emitToFile(lowered)
+		e.fs.Push(name, TagLiteral, nil)
+		return
 	case "nil":
-		jse.emitToFile("null")
-	default:
-		// Check if this identifier refers to a constant or function in the current namespace
-		if jse.inNamespace && jse.pkg != nil && jse.pkg.TypesInfo != nil {
-			if obj := jse.pkg.TypesInfo.Uses[node]; obj != nil {
-				needsThis := false
-				// Check for constants
-				if _, isConst := obj.(*types.Const); isConst {
-					if obj.Pkg() != nil && obj.Pkg().Name() == jse.currentPackage {
-						needsThis = true
-					}
-				}
-				// Check for functions
-				if _, isFunc := obj.(*types.Func); isFunc {
-					if obj.Pkg() != nil && obj.Pkg().Name() == jse.currentPackage {
-						needsThis = true
-					}
-				}
-				if needsThis {
-					// Inside function literals, use package name instead of 'this'
-					// because 'this' has different meaning inside closures
-					if jse.inFuncLit {
-						jse.emitToFile(jse.currentPackage + "." + lowered)
-					} else {
-						jse.emitToFile("this." + lowered)
-					}
+		e.fs.Push("null", TagLiteral, nil)
+		return
+	case "string":
+		e.fs.Push("string", TagType, nil)
+		return
+	}
+	// Check if this is a reference to a package identifier
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		if obj := e.pkg.TypesInfo.Uses[node]; obj != nil {
+			if obj.Pkg() != nil && obj.Pkg().Name() != e.currentPackage {
+				// Qualified name from another package
+				name = obj.Pkg().Name() + "." + name
+			} else if obj.Pkg() != nil && e.inNamespace && obj.Parent() == obj.Pkg().Scope() {
+				// Same package, inside a namespace, and it's a package-level declaration
+				// (not a local variable/parameter) — need prefix for resolution
+				name = obj.Pkg().Name() + "." + name
+			}
+		}
+	}
+	goType := e.getExprGoType(node)
+	e.fs.Push(name, TagIdent, goType)
+}
+
+
+// ============================================================
+// Binary Expressions
+// ============================================================
+
+func (e *JSEmitter) PostVisitBinaryExprLeft(node ast.Expr, indent int) {
+	left := e.fs.ReduceToCode(string(PreVisitBinaryExprLeft))
+	e.fs.PushCode(left)
+}
+
+func (e *JSEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
+	right := e.fs.ReduceToCode(string(PreVisitBinaryExprRight))
+	e.fs.PushCode(right)
+}
+
+func (e *JSEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitBinaryExpr))
+	left := ""
+	right := ""
+	if len(tokens) >= 1 {
+		left = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		right = tokens[1].Content
+	}
+	op := node.Op.String()
+
+	// Check for integer division
+	if op == "/" {
+		leftType := e.getExprGoType(node.X)
+		if leftType != nil {
+			if basic, ok := leftType.Underlying().(*types.Basic); ok {
+				if basic.Info()&types.IsInteger != 0 {
+					e.fs.PushCode(fmt.Sprintf("Math.trunc(%s %s %s)", left, op, right))
 					return
 				}
 			}
 		}
-		jse.emitToFile(lowered)
 	}
+
+	// Check for string indexing: str[i] in Go returns byte, use charCodeAt in JS
+	e.fs.PushCode(fmt.Sprintf("%s %s %s", left, op, right))
 }
 
-// PreVisitMapKeyType suppresses output during map key type traversal
-func (jse *JSEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = true
+// ============================================================
+// Call Expressions
+// ============================================================
+
+func (e *JSEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
+	funCode := e.fs.ReduceToCode(string(PreVisitCallExprFun))
+	e.fs.PushCode(funCode)
 }
 
-// PostVisitMapKeyType re-enables output after map key type traversal
-func (jse *JSEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = false
+func (e *JSEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
+	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
+	e.fs.PushCode(argCode)
 }
 
-// PreVisitMapValueType suppresses output during map value type traversal
-func (jse *JSEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = true
-}
-
-// PostVisitMapValueType re-enables output after map value type traversal
-func (jse *JSEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-// Basic literals
-func (jse *JSEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
-	if jse.forwardDecl {
-		return
+func (e *JSEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
+	argTokens := e.fs.Reduce(string(PreVisitCallExprArgs))
+	var args []string
+	for _, t := range argTokens {
+		if t.Content != "" {
+			args = append(args, t.Content)
+		}
 	}
-	switch node.Kind {
-	case token.STRING:
-		// Handle raw strings
-		if strings.HasPrefix(node.Value, "`") {
-			// Convert Go raw string to JavaScript template literal
-			// Go raw strings preserve backslashes literally, but JS template literals
-			// interpret escape sequences like \n. We need to escape backslashes.
-			content := node.Value[1 : len(node.Value)-1] // Remove surrounding backticks
-			escaped := strings.ReplaceAll(content, "\\", "\\\\")
-			jse.emitToFile("`" + escaped + "`")
+	e.fs.PushCode(strings.Join(args, ", "))
+}
+
+func (e *JSEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCallExpr))
+	funName := ""
+	argsStr := ""
+	if len(tokens) >= 1 {
+		funName = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		argsStr = tokens[1].Content
+	}
+
+	// Handle special built-in functions
+	switch funName {
+	case "len":
+		// len(x) → len(x) helper for slices/strings (null-safe), (x ? x.Size : 0) for maps
+		if len(node.Args) > 0 && e.isMapTypeExpr(node.Args[0]) {
+			e.fs.PushCode(fmt.Sprintf("(%s ? %s.Size : 0)", argsStr, argsStr))
 		} else {
-			jse.emitToFile(node.Value)
+			e.fs.PushCode(fmt.Sprintf("len(%s)", argsStr))
 		}
-	case token.CHAR:
-		// Convert char literal to integer (Go rune semantics)
-		// node.Value is like 'a' or '\n', we need to convert to integer
-		val := node.Value
-		if len(val) >= 2 && val[0] == '\'' && val[len(val)-1] == '\'' {
-			inner := val[1 : len(val)-1]
-			// Handle escape sequences
-			var charCode int
-			if len(inner) == 1 {
-				charCode = int(inner[0])
-			} else if len(inner) == 2 && inner[0] == '\\' {
-				switch inner[1] {
-				case 'n':
-					charCode = 10
-				case 't':
-					charCode = 9
-				case 'r':
-					charCode = 13
-				case '\\':
-					charCode = 92
-				case '\'':
-					charCode = 39
-				case '0':
-					charCode = 0
-				default:
-					charCode = int(inner[1])
-				}
-			} else {
-				// Fallback to emitting as string
-				jse.emitToFile(node.Value)
-				return
-			}
-			jse.emitToFile(fmt.Sprintf("%d", charCode))
-		} else {
-			jse.emitToFile(node.Value)
-		}
-	default:
-		jse.emitToFile(node.Value)
-	}
-}
-
-// Binary expressions
-func (jse *JSEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	if jse.forwardDecl {
 		return
-	}
-	// Check for integer division
-	if node.Op == token.QUO {
-		// Check if both operands are integer types
-		if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-			leftType := jse.pkg.TypesInfo.TypeOf(node.X)
-			rightType := jse.pkg.TypesInfo.TypeOf(node.Y)
-			if leftType != nil && rightType != nil {
-				leftBasic, leftIsBasic := leftType.Underlying().(*types.Basic)
-				rightBasic, rightIsBasic := rightType.Underlying().(*types.Basic)
-				if leftIsBasic && rightIsBasic {
-					if (leftBasic.Info()&types.IsInteger) != 0 && (rightBasic.Info()&types.IsInteger) != 0 {
-						jse.intDivision = true
-					}
-				}
-			}
-		}
-	}
-	jse.emitToFile("(")
-}
-
-func (jse *JSEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
-	if jse.forwardDecl {
+	case "append":
+		// append(slice, items...) → append(slice, items...)
+		e.fs.PushCode(fmt.Sprintf("append(%s)", argsStr))
 		return
-	}
-	opStr := op.String()
-	// Handle Go operators that need conversion
-	switch opStr {
-	case "&&":
-		jse.emitToFile(" && ")
-	case "||":
-		jse.emitToFile(" || ")
-	default:
-		jse.emitToFile(" " + opStr + " ")
-	}
-}
-
-func (jse *JSEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	if jse.forwardDecl {
+	case "delete":
+		// delete(m, k) → hmap.hashMapDelete(m, k)
+		e.fs.PushCode(fmt.Sprintf("hmap.hashMapDelete(%s)", argsStr))
 		return
-	}
-	// Only add | 0 for the actual division operation, not nested expressions
-	if node.Op == token.QUO && jse.intDivision {
-		// Use bitwise OR to convert to integer (truncate towards zero)
-		jse.emitToFile(" | 0)")
-		jse.intDivision = false
-	} else {
-		jse.emitToFile(")")
-	}
-}
-
-// Unary expressions
-func (jse *JSEmitter) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(node.Op.String())
-}
-
-// Call expressions
-func (jse *JSEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Detect make(map[K]V) and make([]T, n) calls
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "make" {
+	case "make":
+		// Detect make(map[K]V) vs make([]T, n)
 		if len(node.Args) >= 1 {
 			if mapType, ok := node.Args[0].(*ast.MapType); ok {
-				jse.isMapMakeCall = true
-				jse.mapMakeKeyType = jse.getMapKeyTypeConst(mapType)
-			} else if arrayType, ok := node.Args[0].(*ast.ArrayType); ok {
+				keyTypeConst := 1
+				if e.pkg != nil && e.pkg.TypesInfo != nil {
+					if tv, ok2 := e.pkg.TypesInfo.Types[mapType.Key]; ok2 && tv.Type != nil {
+						mapT := types.NewMap(tv.Type, nil)
+						keyTypeConst = jsMapKeyTypeConst(mapT)
+						if keyTypeConst == 100 {
+							if e.structKeyTypes == nil {
+								e.structKeyTypes = make(map[string]bool)
+							}
+							e.structKeyTypes[tv.Type.String()] = true
+						}
+					}
+				}
+				e.fs.PushCode(fmt.Sprintf("hmap.newHashMap(%d)", keyTypeConst))
+				return
+			}
+			if _, ok := node.Args[0].(*ast.ArrayType); ok {
 				// make([]T, n) → new Array(n).fill(default)
-				jse.isSliceMakeCall = true
-				jse.sliceMakeDefault = "null"
-				// Determine default based on element type
-				if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-					if tv, ok := jse.pkg.TypesInfo.Types[arrayType.Elt]; ok && tv.Type != nil {
-						if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
-							info := basic.Info()
-							if info&types.IsInteger != 0 || info&types.IsFloat != 0 {
-								jse.sliceMakeDefault = "0"
-							} else if info&types.IsBoolean != 0 {
-								jse.sliceMakeDefault = "false"
-							} else if info&types.IsString != 0 {
-								jse.sliceMakeDefault = `""`
-							}
-						}
-					}
+				parts := strings.SplitN(argsStr, ", ", 2)
+				if len(parts) >= 2 {
+					// First part is the type (already traversed), second is the size
+					e.fs.PushCode(fmt.Sprintf("new Array(%s).fill(0)", parts[1]))
+				} else {
+					e.fs.PushCode("[]")
 				}
-			}
-		}
-	}
-	// Detect delete(m, k) calls
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
-		if len(node.Args) >= 2 {
-			jse.isDeleteCall = true
-			jse.deleteMapVarName = exprToString(node.Args[0])
-		}
-	}
-	// Detect len(m) calls on maps
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "len" {
-		if len(node.Args) >= 1 && jse.pkg != nil && jse.pkg.TypesInfo != nil {
-			tv := jse.pkg.TypesInfo.Types[node.Args[0]]
-			if tv.Type != nil {
-				if _, ok := tv.Type.Underlying().(*types.Map); ok {
-					jse.isMapLenCall = true
-				}
-			}
-		}
-	}
-}
-
-func (jse *JSEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
-	// Don't emit here - the function name will be emitted by PreVisitIdent
-	// through traverseExpression
-}
-
-func (jse *JSEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile("(")
-}
-
-func (jse *JSEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// For make(map[K]V), emit the key type constant as the argument
-	if jse.isMapMakeCall {
-		jse.emitToFile(fmt.Sprintf("%d", jse.mapMakeKeyType))
-	}
-}
-
-func (jse *JSEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if jse.isSliceMakeCall {
-		if index == 0 {
-			// Suppress the first argument (the ArrayType) for make([]T, n)
-			jse.suppressEmit = true
-			return
-		} else if index == 1 {
-			// Re-enable output for the length argument, no comma needed since arg 0 was suppressed
-			jse.suppressEmit = false
-			return
-		}
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-}
-
-func (jse *JSEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(")")
-	// For make([]T, n), append .fill(default)
-	if jse.isSliceMakeCall {
-		jse.emitToFile(fmt.Sprintf(".fill(%s)", jse.sliceMakeDefault))
-		jse.isSliceMakeCall = false
-		jse.sliceMakeDefault = ""
-		jse.suppressEmit = false // Safety reset
-	}
-	// Reset map call flags
-	if jse.isMapMakeCall {
-		jse.isMapMakeCall = false
-	}
-	if jse.isDeleteCall {
-		jse.isDeleteCall = false
-		jse.deleteMapVarName = ""
-	}
-	if jse.isMapLenCall {
-		jse.isMapLenCall = false
-	}
-}
-
-// Return statements
-func (jse *JSEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	str := jse.emitAsString("return ", indent)
-	jse.emitToFile(str)
-	if len(node.Results) > 1 {
-		jse.emitToFile("[")
-		jse.inMultiValueReturn = true
-		jse.multiValueReturnIndex = 0
-	}
-}
-
-func (jse *JSEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-}
-
-func (jse *JSEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if len(node.Results) > 1 {
-		jse.emitToFile("]")
-		jse.inMultiValueReturn = false
-	}
-	jse.emitToFile(";\n")
-}
-
-// If statements
-func (jse *JSEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if node.Init != nil {
-		str := jse.emitAsString("{\n", indent)
-		jse.emitToFile(str)
-	} else {
-		str := jse.emitAsString("if (", indent)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if node.Init != nil {
-		str := jse.emitAsString("}\n", indent)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if node.Init != nil {
-		str := jse.emitAsString("if (", indent)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(") ")
-}
-
-func (jse *JSEmitter) PreVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	str := jse.emitAsString(" else ", indent)
-	jse.emitToFile(str)
-}
-
-// For statements
-func (jse *JSEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Check if infinite loop
-	jse.isInfiniteLoop = node.Init == nil && node.Cond == nil && node.Post == nil
-	if jse.isInfiniteLoop {
-		str := jse.emitAsString("while (true) ", indent)
-		jse.emitToFile(str)
-	} else {
-		str := jse.emitAsString("for (", indent)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PreVisitForStmtInit(node ast.Stmt, indent int) {
-	if jse.forwardDecl || jse.isInfiniteLoop {
-		return
-	}
-	jse.insideForInit = true
-}
-
-func (jse *JSEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
-	if jse.forwardDecl || jse.isInfiniteLoop {
-		return
-	}
-	jse.insideForInit = false
-	jse.emitToFile("; ")
-}
-
-func (jse *JSEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
-	if jse.forwardDecl || jse.isInfiniteLoop {
-		return
-	}
-	jse.emitToFile("; ")
-}
-
-func (jse *JSEmitter) PreVisitForStmtPost(node ast.Stmt, indent int) {
-	if jse.forwardDecl || jse.isInfiniteLoop {
-		return
-	}
-	jse.insideForPostCond = true
-}
-
-func (jse *JSEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
-	if jse.forwardDecl || jse.isInfiniteLoop {
-		return
-	}
-	jse.insideForPostCond = false
-	jse.emitToFile(") ")
-}
-
-// Range statements
-func (jse *JSEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Handle different range patterns
-	// Note: Go AST sets Key=nil when using blank identifier _, so we check Value first
-	if node.Value != nil {
-		// for key, value := range collection OR for _, value := range collection
-		// When key is blank (_), Go AST has Key=nil, not Key=Ident{Name:"_"}
-		jse.isKeyValueRange = true
-		if node.Key == nil {
-			// Key is nil (blank identifier _) - use synthetic index
-			jse.rangeKeyName = "_idx"
-		} else if keyIdent, ok := node.Key.(*ast.Ident); ok {
-			if keyIdent.Name == "_" {
-				// Explicit blank key
-				jse.rangeKeyName = "_idx"
-				DebugLogPrintf("JSEmitter: Range key is blank _, using _idx")
-			} else {
-				jse.rangeKeyName = keyIdent.Name
-				DebugLogPrintf("JSEmitter: Range key is %s", keyIdent.Name)
-			}
-		} else {
-			// Key is not a simple identifier, use synthetic index
-			jse.rangeKeyName = "_idx"
-			DebugLogPrintf("JSEmitter: Range key not ident, using _idx")
-		}
-		if valIdent, ok := node.Value.(*ast.Ident); ok {
-			jse.rangeValueName = valIdent.Name
-		}
-		jse.rangeCollectionExpr = ""
-		jse.suppressRangeEmit = true
-		jse.rangeStmtIndent = indent
-	} else if node.Key != nil {
-		// for i := range collection (index-only)
-		jse.isKeyValueRange = false
-		if keyIdent, ok := node.Key.(*ast.Ident); ok {
-			if keyIdent.Name == "_" {
-				jse.rangeKeyName = "_idx"
-			} else {
-				jse.rangeKeyName = keyIdent.Name
-			}
-		} else {
-			jse.rangeKeyName = "_idx"
-		}
-		jse.rangeCollectionExpr = ""
-		jse.suppressRangeEmit = true
-		jse.rangeStmtIndent = indent
-	} else {
-		DebugLogPrintf("JSEmitter: Range has nil Key and nil Value")
-	}
-}
-
-func (jse *JSEmitter) PreVisitRangeStmtKey(node ast.Expr, indent int) {
-	// Key is captured in PreVisitRangeStmt, suppress emission
-	jse.suppressRangeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
-	// Keep suppressing
-}
-
-func (jse *JSEmitter) PreVisitRangeStmtValue(node ast.Expr, indent int) {
-	// Value is captured in PreVisitRangeStmt, suppress emission
-}
-
-func (jse *JSEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
-	// Stop suppressing, start capturing collection expression
-	jse.suppressRangeEmit = false
-	jse.captureRangeExpr = true
-}
-
-func (jse *JSEmitter) PreVisitRangeStmtX(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Already in capture mode from PostVisitRangeStmtValue
-}
-
-func (jse *JSEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.captureRangeExpr = false
-	collection := jse.rangeCollectionExpr
-	key := jse.rangeKeyName
-	rangeIndent := jse.rangeStmtIndent
-
-	if jse.isKeyValueRange {
-		// Emit: for (let key = 0; key < collection.length; key++)
-		str := jse.emitAsString(fmt.Sprintf("for (let %s = 0; %s < %s.length; %s++) ", key, key, collection, key), rangeIndent)
-		jse.emitToFile(str)
-		// Set flag to emit value declaration in the block
-		if jse.rangeValueName != "" && jse.rangeValueName != "_" {
-			jse.pendingRangeValueDecl = true
-		}
-	} else {
-		// Index-only: for (let i = 0; i < collection.length; i++)
-		str := jse.emitAsString(fmt.Sprintf("for (let %s = 0; %s < %s.length; %s++) ", key, key, collection, key), rangeIndent)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.isKeyValueRange = false
-	jse.rangeKeyName = ""
-	jse.rangeValueName = ""
-	jse.rangeCollectionExpr = ""
-}
-
-// Increment/Decrement statements
-func (jse *JSEmitter) PreVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if !jse.insideForPostCond {
-		str := jse.emitAsString("", indent)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PostVisitIncDecStmtX(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-}
-
-func (jse *JSEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(node.Tok.String())
-	if !jse.insideForPostCond {
-		jse.emitToFile(";\n")
-	}
-}
-
-// Index expressions (array access)
-func (jse *JSEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Check if indexing a map (for read access: m[k])
-	if !jse.isMapAssign && !jse.isMapCommaOk && !jse.isMixedIndexAssign && jse.pkg != nil && jse.pkg.TypesInfo != nil {
-		tv := jse.pkg.TypesInfo.Types[node.X]
-		if tv.Type != nil {
-			if _, ok := tv.Type.Underlying().(*types.Map); ok {
-				jse.indexAccessTypeStack = append(jse.indexAccessTypeStack, "map")
-				jse.isMapIndex = true
-				jse.mapIndexDepth++
-				jse.emitToFile("hmap.hashMapGet(")
-				return
-			}
-			// Check for slice/array access
-			switch tv.Type.Underlying().(type) {
-			case *types.Slice, *types.Array:
-				jse.indexAccessTypeStack = append(jse.indexAccessTypeStack, "slice")
-			}
-		}
-	}
-}
-
-func (jse *JSEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Use the stack to determine access type
-	if len(jse.indexAccessTypeStack) > 0 {
-		accessType := jse.indexAccessTypeStack[len(jse.indexAccessTypeStack)-1]
-		if accessType == "map" {
-			// Map read: emit ", " between map expr and key
-			jse.emitToFile(", ")
-			return
-		} else if accessType == "slice" {
-			// Slice access: emit [
-			// Check for string indexing
-			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-				tv := jse.pkg.TypesInfo.Types[node.X]
-				if tv.Type != nil {
-					if basic, ok := tv.Type.(*types.Basic); ok && basic.Kind() == types.String {
-						jse.isStringIndex = true
-						jse.emitToFile(".charCodeAt(")
-						return
-					}
-				}
-			}
-			jse.emitToFile("[")
-			return
-		}
-	}
-	// Fallback: map assignment, comma-ok, or no stack
-	// Map assignment: start capturing the key expression
-	if jse.isMapAssign {
-		// For nested maps: skip capture for the nested index (outer key)
-		if jse.isNestedMapAssign {
-			if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
 				return
 			}
 		}
-		jse.captureMapKey = true
-		jse.capturedMapKey = ""
+		e.fs.PushCode(fmt.Sprintf("make(%s)", argsStr))
 		return
 	}
-	// Comma-ok: start capturing the key expression
-	if jse.isMapCommaOk {
-		jse.captureMapKey = true
-		jse.capturedMapKey = ""
-		return
+
+	// Lower builtins (fmt.Println → console.log, etc.)
+	lowered := jsLowerBuiltin(funName)
+	if lowered != funName {
+		funName = lowered
 	}
-	// Check if indexing a string - need to use charCodeAt() to get byte value like Go
-	jse.isStringIndex = false
-	if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-		tv := jse.pkg.TypesInfo.Types[node.X]
-		if tv.Type != nil {
-			if basic, ok := tv.Type.(*types.Basic); ok && basic.Kind() == types.String {
-				jse.isStringIndex = true
-				jse.emitToFile(".charCodeAt(")
+
+	e.fs.PushCode(fmt.Sprintf("%s(%s)", funName, argsStr))
+}
+
+// ============================================================
+// Selector Expressions (a.b)
+// ============================================================
+
+func (e *JSEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitSelectorExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JSEmitter) PostVisitSelectorExprSel(node *ast.Ident, indent int) {
+	// Discard the traversed ident, use node.Name directly
+	e.fs.Reduce(string(PreVisitSelectorExprSel))
+	e.fs.PushCode(node.Name)
+}
+
+func (e *JSEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSelectorExpr))
+	xCode := ""
+	selCode := ""
+	if len(tokens) >= 1 {
+		xCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		selCode = tokens[1].Content
+	}
+
+	// Lower builtins: fmt.Println → console.log
+	loweredX := jsLowerBuiltin(xCode)
+	loweredSel := jsLowerBuiltin(selCode)
+
+	if loweredX == "" {
+		// Package selector like fmt is suppressed
+		e.fs.PushCode(loweredSel)
+	} else {
+		e.fs.PushCode(loweredX + "." + loweredSel)
+	}
+}
+
+// ============================================================
+// Index Expressions (a[i])
+// ============================================================
+
+func (e *JSEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitIndexExprX))
+	e.fs.PushCode(xCode)
+	// Save for potential map assignment detection
+	e.lastIndexXCode = xCode
+}
+
+func (e *JSEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
+	idxCode := e.fs.ReduceToCode(string(PreVisitIndexExprIndex))
+	e.fs.PushCode(idxCode)
+	e.lastIndexKeyCode = idxCode
+}
+
+func (e *JSEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitIndexExpr))
+	xCode := ""
+	idxCode := ""
+	if len(tokens) >= 1 {
+		xCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		idxCode = tokens[1].Content
+	}
+
+	// Check if this is a map index (read)
+	if e.isMapTypeExpr(node.X) {
+		e.fs.PushCodeWithType(fmt.Sprintf("hmap.hashMapGet(%s, %s)", xCode, idxCode), e.getExprGoType(node))
+	} else {
+		// Check for string indexing: str[i] returns byte in Go
+		xType := e.getExprGoType(node.X)
+		if xType != nil {
+			if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+				e.fs.PushCode(fmt.Sprintf("%s.charCodeAt(%s)", xCode, idxCode))
 				return
 			}
 		}
+		e.fs.PushCode(fmt.Sprintf("%s[%s]", xCode, idxCode))
 	}
-	jse.emitToFile("[")
 }
 
-func (jse *JSEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Use the stack to determine access type
-	if len(jse.indexAccessTypeStack) > 0 {
-		accessType := jse.indexAccessTypeStack[len(jse.indexAccessTypeStack)-1]
-		jse.indexAccessTypeStack = jse.indexAccessTypeStack[:len(jse.indexAccessTypeStack)-1]
-		if accessType == "map" {
-			jse.emitToFile(")")
-			jse.mapIndexDepth--
-			if jse.mapIndexDepth <= 0 {
-				jse.isMapIndex = false
-				jse.mapIndexDepth = 0
-			}
-			return
-		} else if accessType == "slice" {
-			if jse.isStringIndex {
-				jse.emitToFile(")")
-				jse.isStringIndex = false
-			} else {
-				jse.emitToFile("]")
-			}
-			return
-		}
-	}
-	// Fallback: map assignment, comma-ok, or no stack
-	if jse.isMapIndex {
-		jse.emitToFile(")")
-		jse.mapIndexDepth--
-		if jse.mapIndexDepth <= 0 {
-			jse.isMapIndex = false
-			jse.mapIndexDepth = 0
-		}
-		return
-	}
-	if jse.captureMapKey {
-		jse.captureMapKey = false
-		return
-	}
-	// For nested maps: don't reset isMapIndex when processing the nested index
-	if jse.isNestedMapAssign {
-		if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
-			return
-		}
-	}
-	if jse.isStringIndex {
-		jse.emitToFile(")")
-		jse.isStringIndex = false
+// ============================================================
+// Unary Expressions
+// ============================================================
+
+func (e *JSEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitUnaryExpr))
+	op := node.Op.String()
+	if op == "^" {
+		// Go's ^ is bitwise NOT (like ~ in JS)
+		e.fs.PushCode("~" + xCode)
 	} else {
-		jse.emitToFile("]")
+		e.fs.PushCode(op + xCode)
 	}
 }
 
-// Composite literals (arrays, objects)
-func (jse *JSEmitter) PreVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Check if it's a struct or array
-	if node.Type != nil {
-		switch node.Type.(type) {
-		case *ast.ArrayType:
-			jse.emitToFile("[")
-			return
-		case *ast.Ident, *ast.SelectorExpr:
-			// Check if this named type is actually a slice type alias
-			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-				if typeAndValue, ok := jse.pkg.TypesInfo.Types[node]; ok {
-					underlying := typeAndValue.Type.Underlying()
-					if _, isSlice := underlying.(*types.Slice); isSlice {
-						jse.emitToFile("[")
-						return
-					}
-				}
-			}
-			// Struct initialization - use object literal syntax
-			// Check if it has named fields (KeyValueExpr)
-			if len(node.Elts) > 0 {
-				if _, hasKeys := node.Elts[0].(*ast.KeyValueExpr); hasKeys {
-					jse.emitToFile("{")
-					return
-				}
-			}
-			// Empty struct or positional values
-			jse.emitToFile("{")
-			return
+// ============================================================
+// Paren Expressions
+// ============================================================
+
+func (e *JSEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
+	inner := e.fs.ReduceToCode(string(PreVisitParenExpr))
+	e.fs.PushCode("(" + inner + ")")
+}
+
+// ============================================================
+// Composite Literals (struct{}, []int{}, map[K]V{})
+// ============================================================
+
+func (e *JSEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
+	// Discard type tokens for JS (no type annotations)
+	e.fs.Reduce(string(PreVisitCompositeLitType))
+}
+
+func (e *JSEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
+	eltCode := e.fs.ReduceToCode(string(PreVisitCompositeLitElt))
+	e.fs.PushCode(eltCode)
+}
+
+func (e *JSEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
+	eltTokens := e.fs.Reduce(string(PreVisitCompositeLitElts))
+	// Push each element back as an individual token (don't join)
+	for _, t := range eltTokens {
+		if t.Content != "" {
+			e.fs.Push(t.Content, TagLiteral, nil)
 		}
 	}
-	jse.emitToFile("[")
 }
 
-// Suppress type emission in composite literals (already handled in PreVisitCompositeLit)
-func (jse *JSEmitter) PreVisitCompositeLitType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-}
-
-func (jse *JSEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if node.Type != nil {
-		switch node.Type.(type) {
-		case *ast.Ident, *ast.SelectorExpr:
-			// Check if this named type is actually a slice type alias
-			if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-				if typeAndValue, ok := jse.pkg.TypesInfo.Types[node]; ok {
-					underlying := typeAndValue.Type.Underlying()
-					if _, isSlice := underlying.(*types.Slice); isSlice {
-						jse.emitToFile("]")
-						return
-					}
-					// If it's a struct, emit default values for missing fields
-					if structType, isStruct := underlying.(*types.Struct); isStruct {
-						// Collect specified field names
-						specifiedFields := make(map[string]bool)
-						for _, elt := range node.Elts {
-							if kv, ok := elt.(*ast.KeyValueExpr); ok {
-								if ident, ok := kv.Key.(*ast.Ident); ok {
-									specifiedFields[ident.Name] = true
-								}
-							}
-						}
-						// Emit defaults for missing fields
-						needsComma := len(node.Elts) > 0
-						for i := 0; i < structType.NumFields(); i++ {
-							field := structType.Field(i)
-							if !specifiedFields[field.Name()] {
-								if needsComma {
-									jse.emitToFile(", ")
-								}
-								needsComma = true
-								// Emit field with default value
-								jse.emitToFile(field.Name() + ": ")
-								jse.emitDefaultValue(field.Type())
-							}
-						}
-					}
-				}
-			}
-			// Close struct/object literal
-			jse.emitToFile("}")
-			return
+func (e *JSEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCompositeLit))
+	// Collect individual element tokens (each is TagLiteral from PostVisitCompositeLitElts)
+	var elts []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			elts = append(elts, t.Content)
 		}
 	}
-	jse.emitToFile("]")
-}
+	eltsStr := strings.Join(elts, ", ")
 
-// emitDefaultValue emits the JavaScript default value for a Go type
-func (jse *JSEmitter) emitDefaultValue(t types.Type) {
-	switch underlying := t.Underlying().(type) {
-	case *types.Basic:
-		info := underlying.Info()
-		if info&types.IsInteger != 0 || info&types.IsFloat != 0 {
-			jse.emitToFile("0")
-		} else if info&types.IsBoolean != 0 {
-			jse.emitToFile("false")
-		} else if info&types.IsString != 0 {
-			jse.emitToFile(`""`)
-		} else {
-			jse.emitToFile("null")
-		}
-	case *types.Slice:
-		jse.emitToFile("[]")
+	// Determine type of composite literal
+	litType := e.getExprGoType(node)
+	if litType == nil {
+		// Fallback: just use array syntax
+		e.fs.PushCode("[" + eltsStr + "]")
+		return
+	}
+
+	switch u := litType.Underlying().(type) {
 	case *types.Struct:
-		// Recursively initialize all struct fields
-		jse.emitToFile("{")
-		for i := 0; i < underlying.NumFields(); i++ {
-			if i > 0 {
-				jse.emitToFile(", ")
-			}
-			field := underlying.Field(i)
-			jse.emitToFile(field.Name() + ": ")
-			jse.emitDefaultValue(field.Type())
+		// Struct literal: new StructName(fields...)
+		typeName := ""
+		if node.Type != nil {
+			typeName = exprToString(node.Type)
 		}
-		jse.emitToFile("}")
-	case *types.Pointer:
-		jse.emitToFile("null")
-	default:
-		jse.emitToFile("null")
-	}
-}
-
-// Selector expressions (field access)
-func (jse *JSEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-}
-
-func (jse *JSEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Don't emit dot when suppressing type emission
-	if jse.suppressTypeEmit {
-		return
-	}
-	// Only emit dot if X was not lowered to empty (e.g., fmt -> "")
-	if ident, ok := node.(*ast.Ident); ok {
-		if jse.lowerToBuiltins(ident.Name) == "" {
-			return
+		if typeName == "" {
+			typeName = "Object"
 		}
-		// If X is a known namespace/package, don't emit dot
-		// Constants and functions are accessible globally or via the namespace object
-		if _, found := namespaces[ident.Name]; found {
-			// For cross-package access, emit the dot to access namespace object
-			// e.g., lexer.GetTokens() works because GetTokens is a method of the lexer object
-			jse.emitToFile(".")
-			return
-		}
-	}
-	jse.emitToFile(".")
-}
-
-func (jse *JSEmitter) PreVisitSelectorExprSel(node *ast.Ident, indent int) {
-	// Selector name is emitted via PreVisitIdent when Sel is traversed
-}
-
-// Type specifications (structs)
-func (jse *JSEmitter) PreVisitTypeSpec(node *ast.TypeSpec, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Check if it's a struct type
-	if structType, ok := node.Type.(*ast.StructType); ok {
-		str := jse.emitAsString("class "+node.Name.Name+" {\n", indent)
-		jse.emitToFile(str)
-
-		// Generate constructor
-		str = jse.emitAsString("constructor(", indent+1)
-		jse.emitToFile(str)
-
-		// Collect field names
-		var fieldNames []string
-		for _, field := range structType.Fields.List {
-			for _, name := range field.Names {
-				fieldNames = append(fieldNames, name.Name)
-			}
-		}
-		jse.emitToFile(strings.Join(fieldNames, ", "))
-		jse.emitToFile(") {\n")
-
-		// Initialize fields
-		for _, name := range fieldNames {
-			str = jse.emitAsString("this."+name+" = "+name+";\n", indent+2)
-			jse.emitToFile(str)
-		}
-
-		str = jse.emitAsString("}\n", indent+1)
-		jse.emitToFile(str)
-		str = jse.emitAsString("}\n\n", indent)
-		jse.emitToFile(str)
-	} else if _, ok := node.Type.(*ast.ArrayType); ok {
-		// Type alias for array - just emit a comment
-		str := jse.emitAsString("// type "+node.Name.Name+" = array\n", indent)
-		jse.emitToFile(str)
-	}
-}
-
-// Struct field type and name handling - suppress type emissions
-func (jse *JSEmitter) PreVisitGenStructFieldType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitGenStructFieldName(node *ast.Ident, indent int) {
-	// Field names are handled in PreVisitTypeSpec, suppress here
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-// Type alias handling - suppress in JavaScript (no type aliases needed)
-func (jse *JSEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitTypeAliasName(node *ast.Ident, indent int) {
-	// Keep suppressed until after the type
-}
-
-func (jse *JSEmitter) PreVisitTypeAliasType(node ast.Expr, indent int) {
-	// Type still suppressed
-}
-
-func (jse *JSEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-// Declaration statements (var a int, var b []string, etc.)
-func (jse *JSEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-}
-
-func (jse *JSEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	// Suppress type emission - JavaScript doesn't need type annotations
-	jse.suppressTypeEmit = true
-	// Track if this declaration has an explicit initialization value
-	jse.hasDeclValue = index < len(node.Values)
-	// Emit "let " for variable declaration
-	str := jse.emitAsString("let ", indent)
-	jse.emitToFile(str)
-	// Check if we need to add default initialization
-	if len(node.Values) == 0 && node.Type != nil {
-		// Use type info to detect actual type (handles type aliases)
-		if jse.pkg != nil && jse.pkg.TypesInfo != nil {
-			if typeAndValue, ok := jse.pkg.TypesInfo.Types[node.Type]; ok {
-				underlying := typeAndValue.Type.Underlying()
-				if _, isMap := underlying.(*types.Map); isMap {
-					if mapType, ok := node.Type.(*ast.MapType); ok {
-						jse.pendingMapInit = true
-						jse.pendingMapKeyType = jse.getMapKeyTypeConst(mapType)
+		// Check if using named fields (KeyValueExpr)
+		if len(node.Elts) > 0 {
+			if _, isKV := node.Elts[0].(*ast.KeyValueExpr); isKV {
+				// Named fields — each element token is "Key: Value"
+				// Build a map from field name to value code using individual tokens
+				kvMap := make(map[string]string)
+				for _, elt := range elts {
+					parts := strings.SplitN(elt, ": ", 2)
+					if len(parts) == 2 {
+						key := parts[0]
+						// Strip package prefix from key (e.g. "types.ID" → "ID")
+						if dotIdx := strings.LastIndex(key, "."); dotIdx >= 0 {
+							key = key[dotIdx+1:]
+						}
+						kvMap[key] = parts[1]
 					}
-					return
 				}
-				if _, isSlice := underlying.(*types.Slice); isSlice {
-					jse.pendingSliceInit = true
-					return
+				// Build args in struct field order, using defaults for missing fields
+				var args []string
+				for i := 0; i < u.NumFields(); i++ {
+					fieldName := u.Field(i).Name()
+					if val, ok := kvMap[fieldName]; ok {
+						args = append(args, val)
+					} else {
+						args = append(args, jsDefaultForGoType(u.Field(i).Type()))
+					}
 				}
-				if structType, isStruct := underlying.(*types.Struct); isStruct {
-					jse.pendingStructInit = true
-					jse.pendingStructType = structType
-					return
-				}
-				// Handle basic types (string, int, bool, etc.)
-				if basicType, isBasic := underlying.(*types.Basic); isBasic {
-					jse.pendingBasicInit = basicType
-					return
-				}
+				e.fs.PushCode(fmt.Sprintf("new %s(%s)", typeName, strings.Join(args, ", ")))
+				return
 			}
 		}
-		// Fallback to AST-based detection
-		switch t := node.Type.(type) {
-		case *ast.ArrayType:
-			// Slice/array type - initialize to []
-			jse.pendingSliceInit = true
-		case *ast.Ident:
-			// Custom type (struct) - initialize to {} unless it's a built-in type
-			if !isBuiltinType(t.Name) {
-				jse.pendingStructInit = true
+		e.fs.PushCode(fmt.Sprintf("new %s(%s)", typeName, eltsStr))
+	case *types.Slice:
+		e.fs.PushCode("[" + eltsStr + "]")
+	case *types.Map:
+		// Map literal: IIFE with hashMapSet calls
+		keyTypeConst := jsMapKeyTypeConst(u)
+		if keyTypeConst == 100 {
+			if e.structKeyTypes == nil {
+				e.structKeyTypes = make(map[string]bool)
 			}
-		case *ast.SelectorExpr:
-			// External package type (struct) - initialize to {}
-			jse.pendingStructInit = true
+			e.structKeyTypes[u.Key().String()] = true
 		}
-	}
-}
-
-func (jse *JSEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	// Variable name is emitted via PreVisitIdent when traversed
-}
-
-func (jse *JSEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if jse.pendingMapInit {
-		jse.emitToFile(fmt.Sprintf(" = hmap.newHashMap(%d)", jse.pendingMapKeyType))
-		jse.pendingMapInit = false
-		jse.pendingMapKeyType = 0
-	} else if jse.pendingSliceInit {
-		jse.emitToFile(" = []")
-		jse.pendingSliceInit = false
-	} else if jse.pendingStructInit {
-		if jse.pendingStructType != nil {
-			// Emit full struct with all fields initialized
-			jse.emitToFile(" = {")
-			for i := 0; i < jse.pendingStructType.NumFields(); i++ {
-				if i > 0 {
-					jse.emitToFile(", ")
-				}
-				field := jse.pendingStructType.Field(i)
-				jse.emitToFile(field.Name() + ": ")
-				jse.emitDefaultValue(field.Type())
-			}
-			jse.emitToFile("}")
-			jse.pendingStructType = nil
+		if len(elts) == 0 {
+			e.fs.PushCode(fmt.Sprintf("hmap.newHashMap(%d)", keyTypeConst))
 		} else {
-			jse.emitToFile(" = {}")
+			// Each element is "key: value" from KeyValueExpr
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("(() => { let _m = hmap.newHashMap(%d); ", keyTypeConst))
+			for _, elt := range elts {
+				parts := strings.SplitN(elt, ": ", 2)
+				if len(parts) == 2 {
+					sb.WriteString(fmt.Sprintf("hmap.hashMapSet(_m, %s, %s); ", parts[0], parts[1]))
+				}
+			}
+			sb.WriteString("return _m; })()")
+			e.fs.PushCode(sb.String())
 		}
-		jse.pendingStructInit = false
-	} else if jse.pendingBasicInit != nil {
-		// Emit default value for basic types (string, int, bool, etc.)
-		info := jse.pendingBasicInit.Info()
-		if info&types.IsInteger != 0 || info&types.IsFloat != 0 {
-			jse.emitToFile(" = 0")
-		} else if info&types.IsBoolean != 0 {
-			jse.emitToFile(" = false")
-		} else if info&types.IsString != 0 {
-			jse.emitToFile(` = ""`)
-		}
-		jse.pendingBasicInit = nil
-	}
-	// Only emit semicolon if there's no explicit value to follow
-	if !jse.hasDeclValue {
-		jse.emitToFile(";\n")
+	default:
+		e.fs.PushCode("[" + eltsStr + "]")
 	}
 }
 
-func (jse *JSEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
+// ============================================================
+// KeyValue Expressions (for composite literals)
+// ============================================================
+
+func (e *JSEmitter) PostVisitKeyValueExprKey(node ast.Expr, indent int) {
+	keyCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprKey))
+	e.fs.PushCode(keyCode)
+}
+
+func (e *JSEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprValue))
+	e.fs.PushCode(valCode)
+}
+
+func (e *JSEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitKeyValueExpr))
+	keyCode := ""
+	valCode := ""
+	if len(tokens) >= 1 {
+		keyCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		valCode = tokens[1].Content
+	}
+	e.fs.PushCode(keyCode + ": " + valCode)
+}
+
+// ============================================================
+// Slice Expressions (a[lo:hi])
+// ============================================================
+
+func (e *JSEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitSliceExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JSEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
+	// Discard the duplicated X traversal
+	e.fs.Reduce(string(PreVisitSliceExprXBegin))
+}
+
+func (e *JSEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
+	lowCode := e.fs.ReduceToCode(string(PreVisitSliceExprLow))
+	e.fs.PushCode(lowCode)
+}
+
+func (e *JSEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
+	// Discard the duplicated X traversal
+	e.fs.Reduce(string(PreVisitSliceExprXEnd))
+}
+
+func (e *JSEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
+	highCode := e.fs.ReduceToCode(string(PreVisitSliceExprHigh))
+	e.fs.PushCode(highCode)
+}
+
+func (e *JSEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSliceExpr))
+	xCode := ""
+	lowCode := ""
+	highCode := ""
+
+	// Use AST node to determine which parts are present
+	idx := 0
+	if idx < len(tokens) {
+		xCode = tokens[idx].Content
+		idx++
+	}
+	if node.Low != nil && idx < len(tokens) {
+		lowCode = tokens[idx].Content
+		idx++
+	}
+	if node.High != nil && idx < len(tokens) {
+		highCode = tokens[idx].Content
+	}
+
+	if lowCode == "" {
+		lowCode = "0"
+	}
+
+	if highCode == "" {
+		e.fs.PushCode(fmt.Sprintf("%s.slice(%s)", xCode, lowCode))
+	} else {
+		e.fs.PushCode(fmt.Sprintf("%s.slice(%s, %s)", xCode, lowCode, highCode))
+	}
+}
+
+// ============================================================
+// Array Type (used in composite literals, make calls)
+// ============================================================
+
+func (e *JSEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
+	// Discard type info for JS
+	e.fs.Reduce(string(PreVisitArrayType))
+	e.fs.Push("[]", TagType, nil)
+}
+
+// ============================================================
+// Map Type
+// ============================================================
+
+func (e *JSEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitMapKeyType))
+}
+
+func (e *JSEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitMapValueType))
+}
+
+func (e *JSEmitter) PostVisitMapType(node *ast.MapType, indent int) {
+	e.fs.Reduce(string(PreVisitMapType))
+	e.fs.Push("map", TagType, nil)
+}
+
+// ============================================================
+// Function Literals (closures)
+// ============================================================
+
+func (e *JSEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
+	// Discard the type tokens (e.g., "int") that traverseExpression(param.Type) pushed
+	e.fs.Reduce(string(PreVisitFuncLitTypeParam))
+	// Push the actual parameter names from node.Names
+	for _, name := range node.Names {
+		e.fs.Push(name.Name, TagIdent, nil)
+	}
+}
+
+func (e *JSEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
+	// Collect parameter names
+	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParams))
+	var paramNames []string
+	for _, t := range tokens {
+		if t.Tag == TagIdent && t.Content != "" {
+			paramNames = append(paramNames, t.Content)
+		}
+	}
+	// Use a sentinel space for empty params so the token doesn't get dropped
+	paramsStr := strings.Join(paramNames, ", ")
+	if paramsStr == "" {
+		paramsStr = " "
+	}
+	e.fs.PushCode(paramsStr)
+}
+
+func (e *JSEmitter) PostVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
+	// Discard result types for JS
+	e.fs.Reduce(string(PreVisitFuncLitTypeResults))
+}
+
+func (e *JSEmitter) PostVisitFuncLitBody(node *ast.BlockStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncLitBody))
+	e.fs.PushCode(bodyCode)
+}
+
+func (e *JSEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncLit))
+	paramsCode := ""
+	bodyCode := ""
+	if len(tokens) >= 1 {
+		paramsCode = strings.TrimSpace(tokens[0].Content)
+	}
+	if len(tokens) >= 2 {
+		bodyCode = tokens[1].Content
+	}
+	e.fs.PushCode(fmt.Sprintf("(%s) => %s", paramsCode, bodyCode))
+}
+
+// ============================================================
+// Type Assertions
+// ============================================================
+
+func (e *JSEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
+	// Discard type for JS (type assertions are no-ops at runtime)
+	e.fs.Reduce(string(PreVisitTypeAssertExprType))
+}
+
+func (e *JSEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JSEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitTypeAssertExpr))
+	xCode := ""
+	if len(tokens) >= 1 {
+		xCode = tokens[0].Content
+	}
+	// In JS, type assertions are pass-through
+	e.fs.PushCode(xCode)
+}
+
+// ============================================================
+// Function Declarations
+// ============================================================
+
+func (e *JSEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	// Track number of results for multi-value return handling
+	e.numFuncResults = 0
+	if node.Type.Results != nil {
+		e.numFuncResults = node.Type.Results.NumFields()
+	}
+}
+
+func (e *JSEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
+	// Discard result type tokens for JS
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResultsList))
+}
+
+func (e *JSEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	// Discard all result type tokens for JS
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResults))
+}
+
+func (e *JSEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
+	// Discard traversed ident, use node.Name directly
+	e.fs.Reduce(string(PreVisitFuncDeclName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *JSEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
+	// Discard type tokens for JS
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsListType))
+}
+
+func (e *JSEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
+	// Discard traversed ident, push name directly
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsArgName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *JSEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
+	// Collect param names from this field group
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsList))
+	for _, t := range tokens {
+		if t.Tag == TagIdent {
+			e.fs.Push(t.Content, TagIdent, nil)
+		}
+	}
+}
+
+func (e *JSEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
+	var paramNames []string
+	for _, t := range tokens {
+		if t.Tag == TagIdent {
+			paramNames = append(paramNames, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(paramNames, ", "))
+}
+
+func (e *JSEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
+	funcName := ""
+	paramsStr := ""
+	for _, t := range tokens {
+		if t.Tag == TagIdent && funcName == "" {
+			funcName = t.Content
+		} else if t.Tag == TagExpr {
+			paramsStr = t.Content
+		}
+	}
+
+	if e.inNamespace {
+		e.fs.PushCode(fmt.Sprintf("\n%s(%s)", funcName, paramsStr))
+	} else {
+		e.fs.PushCode(fmt.Sprintf("\nfunction %s(%s)", funcName, paramsStr))
+	}
+}
+
+func (e *JSEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncDeclBody))
+	e.fs.PushCode(bodyCode)
+}
+
+func (e *JSEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
+	sigCode := ""
+	bodyCode := ""
+	if len(tokens) >= 1 {
+		sigCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		bodyCode = tokens[1].Content
+	}
+
+	if e.inNamespace {
+		e.fs.PushCode(sigCode + " " + bodyCode + ",\n")
+	} else {
+		e.fs.PushCode(sigCode + " " + bodyCode + "\n")
+	}
+}
+
+// ============================================================
+// Forward Declaration Signatures (suppressed for JS)
+// ============================================================
+
+func (e *JSEmitter) PostVisitFuncDeclSignatures(indent int) {
+	// Discard all forward declaration signatures for JS
+	e.fs.Reduce(string(PreVisitFuncDeclSignatures))
+}
+
+// ============================================================
+// Block Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JSEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
+	itemCode := e.fs.ReduceToCode(string(PreVisitBlockStmtList))
+	e.fs.PushCode(itemCode)
+}
+
+func (e *JSEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
+	var sb strings.Builder
+	sb.WriteString("{\n")
+	for _, t := range tokens {
+		if t.Content != "" {
+			sb.WriteString(t.Content)
+		}
+	}
+	sb.WriteString(jsIndent(indent/2) + "}")
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Assignment Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	e.indent = indent
+	// Reset map assign state
+	e.mapAssignVar = ""
+	e.mapAssignKey = ""
+}
+
+func (e *JSEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
+	lhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtLhsExpr))
+
+	// Detect map assignment: if lhs is m[k] on a map type
+	if indexExpr, ok := node.(*ast.IndexExpr); ok {
+		if e.isMapTypeExpr(indexExpr.X) {
+			// Save map var and key for PostVisitAssignStmt to generate hashMapSet
+			e.mapAssignVar = e.lastIndexXCode
+			e.mapAssignKey = e.lastIndexKeyCode
+			e.fs.PushCode(lhsCode)
+			return
+		}
+	}
+	e.fs.PushCode(lhsCode)
+}
+
+func (e *JSEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtLhs))
+	var lhsExprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			lhsExprs = append(lhsExprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(lhsExprs, ", "))
+}
+
+func (e *JSEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
+	rhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtRhsExpr))
+	e.fs.PushCode(rhsCode)
+}
+
+func (e *JSEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtRhs))
+	var rhsExprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			rhsExprs = append(rhsExprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(rhsExprs, ", "))
+}
+
+func (e *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmt))
+	lhsStr := ""
+	rhsStr := ""
+	if len(tokens) >= 1 {
+		lhsStr = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		rhsStr = tokens[1].Content
+	}
+
+	ind := jsIndent(indent / 2)
+	tokStr := node.Tok.String()
+
+	// Map assignment: m[k] = v → hmap.hashMapSet(m, k, v)
+	if e.mapAssignVar != "" && e.mapAssignKey != "" {
+		e.fs.PushCode(fmt.Sprintf("%shmap.hashMapSet(%s, %s, %s);\n", ind, e.mapAssignVar, e.mapAssignKey, rhsStr))
+		e.mapAssignVar = ""
+		e.mapAssignKey = ""
 		return
 	}
-	jse.emitToFile(" = ")
-}
 
-func (jse *JSEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
+	// Comma-ok map read: val, ok := m[key] (must be checked before generic multi-value)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
+			if e.isMapTypeExpr(indexExpr.X) {
+				valName := exprToString(node.Lhs[0])
+				okName := exprToString(node.Lhs[1])
+				mapName := exprToString(indexExpr.X)
+				keyStr := exprToString(indexExpr.Index)
+				// Get the zero value for the map's value type
+				zeroVal := "null"
+				mapGoType := e.getExprGoType(indexExpr.X)
+				if mapGoType != nil {
+					if mapUnderlying, ok2 := mapGoType.Underlying().(*types.Map); ok2 {
+						zeroVal = jsDefaultForGoType(mapUnderlying.Elem())
+					}
+				}
+				if tokStr == ":=" {
+					e.fs.PushCode(fmt.Sprintf("%slet %s = hmap.hashMapContains(%s, %s);\n", ind, okName, mapName, keyStr))
+					e.fs.PushCode(fmt.Sprintf("%slet %s = %s ? hmap.hashMapGet(%s, %s) : %s;\n", ind, valName, okName, mapName, keyStr, zeroVal))
+				} else {
+					e.fs.PushCode(fmt.Sprintf("%s%s = hmap.hashMapContains(%s, %s);\n", ind, okName, mapName, keyStr))
+					e.fs.PushCode(fmt.Sprintf("%s%s = %s ? hmap.hashMapGet(%s, %s) : %s;\n", ind, valName, okName, mapName, keyStr, zeroVal))
+				}
+				return
+			}
+		}
+	}
+
+	// Comma-ok type assertion: val, ok := x.(Type) (must be checked before generic multi-value)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if _, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+			valName := exprToString(node.Lhs[0])
+			okName := exprToString(node.Lhs[1])
+			// Type assertions are no-ops in JS; just check if value is not null/undefined
+			if tokStr == ":=" {
+				e.fs.PushCode(fmt.Sprintf("%slet %s = %s;\n", ind, valName, rhsStr))
+				e.fs.PushCode(fmt.Sprintf("%slet %s = (%s !== null && %s !== undefined);\n", ind, okName, valName, valName))
+			} else {
+				e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, valName, rhsStr))
+				e.fs.PushCode(fmt.Sprintf("%s%s = (%s !== null && %s !== undefined);\n", ind, okName, valName, valName))
+			}
+			return
+		}
+	}
+
+	// Multi-value return: a, b := func() → let [a, b] = func()
+	if len(node.Lhs) > 1 && len(node.Rhs) == 1 {
+		lhsParts := make([]string, len(node.Lhs))
+		for i, lhs := range node.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok {
+				if ident.Name == "_" {
+					lhsParts[i] = "_"
+				} else {
+					lhsParts[i] = ident.Name
+				}
+			} else {
+				lhsParts[i] = exprToString(lhs)
+			}
+		}
+		destructured := "[" + strings.Join(lhsParts, ", ") + "]"
+		if tokStr == ":=" {
+			e.fs.PushCode(fmt.Sprintf("%slet %s = %s;\n", ind, destructured, rhsStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, destructured, rhsStr))
+		}
 		return
 	}
-	jse.emitToFile(";\n")
-	jse.hasDeclValue = false
+
+	switch tokStr {
+	case ":=":
+		e.fs.PushCode(fmt.Sprintf("%slet %s = %s;\n", ind, lhsStr, rhsStr))
+	case "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=":
+		e.fs.PushCode(fmt.Sprintf("%s%s %s %s;\n", ind, lhsStr, tokStr, rhsStr))
+	default:
+		e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, lhsStr, rhsStr))
+	}
 }
 
-// isBuiltinType returns true if the type name is a Go built-in type
-func isBuiltinType(name string) bool {
-	switch name {
+// ============================================================
+// Declaration Statements (var x int, var y = 5)
+// ============================================================
+
+func (e *JSEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JSEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
+	// Keep type info for default value determination
+	tokens := e.fs.Reduce(string(PreVisitDeclStmtValueSpecType))
+	typeStr := ""
+	for _, t := range tokens {
+		typeStr += t.Content
+	}
+	// Also carry the Go type for struct default value generation
+	var goType types.Type
+	if e.pkg != nil && e.pkg.TypesInfo != nil && index < len(node.Names) {
+		if obj := e.pkg.TypesInfo.Defs[node.Names[index]]; obj != nil {
+			goType = obj.Type()
+		}
+	}
+	e.fs.Push(typeStr, TagType, goType)
+}
+
+func (e *JSEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
+	// Discard traversed ident, use node.Name directly
+	e.fs.Reduce(string(PreVisitDeclStmtValueSpecNames))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *JSEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitDeclStmtValueSpecValue))
+	e.fs.Push(valCode, TagExpr, nil)
+}
+
+func (e *JSEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
+	ind := jsIndent(indent / 2)
+
+	// Parse tokens: types (TagType), names (TagIdent), values (TagExpr)
+	// Pattern for each var: type, name, [value]
+	// Multiple vars result in multiple type/name/value groups
+	var sb strings.Builder
+	i := 0
+	for i < len(tokens) {
+		typeStr := ""
+		var goType types.Type
+		nameStr := ""
+		valueStr := ""
+
+		// Read type
+		if i < len(tokens) && tokens[i].Tag == TagType {
+			typeStr = tokens[i].Content
+			goType = tokens[i].GoType
+			i++
+		}
+		// Read name
+		if i < len(tokens) && tokens[i].Tag == TagIdent {
+			nameStr = tokens[i].Content
+			i++
+		}
+		// Read value (optional)
+		if i < len(tokens) && tokens[i].Tag == TagExpr {
+			valueStr = tokens[i].Content
+			i++
+		}
+
+		if nameStr == "" {
+			continue
+		}
+
+		if valueStr != "" {
+			sb.WriteString(fmt.Sprintf("%slet %s = %s;\n", ind, nameStr, valueStr))
+		} else {
+			// No initializer - generate default value based on Go type or type string
+			defaultVal := ""
+			if goType != nil {
+				if _, isStruct := goType.Underlying().(*types.Struct); isStruct {
+					// Struct type: create with constructor
+					defaultVal = fmt.Sprintf("new %s()", typeStr)
+				} else {
+					defaultVal = jsDefaultForGoType(goType)
+				}
+			} else {
+				defaultVal = e.defaultForTypeStr(typeStr)
+			}
+			sb.WriteString(fmt.Sprintf("%slet %s = %s;\n", ind, nameStr, defaultVal))
+		}
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// defaultForTypeStr returns the JS default value for a Go type name string.
+func (e *JSEmitter) defaultForTypeStr(typeStr string) string {
+	switch typeStr {
 	case "int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64",
-		"float32", "float64", "complex64", "complex128",
-		"bool", "string", "byte", "rune", "error", "any":
-		return true
+		"float32", "float64", "byte", "rune":
+		return "0"
+	case "string":
+		return `""`
+	case "bool":
+		return "false"
+	case "[]":
+		return "[]"
+	case "map":
+		return "null"
 	}
-	return false
+	// Check if it's a slice type
+	if strings.HasPrefix(typeStr, "[]") {
+		return "[]"
+	}
+	// Default: zero value
+	return "null"
 }
 
-func (jse *JSEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
-	if jse.forwardDecl {
-		return
+// jsDefaultForASTType returns the JS default value for a Go AST type expression.
+func (e *JSEmitter) jsDefaultForASTType(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		switch t.Name {
+		case "int", "int8", "int16", "int32", "int64",
+			"uint", "uint8", "uint16", "uint32", "uint64",
+			"float32", "float64", "byte", "rune":
+			return "0"
+		case "string":
+			return `""`
+		case "bool":
+			return "false"
+		}
+		// Check if it's a struct type using TypesInfo
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if obj := e.pkg.TypesInfo.Uses[t]; obj != nil {
+				if named, ok := obj.Type().(*types.Named); ok {
+					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+						return fmt.Sprintf("new %s()", t.Name)
+					}
+				}
+			}
+		}
+		return "null"
+	case *ast.ArrayType:
+		return "[]"
+	case *ast.MapType:
+		return "null"
+	case *ast.SelectorExpr:
+		// e.g., pkg.StructType — check if it's a struct
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if tv, ok := e.pkg.TypesInfo.Types[expr]; ok {
+				if named, ok := tv.Type.(*types.Named); ok {
+					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+						if ident, ok := t.X.(*ast.Ident); ok {
+							return fmt.Sprintf("new %s.%s()", ident.Name, t.Sel.Name)
+						}
+					}
+				}
+			}
+		}
+		return "null"
+	case *ast.InterfaceType:
+		return "null"
+	case *ast.FuncType:
+		return "null"
+	}
+	return "null"
+}
+
+// ============================================================
+// Return Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JSEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
+	resultCode := e.fs.ReduceToCode(string(PreVisitReturnStmtResult))
+	e.fs.PushCode(resultCode)
+}
+
+func (e *JSEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitReturnStmt))
+	ind := jsIndent(indent / 2)
+
+	if len(tokens) == 0 {
+		e.fs.PushCode(ind + "return;\n")
+	} else if len(tokens) == 1 {
+		e.fs.PushCode(fmt.Sprintf("%sreturn %s;\n", ind, tokens[0].Content))
+	} else {
+		// Multi-value return: return [a, b]
+		var vals []string
+		for _, t := range tokens {
+			vals = append(vals, t.Content)
+		}
+		e.fs.PushCode(fmt.Sprintf("%sreturn [%s];\n", ind, strings.Join(vals, ", ")))
 	}
 }
 
-// Variable declarations
-func (jse *JSEmitter) PreVisitGenDeclVar(node *ast.GenDecl, indent int) {
-	if jse.forwardDecl {
+// ============================================================
+// Expression Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JSEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitExprStmtX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JSEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitExprStmt))
+	code := ""
+	if len(tokens) >= 1 {
+		code = tokens[0].Content
+	}
+	ind := jsIndent(indent / 2)
+	e.fs.PushCode(ind + code + ";\n")
+}
+
+// ============================================================
+// If Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
+	e.indent = indent
+	// Push new stack frame for nesting support
+	e.ifInitStack = append(e.ifInitStack, "")
+	e.ifCondStack = append(e.ifCondStack, "")
+	e.ifBodyStack = append(e.ifBodyStack, "")
+	e.ifElseStack = append(e.ifElseStack, "")
+}
+
+func (e *JSEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
+	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtInit))
+}
+
+func (e *JSEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
+	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtCond))
+}
+
+func (e *JSEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
+	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtBody))
+}
+
+func (e *JSEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
+	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtElse))
+}
+
+func (e *JSEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+	e.fs.Reduce(string(PreVisitIfStmt))
+	ind := jsIndent(indent / 2)
+
+	// Pop stack frame
+	n := len(e.ifInitStack)
+	initCode := e.ifInitStack[n-1]
+	condCode := e.ifCondStack[n-1]
+	bodyCode := e.ifBodyStack[n-1]
+	elseCode := e.ifElseStack[n-1]
+	e.ifInitStack = e.ifInitStack[:n-1]
+	e.ifCondStack = e.ifCondStack[:n-1]
+	e.ifBodyStack = e.ifBodyStack[:n-1]
+	e.ifElseStack = e.ifElseStack[:n-1]
+
+	var sb strings.Builder
+	if initCode != "" {
+		// Wrap in block scope to avoid variable redeclaration conflicts
+		sb.WriteString(fmt.Sprintf("%s{\n", ind))
+		sb.WriteString(initCode)
+		sb.WriteString(fmt.Sprintf("%sif (%s) %s", ind, condCode, bodyCode))
+	} else {
+		sb.WriteString(fmt.Sprintf("%sif (%s) %s", ind, condCode, bodyCode))
+	}
+	if elseCode != "" {
+		// Check if else is another if statement (else if chain)
+		trimmed := strings.TrimLeft(elseCode, " \t\n")
+		if strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(") {
+			sb.WriteString(" else " + trimmed)
+		} else {
+			sb.WriteString(" else " + elseCode)
+		}
+	}
+	sb.WriteString("\n")
+	if initCode != "" {
+		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// For Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
+	e.indent = indent
+	// Push new stack frame for nesting support
+	e.forInitStack = append(e.forInitStack, "")
+	e.forCondStack = append(e.forCondStack, "")
+	e.forPostStack = append(e.forPostStack, "")
+}
+
+func (e *JSEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
+	initCode := e.fs.ReduceToCode(string(PreVisitForStmtInit))
+	initCode = strings.TrimRight(initCode, ";\n \t")
+	initCode = strings.TrimLeft(initCode, " \t")
+	e.forInitStack[len(e.forInitStack)-1] = initCode
+}
+
+func (e *JSEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
+	e.forCondStack[len(e.forCondStack)-1] = e.fs.ReduceToCode(string(PreVisitForStmtCond))
+}
+
+func (e *JSEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
+	postCode := e.fs.ReduceToCode(string(PreVisitForStmtPost))
+	postCode = strings.TrimRight(postCode, ";\n \t")
+	postCode = strings.TrimLeft(postCode, " \t")
+	e.forPostStack[len(e.forPostStack)-1] = postCode
+}
+
+func (e *JSEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitForStmt))
+	ind := jsIndent(indent / 2)
+
+	// Pop stack frame
+	n := len(e.forInitStack)
+	initCode := e.forInitStack[n-1]
+	condCode := e.forCondStack[n-1]
+	postCode := e.forPostStack[n-1]
+	e.forInitStack = e.forInitStack[:n-1]
+	e.forCondStack = e.forCondStack[:n-1]
+	e.forPostStack = e.forPostStack[:n-1]
+
+	// Infinite loop (no init, cond, post)
+	if node.Init == nil && node.Cond == nil && node.Post == nil {
+		e.fs.PushCode(fmt.Sprintf("%swhile (true) %s\n", ind, bodyCode))
 		return
+	}
+
+	// While loop (only cond)
+	if node.Init == nil && node.Post == nil && node.Cond != nil {
+		e.fs.PushCode(fmt.Sprintf("%swhile (%s) %s\n", ind, condCode, bodyCode))
+		return
+	}
+
+	e.fs.PushCode(fmt.Sprintf("%sfor (%s; %s; %s) %s\n", ind, initCode, condCode, postCode, bodyCode))
+}
+
+// ============================================================
+// Range Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JSEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
+	keyCode := e.fs.ReduceToCode(string(PreVisitRangeStmtKey))
+	e.fs.Push(keyCode, TagIdent, nil)
+}
+
+func (e *JSEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitRangeStmtValue))
+	e.fs.Push(valCode, TagIdent, nil)
+}
+
+func (e *JSEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitRangeStmtX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JSEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitRangeStmt))
+	ind := jsIndent(indent / 2)
+
+	keyCode := ""
+	valCode := ""
+	xCode := ""
+	bodyCode := ""
+
+	idx := 0
+	// Use AST node to determine which tokens are present
+	// Sema pass sets Key=nil when key is blank identifier (_)
+	if node.Key != nil {
+		// key (TagIdent)
+		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+			keyCode = tokens[idx].Content
+			idx++
+		}
+	}
+	if node.Value != nil {
+		// value (TagIdent)
+		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+			valCode = tokens[idx].Content
+			idx++
+		}
+	}
+	// collection (TagExpr)
+	if idx < len(tokens) {
+		xCode = tokens[idx].Content
+		idx++
+	}
+	// body
+	if idx < len(tokens) {
+		bodyCode = tokens[idx].Content
+	}
+	// When Key was nil (blank identifier), treat as value-only range
+	if node.Key == nil && valCode != "" {
+		keyCode = "_"
+	}
+
+	// Check if ranging over a map
+	isMap := false
+	if node.X != nil {
+		isMap = e.isMapTypeExpr(node.X)
+	}
+
+	if isMap {
+		// Map range: iterate using hashMapKeys
+		if valCode != "" && valCode != "_" {
+			// Key-value range on map
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%s{\n", ind))
+			sb.WriteString(fmt.Sprintf("%s  let _keys = hmap.hashMapKeys(%s);\n", ind, xCode))
+			sb.WriteString(fmt.Sprintf("%s  for (let _i = 0; _i < _keys.length; _i++) {\n", ind))
+			if keyCode != "_" {
+				sb.WriteString(fmt.Sprintf("%s    let %s = _keys[_i];\n", ind, keyCode))
+			}
+			sb.WriteString(fmt.Sprintf("%s    let %s = hmap.hashMapGet(%s, _keys[_i]);\n", ind, valCode, xCode))
+			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
+			sb.WriteString(fmt.Sprintf("%s  }\n", ind))
+			sb.WriteString(fmt.Sprintf("%s}\n", ind))
+			e.fs.PushCode(sb.String())
+		} else {
+			// Key-only range on map
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%s{\n", ind))
+			sb.WriteString(fmt.Sprintf("%s  let _keys = hmap.hashMapKeys(%s);\n", ind, xCode))
+			sb.WriteString(fmt.Sprintf("%s  for (let _i = 0; _i < _keys.length; _i++) {\n", ind))
+			if keyCode != "_" {
+				sb.WriteString(fmt.Sprintf("%s    let %s = _keys[_i];\n", ind, keyCode))
+			}
+			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
+			sb.WriteString(fmt.Sprintf("%s  }\n", ind))
+			sb.WriteString(fmt.Sprintf("%s}\n", ind))
+			e.fs.PushCode(sb.String())
+		}
+		return
+	}
+
+	// Slice/string range
+	if valCode != "" && valCode != "_" {
+		// Key-value range on slice/string
+		loopVar := keyCode
+		if loopVar == "_" || loopVar == "" {
+			loopVar = "_i"
+		}
+
+		// Inject value declaration at start of body
+		valDecl := fmt.Sprintf("%s    let %s = %s[%s];\n", ind, valCode, xCode, loopVar)
+		// Insert value decl inside the body block
+		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+
+		e.fs.PushCode(fmt.Sprintf("%sfor (let %s = 0; %s < %s.length; %s++) %s\n",
+			ind, loopVar, loopVar, xCode, loopVar, bodyWithDecl))
+	} else {
+		// Key-only range
+		loopVar := keyCode
+		if loopVar == "_" || loopVar == "" {
+			loopVar = "_i"
+		}
+		e.fs.PushCode(fmt.Sprintf("%sfor (let %s = 0; %s < %s.length; %s++) %s\n",
+			ind, loopVar, loopVar, xCode, loopVar, bodyCode))
 	}
 }
 
-func (jse *JSEmitter) PreVisitValueSpec(node *ast.ValueSpec, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	str := jse.emitAsString("let ", indent)
-	jse.emitToFile(str)
+// ============================================================
+// Switch / Case Statements
+// ============================================================
+
+func (e *JSEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+	e.indent = indent
 }
 
-func (jse *JSEmitter) PreVisitValueSpecName(node *ast.Ident, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-	jse.emitToFile(node.Name)
+func (e *JSEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
+	tagCode := e.fs.ReduceToCode(string(PreVisitSwitchStmtTag))
+	e.fs.PushCode(tagCode)
 }
 
-func (jse *JSEmitter) PreVisitValueSpecValue(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
-		return
+func (e *JSEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSwitchStmt))
+	ind := jsIndent(indent / 2)
+
+	tagCode := ""
+	idx := 0
+	if idx < len(tokens) {
+		tagCode = tokens[idx].Content
+		idx++
 	}
-	jse.emitToFile(" = ")
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%sswitch (%s) {\n", ind, tagCode))
+	for i := idx; i < len(tokens); i++ {
+		sb.WriteString(tokens[i].Content)
+	}
+	sb.WriteString(ind + "}\n")
+	e.fs.PushCode(sb.String())
 }
 
-func (jse *JSEmitter) PostVisitValueSpec(node *ast.ValueSpec, indent int) {
-	if jse.forwardDecl {
+func (e *JSEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
+	e.indent = indent
+}
+
+func (e *JSEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
+	exprCode := e.fs.ReduceToCode(string(PreVisitCaseClauseListExpr))
+	e.fs.PushCode(exprCode)
+}
+
+func (e *JSEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCaseClauseList))
+	var exprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			exprs = append(exprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(exprs, ", "))
+}
+
+func (e *JSEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCaseClause))
+	ind := jsIndent(indent / 2)
+
+	caseExprs := ""
+	idx := 0
+	if idx < len(tokens) {
+		caseExprs = tokens[idx].Content
+		idx++
+	}
+
+	var sb strings.Builder
+	if len(node.List) == 0 {
+		// Default case
+		sb.WriteString(ind + "default:\n")
+	} else {
+		// Regular case - handle multiple values
+		vals := strings.Split(caseExprs, ", ")
+		for _, v := range vals {
+			sb.WriteString(fmt.Sprintf("%scase %s:\n", ind, v))
+		}
+	}
+	// Case body statements
+	for i := idx; i < len(tokens); i++ {
+		sb.WriteString(tokens[i].Content)
+	}
+	// Add break unless the last statement is a return or break
+	bodyStr := sb.String()
+	if !strings.Contains(bodyStr, "return ") && !strings.Contains(bodyStr, "break;") {
+		sb.WriteString(ind + "  break;\n")
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Inc/Dec Statements
+// ============================================================
+
+func (e *JSEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
+	ind := jsIndent(indent / 2)
+	e.fs.PushCode(fmt.Sprintf("%s%s%s;\n", ind, xCode, node.Tok.String()))
+}
+
+// ============================================================
+// Branch Statements (break, continue)
+// ============================================================
+
+func (e *JSEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
+	ind := jsIndent(indent / 2)
+	switch node.Tok {
+	case token.BREAK:
+		e.fs.PushCode(ind + "break;\n")
+	case token.CONTINUE:
+		e.fs.PushCode(ind + "continue;\n")
+	}
+}
+
+// ============================================================
+// Struct Declarations (GenStructInfo)
+// ============================================================
+
+
+func (e *JSEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
+	// After all struct classes are emitted, open the namespace object if needed
+	if e.inNamespace {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("\nconst %s = {\n", e.currentPackage))
+		// Add struct class references into the namespace
+		for _, ti := range node {
+			if ti.Struct != nil {
+				sb.WriteString(fmt.Sprintf("  %s: %s,\n", ti.Name, ti.Name))
+			}
+		}
+		e.fs.PushCode(sb.String())
+	}
+}
+
+func (e *JSEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
+	// Discard type tokens
+	e.fs.Reduce(string(PreVisitGenStructFieldType))
+}
+
+func (e *JSEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
+	// Discard traversed ident, push name directly
+	e.fs.Reduce(string(PreVisitGenStructFieldName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *JSEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitGenStructInfo))
+
+	if node.Struct == nil {
 		return
 	}
-	// If no value, initialize with default
-	if len(node.Values) == 0 {
-		if node.Type != nil && jse.pkg != nil && jse.pkg.TypesInfo != nil {
-			if typeAndValue, ok := jse.pkg.TypesInfo.Types[node.Type]; ok {
-				jse.emitToFile(" = ")
-				jse.emitDefaultValue(typeAndValue.Type)
+
+	// Collect field names
+	var fieldNames []string
+	for _, t := range tokens {
+		if t.Tag == TagIdent {
+			fieldNames = append(fieldNames, t.Content)
+		}
+	}
+
+	// Generate JS class with default parameter values
+	// Build a map from field name to its default value based on AST type
+	fieldDefaults := make(map[string]string)
+	if node.Struct != nil {
+		for _, field := range node.Struct.Fields.List {
+			defVal := e.jsDefaultForASTType(field.Type)
+			for _, name := range field.Names {
+				fieldDefaults[name.Name] = defVal
 			}
 		}
 	}
-	jse.emitToFile(";\n")
-}
 
-// Constant declarations
-func (jse *JSEmitter) PreVisitGenDeclConst(node *ast.GenDecl, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-}
-
-func (jse *JSEmitter) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if jse.inNamespace {
-		// Inside a namespace object, use property syntax
-		str := jse.emitAsString(node.Name+": ", 0)
-		jse.emitToFile(str)
-	} else {
-		str := jse.emitAsString("const "+node.Name+" = ", 0)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if jse.inNamespace {
-		jse.emitToFile(",\n")
-	} else {
-		jse.emitToFile(";\n")
-	}
-}
-
-// Parenthesized expressions
-func (jse *JSEmitter) PreVisitParenExpr(node *ast.ParenExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile("(")
-}
-
-func (jse *JSEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(")")
-}
-
-// Break and continue
-func (jse *JSEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	str := jse.emitAsString(node.Tok.String()+";\n", indent)
-	jse.emitToFile(str)
-}
-
-// Switch statements
-func (jse *JSEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	str := jse.emitAsString("switch (", indent)
-	jse.emitToFile(str)
-}
-
-func (jse *JSEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(") {\n")
-}
-
-func (jse *JSEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	str := jse.emitAsString("}\n", indent)
-	jse.emitToFile(str)
-}
-
-func (jse *JSEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if len(node.List) == 0 {
-		str := jse.emitAsString("default:\n", indent)
-		jse.emitToFile(str)
-	} else {
-		str := jse.emitAsString("case ", indent)
-		jse.emitToFile(str)
-	}
-}
-
-func (jse *JSEmitter) PreVisitCaseClauseExpr(node ast.Expr, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-}
-
-func (jse *JSEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if len(node) > 0 {
-		jse.emitToFile(":\n")
-	}
-}
-
-func (jse *JSEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// Add break if no fallthrough (Go's default behavior)
-	str := jse.emitAsString("break;\n", indent+1)
-	jse.emitToFile(str)
-}
-
-// Key-value expressions (struct field initialization)
-func (jse *JSEmitter) PreVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-}
-
-func (jse *JSEmitter) PreVisitKeyValueExprValue(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(": ")
-}
-
-// Slice expressions
-// Go: a[low:high] => JS: a.slice(low, high)
-// Go: a[low:] => JS: a.slice(low)
-// Go: a[:high] => JS: a.slice(0, high)
-func (jse *JSEmitter) PreVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-}
-
-func (jse *JSEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// After the array name, emit .slice(
-	jse.emitToFile(".slice(")
-}
-
-func (jse *JSEmitter) PreVisitSliceExprXBegin(node ast.Expr, indent int) {
-	// Suppress the second X visit - it's for Go's internal slice bounds
-	jse.suppressRangeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
-	jse.suppressRangeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// If Low is nil (like a[:high]), emit 0
-	if node == nil {
-		jse.emitToFile("0")
-	}
-}
-
-func (jse *JSEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// We'll add comma in PreVisitSliceExprHigh if High is not nil
-}
-
-func (jse *JSEmitter) PreVisitSliceExprXEnd(node ast.Expr, indent int) {
-	// Suppress the third X visit
-	jse.suppressRangeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
-	jse.suppressRangeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// If High is not nil, emit comma before it
-	if node != nil {
-		jse.emitToFile(", ")
-	}
-}
-
-func (jse *JSEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.emitToFile(")")
-}
-
-// Type assertions (limited support)
-func (jse *JSEmitter) PreVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// In JavaScript, just return the value (dynamic typing)
-}
-
-func (jse *JSEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	// No-op for JavaScript
-}
-
-func (jse *JSEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
-	// Suppress type emission - JavaScript has no type assertions
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-func (jse *JSEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
-	if jse.isTypeAssertCommaOk {
-		jse.captureMapKey = true
-		jse.capturedMapKey = ""
-		return
-	}
-}
-
-func (jse *JSEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
-	if jse.isTypeAssertCommaOk {
-		jse.captureMapKey = false
-		return
-	}
-}
-
-// Function literals (closures)
-func (jse *JSEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.inFuncLit = true
-	jse.emitToFile("function(")
-}
-
-func (jse *JSEmitter) PreVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
-	// Start of parameters - suppress type emission
-	jse.suppressTypeEmit = true
-}
-
-func (jse *JSEmitter) PreVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	if index > 0 {
-		jse.emitToFile(", ")
-	}
-	for i, name := range node.Names {
-		if i > 0 {
-			jse.emitToFile(", ")
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("class %s {\n", node.Name))
+	var ctorParams []string
+	for _, name := range fieldNames {
+		if defVal, ok := fieldDefaults[name]; ok {
+			ctorParams = append(ctorParams, fmt.Sprintf("%s = %s", name, defVal))
+		} else {
+			ctorParams = append(ctorParams, name)
 		}
-		jse.emitToFile(name.Name)
+	}
+	sb.WriteString("  constructor(" + strings.Join(ctorParams, ", ") + ") {\n")
+	for _, name := range fieldNames {
+		sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", name, name))
+	}
+	sb.WriteString("  }\n")
+	sb.WriteString("}\n\n")
+
+	// Classes are always pushed to the stack - they come before the namespace opener
+	// (PostVisitGenStructInfos opens the namespace after all struct classes)
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Constants (GenDeclConst)
+// ============================================================
+
+func (e *JSEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
+	valTokens := e.fs.Reduce(string(PreVisitGenDeclConstName))
+	valCode := ""
+	for _, t := range valTokens {
+		valCode += t.Content
+	}
+	if valCode == "" {
+		valCode = "0"
+	}
+	name := node.Name
+	if e.inNamespace {
+		e.fs.PushCode(fmt.Sprintf("%s: %s,\n", name, valCode))
+	} else {
+		e.fs.PushCode(fmt.Sprintf("const %s = %s;\n", name, valCode))
 	}
 }
 
-func (jse *JSEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
-	if jse.forwardDecl {
-		return
-	}
-	jse.suppressTypeEmit = false
-	jse.emitToFile(") ")
+func (e *JSEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
+	// Let const tokens flow through
 }
 
-func (jse *JSEmitter) PreVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
-	// Suppress return type emission - JavaScript doesn't have return type annotations
-	jse.suppressTypeEmit = true
-}
+// ============================================================
+// Type Aliases (suppressed for JS)
+// ============================================================
 
-func (jse *JSEmitter) PostVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
-	jse.suppressTypeEmit = false
-}
-
-func (jse *JSEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
-	jse.inFuncLit = false
-}
-
-// Helper to check if type needs special handling
-func (jse *JSEmitter) getJSType(goType string) string {
-	if jsType, ok := jsTypesMap[goType]; ok {
-		return jsType
-	}
-	return goType
-}
-
-// mapGoTypeToJS converts Go types to JavaScript type comments
-func (jse *JSEmitter) mapGoTypeToJS(t types.Type) string {
-	if t == nil {
-		return "any"
-	}
-	switch underlying := t.Underlying().(type) {
-	case *types.Basic:
-		return jse.getJSType(underlying.Name())
-	case *types.Slice:
-		return "Array"
-	case *types.Struct:
-		return "Object"
-	default:
-		return "any"
-	}
+func (e *JSEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
+	// Discard type alias - no output for JS
+	e.fs.Reduce(string(PreVisitTypeAliasName))
 }
 
 // ensureNpmDependencies generates package.json and runs npm install if runtime
 // packages require third-party npm dependencies (e.g. net runtime needs deasync).
-func (jse *JSEmitter) ensureNpmDependencies() {
-	if _, hasNet := jse.RuntimePackages["net"]; !hasNet {
+func (e *JSEmitter) ensureNpmDependencies() {
+	if _, hasNet := e.RuntimePackages["net"]; !hasNet {
 		return
 	}
-	pkgJsonPath := filepath.Join(jse.OutputDir, "package.json")
+	pkgJsonPath := filepath.Join(e.OutputDir, "package.json")
 	if _, err := os.Stat(pkgJsonPath); os.IsNotExist(err) {
 		os.WriteFile(pkgJsonPath, []byte("{\"private\":true,\"dependencies\":{\"deasync\":\"^0.1.30\"}}\n"), 0644)
 	}
-	deasyncDir := filepath.Join(jse.OutputDir, "node_modules", "deasync")
+	deasyncDir := filepath.Join(e.OutputDir, "node_modules", "deasync")
 	if _, err := os.Stat(deasyncDir); os.IsNotExist(err) {
 		cmd := exec.Command("npm", "install", "--no-audit", "--no-fund")
-		cmd.Dir = jse.OutputDir
+		cmd.Dir = e.OutputDir
 		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Printf("Warning: npm install failed in %s: %v\n%s", jse.OutputDir, err, out)
+			log.Printf("Warning: npm install failed in %s: %v\n%s", e.OutputDir, err, out)
 		}
 	}
 }
+

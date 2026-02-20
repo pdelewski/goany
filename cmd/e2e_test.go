@@ -24,34 +24,32 @@ type TestCase struct {
 	JsRunnable       bool // Can run with Node.js (false for graphics apps that need browser)
 	JavaEnabled      bool
 	JavaRunnable     bool // Can run standalone (false for apps that need special setup)
-	JsPrimEnabled    bool
-	JsPrimRunnable   bool // Can run with Node.js (jsprim shift/reduce backend)
 }
 
 const runtimePath = "../runtime"
 
 var e2eTestCases = []TestCase{
-	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true, true, true},
-	{"containers", "../examples/containers", true, true, true, true, true, true, true, false, true, true},
-	{"uql", "../examples/uql", true, true, true, true, true, true, true, false, true, true},
-	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false, true, true},
-	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true, true, true},
-	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true, true, true},
-	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false, true, false},   // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false, true, false},         // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false, true, false},                   // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false, true, false}, // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false, true, false},       // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false, true, false}, // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false, true, false},         // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false, true, false},   // Dotnet/JS/JsPrim/Java: transpile only (needs graphics)
-	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false, true, false},
-	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false, true, false},
-	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true, true, true},
-	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false, true, false},                   // JS/JsPrim transpile only (needs deasync npm package)
-	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false, true, false},     // Server example - transpile/compile only
-	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false, true, false},     // Client example - transpile/compile only
-	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true, true, true},
+	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true},
+	{"containers", "../examples/containers", true, true, true, true, true, true, true, false},
+	{"uql", "../examples/uql", true, true, true, true, true, true, true, false},
+	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false},
+	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true},
+	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true},
+	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false},       // Dotnet/JS/Java: transpile only (needs graphics)
+	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false},             // Dotnet/JS/Java: transpile only (needs graphics)
+	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false},                       // Dotnet/JS/Java: transpile only (needs graphics)
+	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false},     // Dotnet/JS/Java: transpile only (needs graphics)
+	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false},           // Dotnet/JS/Java: transpile only (needs graphics)
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false}, // Dotnet/JS/Java: transpile only (needs graphics)
+	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false},             // Dotnet/JS/Java: transpile only (needs graphics)
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false},       // Dotnet/JS/Java: transpile only (needs graphics)
+	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false},
+	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false},
+	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true},
+	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false},                       // JS transpile only (needs deasync npm package)
+	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false},         // Server example - transpile/compile only
+	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false},         // Client example - transpile/compile only
+	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true},
 }
 
 func TestE2E(t *testing.T) {
@@ -115,9 +113,6 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 	}
 	if tc.JavaEnabled {
 		optInBackends = append(optInBackends, "java")
-	}
-	if tc.JsPrimEnabled {
-		optInBackends = append(optInBackends, "jsprim")
 	}
 	if len(optInBackends) > 0 {
 		args = append(args, fmt.Sprintf("--backend=all,%s", joinStrings(optInBackends, ",")))
@@ -192,22 +187,7 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		t.Logf("Skipping JavaScript execution for %s (requires browser)", tc.Name)
 	}
 
-	// Step 6: Run JsPrim JavaScript using node (only if runnable)
-	if tc.JsPrimEnabled && tc.JsPrimRunnable {
-		jsprimFile := filepath.Join(outputDir, tc.Name+".jsprim.js")
-		t.Logf("Running JsPrim JavaScript for %s", tc.Name)
-		cmd = exec.Command("node", jsprimFile)
-		cmd.Dir = outputDir
-		output, err = cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("JsPrim JavaScript execution failed: %v\nOutput: %s", err, output)
-		}
-		t.Logf("JsPrim JavaScript execution output: %s", output)
-	} else if tc.JsPrimEnabled {
-		t.Logf("Skipping JsPrim JavaScript execution for %s (not runnable)", tc.Name)
-	}
-
-	// Step 7: Compile and run Java
+	// Step 6: Compile and run Java
 	if tc.JavaEnabled {
 		// Java file names are sanitized (hyphens replaced with underscores)
 		javaName := strings.ReplaceAll(tc.Name, "-", "_")

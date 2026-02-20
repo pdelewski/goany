@@ -30,7 +30,7 @@ func NewFragmentStack(gir *GoFIR) *FragmentStack {
 // Push adds a token to the GoFIR's tokenSlice with the given code, tag, and Go type.
 func (fs *FragmentStack) Push(code string, tag int, goType types.Type) {
 	token := Token{Content: code, Tag: tag, GoType: goType}
-	fs.gir.emitTokenToFileBufferString(token, "__JSPRIM_PUSH")
+	fs.gir.emitTokenToFileBufferString(token, "__JS_PUSH")
 }
 
 // PushCode is a convenience method that pushes code with TagExpr and nil GoType.
