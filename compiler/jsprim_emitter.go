@@ -384,7 +384,6 @@ func (e *JSPrimEmitter) PreVisitProgram(indent int) {
 	}
 
 	e.fs = NewFragmentStack(e.GetGoFIR())
-	e.fs.PushMarker(MarkerProgram)
 
 	// Write JS header with runtime helpers
 	e.file.WriteString(`// Generated JavaScript code (jsprim backend)
@@ -503,7 +502,7 @@ function bool(v) { return Boolean(v); }
 
 func (e *JSPrimEmitter) PostVisitProgram(indent int) {
 	// Reduce everything from program marker
-	tokens := e.fs.Reduce(MarkerProgram)
+	tokens := e.fs.Reduce(string(PreVisitProgram))
 	// Write all accumulated code
 	for _, t := range tokens {
 		e.file.WriteString(t.Content)
@@ -589,7 +588,6 @@ func (e *JSPrimEmitter) replaceStructKeyFunctions() {
 func (e *JSPrimEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	e.pkg = pkg
 	e.currentPackage = pkg.Name
-	e.fs.PushMarker(MarkerPackage)
 	if pkg.Name != "main" {
 		e.inNamespace = true
 		// Write namespace opener directly - structs will be written before it
@@ -683,30 +681,18 @@ func (e *JSPrimEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 // Binary Expressions
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	e.fs.PushMarker(MarkerBinOp)
-}
-
-func (e *JSPrimEmitter) PreVisitBinaryExprLeft(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerBinOpLeft)
-}
-
 func (e *JSPrimEmitter) PostVisitBinaryExprLeft(node ast.Expr, indent int) {
-	left := e.fs.ReduceToCode(MarkerBinOpLeft)
+	left := e.fs.ReduceToCode(string(PreVisitBinaryExprLeft))
 	e.fs.PushCode(left)
 }
 
-func (e *JSPrimEmitter) PreVisitBinaryExprRight(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerBinOpRight)
-}
-
 func (e *JSPrimEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
-	right := e.fs.ReduceToCode(MarkerBinOpRight)
+	right := e.fs.ReduceToCode(string(PreVisitBinaryExprRight))
 	e.fs.PushCode(right)
 }
 
 func (e *JSPrimEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	tokens := e.fs.Reduce(MarkerBinOp)
+	tokens := e.fs.Reduce(string(PreVisitBinaryExpr))
 	left := ""
 	right := ""
 	if len(tokens) >= 1 {
@@ -738,34 +724,18 @@ func (e *JSPrimEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 // Call Expressions
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
-	e.fs.PushMarker(MarkerCall)
-}
-
-func (e *JSPrimEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerCallFun)
-}
-
 func (e *JSPrimEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
-	funCode := e.fs.ReduceToCode(MarkerCallFun)
+	funCode := e.fs.ReduceToCode(string(PreVisitCallExprFun))
 	e.fs.PushCode(funCode)
 }
 
-func (e *JSPrimEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerCallArgs)
-}
-
-func (e *JSPrimEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
-	e.fs.PushMarker(MarkerCallArg)
-}
-
 func (e *JSPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	argCode := e.fs.ReduceToCode(MarkerCallArg)
+	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
 	e.fs.PushCode(argCode)
 }
 
 func (e *JSPrimEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
-	argTokens := e.fs.Reduce(MarkerCallArgs)
+	argTokens := e.fs.Reduce(string(PreVisitCallExprArgs))
 	var args []string
 	for _, t := range argTokens {
 		if t.Content != "" {
@@ -776,7 +746,7 @@ func (e *JSPrimEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 }
 
 func (e *JSPrimEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
-	tokens := e.fs.Reduce(MarkerCall)
+	tokens := e.fs.Reduce(string(PreVisitCallExpr))
 	funName := ""
 	argsStr := ""
 	if len(tokens) >= 1 {
@@ -853,31 +823,19 @@ func (e *JSPrimEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 // Selector Expressions (a.b)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
-	e.fs.PushMarker(MarkerSelector)
-}
-
-func (e *JSPrimEmitter) PreVisitSelectorExprX(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerSelectorX)
-}
-
 func (e *JSPrimEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerSelectorX)
+	xCode := e.fs.ReduceToCode(string(PreVisitSelectorExprX))
 	e.fs.PushCode(xCode)
-}
-
-func (e *JSPrimEmitter) PreVisitSelectorExprSel(node *ast.Ident, indent int) {
-	e.fs.PushMarker(MarkerSelectorSel)
 }
 
 func (e *JSPrimEmitter) PostVisitSelectorExprSel(node *ast.Ident, indent int) {
 	// Discard the traversed ident, use node.Name directly
-	e.fs.Reduce(MarkerSelectorSel)
+	e.fs.Reduce(string(PreVisitSelectorExprSel))
 	e.fs.PushCode(node.Name)
 }
 
 func (e *JSPrimEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
-	tokens := e.fs.Reduce(MarkerSelector)
+	tokens := e.fs.Reduce(string(PreVisitSelectorExpr))
 	xCode := ""
 	selCode := ""
 	if len(tokens) >= 1 {
@@ -903,33 +861,21 @@ func (e *JSPrimEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int
 // Index Expressions (a[i])
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	e.fs.PushMarker(MarkerIndex)
-}
-
-func (e *JSPrimEmitter) PreVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	e.fs.PushMarker(MarkerIndexX)
-}
-
 func (e *JSPrimEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerIndexX)
+	xCode := e.fs.ReduceToCode(string(PreVisitIndexExprX))
 	e.fs.PushCode(xCode)
 	// Save for potential map assignment detection
 	e.lastIndexXCode = xCode
 }
 
-func (e *JSPrimEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	e.fs.PushMarker(MarkerIndexIdx)
-}
-
 func (e *JSPrimEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	idxCode := e.fs.ReduceToCode(MarkerIndexIdx)
+	idxCode := e.fs.ReduceToCode(string(PreVisitIndexExprIndex))
 	e.fs.PushCode(idxCode)
 	e.lastIndexKeyCode = idxCode
 }
 
 func (e *JSPrimEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	tokens := e.fs.Reduce(MarkerIndex)
+	tokens := e.fs.Reduce(string(PreVisitIndexExpr))
 	xCode := ""
 	idxCode := ""
 	if len(tokens) >= 1 {
@@ -959,12 +905,8 @@ func (e *JSPrimEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 // Unary Expressions
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	e.fs.PushMarker(MarkerUnaryOp)
-}
-
 func (e *JSPrimEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerUnaryOp)
+	xCode := e.fs.ReduceToCode(string(PreVisitUnaryExpr))
 	op := node.Op.String()
 	if op == "^" {
 		// Go's ^ is bitwise NOT (like ~ in JS)
@@ -978,12 +920,8 @@ func (e *JSPrimEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 // Paren Expressions
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitParenExpr(node *ast.ParenExpr, indent int) {
-	e.fs.PushMarker(MarkerParen)
-}
-
 func (e *JSPrimEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
-	inner := e.fs.ReduceToCode(MarkerParen)
+	inner := e.fs.ReduceToCode(string(PreVisitParenExpr))
 	e.fs.PushCode("(" + inner + ")")
 }
 
@@ -991,34 +929,18 @@ func (e *JSPrimEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
 // Composite Literals (struct{}, []int{}, map[K]V{})
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	e.fs.PushMarker(MarkerCompositeLit)
-}
-
-func (e *JSPrimEmitter) PreVisitCompositeLitType(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerCompositeLitType)
-}
-
 func (e *JSPrimEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
 	// Discard type tokens for JS (no type annotations)
-	e.fs.Reduce(MarkerCompositeLitType)
-}
-
-func (e *JSPrimEmitter) PreVisitCompositeLitElts(node []ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerCompositeLitElts)
-}
-
-func (e *JSPrimEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	e.fs.PushMarker(MarkerCompositeLitElt)
+	e.fs.Reduce(string(PreVisitCompositeLitType))
 }
 
 func (e *JSPrimEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	eltCode := e.fs.ReduceToCode(MarkerCompositeLitElt)
+	eltCode := e.fs.ReduceToCode(string(PreVisitCompositeLitElt))
 	e.fs.PushCode(eltCode)
 }
 
 func (e *JSPrimEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
-	eltTokens := e.fs.Reduce(MarkerCompositeLitElts)
+	eltTokens := e.fs.Reduce(string(PreVisitCompositeLitElts))
 	// Push each element back as an individual token (don't join)
 	for _, t := range eltTokens {
 		if t.Content != "" {
@@ -1028,7 +950,7 @@ func (e *JSPrimEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
 }
 
 func (e *JSPrimEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	tokens := e.fs.Reduce(MarkerCompositeLit)
+	tokens := e.fs.Reduce(string(PreVisitCompositeLit))
 	// Collect individual element tokens (each is TagLiteral from PostVisitCompositeLitElts)
 	var elts []string
 	for _, t := range tokens {
@@ -1123,30 +1045,18 @@ func (e *JSPrimEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 // KeyValue Expressions (for composite literals)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	e.fs.PushMarker(MarkerKeyValue)
-}
-
-func (e *JSPrimEmitter) PreVisitKeyValueExprKey(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerKeyValueKey)
-}
-
 func (e *JSPrimEmitter) PostVisitKeyValueExprKey(node ast.Expr, indent int) {
-	keyCode := e.fs.ReduceToCode(MarkerKeyValueKey)
+	keyCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprKey))
 	e.fs.PushCode(keyCode)
 }
 
-func (e *JSPrimEmitter) PreVisitKeyValueExprValue(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerKeyValueValue)
-}
-
 func (e *JSPrimEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
-	valCode := e.fs.ReduceToCode(MarkerKeyValueValue)
+	valCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprValue))
 	e.fs.PushCode(valCode)
 }
 
 func (e *JSPrimEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	tokens := e.fs.Reduce(MarkerKeyValue)
+	tokens := e.fs.Reduce(string(PreVisitKeyValueExpr))
 	keyCode := ""
 	valCode := ""
 	if len(tokens) >= 1 {
@@ -1162,57 +1072,33 @@ func (e *JSPrimEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int
 // Slice Expressions (a[lo:hi])
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	e.fs.PushMarker(MarkerSliceExpr)
-}
-
-func (e *JSPrimEmitter) PreVisitSliceExprX(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerSliceExprX)
-}
-
 func (e *JSPrimEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerSliceExprX)
+	xCode := e.fs.ReduceToCode(string(PreVisitSliceExprX))
 	e.fs.PushCode(xCode)
-}
-
-func (e *JSPrimEmitter) PreVisitSliceExprXBegin(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerSliceExprXBegin)
 }
 
 func (e *JSPrimEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
 	// Discard the duplicated X traversal
-	e.fs.Reduce(MarkerSliceExprXBegin)
-}
-
-func (e *JSPrimEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerSliceExprLow)
+	e.fs.Reduce(string(PreVisitSliceExprXBegin))
 }
 
 func (e *JSPrimEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
-	lowCode := e.fs.ReduceToCode(MarkerSliceExprLow)
+	lowCode := e.fs.ReduceToCode(string(PreVisitSliceExprLow))
 	e.fs.PushCode(lowCode)
-}
-
-func (e *JSPrimEmitter) PreVisitSliceExprXEnd(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerSliceExprXEnd)
 }
 
 func (e *JSPrimEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
 	// Discard the duplicated X traversal
-	e.fs.Reduce(MarkerSliceExprXEnd)
-}
-
-func (e *JSPrimEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerSliceExprHigh)
+	e.fs.Reduce(string(PreVisitSliceExprXEnd))
 }
 
 func (e *JSPrimEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
-	highCode := e.fs.ReduceToCode(MarkerSliceExprHigh)
+	highCode := e.fs.ReduceToCode(string(PreVisitSliceExprHigh))
 	e.fs.PushCode(highCode)
 }
 
 func (e *JSPrimEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	tokens := e.fs.Reduce(MarkerSliceExpr)
+	tokens := e.fs.Reduce(string(PreVisitSliceExpr))
 	xCode := ""
 	lowCode := ""
 	highCode := ""
@@ -1246,13 +1132,9 @@ func (e *JSPrimEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 // Array Type (used in composite literals, make calls)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
-	e.fs.PushMarker(MarkerArrayType)
-}
-
 func (e *JSPrimEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	// Discard type info for JS
-	e.fs.Reduce(MarkerArrayType)
+	e.fs.Reduce(string(PreVisitArrayType))
 	e.fs.Push("[]", TagType, nil)
 }
 
@@ -1260,28 +1142,16 @@ func (e *JSPrimEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 // Map Type
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitMapType(node *ast.MapType, indent int) {
-	e.fs.PushMarker(MarkerMapType)
-}
-
-func (e *JSPrimEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerMapKeyType)
-}
-
 func (e *JSPrimEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
-	e.fs.Reduce(MarkerMapKeyType)
-}
-
-func (e *JSPrimEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerMapValueType)
+	e.fs.Reduce(string(PreVisitMapKeyType))
 }
 
 func (e *JSPrimEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
-	e.fs.Reduce(MarkerMapValueType)
+	e.fs.Reduce(string(PreVisitMapValueType))
 }
 
 func (e *JSPrimEmitter) PostVisitMapType(node *ast.MapType, indent int) {
-	e.fs.Reduce(MarkerMapType)
+	e.fs.Reduce(string(PreVisitMapType))
 	e.fs.Push("map", TagType, nil)
 }
 
@@ -1289,21 +1159,9 @@ func (e *JSPrimEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 // Function Literals (closures)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
-	e.fs.PushMarker(MarkerFuncLit)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
-	e.fs.PushMarker(MarkerFuncLitParams)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	e.fs.PushMarker(MarkerFuncLitParam)
-}
-
 func (e *JSPrimEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
 	// Discard the type tokens (e.g., "int") that traverseExpression(param.Type) pushed
-	e.fs.Reduce(MarkerFuncLitParam)
+	e.fs.Reduce(string(PreVisitFuncLitTypeParam))
 	// Push the actual parameter names from node.Names
 	for _, name := range node.Names {
 		e.fs.Push(name.Name, TagIdent, nil)
@@ -1312,7 +1170,7 @@ func (e *JSPrimEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, in
 
 func (e *JSPrimEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
 	// Collect parameter names
-	tokens := e.fs.Reduce(MarkerFuncLitParams)
+	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParams))
 	var paramNames []string
 	for _, t := range tokens {
 		if t.Tag == TagIdent && t.Content != "" {
@@ -1327,27 +1185,18 @@ func (e *JSPrimEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent i
 	e.fs.PushCode(paramsStr)
 }
 
-func (e *JSPrimEmitter) PreVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
-	e.fs.PushMarker(MarkerFuncLitResults)
-}
-
-
 func (e *JSPrimEmitter) PostVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
 	// Discard result types for JS
-	e.fs.Reduce(MarkerFuncLitResults)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncLitBody(node *ast.BlockStmt, indent int) {
-	e.fs.PushMarker(MarkerFuncLitBody)
+	e.fs.Reduce(string(PreVisitFuncLitTypeResults))
 }
 
 func (e *JSPrimEmitter) PostVisitFuncLitBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.ReduceToCode(MarkerFuncLitBody)
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncLitBody))
 	e.fs.PushCode(bodyCode)
 }
 
 func (e *JSPrimEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
-	tokens := e.fs.Reduce(MarkerFuncLit)
+	tokens := e.fs.Reduce(string(PreVisitFuncLit))
 	paramsCode := ""
 	bodyCode := ""
 	if len(tokens) >= 1 {
@@ -1363,30 +1212,18 @@ func (e *JSPrimEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 // Type Assertions
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
-	e.fs.PushMarker(MarkerTypeAssert)
-}
-
-func (e *JSPrimEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerTypeAssertType)
-}
-
 func (e *JSPrimEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
 	// Discard type for JS (type assertions are no-ops at runtime)
-	e.fs.Reduce(MarkerTypeAssertType)
-}
-
-func (e *JSPrimEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerTypeAssertX)
+	e.fs.Reduce(string(PreVisitTypeAssertExprType))
 }
 
 func (e *JSPrimEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerTypeAssertX)
+	xCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprX))
 	e.fs.PushCode(xCode)
 }
 
 func (e *JSPrimEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
-	tokens := e.fs.Reduce(MarkerTypeAssert)
+	tokens := e.fs.Reduce(string(PreVisitTypeAssertExpr))
 	xCode := ""
 	if len(tokens) >= 1 {
 		xCode = tokens[0].Content
@@ -1399,16 +1236,7 @@ func (e *JSPrimEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent
 // Function Declarations
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	e.fs.PushMarker(MarkerFunc)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	e.fs.PushMarker(MarkerFuncSig)
-}
-
 func (e *JSPrimEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	e.fs.PushMarker(MarkerFuncSigResults)
 	// Track number of results for multi-value return handling
 	e.numFuncResults = 0
 	if node.Type.Results != nil {
@@ -1416,60 +1244,36 @@ func (e *JSPrimEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl,
 	}
 }
 
-func (e *JSPrimEmitter) PreVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	e.fs.PushMarker(MarkerFuncSigResultsList)
-}
-
 func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
 	// Discard result type tokens for JS
-	e.fs.Reduce(MarkerFuncSigResultsList)
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResultsList))
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
 	// Discard all result type tokens for JS
-	e.fs.Reduce(MarkerFuncSigResults)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncDeclName(node *ast.Ident, indent int) {
-	e.fs.PushMarker(MarkerFuncDeclName)
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResults))
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 	// Discard traversed ident, use node.Name directly
-	e.fs.Reduce(MarkerFuncDeclName)
+	e.fs.Reduce(string(PreVisitFuncDeclName))
 	e.fs.Push(node.Name, TagIdent, nil)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	e.fs.PushMarker(MarkerFuncSigParams)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	e.fs.PushMarker(MarkerFuncSigParamsList)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
-	e.fs.PushMarker(MarkerFuncSigParamType)
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
 	// Discard type tokens for JS
-	e.fs.Reduce(MarkerFuncSigParamType)
-}
-
-func (e *JSPrimEmitter) PreVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	e.fs.PushMarker(MarkerFuncSigParamName)
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsListType))
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
 	// Discard traversed ident, push name directly
-	e.fs.Reduce(MarkerFuncSigParamName)
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsArgName))
 	e.fs.Push(node.Name, TagIdent, nil)
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
 	// Collect param names from this field group
-	tokens := e.fs.Reduce(MarkerFuncSigParamsList)
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsList))
 	for _, t := range tokens {
 		if t.Tag == TagIdent {
 			e.fs.Push(t.Content, TagIdent, nil)
@@ -1478,7 +1282,7 @@ func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(MarkerFuncSigParams)
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
 	var paramNames []string
 	for _, t := range tokens {
 		if t.Tag == TagIdent {
@@ -1489,7 +1293,7 @@ func (e *JSPrimEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl,
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(MarkerFuncSig)
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
 	funcName := ""
 	paramsStr := ""
 	for _, t := range tokens {
@@ -1507,17 +1311,13 @@ func (e *JSPrimEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent in
 	}
 }
 
-func (e *JSPrimEmitter) PreVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	e.fs.PushMarker(MarkerFuncBody)
-}
-
 func (e *JSPrimEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.ReduceToCode(MarkerFuncBody)
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncDeclBody))
 	e.fs.PushCode(bodyCode)
 }
 
 func (e *JSPrimEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(MarkerFunc)
+	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
 	sigCode := ""
 	bodyCode := ""
 	if len(tokens) >= 1 {
@@ -1538,13 +1338,9 @@ func (e *JSPrimEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 // Forward Declaration Signatures (suppressed for JS)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitFuncDeclSignatures(indent int) {
-	e.fs.PushMarker(MarkerFuncSignatures)
-}
-
 func (e *JSPrimEmitter) PostVisitFuncDeclSignatures(indent int) {
 	// Discard all forward declaration signatures for JS
-	e.fs.Reduce(MarkerFuncSignatures)
+	e.fs.Reduce(string(PreVisitFuncDeclSignatures))
 }
 
 // ============================================================
@@ -1552,21 +1348,16 @@ func (e *JSPrimEmitter) PostVisitFuncDeclSignatures(indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	e.fs.PushMarker(MarkerBlock)
 	e.indent = indent
 }
 
-func (e *JSPrimEmitter) PreVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	e.fs.PushMarker(MarkerBlockItem)
-}
-
 func (e *JSPrimEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	itemCode := e.fs.ReduceToCode(MarkerBlockItem)
+	itemCode := e.fs.ReduceToCode(string(PreVisitBlockStmtList))
 	e.fs.PushCode(itemCode)
 }
 
 func (e *JSPrimEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerBlock)
+	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
 	var sb strings.Builder
 	sb.WriteString("{\n")
 	for _, t := range tokens {
@@ -1583,23 +1374,14 @@ func (e *JSPrimEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	e.fs.PushMarker(MarkerAssign)
 	e.indent = indent
 	// Reset map assign state
 	e.mapAssignVar = ""
 	e.mapAssignKey = ""
 }
 
-func (e *JSPrimEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	e.fs.PushMarker(MarkerAssignLhs)
-}
-
-func (e *JSPrimEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	e.fs.PushMarker(MarkerAssignLhsExpr)
-}
-
 func (e *JSPrimEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	lhsCode := e.fs.ReduceToCode(MarkerAssignLhsExpr)
+	lhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtLhsExpr))
 
 	// Detect map assignment: if lhs is m[k] on a map type
 	if indexExpr, ok := node.(*ast.IndexExpr); ok {
@@ -1615,7 +1397,7 @@ func (e *JSPrimEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, ind
 }
 
 func (e *JSPrimEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerAssignLhs)
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtLhs))
 	var lhsExprs []string
 	for _, t := range tokens {
 		if t.Content != "" {
@@ -1625,21 +1407,13 @@ func (e *JSPrimEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int)
 	e.fs.PushCode(strings.Join(lhsExprs, ", "))
 }
 
-func (e *JSPrimEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	e.fs.PushMarker(MarkerAssignRhs)
-}
-
-func (e *JSPrimEmitter) PreVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
-	e.fs.PushMarker(MarkerAssignRhsExpr)
-}
-
 func (e *JSPrimEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
-	rhsCode := e.fs.ReduceToCode(MarkerAssignRhsExpr)
+	rhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtRhsExpr))
 	e.fs.PushCode(rhsCode)
 }
 
 func (e *JSPrimEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerAssignRhs)
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtRhs))
 	var rhsExprs []string
 	for _, t := range tokens {
 		if t.Content != "" {
@@ -1650,7 +1424,7 @@ func (e *JSPrimEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int)
 }
 
 func (e *JSPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerAssign)
+	tokens := e.fs.Reduce(string(PreVisitAssignStmt))
 	lhsStr := ""
 	rhsStr := ""
 	if len(tokens) >= 1 {
@@ -1754,17 +1528,12 @@ func (e *JSPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
-	e.fs.PushMarker(MarkerDecl)
 	e.indent = indent
-}
-
-func (e *JSPrimEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	e.fs.PushMarker(MarkerDeclType)
 }
 
 func (e *JSPrimEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
 	// Keep type info for default value determination
-	tokens := e.fs.Reduce(MarkerDeclType)
+	tokens := e.fs.Reduce(string(PreVisitDeclStmtValueSpecType))
 	typeStr := ""
 	for _, t := range tokens {
 		typeStr += t.Content
@@ -1779,27 +1548,19 @@ func (e *JSPrimEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, inde
 	e.fs.Push(typeStr, TagType, goType)
 }
 
-func (e *JSPrimEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	e.fs.PushMarker(MarkerDeclName)
-}
-
 func (e *JSPrimEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
 	// Discard traversed ident, use node.Name directly
-	e.fs.Reduce(MarkerDeclName)
+	e.fs.Reduce(string(PreVisitDeclStmtValueSpecNames))
 	e.fs.Push(node.Name, TagIdent, nil)
 }
 
-func (e *JSPrimEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	e.fs.PushMarker(MarkerDeclValue)
-}
-
 func (e *JSPrimEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	valCode := e.fs.ReduceToCode(MarkerDeclValue)
+	valCode := e.fs.ReduceToCode(string(PreVisitDeclStmtValueSpecValue))
 	e.fs.Push(valCode, TagExpr, nil)
 }
 
 func (e *JSPrimEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerDecl)
+	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
 	ind := jsprimIndent(indent / 2)
 
 	// Parse tokens: types (TagType), names (TagIdent), values (TagExpr)
@@ -1935,21 +1696,16 @@ func (e *JSPrimEmitter) jsprimDefaultForASTType(expr ast.Expr) string {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	e.fs.PushMarker(MarkerReturn)
 	e.indent = indent
 }
 
-func (e *JSPrimEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	e.fs.PushMarker(MarkerReturnResult)
-}
-
 func (e *JSPrimEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	resultCode := e.fs.ReduceToCode(MarkerReturnResult)
+	resultCode := e.fs.ReduceToCode(string(PreVisitReturnStmtResult))
 	e.fs.PushCode(resultCode)
 }
 
 func (e *JSPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerReturn)
+	tokens := e.fs.Reduce(string(PreVisitReturnStmt))
 	ind := jsprimIndent(indent / 2)
 
 	if len(tokens) == 0 {
@@ -1971,21 +1727,16 @@ func (e *JSPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {
-	e.fs.PushMarker(MarkerExprStmt)
 	e.indent = indent
 }
 
-func (e *JSPrimEmitter) PreVisitExprStmtX(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerExprStmtX)
-}
-
 func (e *JSPrimEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerExprStmtX)
+	xCode := e.fs.ReduceToCode(string(PreVisitExprStmtX))
 	e.fs.PushCode(xCode)
 }
 
 func (e *JSPrimEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerExprStmt)
+	tokens := e.fs.Reduce(string(PreVisitExprStmt))
 	code := ""
 	if len(tokens) >= 1 {
 		code = tokens[0].Content
@@ -1999,7 +1750,6 @@ func (e *JSPrimEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
-	e.fs.PushMarker(MarkerIf)
 	e.indent = indent
 	// Push new stack frame for nesting support
 	e.ifInitStack = append(e.ifInitStack, "")
@@ -2008,40 +1758,24 @@ func (e *JSPrimEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.ifElseStack = append(e.ifElseStack, "")
 }
 
-func (e *JSPrimEmitter) PreVisitIfStmtInit(node ast.Stmt, indent int) {
-	e.fs.PushMarker(MarkerIfInit)
-}
-
 func (e *JSPrimEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
-	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.ReduceToCode(MarkerIfInit)
-}
-
-func (e *JSPrimEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	e.fs.PushMarker(MarkerIfCond)
+	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtInit))
 }
 
 func (e *JSPrimEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.ReduceToCode(MarkerIfCond)
-}
-
-func (e *JSPrimEmitter) PreVisitIfStmtBody(node *ast.IfStmt, indent int) {
-	e.fs.PushMarker(MarkerIfBody)
+	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtCond))
 }
 
 func (e *JSPrimEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
-	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.ReduceToCode(MarkerIfBody)
-}
-
-func (e *JSPrimEmitter) PreVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	e.fs.PushMarker(MarkerIfElse)
+	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtBody))
 }
 
 func (e *JSPrimEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.ReduceToCode(MarkerIfElse)
+	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtElse))
 }
 
 func (e *JSPrimEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	e.fs.Reduce(MarkerIf)
+	e.fs.Reduce(string(PreVisitIfStmt))
 	ind := jsprimIndent(indent / 2)
 
 	// Pop stack frame
@@ -2085,7 +1819,6 @@ func (e *JSPrimEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
-	e.fs.PushMarker(MarkerFor)
 	e.indent = indent
 	// Push new stack frame for nesting support
 	e.forInitStack = append(e.forInitStack, "")
@@ -2093,38 +1826,26 @@ func (e *JSPrimEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
 	e.forPostStack = append(e.forPostStack, "")
 }
 
-func (e *JSPrimEmitter) PreVisitForStmtInit(node ast.Stmt, indent int) {
-	e.fs.PushMarker(MarkerForInit)
-}
-
 func (e *JSPrimEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
-	initCode := e.fs.ReduceToCode(MarkerForInit)
+	initCode := e.fs.ReduceToCode(string(PreVisitForStmtInit))
 	initCode = strings.TrimRight(initCode, ";\n \t")
 	initCode = strings.TrimLeft(initCode, " \t")
 	e.forInitStack[len(e.forInitStack)-1] = initCode
 }
 
-func (e *JSPrimEmitter) PreVisitForStmtCond(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerForCond)
-}
-
 func (e *JSPrimEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
-	e.forCondStack[len(e.forCondStack)-1] = e.fs.ReduceToCode(MarkerForCond)
-}
-
-func (e *JSPrimEmitter) PreVisitForStmtPost(node ast.Stmt, indent int) {
-	e.fs.PushMarker(MarkerForPost)
+	e.forCondStack[len(e.forCondStack)-1] = e.fs.ReduceToCode(string(PreVisitForStmtCond))
 }
 
 func (e *JSPrimEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
-	postCode := e.fs.ReduceToCode(MarkerForPost)
+	postCode := e.fs.ReduceToCode(string(PreVisitForStmtPost))
 	postCode = strings.TrimRight(postCode, ";\n \t")
 	postCode = strings.TrimLeft(postCode, " \t")
 	e.forPostStack[len(e.forPostStack)-1] = postCode
 }
 
 func (e *JSPrimEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
-	bodyCode := e.fs.ReduceToCode(MarkerFor)
+	bodyCode := e.fs.ReduceToCode(string(PreVisitForStmt))
 	ind := jsprimIndent(indent / 2)
 
 	// Pop stack frame
@@ -2156,39 +1877,26 @@ func (e *JSPrimEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	e.fs.PushMarker(MarkerRange)
 	e.indent = indent
 }
 
-func (e *JSPrimEmitter) PreVisitRangeStmtKey(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerRangeKey)
-}
-
 func (e *JSPrimEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
-	keyCode := e.fs.ReduceToCode(MarkerRangeKey)
+	keyCode := e.fs.ReduceToCode(string(PreVisitRangeStmtKey))
 	e.fs.Push(keyCode, TagIdent, nil)
 }
 
-func (e *JSPrimEmitter) PreVisitRangeStmtValue(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerRangeValue)
-}
-
 func (e *JSPrimEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
-	valCode := e.fs.ReduceToCode(MarkerRangeValue)
+	valCode := e.fs.ReduceToCode(string(PreVisitRangeStmtValue))
 	e.fs.Push(valCode, TagIdent, nil)
 }
 
-func (e *JSPrimEmitter) PreVisitRangeStmtX(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerRangeX)
-}
-
 func (e *JSPrimEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerRangeX)
+	xCode := e.fs.ReduceToCode(string(PreVisitRangeStmtX))
 	e.fs.PushCode(xCode)
 }
 
 func (e *JSPrimEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerRange)
+	tokens := e.fs.Reduce(string(PreVisitRangeStmt))
 	ind := jsprimIndent(indent / 2)
 
 	keyCode := ""
@@ -2297,21 +2005,16 @@ func (e *JSPrimEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 // ============================================================
 
 func (e *JSPrimEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	e.fs.PushMarker(MarkerSwitch)
 	e.indent = indent
 }
 
-func (e *JSPrimEmitter) PreVisitSwitchStmtTag(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerSwitchTag)
-}
-
 func (e *JSPrimEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
-	tagCode := e.fs.ReduceToCode(MarkerSwitchTag)
+	tagCode := e.fs.ReduceToCode(string(PreVisitSwitchStmtTag))
 	e.fs.PushCode(tagCode)
 }
 
 func (e *JSPrimEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	tokens := e.fs.Reduce(MarkerSwitch)
+	tokens := e.fs.Reduce(string(PreVisitSwitchStmt))
 	ind := jsprimIndent(indent / 2)
 
 	tagCode := ""
@@ -2331,25 +2034,16 @@ func (e *JSPrimEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 }
 
 func (e *JSPrimEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
-	e.fs.PushMarker(MarkerCase)
 	e.indent = indent
 }
 
-func (e *JSPrimEmitter) PreVisitCaseClauseList(node []ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerCaseList)
-}
-
-func (e *JSPrimEmitter) PreVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	e.fs.PushMarker(MarkerCaseListExpr)
-}
-
 func (e *JSPrimEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	exprCode := e.fs.ReduceToCode(MarkerCaseListExpr)
+	exprCode := e.fs.ReduceToCode(string(PreVisitCaseClauseListExpr))
 	e.fs.PushCode(exprCode)
 }
 
 func (e *JSPrimEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
-	tokens := e.fs.Reduce(MarkerCaseList)
+	tokens := e.fs.Reduce(string(PreVisitCaseClauseList))
 	var exprs []string
 	for _, t := range tokens {
 		if t.Content != "" {
@@ -2360,7 +2054,7 @@ func (e *JSPrimEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
 }
 
 func (e *JSPrimEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
-	tokens := e.fs.Reduce(MarkerCase)
+	tokens := e.fs.Reduce(string(PreVisitCaseClause))
 	ind := jsprimIndent(indent / 2)
 
 	caseExprs := ""
@@ -2397,13 +2091,8 @@ func (e *JSPrimEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 // Inc/Dec Statements
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	e.fs.PushMarker(MarkerIncDec)
-	e.indent = indent
-}
-
 func (e *JSPrimEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	xCode := e.fs.ReduceToCode(MarkerIncDec)
+	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
 	ind := jsprimIndent(indent / 2)
 	e.fs.PushCode(fmt.Sprintf("%s%s%s;\n", ind, xCode, node.Tok.String()))
 }
@@ -2426,9 +2115,6 @@ func (e *JSPrimEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 // Struct Declarations (GenStructInfo)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitGenStructInfos(node []GenTypeInfo, indent int) {
-	e.fs.PushMarker(MarkerGenStructInfos)
-}
 
 func (e *JSPrimEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
 	// After all struct classes are emitted, open the namespace object if needed
@@ -2445,31 +2131,19 @@ func (e *JSPrimEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) 
 	}
 }
 
-func (e *JSPrimEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
-	e.fs.PushMarker(MarkerGenStructInfo)
-}
-
-func (e *JSPrimEmitter) PreVisitGenStructFieldType(node ast.Expr, indent int) {
-	e.fs.PushMarker(MarkerGenStructField)
-}
-
 func (e *JSPrimEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
 	// Discard type tokens
-	e.fs.Reduce(MarkerGenStructField)
-}
-
-func (e *JSPrimEmitter) PreVisitGenStructFieldName(node *ast.Ident, indent int) {
-	e.fs.PushMarker(MarkerGenStructFieldName)
+	e.fs.Reduce(string(PreVisitGenStructFieldType))
 }
 
 func (e *JSPrimEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
 	// Discard traversed ident, push name directly
-	e.fs.Reduce(MarkerGenStructFieldName)
+	e.fs.Reduce(string(PreVisitGenStructFieldName))
 	e.fs.Push(node.Name, TagIdent, nil)
 }
 
 func (e *JSPrimEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
-	tokens := e.fs.Reduce(MarkerGenStructInfo)
+	tokens := e.fs.Reduce(string(PreVisitGenStructInfo))
 
 	if node.Struct == nil {
 		return
@@ -2521,16 +2195,8 @@ func (e *JSPrimEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 // Constants (GenDeclConst)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitGenDeclConst(node *ast.GenDecl, indent int) {
-	e.fs.PushMarker(MarkerGenDeclConst)
-}
-
-func (e *JSPrimEmitter) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
-	e.fs.PushMarker(MarkerGenDeclConstName)
-}
-
 func (e *JSPrimEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
-	valTokens := e.fs.Reduce(MarkerGenDeclConstName)
+	valTokens := e.fs.Reduce(string(PreVisitGenDeclConstName))
 	valCode := ""
 	for _, t := range valTokens {
 		valCode += t.Content
@@ -2554,12 +2220,8 @@ func (e *JSPrimEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
 // Type Aliases (suppressed for JS)
 // ============================================================
 
-func (e *JSPrimEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
-	e.fs.PushMarker(MarkerTypeAlias)
-}
-
 func (e *JSPrimEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
 	// Discard type alias - no output for JS
-	e.fs.Reduce(MarkerTypeAlias)
+	e.fs.Reduce(string(PreVisitTypeAliasName))
 }
 
