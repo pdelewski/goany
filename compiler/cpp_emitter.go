@@ -63,8 +63,8 @@ type CPPEmitter struct {
 	OutputName      string
 	LinkRuntime     string            // Path to runtime directory (empty = disabled)
 	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
-	OptimizeMoves   bool            // Enable move optimizations to reduce struct cloning
-	MoveOptCount    int    // Count of copies replaced by std::move()
+	OptimizeMoves   bool              // Enable move optimizations to reduce struct cloning
+	MoveOptCount    int               // Count of copies replaced by std::move()
 	file            *os.File
 	Emitter
 	pkg               *packages.Package
@@ -115,42 +115,42 @@ type CPPEmitter struct {
 	nestedMapVarName            string // Generated variable name (e.g., "__nested_inner_0")
 	nestedMapValueCppType       string // C++ type for the nested value extraction (e.g., "hmap::HashMap" or "std::vector<hmap::HashMap>")
 	// Nested map read: m["outer"]["inner"] (read context)
-	nestedMapReadDepth          int    // Depth of nested map reads (0 = not nested, 1+ = nested)
-	nestedMapReadOuterKeyType   types.Type // Key type of the outer map for casting
-	mapIndexKeyCastStack        []keyCastState // Stack to save/restore key cast values for nested reads
+	nestedMapReadDepth        int            // Depth of nested map reads (0 = not nested, 1+ = nested)
+	nestedMapReadOuterKeyType types.Type     // Key type of the outer map for casting
+	mapIndexKeyCastStack      []keyCastState // Stack to save/restore key cast values for nested reads
 	// Mixed nested composites: []map[string]int, map[string][]int, etc.
-	indexAccessTypeStack        []string // Stack of access types: "map" or "slice" for each IndexExpr level
+	indexAccessTypeStack []string // Stack of access types: "map" or "slice" for each IndexExpr level
 	// Save/restore stack for suppressEmit during nested type traversal
-	suppressEmitStack           []bool
+	suppressEmitStack []bool
 	// General mixed index assignment: any combination of map[k] and slice[i] on LHS
-	isMixedIndexAssign          bool              // Assignment involves map access below outermost level
-	mixedIndexAssignOps         []mixedIndexOp    // Chain of operations from root to outermost
-	mixedAssignIndent           int               // Indent level
-	mixedAssignFinalTarget      string            // Final assignment target expression (e.g., "__temp[0]" or "__temp")
-	captureMapKey          bool   // Capturing map key expression
-	capturedMapKey         string // Captured key expression text
-	isDeleteCall           bool   // Inside delete(m, k) call
-	deleteMapVarName       string // Variable name for delete
-	deleteKeyCastPrefix    string // Cast prefix for delete key
-	deleteKeyCastSuffix    string // Cast suffix for delete key
-	isMapLenCall           bool   // len() call on a map
-	pendingMapInit         bool   // var m map[K]V needs default init
-	pendingMapKeyType      int    // Key type for pending init
+	isMixedIndexAssign     bool              // Assignment involves map access below outermost level
+	mixedIndexAssignOps    []mixedIndexOp    // Chain of operations from root to outermost
+	mixedAssignIndent      int               // Indent level
+	mixedAssignFinalTarget string            // Final assignment target expression (e.g., "__temp[0]" or "__temp")
+	captureMapKey          bool              // Capturing map key expression
+	capturedMapKey         string            // Captured key expression text
+	isDeleteCall           bool              // Inside delete(m, k) call
+	deleteMapVarName       string            // Variable name for delete
+	deleteKeyCastPrefix    string            // Cast prefix for delete key
+	deleteKeyCastSuffix    string            // Cast suffix for delete key
+	isMapLenCall           bool              // len() call on a map
+	pendingMapInit         bool              // var m map[K]V needs default init
+	pendingMapKeyType      int               // Key type for pending init
 	structKeyTypes         map[string]string // Struct types used as map keys: name -> qualified C++ name (e.g., "::Point" or "::pkgname::MyStruct")
 	pendingHashSpecs       []pendingHashSpec // Deferred hash specializations to emit after namespace close
-	hasDeclValue           bool   // True if current declaration has an explicit initialization value
-	suppressEmit           bool   // When true, emitToFile does nothing
-	isSliceMakeCall        bool   // Inside make([]T, n) call
-	sliceMakeCppType       string // C++ vector type, e.g. "std::vector<std::any>"
-	assignLhsIsInterface   bool   // LHS of assignment is interface{}/std::any type
+	hasDeclValue           bool              // True if current declaration has an explicit initialization value
+	suppressEmit           bool              // When true, emitToFile does nothing
+	isSliceMakeCall        bool              // Inside make([]T, n) call
+	sliceMakeCppType       string            // C++ vector type, e.g. "std::vector<std::any>"
+	assignLhsIsInterface   bool              // LHS of assignment is interface{}/std::any type
 	// Comma-ok idiom: val, ok := m[key]
-	isMapCommaOk          bool
-	mapCommaOkValName     string
-	mapCommaOkOkName      string
-	mapCommaOkMapName     string
-	mapCommaOkValueType   string
-	mapCommaOkIsDecl      bool
-	mapCommaOkIndent      int
+	isMapCommaOk            bool
+	mapCommaOkValName       string
+	mapCommaOkOkName        string
+	mapCommaOkMapName       string
+	mapCommaOkValueType     string
+	mapCommaOkIsDecl        bool
+	mapCommaOkIndent        int
 	mapCommaOkKeyCastPrefix string
 	mapCommaOkKeyCastSuffix string
 	// Type assertion comma-ok: val, ok := x.(Type)
@@ -381,6 +381,14 @@ func getCppTypeName(t types.Type) string {
 			return "std::int32_t"
 		case types.Int64:
 			return "std::int64_t"
+		case types.Uint8: // also types.Byte
+			return "std::uint8_t"
+		case types.Uint16:
+			return "std::uint16_t"
+		case types.Uint32:
+			return "std::uint32_t"
+		case types.Uint64:
+			return "std::uint64_t"
 		}
 	}
 	// Handle slice types - recursively get element type
@@ -394,8 +402,36 @@ func getCppTypeName(t types.Type) string {
 	}
 	if named, ok := t.(*types.Named); ok {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-			return named.Obj().Name()
+			name := named.Obj().Name()
+			// Qualify with namespace if from another package (not main)
+			if pkg := named.Obj().Pkg(); pkg != nil {
+				pkgName := pkg.Name()
+				if pkgName != "" && pkgName != "main" {
+					if _, isNs := namespaces[pkgName]; isNs {
+						name = pkgName + "::" + name
+					}
+				}
+			}
+			return name
 		}
+	}
+	// Handle function types → std::function<ret(params)>
+	if sig, ok := t.Underlying().(*types.Signature); ok {
+		var params []string
+		for i := 0; i < sig.Params().Len(); i++ {
+			params = append(params, getCppTypeName(sig.Params().At(i).Type()))
+		}
+		retType := "void"
+		if sig.Results().Len() == 1 {
+			retType = getCppTypeName(sig.Results().At(0).Type())
+		} else if sig.Results().Len() > 1 {
+			var rets []string
+			for i := 0; i < sig.Results().Len(); i++ {
+				rets = append(rets, getCppTypeName(sig.Results().At(i).Type()))
+			}
+			retType = "std::tuple<" + strings.Join(rets, ", ") + ">"
+		}
+		return "std::function<" + retType + "(" + strings.Join(params, ", ") + ")>"
 	}
 	return "std::any"
 }

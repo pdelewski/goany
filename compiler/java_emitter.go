@@ -5577,14 +5577,14 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 				DebugLogPrintf("Copied graphics_jni.c")
 			}
 
-			// Copy Makefile
+			// Copy Makefile as Makefile.jni (avoid overwriting C++ Makefile)
 			makeSrc := filepath.Join(je.LinkRuntime, "graphics", "java", "Makefile")
 			if makeContent, err := os.ReadFile(makeSrc); err == nil {
-				makeDst := filepath.Join(je.OutputDir, "Makefile")
+				makeDst := filepath.Join(je.OutputDir, "Makefile.jni")
 				if err := os.WriteFile(makeDst, makeContent, 0644); err != nil {
-					return fmt.Errorf("failed to write Makefile: %w", err)
+					return fmt.Errorf("failed to write Makefile.jni: %w", err)
 				}
-				DebugLogPrintf("Copied Makefile")
+				DebugLogPrintf("Copied Makefile.jni")
 			}
 
 			// Copy TIGR files from cpp directory
