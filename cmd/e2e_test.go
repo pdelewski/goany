@@ -14,16 +14,16 @@ func joinStrings(strs []string, sep string) string {
 }
 
 type TestCase struct {
-	Name             string
-	SourceDir        string
-	CppEnabled       bool
-	DotnetEnabled    bool
-	DotnetRunnable   bool // Can run with dotnet run (false for graphics apps)
-	RustEnabled      bool
-	JsEnabled        bool
-	JsRunnable       bool // Can run with Node.js (false for graphics apps that need browser)
-	JavaEnabled      bool
-	JavaRunnable     bool // Can run standalone (false for apps that need special setup)
+	Name           string
+	SourceDir      string
+	CppEnabled     bool
+	DotnetEnabled  bool
+	DotnetRunnable bool // Can run with dotnet run (false for graphics apps)
+	RustEnabled    bool
+	JsEnabled      bool
+	JsRunnable     bool // Can run with Node.js (false for graphics apps that need browser)
+	JavaEnabled    bool
+	JavaRunnable   bool // Can run standalone (false for apps that need special setup)
 }
 
 const runtimePath = "../runtime"
@@ -106,7 +106,7 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		"--optimize-moves",
 		"--optimize-refs",
 	}
-	// Add opt-in backends (JS and Java are not included in "all")
+	// Add opt-in backends (JS, Java are not included in "all")
 	optInBackends := []string{}
 	if tc.JsEnabled {
 		optInBackends = append(optInBackends, "js")
@@ -135,6 +135,18 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 			t.Fatalf("C++ compilation failed: %v\nOutput: %s", err, output)
 		}
 		t.Logf("C++ compilation output: %s", output)
+
+		// Run C++ binary for runnable tests
+		if tc.DotnetRunnable {
+			t.Logf("Running C++ for %s", tc.Name)
+			cmd = exec.Command(filepath.Join(outputDir, tc.Name))
+			cmd.Dir = outputDir
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("C++ execution failed: %v\nOutput: %s", err, output)
+			}
+			t.Logf("C++ execution output: %s", output)
+		}
 	}
 
 	// Step 3: Compile C# using dotnet build

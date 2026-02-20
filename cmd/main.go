@@ -165,7 +165,7 @@ func main() {
 	var programFiles []string
 
 	if useCpp {
-		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CPPEmitter{
+		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CppEmitter{
 			Emitter:         &compiler.BaseEmitter{},
 			Output:          output + ".cpp",
 			LinkRuntime:     linkRuntime,

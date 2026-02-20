@@ -23,12 +23,47 @@ struct Color {
     uint8_t A;
 };
 
+inline bool operator==(const Color& a, const Color& b) {
+    return a.R == b.R && a.G == b.G && a.B == b.B && a.A == b.A;
+}
+
 struct Rect {
     int32_t X;
     int32_t Y;
     int32_t Width;
     int32_t Height;
 };
+
+inline bool operator==(const Rect& a, const Rect& b) {
+    return a.X == b.X && a.Y == b.Y && a.Width == b.Width && a.Height == b.Height;
+}
+
+} // namespace graphics (temporarily close for hash specializations)
+
+namespace std {
+template<> struct hash<graphics::Color> {
+    size_t operator()(const graphics::Color& s) const {
+        size_t h = 0;
+        h ^= std::hash<uint8_t>{}(s.R) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint8_t>{}(s.G) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint8_t>{}(s.B) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint8_t>{}(s.A) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+template<> struct hash<graphics::Rect> {
+    size_t operator()(const graphics::Rect& s) const {
+        size_t h = 0;
+        h ^= std::hash<int32_t>{}(s.X) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int32_t>{}(s.Y) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int32_t>{}(s.Width) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int32_t>{}(s.Height) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+} // namespace std
+
+namespace graphics { // reopen
 
 struct Window {
     int64_t handle;   // Tigr*
