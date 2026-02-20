@@ -16,171 +16,92 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-var cppTypesMap = map[string]string{
-	"int8":    "std::int8_t",
-	"int16":   "std::int16_t",
-	"int32":   "std::int32_t",
-	"int64":   "std::int64_t",
-	"uint8":   "std::uint8_t",
-	"uint16":  "std::uint16_t",
-	"uint32":  "std::uint32_t",
-	"uint64":  "std::uint64_t",
-	"byte":    "std::uint8_t", // Go byte is alias for uint8
-	"float32": "float",
-	"float64": "double",
-	"any":     "std::any",
-	"string":  "std::string",
-}
-
-// keyCastState holds key cast values for nested map reads
-type keyCastState struct {
-	prefix    string
-	suffix    string
-	valueType string
-}
-
-// mixedIndexOp represents a single index operation in a chain
-type mixedIndexOp struct {
-	accessType   string // "map" or "slice"
-	keyExpr      string // Key/index expression
-	keyCastPfx   string // Cast prefix for map key
-	keyCastSfx   string // Cast suffix for map key
-	valueCppType string // C++ type of the value at this level
-	tempVarName  string // Temp variable name (only for map access)
-	mapVarExpr   string // The expression to call hashMapGet on
-}
-
-// pendingHashSpec stores info for deferred hash specialization generation
-type pendingHashSpec struct {
-	structName string   // Struct name (unqualified)
-	pkgName    string   // Package/namespace name (empty for main)
-	fieldNames []string // Field names of the struct
-}
-
-type CPPEmitter struct {
+// CppEmitter implements the Emitter interface using a shift/reduce architecture
+// for C++ code generation. Mirrors the JSEmitter pattern from js_emitter.go.
+type CppEmitter struct {
+	fs              *FragmentStack
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string            // Path to runtime directory (empty = disabled)
-	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
-	OptimizeMoves   bool              // Enable move optimizations to reduce struct cloning
-	MoveOptCount    int               // Count of copies replaced by std::move()
+	LinkRuntime     string
+	RuntimePackages map[string]string
+	OptimizeMoves   bool
+	MoveOptCount    int
 	file            *os.File
 	Emitter
-	pkg               *packages.Package
-	insideForPostCond bool
-	assignmentToken   string
-	forwardDecl       bool
-	// Key-value range loop support
-	isKeyValueRange       bool
-	rangeKeyName          string
-	rangeValueName        string
-	rangeCollectionExpr   string
-	captureRangeExpr      bool
-	suppressRangeEmit     bool
-	rangeStmtIndent       int
-	pendingRangeValueDecl bool // True when we need to emit value decl at start of block
-	pendingValueName      string
-	pendingCollectionExpr string
-	pendingKeyName        string
-	// Move optimization: add std::move() for struct arguments
-	currentAssignLhsNames     map[string]bool  // LHS variable names of current assignment
-	currentCallArgIdentsStack []map[string]int // Stack of identifier counts per nested call
-	moveCurrentArg            bool             // Flag set in Pre, read in Post for std::move wrapping
-	funcLitDepth              int              // Nesting depth of function literals (closures)
-	currentReturnNode         *ast.ReturnStmt  // Current return statement being processed
-	moveCurrentReturn         bool             // Flag for std::move wrapping in return
-	// Map support
-	isMapMakeCall          bool   // Inside make(map[K]V) call
-	mapMakeKeyType         int    // Key type constant for make call
-	isMapIndex             bool   // IndexExpr on a map (for read: m[k])
-	mapIndexValueCppType   string // C++ type name for std::any_cast on hashMapGet result
-	mapIndexKeyCastPrefix  string // Cast prefix for map key (e.g. "std::string(" or "(std::int64_t)(")
-	mapIndexKeyCastSuffix  string // Cast suffix for map key (e.g. ")")
-	isMapAssign            bool   // Assignment to map index (m[k] = v)
-	mapAssignVarName       string // Variable name for map assignment
-	mapAssignIndent        int    // Indent level for map assignment
-	mapAssignKeyCastPrefix string // Cast prefix for map assign key
-	mapAssignKeyCastSuffix string // Cast suffix for map assign key
-	mapAssignValueIsString bool   // Value is string type
-	// Nested map assignment: m["outer"]["inner"] = v
-	isNestedMapAssign           bool   // Assignment to nested map index
-	nestedMapOuterVarName       string // Outer map variable name (e.g., "m")
-	nestedMapOuterKey           string // Outer map key expression (captured)
-	nestedMapOuterKeyCastPrefix string // Cast prefix for outer key
-	nestedMapOuterKeyCastSuffix string // Cast suffix for outer key
-	captureOuterMapKey          bool   // Capturing outer map key expression
-	capturedOuterMapKey         string // Captured outer key expression text
-	nestedMapCounter            int    // Counter for unique nested map variable names
-	nestedMapVarName            string // Generated variable name (e.g., "__nested_inner_0")
-	nestedMapValueCppType       string // C++ type for the nested value extraction (e.g., "hmap::HashMap" or "std::vector<hmap::HashMap>")
-	// Nested map read: m["outer"]["inner"] (read context)
-	nestedMapReadDepth        int            // Depth of nested map reads (0 = not nested, 1+ = nested)
-	nestedMapReadOuterKeyType types.Type     // Key type of the outer map for casting
-	mapIndexKeyCastStack      []keyCastState // Stack to save/restore key cast values for nested reads
-	// Mixed nested composites: []map[string]int, map[string][]int, etc.
-	indexAccessTypeStack []string // Stack of access types: "map" or "slice" for each IndexExpr level
-	// Save/restore stack for suppressEmit during nested type traversal
-	suppressEmitStack []bool
-	// General mixed index assignment: any combination of map[k] and slice[i] on LHS
-	isMixedIndexAssign     bool              // Assignment involves map access below outermost level
-	mixedIndexAssignOps    []mixedIndexOp    // Chain of operations from root to outermost
-	mixedAssignIndent      int               // Indent level
-	mixedAssignFinalTarget string            // Final assignment target expression (e.g., "__temp[0]" or "__temp")
-	captureMapKey          bool              // Capturing map key expression
-	capturedMapKey         string            // Captured key expression text
-	isDeleteCall           bool              // Inside delete(m, k) call
-	deleteMapVarName       string            // Variable name for delete
-	deleteKeyCastPrefix    string            // Cast prefix for delete key
-	deleteKeyCastSuffix    string            // Cast suffix for delete key
-	isMapLenCall           bool              // len() call on a map
-	pendingMapInit         bool              // var m map[K]V needs default init
-	pendingMapKeyType      int               // Key type for pending init
-	structKeyTypes         map[string]string // Struct types used as map keys: name -> qualified C++ name (e.g., "::Point" or "::pkgname::MyStruct")
-	pendingHashSpecs       []pendingHashSpec // Deferred hash specializations to emit after namespace close
-	hasDeclValue           bool              // True if current declaration has an explicit initialization value
-	suppressEmit           bool              // When true, emitToFile does nothing
-	isSliceMakeCall        bool              // Inside make([]T, n) call
-	sliceMakeCppType       string            // C++ vector type, e.g. "std::vector<std::any>"
-	assignLhsIsInterface   bool              // LHS of assignment is interface{}/std::any type
-	// Comma-ok idiom: val, ok := m[key]
-	isMapCommaOk            bool
-	mapCommaOkValName       string
-	mapCommaOkOkName        string
-	mapCommaOkMapName       string
-	mapCommaOkValueType     string
-	mapCommaOkIsDecl        bool
-	mapCommaOkIndent        int
-	mapCommaOkKeyCastPrefix string
-	mapCommaOkKeyCastSuffix string
-	// Type assertion comma-ok: val, ok := x.(Type)
-	isTypeAssertCommaOk      bool
-	typeAssertCommaOkValName string
-	typeAssertCommaOkOkName  string
-	typeAssertCommaOkType    string
-	typeAssertCommaOkIsDecl  bool
-	typeAssertCommaOkIndent  int
+	pkg            *packages.Package
+	currentPackage string
+	inNamespace    bool
+	indent         int
+	numFuncResults int
+	// Map assignment detection (minimal, same as JS)
+	lastIndexXCode   string
+	lastIndexKeyCode string
+	mapAssignVar     string
+	mapAssignKey     string
+	structKeyTypes   map[string]string
+	// For loop components (stacks for nesting support)
+	forInitStack []string
+	forCondStack []string
+	forPostStack []string
+	// If statement components (stacks for nesting support)
+	ifInitStack []string
+	ifCondStack []string
+	ifBodyStack []string
+	ifElseStack []string
+	// Move optimization guards
+	currentAssignLhsNames     map[string]bool
+	currentCallArgIdentsStack []map[string]int
+	// C++-specific
+	forwardDecl      bool
+	funcLitDepth     int
+	nestedMapCounter int
+	pendingHashSpecs []pendingHashSpec
 }
 
-// collectCallArgIdentCounts counts how many times each base identifier
-// appears across all arguments of a function call
-func (cppe *CPPEmitter) collectCallArgIdentCounts(args []ast.Expr) map[string]int {
+func (e *CppEmitter) SetFile(file *os.File) { e.file = file }
+func (e *CppEmitter) GetFile() *os.File     { return e.file }
+
+// canMoveArg checks if a call argument identifier can be moved instead of copied.
+// A move is safe only when: (1) the variable is the LHS of the enclosing assignment
+// (so it gets reassigned immediately), and (2) it doesn't appear multiple times
+// in the same call's arguments.
+func (e *CppEmitter) canMoveArg(varName string) bool {
+	if !e.OptimizeMoves {
+		return false
+	}
+	if e.funcLitDepth > 0 {
+		return false
+	}
+	if e.currentAssignLhsNames == nil || !e.currentAssignLhsNames[varName] {
+		return false
+	}
+	if len(e.currentCallArgIdentsStack) > 0 {
+		outermostCounts := e.currentCallArgIdentsStack[0]
+		if outermostCounts[varName] > 1 {
+			return false
+		}
+	}
+	e.MoveOptCount++
+	return true
+}
+
+func (e *CppEmitter) collectCallArgIdentCounts(args []ast.Expr) map[string]int {
 	counts := make(map[string]int)
 	for _, arg := range args {
-		cppe.countIdentsInExpr(arg, counts)
+		e.countIdentsInExpr(arg, counts)
 	}
 	return counts
 }
 
-// countIdentsInExpr recursively counts identifier occurrences in an expression
-func (cppe *CPPEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) {
+func (e *CppEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) {
 	if expr == nil {
 		return
 	}
-	switch e := expr.(type) {
+	switch n := expr.(type) {
 	case *ast.Ident:
-		if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-			if obj := cppe.pkg.TypesInfo.ObjectOf(e); obj != nil {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if obj := e.pkg.TypesInfo.ObjectOf(n); obj != nil {
 				if _, isTypeName := obj.(*types.TypeName); isTypeName {
 					return
 				}
@@ -189,96 +110,112 @@ func (cppe *CPPEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) 
 				}
 			}
 		}
-		counts[e.Name]++
+		counts[n.Name]++
 	case *ast.SelectorExpr:
-		cppe.countIdentsInExpr(e.X, counts)
+		e.countIdentsInExpr(n.X, counts)
 	case *ast.CallExpr:
-		for _, arg := range e.Args {
-			cppe.countIdentsInExpr(arg, counts)
+		for _, arg := range n.Args {
+			e.countIdentsInExpr(arg, counts)
 		}
-		cppe.countIdentsInExpr(e.Fun, counts)
+		e.countIdentsInExpr(n.Fun, counts)
 	case *ast.IndexExpr:
-		cppe.countIdentsInExpr(e.X, counts)
-		cppe.countIdentsInExpr(e.Index, counts)
+		e.countIdentsInExpr(n.X, counts)
+		e.countIdentsInExpr(n.Index, counts)
 	case *ast.BinaryExpr:
-		cppe.countIdentsInExpr(e.X, counts)
-		cppe.countIdentsInExpr(e.Y, counts)
+		e.countIdentsInExpr(n.X, counts)
+		e.countIdentsInExpr(n.Y, counts)
 	case *ast.UnaryExpr:
-		cppe.countIdentsInExpr(e.X, counts)
+		e.countIdentsInExpr(n.X, counts)
 	case *ast.ParenExpr:
-		cppe.countIdentsInExpr(e.X, counts)
+		e.countIdentsInExpr(n.X, counts)
 	case *ast.TypeAssertExpr:
-		cppe.countIdentsInExpr(e.X, counts)
+		e.countIdentsInExpr(n.X, counts)
 	case *ast.CompositeLit:
-		for _, elt := range e.Elts {
-			cppe.countIdentsInExpr(elt, counts)
+		for _, elt := range n.Elts {
+			e.countIdentsInExpr(elt, counts)
 		}
 	case *ast.KeyValueExpr:
-		cppe.countIdentsInExpr(e.Value, counts)
+		e.countIdentsInExpr(n.Value, counts)
 	}
 }
 
-// exprContainsIdent checks if an expression references a given identifier
-func (cppe *CPPEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
-	if expr == nil {
-		return false
+// analyzeLhsIndexChain walks a chain of IndexExpr from outermost to root variable,
+// returning the operations and whether there's an intermediate map access that needs
+// read-modify-write semantics.
+func (e *CppEmitter) analyzeLhsIndexChain(expr ast.Expr) (ops []mixedIndexOp, hasIntermediateMap bool) {
+	var chain []ast.Expr
+	current := expr
+	for {
+		indexExpr, ok := current.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append(chain, indexExpr)
+		current = indexExpr.X
 	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		return e.Name == name
-	case *ast.SelectorExpr:
-		return cppe.exprContainsIdent(e.X, name)
-	case *ast.CallExpr:
-		for _, arg := range e.Args {
-			if cppe.exprContainsIdent(arg, name) {
-				return true
+	// Reverse: chain[0] = innermost (closest to root), chain[len-1] = outermost
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	hasIntermediateMap = false
+	for i, node := range chain {
+		ie := node.(*ast.IndexExpr)
+		tv := e.pkg.TypesInfo.Types[ie.X]
+		if tv.Type == nil {
+			continue
+		}
+		isLast := (i == len(chain)-1)
+		if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+			op := mixedIndexOp{
+				accessType:   "map",
+				keyExpr:      exprToCppString(ie.Index),
+				valueCppType: getCppTypeName(mapType.Elem()),
 			}
-		}
-		return cppe.exprContainsIdent(e.Fun, name)
-	case *ast.IndexExpr:
-		return cppe.exprContainsIdent(e.X, name) || cppe.exprContainsIdent(e.Index, name)
-	case *ast.BinaryExpr:
-		return cppe.exprContainsIdent(e.X, name) || cppe.exprContainsIdent(e.Y, name)
-	case *ast.UnaryExpr:
-		return cppe.exprContainsIdent(e.X, name)
-	case *ast.ParenExpr:
-		return cppe.exprContainsIdent(e.X, name)
-	case *ast.TypeAssertExpr:
-		return cppe.exprContainsIdent(e.X, name)
-	case *ast.CompositeLit:
-		for _, elt := range e.Elts {
-			if cppe.exprContainsIdent(elt, name) {
-				return true
+			op.keyCastPfx, op.keyCastSfx = getCppKeyCast(mapType.Key())
+			if !isLast {
+				hasIntermediateMap = true
 			}
-		}
-	case *ast.KeyValueExpr:
-		return cppe.exprContainsIdent(e.Value, name)
-	}
-	return false
-}
-
-// canMoveArg checks if a call argument identifier can be moved instead of copied.
-func (cppe *CPPEmitter) canMoveArg(varName string) bool {
-	if !cppe.OptimizeMoves {
-		return false
-	}
-	if cppe.funcLitDepth > 0 {
-		return false
-	}
-	if cppe.currentAssignLhsNames == nil || !cppe.currentAssignLhsNames[varName] {
-		return false
-	}
-	if len(cppe.currentCallArgIdentsStack) > 0 {
-		outermostCounts := cppe.currentCallArgIdentsStack[0]
-		if outermostCounts[varName] > 1 {
-			return false
+			ops = append(ops, op)
+		} else {
+			op := mixedIndexOp{
+				accessType: "slice",
+				keyExpr:    exprToCppString(ie.Index),
+			}
+			ops = append(ops, op)
 		}
 	}
-	cppe.MoveOptCount++
-	return true
+	return ops, hasIntermediateMap
 }
 
-func (*CPPEmitter) lowerToBuiltins(selector string) string {
+// cppIndent returns indentation string for the given level.
+func cppIndent(indent int) string {
+	return strings.Repeat("    ", indent/4)
+}
+
+// isMapTypeExprCpp checks if an expression has map type via TypesInfo.
+func (e *CppEmitter) isMapTypeExpr(expr ast.Expr) bool {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return false
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	if tv.Type == nil {
+		return false
+	}
+	_, ok := tv.Type.Underlying().(*types.Map)
+	return ok
+}
+
+// getExprGoType returns the Go type for an expression, or nil.
+func (e *CppEmitter) getExprGoType(expr ast.Expr) types.Type {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return nil
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	return tv.Type
+}
+
+// cppLowerBuiltin maps Go stdlib selectors to C++ equivalents.
+func cppLowerBuiltin(selector string) string {
 	switch selector {
 	case "fmt":
 		return ""
@@ -298,10 +235,10 @@ func (*CPPEmitter) lowerToBuiltins(selector string) string {
 	return selector
 }
 
-// getMapKeyTypeConst returns the key type constant for a map type AST node
-func (cppe *CPPEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
-	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-		if tv, ok := cppe.pkg.TypesInfo.Types[mapType.Key]; ok && tv.Type != nil {
+// getMapKeyTypeConstPrim returns the key type constant for a map type AST node
+func (e *CppEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		if tv, ok := e.pkg.TypesInfo.Types[mapType.Key]; ok && tv.Type != nil {
 			if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
 				switch basic.Kind() {
 				case types.String:
@@ -332,17 +269,12 @@ func (cppe *CPPEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 					return 13
 				}
 			}
-			// Check for struct type - use KeyTypeStruct (100)
 			if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
-				// Track this struct type for hash/equality generation
 				if named, ok := tv.Type.(*types.Named); ok {
-					if cppe.structKeyTypes == nil {
-						cppe.structKeyTypes = make(map[string]string)
+					if e.structKeyTypes == nil {
+						e.structKeyTypes = make(map[string]string)
 					}
 					structName := named.Obj().Name()
-					// Build C++ name - for structs in main package use just the name
-					// For structs in other packages, use pkgname::StructName
-					// Use the package where the struct is DEFINED, not the current package
 					qualifiedName := structName
 					if structPkg := named.Obj().Pkg(); structPkg != nil {
 						pkgName := structPkg.Name()
@@ -350,7 +282,7 @@ func (cppe *CPPEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 							qualifiedName = pkgName + "::" + structName
 						}
 					}
-					cppe.structKeyTypes[structName] = qualifiedName
+					e.structKeyTypes[structName] = qualifiedName
 				}
 				return 100
 			}
@@ -359,248 +291,73 @@ func (cppe *CPPEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
 	return 1
 }
 
-// getCppTypeName returns the C++ type name for a Go type
-func getCppTypeName(t types.Type) string {
-	if basic, isBasic := t.Underlying().(*types.Basic); isBasic {
-		switch basic.Kind() {
-		case types.Int:
-			return "int"
-		case types.String:
-			return "std::string"
-		case types.Bool:
-			return "bool"
-		case types.Float64:
-			return "double"
-		case types.Float32:
-			return "float"
-		case types.Int8:
-			return "std::int8_t"
-		case types.Int16:
-			return "std::int16_t"
-		case types.Int32:
-			return "std::int32_t"
-		case types.Int64:
-			return "std::int64_t"
-		case types.Uint8: // also types.Byte
-			return "std::uint8_t"
-		case types.Uint16:
-			return "std::uint16_t"
-		case types.Uint32:
-			return "std::uint32_t"
-		case types.Uint64:
-			return "std::uint64_t"
-		}
+// exprContainsIdent checks if an expression references a given identifier
+func (e *CppEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
+	if expr == nil {
+		return false
 	}
-	// Handle slice types - recursively get element type
-	if slice, ok := t.(*types.Slice); ok {
-		elemType := getCppTypeName(slice.Elem())
-		return "std::vector<" + elemType + ">"
-	}
-	// Handle map types
-	if _, ok := t.Underlying().(*types.Map); ok {
-		return "hmap::HashMap"
-	}
-	if named, ok := t.(*types.Named); ok {
-		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-			name := named.Obj().Name()
-			// Qualify with namespace if from another package (not main)
-			if pkg := named.Obj().Pkg(); pkg != nil {
-				pkgName := pkg.Name()
-				if pkgName != "" && pkgName != "main" {
-					if _, isNs := namespaces[pkgName]; isNs {
-						name = pkgName + "::" + name
-					}
-				}
-			}
-			return name
-		}
-	}
-	// Handle function types → std::function<ret(params)>
-	if sig, ok := t.Underlying().(*types.Signature); ok {
-		var params []string
-		for i := 0; i < sig.Params().Len(); i++ {
-			params = append(params, getCppTypeName(sig.Params().At(i).Type()))
-		}
-		retType := "void"
-		if sig.Results().Len() == 1 {
-			retType = getCppTypeName(sig.Results().At(0).Type())
-		} else if sig.Results().Len() > 1 {
-			var rets []string
-			for i := 0; i < sig.Results().Len(); i++ {
-				rets = append(rets, getCppTypeName(sig.Results().At(i).Type()))
-			}
-			retType = "std::tuple<" + strings.Join(rets, ", ") + ">"
-		}
-		return "std::function<" + retType + "(" + strings.Join(params, ", ") + ")>"
-	}
-	return "std::any"
-}
-
-// getCppKeyCast returns prefix/suffix to cast a map key expression to the correct C++ type.
-func getCppKeyCast(keyType types.Type) (string, string) {
-	if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic {
-		switch basic.Kind() {
-		case types.String:
-			return "std::string(", ")"
-		case types.Int8:
-			return "(std::int8_t)(", ")"
-		case types.Int16:
-			return "(std::int16_t)(", ")"
-		case types.Int32:
-			return "(std::int32_t)(", ")"
-		case types.Int64:
-			return "(std::int64_t)(", ")"
-		case types.Uint8:
-			return "(uint8_t)(", ")"
-		case types.Uint16:
-			return "(uint16_t)(", ")"
-		case types.Uint32:
-			return "(uint32_t)(", ")"
-		case types.Uint64:
-			return "(uint64_t)(", ")"
-		case types.Float32:
-			return "(float)(", ")"
-		}
-	}
-	return "", ""
-}
-
-// analyzeLhsIndexChain walks an IndexExpr chain and returns operations from root to outermost.
-// Returns true if any intermediate map access was found (requiring temp var extraction).
-func (cppe *CPPEmitter) analyzeLhsIndexChain(expr ast.Expr) (ops []mixedIndexOp, hasIntermediateMap bool) {
-	// Collect the chain from outermost to root
-	var chain []ast.Expr
-	current := expr
-	for {
-		indexExpr, ok := current.(*ast.IndexExpr)
-		if !ok {
-			break
-		}
-		chain = append(chain, indexExpr)
-		current = indexExpr.X
-	}
-	// chain[0] is outermost, chain[len-1] is innermost (closest to root variable)
-	// Reverse to get root to outermost order
-	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
-		chain[i], chain[j] = chain[j], chain[i]
-	}
-	// Now chain[0] is innermost (root[k1]), chain[len-1] is outermost ([kN])
-	hasIntermediateMap = false
-	for i, node := range chain {
-		ie := node.(*ast.IndexExpr)
-		tv := cppe.pkg.TypesInfo.Types[ie.X]
-		if tv.Type == nil {
-			continue
-		}
-		isLast := (i == len(chain)-1)
-		if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-			op := mixedIndexOp{
-				accessType:   "map",
-				keyExpr:      exprToCppString(ie.Index),
-				valueCppType: getCppTypeName(mapType.Elem()),
-			}
-			op.keyCastPfx, op.keyCastSfx = getCppKeyCast(mapType.Key())
-			if !isLast {
-				hasIntermediateMap = true
-			}
-			ops = append(ops, op)
-		} else {
-			op := mixedIndexOp{
-				accessType: "slice",
-				keyExpr:    exprToCppString(ie.Index),
-			}
-			ops = append(ops, op)
-		}
-	}
-	return ops, hasIntermediateMap
-}
-
-// exprToCppString converts a simple expression (BasicLit, Ident, IndexExpr) to its C++ string representation
-// Used for extracting map key expressions and slice access expressions from AST nodes
-func exprToCppString(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.BasicLit:
-		if e.Kind == token.STRING {
-			// Go string literal to C++ - keep the quotes
-			return e.Value
-		}
-		return e.Value
+	switch n := expr.(type) {
 	case *ast.Ident:
-		return e.Name
-	case *ast.IndexExpr:
-		// Handle slice/array access like sliceOfMaps[0]
-		xStr := exprToCppString(e.X)
-		indexStr := exprToCppString(e.Index)
-		if xStr != "" && indexStr != "" {
-			return xStr + "[" + indexStr + "]"
-		}
-		return ""
+		return n.Name == name
 	case *ast.SelectorExpr:
-		xStr := exprToCppString(e.X)
-		if xStr != "" {
-			return xStr + "." + e.Sel.Name
+		return e.exprContainsIdent(n.X, name)
+	case *ast.CallExpr:
+		for _, arg := range n.Args {
+			if e.exprContainsIdent(arg, name) {
+				return true
+			}
 		}
-		return ""
-	default:
-		return ""
+		return e.exprContainsIdent(n.Fun, name)
+	case *ast.IndexExpr:
+		return e.exprContainsIdent(n.X, name) || e.exprContainsIdent(n.Index, name)
+	case *ast.BinaryExpr:
+		return e.exprContainsIdent(n.X, name) || e.exprContainsIdent(n.Y, name)
+	case *ast.UnaryExpr:
+		return e.exprContainsIdent(n.X, name)
+	case *ast.ParenExpr:
+		return e.exprContainsIdent(n.X, name)
+	case *ast.TypeAssertExpr:
+		return e.exprContainsIdent(n.X, name)
+	case *ast.CompositeLit:
+		for _, elt := range n.Elts {
+			if e.exprContainsIdent(elt, name) {
+				return true
+			}
+		}
+	case *ast.KeyValueExpr:
+		return e.exprContainsIdent(n.Value, name)
 	}
+	return false
 }
 
-func (cppe *CPPEmitter) emitToFile(s string) error {
-	// When capturing range expression, append to buffer instead of file
-	if cppe.captureRangeExpr {
-		cppe.rangeCollectionExpr += s
-		return nil
-	}
-	if cppe.captureMapKey {
-		cppe.capturedMapKey += s
-		return nil
-	}
-	if cppe.suppressEmit {
-		return nil
-	}
-	// When suppressing range emit (key/value identifiers), skip
-	if cppe.suppressRangeEmit {
-		return nil
-	}
-	return emitToFile(cppe.file, s)
-}
+// ============================================================
+// Program / Package
+// ============================================================
 
-func (cppe *CPPEmitter) emitAsString(s string, indent int) string {
-	return strings.Repeat(" ", indent) + s
-}
-
-func (cppe *CPPEmitter) SetFile(file *os.File) {
-	cppe.file = file
-}
-
-func (cppe *CPPEmitter) GetFile() *os.File {
-	return cppe.file
-}
-
-func (cppe *CPPEmitter) PreVisitProgram(indent int) {
-	outputFile := cppe.Output
+func (e *CppEmitter) PreVisitProgram(indent int) {
 	var err error
-	cppe.file, err = os.Create(outputFile)
-	cppe.SetFile(cppe.file)
+	e.file, err = os.Create(e.Output)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
 		return
 	}
-	_, err = cppe.file.WriteString("#include <vector>\n" +
+
+	e.fs = NewFragmentStack(e.GetGoFIR())
+
+	// Write C++ header
+	e.file.WriteString("#include <vector>\n" +
 		"#include <string>\n" +
 		"#include <tuple>\n" +
 		"#include <any>\n" +
 		"#include <cstdint>\n" +
 		"#include <functional>\n")
-	cppe.file.WriteString(`#include <cstdarg> // For va_start, etc.
-#include <initializer_list>
-#include <iostream>
-`)
-	// Include runtime headers if link-runtime is enabled
-	// Convention: X/cpp/X_runtime.hpp (no variant) or X/cpp/X_runtime_<variant>.hpp (with variant)
-	if cppe.LinkRuntime != "" {
-		for name, variant := range cppe.RuntimePackages {
+	e.file.WriteString("#include <cstdarg> // For va_start, etc.\n" +
+		"#include <initializer_list>\n" +
+		"#include <iostream>\n")
+
+	// Include runtime headers
+	if e.LinkRuntime != "" {
+		for name, variant := range e.RuntimePackages {
 			if variant == "none" {
 				continue
 			}
@@ -608,15 +365,17 @@ func (cppe *CPPEmitter) PreVisitProgram(indent int) {
 			if variant != "" {
 				fileName += "_" + variant
 			}
-			cppe.file.WriteString(fmt.Sprintf("#include \"%s/cpp/%s.hpp\"\n", name, fileName))
+			e.file.WriteString(fmt.Sprintf("#include \"%s/cpp/%s.hpp\"\n", name, fileName))
 		}
 	}
-	// Include panic runtime
-	cppe.file.WriteString("\n// GoAny panic runtime\n")
-	cppe.file.WriteString(goanyrt.PanicCppSource)
-	cppe.file.WriteString("\n")
 
-	cppe.file.WriteString(`
+	// Include panic runtime
+	e.file.WriteString("\n// GoAny panic runtime\n")
+	e.file.WriteString(goanyrt.PanicCppSource)
+	e.file.WriteString("\n")
+
+	// C++ helper definitions
+	e.file.WriteString(`
 using int8 = int8_t;
 using int16 = int16_t;
 using int32 = int32_t;
@@ -697,860 +456,1093 @@ std::vector<std::string>& append(std::vector<std::string> &vec, const char *elem
   return result;
 }
 `)
-	cppe.file.WriteString("\n\n")
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-		return
-	}
-	cppe.insideForPostCond = false
+	e.file.WriteString("\n\n")
 }
 
-func (cppe *CPPEmitter) PostVisitProgram(indent int) {
-	// Emit pending hash specializations for main package (no namespace)
-	cppe.emitPendingHashSpecs("")
-
-	cppe.file.Close()
-
-	// Replace placeholder struct key functions with working implementations
-	if len(cppe.structKeyTypes) > 0 {
-		cppe.replaceStructKeyFunctions()
+func (e *CppEmitter) PostVisitProgram(indent int) {
+	tokens := e.fs.Reduce(string(PreVisitProgram))
+	for _, t := range tokens {
+		e.file.WriteString(t.Content)
 	}
 
-	// Generate Makefile if link-runtime is enabled
-	if err := cppe.GenerateMakefile(); err != nil {
+	// Emit pending hash specializations for main package
+	e.emitPendingHashSpecs("")
+
+	e.file.Close()
+
+	// Replace placeholder struct key functions
+	if len(e.structKeyTypes) > 0 {
+		e.replaceStructKeyFunctions()
+	}
+
+	// Generate Makefile
+	if err := e.GenerateMakefile(); err != nil {
 		log.Printf("Warning: %v", err)
 	}
 
-	if cppe.OptimizeMoves && cppe.MoveOptCount > 0 {
-		fmt.Printf("  C++: %d copy(ies) replaced by std::move()\n", cppe.MoveOptCount)
+	if e.OptimizeMoves && e.MoveOptCount > 0 {
+		fmt.Printf("  C++: %d copy(ies) replaced by std::move()\n", e.MoveOptCount)
 	}
 }
 
-// replaceStructKeyFunctions replaces placeholder hash/equality functions with struct-specific implementations
-func (cppe *CPPEmitter) replaceStructKeyFunctions() {
-	outputPath := cppe.OutputDir + "/" + cppe.OutputName + ".cpp"
-	content, err := os.ReadFile(outputPath)
-	if err != nil {
-		log.Printf("Warning: could not read file for struct key replacement: %v", err)
-		return
+func (e *CppEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
+	e.pkg = pkg
+	e.currentPackage = pkg.Name
+	if e.structKeyTypes == nil {
+		e.structKeyTypes = make(map[string]string)
 	}
-
-	// Generate struct-specific hash function
-	// Use qualified names (e.g., "::Point") to reference structs from within hmap namespace
-	var hashCode strings.Builder
-	hashCode.WriteString("int hashStructKey(std::any key)\n{\n")
-	for _, qualifiedName := range cppe.structKeyTypes {
-		hashCode.WriteString(fmt.Sprintf("    if (key.type() == typeid(%s)) {\n", qualifiedName))
-		hashCode.WriteString(fmt.Sprintf("        int h = static_cast<int>(std::hash<%s>{}(std::any_cast<%s>(key)));\n", qualifiedName, qualifiedName))
-		hashCode.WriteString("        if (h < 0) h = -h;\n")
-		hashCode.WriteString("        return h;\n")
-		hashCode.WriteString("    }\n")
-	}
-	hashCode.WriteString("    return 0;\n}")
-
-	// Generate struct-specific equality function
-	var eqCode strings.Builder
-	eqCode.WriteString("bool structKeysEqual(std::any a, std::any b)\n{\n")
-	eqCode.WriteString("    if (a.type() != b.type()) return false;\n")
-	for _, qualifiedName := range cppe.structKeyTypes {
-		eqCode.WriteString(fmt.Sprintf("    if (a.type() == typeid(%s)) {\n", qualifiedName))
-		eqCode.WriteString(fmt.Sprintf("        return std::any_cast<%s>(a) == std::any_cast<%s>(b);\n", qualifiedName, qualifiedName))
-		eqCode.WriteString("    }\n")
-	}
-	eqCode.WriteString("    return false;\n}")
-
-	newContent := string(content)
-
-	// Replace placeholder hashStructKey with a version that calls the real implementation defined later
-	hashPattern := regexp.MustCompile(`(?s)int hashStructKey\(std::any key\)\s*\{\s*return 0;\s*\}`)
-	newContent = hashPattern.ReplaceAllString(newContent, "int hashStructKey(std::any key);\n")
-
-	// Replace placeholder structKeysEqual with a forward declaration
-	eqPattern := regexp.MustCompile(`(?s)bool structKeysEqual\(std::any a, std::any b\)\s*\{\s*return false;\s*\}`)
-	newContent = eqPattern.ReplaceAllString(newContent, "bool structKeysEqual(std::any a, std::any b);\n")
-
-	// Append the real implementations at the end of the file (after all struct definitions)
-	newContent += "\n// Struct map key support - implementations after struct definitions\n"
-	newContent += "namespace hmap {\n"
-	newContent += hashCode.String() + "\n"
-	newContent += eqCode.String() + "\n"
-	newContent += "} // namespace hmap\n"
-
-	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
-		log.Printf("Warning: could not write struct key replacements: %v", err)
+	if pkg.Name != "main" {
+		e.inNamespace = true
+		e.fs.PushCode(fmt.Sprintf("namespace %s\n{\n\n", pkg.Name))
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
-	cppe.pkg = pkg
-	name := pkg.Name
-	if cppe.structKeyTypes == nil {
-		cppe.structKeyTypes = make(map[string]string)
-	}
-	DebugLogPrintf("CPPEmitter: PreVisitPackage: %s (path: %s)", name, pkg.PkgPath)
-	if name == "main" {
-		return
-	}
-	str := cppe.emitAsString(fmt.Sprintf("namespace %s\n", name), 0)
-	err := cppe.emitToFile(str)
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-		return
-	}
-	err = cppe.emitToFile("{\n\n")
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-		return
-	}
-}
+func (e *CppEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
+	if pkg.Name != "main" {
+		e.fs.PushCode(fmt.Sprintf("} // namespace %s\n\n", pkg.Name))
+		e.inNamespace = false
 
-func (cppe *CPPEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
-	name := pkg.Name
-	if name == "main" {
-		return
-	}
-	str := cppe.emitAsString(fmt.Sprintf("} // namespace %s\n\n", name), 0)
-	err := cppe.emitToFile(str)
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-		return
-	}
-
-	// Emit pending hash specializations for this package (now that namespace is closed)
-	cppe.emitPendingHashSpecs(name)
-}
-
-func (cppe *CPPEmitter) PreVisitBasicLit(e *ast.BasicLit, indent int) {
-	if e.Kind == token.STRING {
-		// Wrap string literals in std::string() when assigned to interface{}/std::any
-		// to avoid const char* being stored in std::any instead of std::string
-		wrapStr := cppe.assignLhsIsInterface
-		if wrapStr {
-			cppe.emitToFile("std::string(")
+		// Emit pending hash specializations for this package
+		var specsForPkg []pendingHashSpec
+		var remaining []pendingHashSpec
+		for _, spec := range e.pendingHashSpecs {
+			if spec.pkgName == pkg.Name {
+				specsForPkg = append(specsForPkg, spec)
+			} else {
+				remaining = append(remaining, spec)
+			}
 		}
-		// Use a local copy to avoid mutating the AST (which affects other emitters)
-		value := e.Value
-		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-			// Remove only the outer quotes, keep escaped content intact
-			value = value[1 : len(value)-1]
-			cppe.emitToFile(cppe.emitAsString(fmt.Sprintf("\"%s\"", value), 0))
-		} else if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
-			// Raw string literal - use C++ raw string
-			value = value[1 : len(value)-1]
-			cppe.emitToFile(cppe.emitAsString(fmt.Sprintf("R\"(%s)\"", value), 0))
+		e.pendingHashSpecs = remaining
+		for _, spec := range specsForPkg {
+			e.emitHashSpec(spec)
+		}
+	}
+}
+
+// ============================================================
+// Literals and Identifiers
+// ============================================================
+
+func (e *CppEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
+	val := node.Value
+	if node.Kind == token.STRING {
+		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+			// Regular string
+			e.fs.Push(val, TagLiteral, nil)
+		} else if len(val) >= 2 && val[0] == '`' && val[len(val)-1] == '`' {
+			// Raw string → C++ raw string
+			content := val[1 : len(val)-1]
+			e.fs.Push(fmt.Sprintf("R\"(%s)\"", content), TagLiteral, nil)
 		} else {
-			cppe.emitToFile(cppe.emitAsString(fmt.Sprintf("\"%s\"", value), 0))
-		}
-		if wrapStr {
-			cppe.emitToFile(")")
+			e.fs.Push(val, TagLiteral, nil)
 		}
 	} else {
-		cppe.emitToFile(cppe.emitAsString(e.Value, 0))
+		e.fs.Push(val, TagLiteral, nil)
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitIdent(e *ast.Ident, indent int) {
-	var str string
-	name := e.Name
-	name = cppe.lowerToBuiltins(name)
-	// Handle map operation identifier replacements
-	if cppe.isMapMakeCall && name == "make" {
-		cppe.emitToFile("hmap::newHashMap")
+func (e *CppEmitter) PreVisitIdent(node *ast.Ident, indent int) {
+	name := node.Name
+	// Map Go builtins
+	switch name {
+	case "true", "false":
+		e.fs.Push(name, TagLiteral, nil)
+		return
+	case "nil":
+		e.fs.Push("{}", TagLiteral, nil)
 		return
 	}
-	if cppe.isSliceMakeCall && name == "make" {
-		cppe.emitToFile(cppe.sliceMakeCppType)
+	// Map Go types to C++ types
+	if n, ok := cppTypesMap[name]; ok {
+		e.fs.Push(n, TagType, nil)
 		return
 	}
-	if cppe.isDeleteCall && name == "delete" {
-		cppe.emitToFile(cppe.deleteMapVarName + " = hmap::hashMapDelete")
-		return
-	}
-	if cppe.isMapLenCall && name == "std::size" {
-		cppe.emitToFile("hmap::hashMapLen")
-		return
-	}
-	if name == "nil" {
-		str = cppe.emitAsString("{}", indent)
-		cppe.emitToFile(str)
-	} else {
-		if n, ok := cppTypesMap[name]; ok {
-			str = cppe.emitAsString(n, indent)
-			cppe.emitToFile(str)
-		} else {
-			str = cppe.emitAsString(name, indent)
-			cppe.emitToFile(str)
-		}
-	}
+	goType := e.getExprGoType(node)
+	e.fs.Push(name, TagIdent, goType)
 }
 
-func (cppe *CPPEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
-	str := cppe.emitAsString(op.String()+" ", 1)
-	cppe.emitToFile(str)
+// ============================================================
+// Binary Expressions
+// ============================================================
+
+func (e *CppEmitter) PostVisitBinaryExprLeft(node ast.Expr, indent int) {
+	left := e.fs.ReduceToCode(string(PreVisitBinaryExprLeft))
+	e.fs.PushCode(left)
 }
 
-// PreVisitCallExpr detects map operations: make(map[K]V), make([]T,n), delete, len(map)
-func (cppe *CPPEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
-	if cppe.forwardDecl {
-		return
-	}
-	// Detect make(map[K]V) and make([]T, n) calls
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "make" {
-		if len(node.Args) >= 1 {
-			if mapType, ok := node.Args[0].(*ast.MapType); ok {
-				cppe.isMapMakeCall = true
-				cppe.mapMakeKeyType = cppe.getMapKeyTypeConst(mapType)
-			} else if arrayType, ok := node.Args[0].(*ast.ArrayType); ok {
-				// make([]T, n) → std::vector<CppType>(n)
-				cppe.isSliceMakeCall = true
-				cppe.sliceMakeCppType = "std::vector<std::any>" // default for interface{}
-				if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-					if tv, ok := cppe.pkg.TypesInfo.Types[arrayType.Elt]; ok && tv.Type != nil {
-						cppType := getCppTypeName(tv.Type)
-						cppe.sliceMakeCppType = "std::vector<" + cppType + ">"
-					}
-				}
-			}
-		}
-	}
-	// Detect delete(m, k) calls
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
-		if len(node.Args) >= 2 {
-			cppe.isDeleteCall = true
-			cppe.deleteMapVarName = exprToString(node.Args[0])
-			cppe.deleteKeyCastPrefix = ""
-			cppe.deleteKeyCastSuffix = ""
-			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-				tv := cppe.pkg.TypesInfo.Types[node.Args[0]]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						cppe.deleteKeyCastPrefix, cppe.deleteKeyCastSuffix = getCppKeyCast(mapType.Key())
-					}
-				}
-			}
-		}
-	}
-	// Detect len(m) calls on maps
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "len" {
-		if len(node.Args) >= 1 && cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-			tv := cppe.pkg.TypesInfo.Types[node.Args[0]]
-			if tv.Type != nil {
-				if _, ok := tv.Type.Underlying().(*types.Map); ok {
-					cppe.isMapLenCall = true
-				}
-			}
-		}
-	}
+func (e *CppEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
+	right := e.fs.ReduceToCode(string(PreVisitBinaryExprRight))
+	e.fs.PushCode(right)
 }
 
-func (cppe *CPPEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
-	cppe.currentCallArgIdentsStack = append(cppe.currentCallArgIdentsStack, cppe.collectCallArgIdentCounts(node))
-	str := cppe.emitAsString("(", 0)
-	cppe.emitToFile(str)
-	// For make(map[K]V), emit the key type constant as the argument
-	if cppe.isMapMakeCall {
-		cppe.emitToFile(fmt.Sprintf("%d", cppe.mapMakeKeyType))
+func (e *CppEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitBinaryExpr))
+	left := ""
+	right := ""
+	if len(tokens) >= 1 {
+		left = tokens[0].Content
 	}
-}
-func (cppe *CPPEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
-	if len(cppe.currentCallArgIdentsStack) > 0 {
-		cppe.currentCallArgIdentsStack = cppe.currentCallArgIdentsStack[:len(cppe.currentCallArgIdentsStack)-1]
+	if len(tokens) >= 2 {
+		right = tokens[1].Content
 	}
-	str := cppe.emitAsString(")", 0)
-	cppe.emitToFile(str)
-	// For make([]T, n), no .fill needed in C++ (vector constructor handles it)
-	if cppe.isSliceMakeCall {
-		cppe.isSliceMakeCall = false
-		cppe.sliceMakeCppType = ""
-		cppe.suppressEmit = false
-	}
-	// Reset map call flags
-	if cppe.isMapMakeCall {
-		cppe.isMapMakeCall = false
-	}
-	if cppe.isDeleteCall {
-		cppe.isDeleteCall = false
-		cppe.deleteMapVarName = ""
-		cppe.deleteKeyCastPrefix = ""
-		cppe.deleteKeyCastSuffix = ""
-	}
-	if cppe.isMapLenCall {
-		cppe.isMapLenCall = false
-	}
+	op := node.Op.String()
+	e.fs.PushCode(fmt.Sprintf("%s %s %s", left, op, right))
 }
 
-func (cppe *CPPEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
-	if cppe.isSliceMakeCall {
-		if index == 0 {
-			// Suppress the first argument (the ArrayType) for make([]T, n)
-			cppe.suppressEmit = true
-			return
-		} else if index == 1 {
-			// Re-enable output for the length argument
-			cppe.suppressEmit = false
-			return
-		}
-	}
-	if index > 0 {
-		str := cppe.emitAsString(", ", 0)
-		cppe.emitToFile(str)
-	}
-	// Wrap delete key argument with appropriate cast
-	if cppe.isDeleteCall && cppe.deleteKeyCastPrefix != "" && index == 1 {
-		cppe.emitToFile(cppe.deleteKeyCastPrefix)
-	}
-	// Check if this argument is a struct that can be moved
-	cppe.moveCurrentArg = false
-	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
+// ============================================================
+// Call Expressions
+// ============================================================
+
+func (e *CppEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
+	funCode := e.fs.ReduceToCode(string(PreVisitCallExprFun))
+	e.fs.PushCode(funCode)
+}
+
+func (e *CppEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
+	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
+
+	// Move optimization for struct arguments
+	if e.OptimizeMoves && e.funcLitDepth == 0 {
 		if ident, isIdent := node.(*ast.Ident); isIdent {
-			tv := cppe.pkg.TypesInfo.Types[node]
-			if tv.Type != nil {
-				if named, ok := tv.Type.(*types.Named); ok {
+			tv := e.getExprGoType(node)
+			if tv != nil {
+				if named, ok := tv.(*types.Named); ok {
 					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-						if cppe.canMoveArg(ident.Name) {
-							cppe.moveCurrentArg = true
-							str := cppe.emitAsString("std::move(", 0)
-							cppe.emitToFile(str)
+						if e.canMoveArg(ident.Name) {
+							argCode = "std::move(" + argCode + ")"
 						}
 					}
 				}
 			}
 		}
 	}
+
+	e.fs.PushCode(argCode)
 }
 
-func (cppe *CPPEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	if cppe.isDeleteCall && cppe.deleteKeyCastSuffix != "" && index == 1 {
-		cppe.emitToFile(cppe.deleteKeyCastSuffix)
+func (e *CppEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
+	e.currentCallArgIdentsStack = append(e.currentCallArgIdentsStack, e.collectCallArgIdentCounts(node))
+}
+
+func (e *CppEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
+	if len(e.currentCallArgIdentsStack) > 0 {
+		e.currentCallArgIdentsStack = e.currentCallArgIdentsStack[:len(e.currentCallArgIdentsStack)-1]
 	}
-	if cppe.moveCurrentArg {
-		str := cppe.emitAsString(")", 0)
-		cppe.emitToFile(str)
-		cppe.moveCurrentArg = false
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitParenExpr(node *ast.ParenExpr, indent int) {
-	str := cppe.emitAsString("(", 0)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
-	str := cppe.emitAsString(")", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitCompositeLitElts(node []ast.Expr, indent int) {
-	str := cppe.emitAsString("{", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
-	str := cppe.emitAsString("}", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(", ", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
-	str := cppe.emitAsString("std::vector<", indent)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
-	str := cppe.emitAsString(">", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitMapType(node *ast.MapType, indent int) {
-	// Skip when inside make(map[K]V) — already handled by make lowering
-	if cppe.isMapMakeCall {
-		return
-	}
-	cppe.emitToFile("hmap::HashMap")
-}
-
-func (cppe *CPPEmitter) PostVisitMapType(node *ast.MapType, indent int) {
-}
-
-// PreVisitMapKeyType suppresses output during map key type traversal
-func (cppe *CPPEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
-	cppe.suppressEmitStack = append(cppe.suppressEmitStack, cppe.suppressEmit)
-	cppe.suppressEmit = true
-}
-
-// PostVisitMapKeyType restores output state after map key type traversal
-func (cppe *CPPEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
-	if len(cppe.suppressEmitStack) > 0 {
-		cppe.suppressEmit = cppe.suppressEmitStack[len(cppe.suppressEmitStack)-1]
-		cppe.suppressEmitStack = cppe.suppressEmitStack[:len(cppe.suppressEmitStack)-1]
-	} else {
-		cppe.suppressEmit = false
-	}
-}
-
-// PreVisitMapValueType suppresses output during map value type traversal
-func (cppe *CPPEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
-	cppe.suppressEmitStack = append(cppe.suppressEmitStack, cppe.suppressEmit)
-	cppe.suppressEmit = true
-}
-
-// PostVisitMapValueType restores output state after map value type traversal
-func (cppe *CPPEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
-	if len(cppe.suppressEmitStack) > 0 {
-		cppe.suppressEmit = cppe.suppressEmitStack[len(cppe.suppressEmitStack)-1]
-		cppe.suppressEmitStack = cppe.suppressEmitStack[:len(cppe.suppressEmitStack)-1]
-	} else {
-		cppe.suppressEmit = false
-	}
-}
-
-func (cppe *CPPEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
-	if ident, ok := node.(*ast.Ident); ok {
-		if cppe.lowerToBuiltins(ident.Name) == "" {
-			return
-		}
-		scopeOperator := "."
-		if _, found := namespaces[ident.Name]; found {
-			scopeOperator = "::"
-		}
-		str := cppe.emitAsString(scopeOperator, 0)
-		cppe.emitToFile(str)
-	} else {
-		str := cppe.emitAsString(".", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	if cppe.forwardDecl {
-		return
-	}
-	// Check if this is a map index (not a map assignment or comma-ok - those are handled separately)
-	if !cppe.isMapAssign && !cppe.isMapCommaOk && cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-		tv := cppe.pkg.TypesInfo.Types[node.X]
-		if tv.Type != nil {
-			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-				// Push "map" onto the access type stack
-				cppe.indexAccessTypeStack = append(cppe.indexAccessTypeStack, "map")
-
-				// If already in a map index (nested read), save current state
-				if cppe.isMapIndex {
-					cppe.mapIndexKeyCastStack = append(cppe.mapIndexKeyCastStack, keyCastState{
-						prefix:    cppe.mapIndexKeyCastPrefix,
-						suffix:    cppe.mapIndexKeyCastSuffix,
-						valueType: cppe.mapIndexValueCppType,
-					})
-				}
-				cppe.isMapIndex = true
-				cppe.mapIndexKeyCastPrefix, cppe.mapIndexKeyCastSuffix = getCppKeyCast(mapType.Key())
-
-				// Check if the value type is also a map (nested map read)
-				// If so, cast to hmap::HashMap instead of the map type
-				if _, isNestedMap := mapType.Elem().Underlying().(*types.Map); isNestedMap {
-					cppe.mapIndexValueCppType = "hmap::HashMap"
-					cppe.nestedMapReadDepth++
-				} else {
-					cppe.mapIndexValueCppType = getCppTypeName(mapType.Elem())
-				}
-
-				// Emit: std::any_cast<ValueType>(hmap::hashMapGet(
-				cppe.emitToFile("std::any_cast<" + cppe.mapIndexValueCppType + ">(hmap::hashMapGet(")
-			} else {
-				// Slice or array access - push "slice" onto the stack
-				switch tv.Type.Underlying().(type) {
-				case *types.Slice, *types.Array:
-					cppe.indexAccessTypeStack = append(cppe.indexAccessTypeStack, "slice")
-				default:
-					// For other types (like string indexing), treat as slice-like
-					cppe.indexAccessTypeStack = append(cppe.indexAccessTypeStack, "slice")
-				}
-			}
+	argTokens := e.fs.Reduce(string(PreVisitCallExprArgs))
+	var args []string
+	for _, t := range argTokens {
+		if t.Content != "" {
+			args = append(args, t.Content)
 		}
 	}
+	e.fs.PushCode(strings.Join(args, ", "))
 }
 
-func (cppe *CPPEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	if cppe.isMapCommaOk {
-		cppe.captureMapKey = true
-		cppe.capturedMapKey = ""
-		return
+func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCallExpr))
+	funName := ""
+	argsStr := ""
+	if len(tokens) >= 1 {
+		funName = tokens[0].Content
 	}
-	if cppe.isMapAssign {
-		// Capture the key expression
-		cppe.captureMapKey = true
-		cppe.capturedMapKey = ""
-		return
+	if len(tokens) >= 2 {
+		argsStr = tokens[1].Content
 	}
-	// Check the access type stack to determine if this is a map or slice access
-	if len(cppe.indexAccessTypeStack) > 0 {
-		accessType := cppe.indexAccessTypeStack[len(cppe.indexAccessTypeStack)-1]
-		if accessType == "map" {
-			if cppe.mapIndexKeyCastPrefix != "" {
-				cppe.emitToFile(", " + cppe.mapIndexKeyCastPrefix)
-			} else {
-				cppe.emitToFile(", ")
-			}
-			return
+
+	// Handle special built-in functions
+	switch funName {
+	case "len":
+		// len(m) on maps → hmap::hashMapLen(m)
+		if len(node.Args) > 0 && e.isMapTypeExpr(node.Args[0]) {
+			e.fs.PushCode(fmt.Sprintf("hmap::hashMapLen(%s)", argsStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("std::size(%s)", argsStr))
 		}
-	}
-	// Slice/array access - emit [
-	str := cppe.emitAsString("[", 0)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	if cppe.isMapCommaOk {
-		cppe.captureMapKey = false
 		return
-	}
-	if cppe.captureMapKey {
-		cppe.captureMapKey = false
+	case "append":
+		e.fs.PushCode(fmt.Sprintf("append(%s)", argsStr))
 		return
-	}
-	// Check the access type stack to determine if this is a map or slice access
-	if len(cppe.indexAccessTypeStack) > 0 {
-		accessType := cppe.indexAccessTypeStack[len(cppe.indexAccessTypeStack)-1]
-		// Pop from the stack
-		cppe.indexAccessTypeStack = cppe.indexAccessTypeStack[:len(cppe.indexAccessTypeStack)-1]
-
-		if accessType == "map" {
-			if cppe.mapIndexKeyCastSuffix != "" {
-				cppe.emitToFile(cppe.mapIndexKeyCastSuffix)
-			}
-			cppe.emitToFile("))")
-			// Restore previous key cast state if we have saved state (nested reads)
-			if len(cppe.mapIndexKeyCastStack) > 0 {
-				state := cppe.mapIndexKeyCastStack[len(cppe.mapIndexKeyCastStack)-1]
-				cppe.mapIndexKeyCastStack = cppe.mapIndexKeyCastStack[:len(cppe.mapIndexKeyCastStack)-1]
-				cppe.mapIndexKeyCastPrefix = state.prefix
-				cppe.mapIndexKeyCastSuffix = state.suffix
-				cppe.mapIndexValueCppType = state.valueType
-				// Keep isMapIndex true for the outer map read
-				if cppe.nestedMapReadDepth > 0 {
-					cppe.nestedMapReadDepth--
-				}
-			} else {
-				cppe.isMapIndex = false
-				cppe.mapIndexValueCppType = ""
-				cppe.mapIndexKeyCastPrefix = ""
-				cppe.mapIndexKeyCastSuffix = ""
-			}
-			return
-		}
-	}
-	// Slice/array access - emit ]
-	str := cppe.emitAsString("]", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	// Nothing needed - cleanup handled in PostVisitIndexExprIndex
-}
-
-func (cppe *CPPEmitter) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	str := cppe.emitAsString("(", 0)
-	str += cppe.emitAsString(node.Op.String(), 0)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	str := cppe.emitAsString(")", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	str := cppe.emitAsString("std::vector<std::remove_reference<decltype(", indent)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	str := cppe.emitAsString(")", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
-	str := cppe.emitAsString("[0]", 0)
-	str += cppe.emitAsString(")>::type>(", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
-	str := cppe.emitAsString(".begin() ", 0)
-	cppe.emitToFile(str)
-	if node != nil {
-		str := cppe.emitAsString("+ ", 0)
-		cppe.emitToFile(str)
-	} else {
-		DebugLogPrintf("Low index: <nil>\n")
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitSliceExprXEnd(node ast.Expr, indent int) {
-	str := cppe.emitAsString(", ", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
-	if node != nil {
-		str := cppe.emitAsString(".begin() ", 0)
-		cppe.emitToFile(str)
-		str = cppe.emitAsString("+ ", 0)
-		cppe.emitToFile(str)
-	} else {
-		str := cppe.emitAsString(".end() ", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
-
-}
-
-func (cppe *CPPEmitter) PreVisitFuncType(node *ast.FuncType, indent int) {
-	str := cppe.emitAsString("std::function<", indent)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
-	str := cppe.emitAsString(">", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncTypeResults(node *ast.FieldList, indent int) {
-	if node == nil {
-		str := cppe.emitAsString("void", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitFuncTypeResult(node *ast.Field, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(", ", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	str := cppe.emitAsString(".", 0)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	str := cppe.emitAsString("\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncTypeParams(node *ast.FieldList, indent int) {
-	str := cppe.emitAsString("(", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitFuncTypeParams(node *ast.FieldList, indent int) {
-	str := cppe.emitAsString(")", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncTypeParam(node *ast.Field, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(", ", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitKeyValueExprValue(node ast.Expr, indent int) {
-	str := cppe.emitAsString("= ", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
-	cppe.funcLitDepth++
-	str := cppe.emitAsString("[&](", indent)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
-	cppe.funcLitDepth--
-	str := cppe.emitAsString("}", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
-	str := cppe.emitAsString(")", 0)
-	str += cppe.emitAsString("->", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	str := ""
-	if index > 0 {
-		str += cppe.emitAsString(", ", 0)
-	}
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	str := cppe.emitAsString(" ", 0)
-	str += cppe.emitAsString(node.Names[0].Name, indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncLitBody(node *ast.BlockStmt, indent int) {
-	str := cppe.emitAsString("{\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
-	if node == nil {
-		str := cppe.emitAsString("void", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitFuncLitTypeResult(node *ast.Field, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(", ", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
-	if cppe.isTypeAssertCommaOk {
-		return
-	}
-	str := cppe.emitAsString("std::any_cast<", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
-	if cppe.isTypeAssertCommaOk {
-		cppe.captureMapKey = true
-		cppe.capturedMapKey = ""
-		return
-	}
-	// Check if the expression is already interface{} (std::any) - skip the std::any() wrapper
-	needsAnyWrap := true
-	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-		tv := cppe.pkg.TypesInfo.Types[node]
-		if tv.Type != nil {
-			if iface, ok := tv.Type.Underlying().(*types.Interface); ok && iface.Empty() {
-				needsAnyWrap = false
-			}
-		}
-	}
-	if needsAnyWrap {
-		str := cppe.emitAsString(">(std::any(", 0)
-		cppe.emitToFile(str)
-	} else {
-		str := cppe.emitAsString(">(", 0)
-		cppe.emitToFile(str)
-	}
-}
-func (cppe *CPPEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
-	if cppe.isTypeAssertCommaOk {
-		cppe.captureMapKey = false
-		return
-	}
-	// Match the wrapper from PreVisitTypeAssertExprX
-	needsAnyWrap := true
-	if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-		tv := cppe.pkg.TypesInfo.Types[node]
-		if tv.Type != nil {
-			if iface, ok := tv.Type.Underlying().(*types.Interface); ok && iface.Empty() {
-				needsAnyWrap = false
-			}
-		}
-	}
-	if needsAnyWrap {
-		str := cppe.emitAsString("))", 0)
-		cppe.emitToFile(str)
-	} else {
-		str := cppe.emitAsString(")", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitStarExpr(node *ast.StarExpr, indent int) {
-	str := cppe.emitAsString("*", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {
-	str := cppe.emitAsString("std::any", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
-	str := cppe.emitAsString(";", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	// Track if there's an explicit initialization value
-	cppe.hasDeclValue = index < len(node.Values)
-	// Detect var m map[K]V declarations
-	if len(node.Values) == 0 && node.Type != nil {
-		if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-			if typeAndValue, ok := cppe.pkg.TypesInfo.Types[node.Type]; ok {
-				if _, isMap := typeAndValue.Type.Underlying().(*types.Map); isMap {
-					if mapType, ok := node.Type.(*ast.MapType); ok {
-						cppe.pendingMapInit = true
-						cppe.pendingMapKeyType = cppe.getMapKeyTypeConst(mapType)
+	case "delete":
+		// delete(m, k) → m = hmap::hashMapDelete(m, k)
+		if len(node.Args) >= 2 {
+			mapName := exprToString(node.Args[0])
+			// Get key cast
+			castPfx, castSfx := "", ""
+			if e.pkg != nil && e.pkg.TypesInfo != nil {
+				tv := e.pkg.TypesInfo.Types[node.Args[0]]
+				if tv.Type != nil {
+					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
+						castPfx, castSfx = getCppKeyCast(mapType.Key())
 					}
 				}
 			}
+			parts := strings.SplitN(argsStr, ", ", 2)
+			keyStr := ""
+			if len(parts) >= 2 {
+				keyStr = parts[1]
+			}
+			if castPfx != "" {
+				keyStr = castPfx + keyStr + castSfx
+			}
+			e.fs.PushCode(fmt.Sprintf("%s = hmap::hashMapDelete(%s, %s)", mapName, mapName, keyStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("delete(%s)", argsStr))
+		}
+		return
+	case "make":
+		if len(node.Args) >= 1 {
+			if mapType, ok := node.Args[0].(*ast.MapType); ok {
+				keyTypeConst := e.getMapKeyTypeConst(mapType)
+				e.fs.PushCode(fmt.Sprintf("hmap::newHashMap(%d)", keyTypeConst))
+				return
+			}
+			if _, ok := node.Args[0].(*ast.ArrayType); ok {
+				// make([]T, n) → std::vector<CppType>(n)
+				cppType := "std::vector<std::any>"
+				if e.pkg != nil && e.pkg.TypesInfo != nil {
+					if arrayType, ok := node.Args[0].(*ast.ArrayType); ok {
+						if tv, ok2 := e.pkg.TypesInfo.Types[arrayType.Elt]; ok2 && tv.Type != nil {
+							elemType := getCppTypeName(tv.Type)
+							cppType = "std::vector<" + elemType + ">"
+						}
+					}
+				}
+				parts := strings.SplitN(argsStr, ", ", 2)
+				if len(parts) >= 2 {
+					e.fs.PushCode(fmt.Sprintf("%s(%s)", cppType, parts[1]))
+				} else {
+					e.fs.PushCode(cppType + "()")
+				}
+				return
+			}
+		}
+		e.fs.PushCode(fmt.Sprintf("make(%s)", argsStr))
+		return
+	case "goany_panic":
+		e.fs.PushCode(fmt.Sprintf("goany_panic(%s)", argsStr))
+		return
+	}
+
+	// Lower builtins
+	lowered := cppLowerBuiltin(funName)
+	if lowered != funName {
+		funName = lowered
+	}
+
+	e.fs.PushCode(fmt.Sprintf("%s(%s)", funName, argsStr))
+}
+
+// ============================================================
+// Selector Expressions (a.b)
+// ============================================================
+
+func (e *CppEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitSelectorExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *CppEmitter) PostVisitSelectorExprSel(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitSelectorExprSel))
+	e.fs.PushCode(node.Name)
+}
+
+func (e *CppEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSelectorExpr))
+	xCode := ""
+	selCode := ""
+	if len(tokens) >= 1 {
+		xCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		selCode = tokens[1].Content
+	}
+
+	loweredX := cppLowerBuiltin(xCode)
+	loweredSel := cppLowerBuiltin(selCode)
+
+	if loweredX == "" {
+		// Package selector like fmt is suppressed
+		e.fs.PushCode(loweredSel)
+	} else {
+		// Use :: for namespaces, . for struct fields
+		scopeOp := "."
+		if _, found := namespaces[xCode]; found {
+			scopeOp = "::"
+		}
+		e.fs.PushCode(loweredX + scopeOp + loweredSel)
+	}
+}
+
+// ============================================================
+// Index Expressions (a[i])
+// ============================================================
+
+func (e *CppEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitIndexExprX))
+	e.fs.PushCode(xCode)
+	e.lastIndexXCode = xCode
+}
+
+func (e *CppEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
+	idxCode := e.fs.ReduceToCode(string(PreVisitIndexExprIndex))
+	e.fs.PushCode(idxCode)
+	e.lastIndexKeyCode = idxCode
+}
+
+func (e *CppEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitIndexExpr))
+	xCode := ""
+	idxCode := ""
+	if len(tokens) >= 1 {
+		xCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		idxCode = tokens[1].Content
+	}
+
+	// Check if this is a map index
+	if e.isMapTypeExpr(node.X) {
+		mapGoType := e.getExprGoType(node.X)
+		valueCppType := "std::any"
+		castPfx, castSfx := "", ""
+		if mapGoType != nil {
+			if mapType, ok := mapGoType.Underlying().(*types.Map); ok {
+				valueCppType = getCppTypeName(mapType.Elem())
+				castPfx, castSfx = getCppKeyCast(mapType.Key())
+			}
+		}
+		keyStr := idxCode
+		if castPfx != "" {
+			keyStr = castPfx + idxCode + castSfx
+		}
+		e.fs.PushCodeWithType(
+			fmt.Sprintf("std::any_cast<%s>(hmap::hashMapGet(%s, %s))", valueCppType, xCode, keyStr),
+			e.getExprGoType(node))
+	} else {
+		e.fs.PushCode(fmt.Sprintf("%s[%s]", xCode, idxCode))
+	}
+}
+
+// ============================================================
+// Unary Expressions
+// ============================================================
+
+func (e *CppEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitUnaryExpr))
+	op := node.Op.String()
+	if op == "^" {
+		e.fs.PushCode("~" + xCode)
+	} else {
+		e.fs.PushCode("(" + op + xCode + ")")
+	}
+}
+
+// ============================================================
+// Paren Expressions
+// ============================================================
+
+func (e *CppEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
+	inner := e.fs.ReduceToCode(string(PreVisitParenExpr))
+	e.fs.PushCode("(" + inner + ")")
+}
+
+// ============================================================
+// Slice Expressions (a[lo:hi])
+// ============================================================
+
+func (e *CppEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitSliceExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *CppEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitSliceExprXBegin))
+}
+
+func (e *CppEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
+	lowCode := e.fs.ReduceToCode(string(PreVisitSliceExprLow))
+	e.fs.PushCode(lowCode)
+}
+
+func (e *CppEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitSliceExprXEnd))
+}
+
+func (e *CppEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
+	highCode := e.fs.ReduceToCode(string(PreVisitSliceExprHigh))
+	e.fs.PushCode(highCode)
+}
+
+func (e *CppEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSliceExpr))
+	xCode := ""
+	lowCode := ""
+	highCode := ""
+
+	idx := 0
+	if idx < len(tokens) {
+		xCode = tokens[idx].Content
+		idx++
+	}
+	if node.Low != nil && idx < len(tokens) {
+		lowCode = tokens[idx].Content
+		idx++
+	}
+	if node.High != nil && idx < len(tokens) {
+		highCode = tokens[idx].Content
+	}
+
+	if lowCode == "" {
+		lowCode = "0"
+	}
+
+	// C++ slice: std::vector<T>(x.begin() + low, x.begin() + high) or x.end()
+	beginExpr := fmt.Sprintf("%s.begin() + %s", xCode, lowCode)
+	endExpr := ""
+	if highCode == "" {
+		endExpr = fmt.Sprintf("%s.end()", xCode)
+	} else {
+		endExpr = fmt.Sprintf("%s.begin() + %s", xCode, highCode)
+	}
+	e.fs.PushCode(fmt.Sprintf("std::vector<std::remove_reference<decltype(%s[0])>::type>(%s, %s)", xCode, beginExpr, endExpr))
+}
+
+// ============================================================
+// Composite Literals
+// ============================================================
+
+func (e *CppEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitCompositeLitType))
+}
+
+func (e *CppEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
+	eltCode := e.fs.ReduceToCode(string(PreVisitCompositeLitElt))
+	e.fs.PushCode(eltCode)
+}
+
+func (e *CppEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
+	eltTokens := e.fs.Reduce(string(PreVisitCompositeLitElts))
+	for _, t := range eltTokens {
+		if t.Content != "" {
+			e.fs.Push(t.Content, TagLiteral, nil)
 		}
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	str := cppe.emitAsString(" ", 0)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	if cppe.pendingMapInit {
-		cppe.emitToFile(fmt.Sprintf(" = hmap::newHashMap(%d)", cppe.pendingMapKeyType))
-		cppe.pendingMapInit = false
-		cppe.pendingMapKeyType = 0
+func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCompositeLit))
+	var elts []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			elts = append(elts, t.Content)
+		}
 	}
-	// Only emit semicolon if there's no value coming
-	if !cppe.hasDeclValue {
-		cppe.emitToFile(";")
+
+	litType := e.getExprGoType(node)
+	if litType == nil {
+		// Try to get type name from AST
+		typeName := ""
+		if node.Type != nil {
+			typeName = exprToString(node.Type)
+			typeName = strings.ReplaceAll(typeName, ".", "::")
+		}
+		if typeName != "" {
+			e.fs.PushCode(fmt.Sprintf("%s{%s}", typeName, strings.Join(elts, ", ")))
+		} else {
+			e.fs.PushCode("{" + strings.Join(elts, ", ") + "}")
+		}
+		return
+	}
+
+	switch u := litType.Underlying().(type) {
+	case *types.Struct:
+		typeName := ""
+		if node.Type != nil {
+			typeName = exprToString(node.Type)
+		}
+		if typeName == "" {
+			typeName = "auto"
+		}
+		// Convert package.Type to package::Type for C++
+		typeName = strings.ReplaceAll(typeName, ".", "::")
+		// Check for KeyValueExpr (named fields)
+		if len(node.Elts) > 0 {
+			if _, isKV := node.Elts[0].(*ast.KeyValueExpr); isKV {
+				// Build ordered args from KV pairs
+				kvMap := make(map[string]string)
+				for _, elt := range elts {
+					parts := strings.SplitN(elt, " = ", 2)
+					if len(parts) == 2 {
+						key := strings.TrimPrefix(parts[0], ".")
+						kvMap[key] = parts[1]
+					}
+				}
+				var args []string
+				for i := 0; i < u.NumFields(); i++ {
+					fieldName := u.Field(i).Name()
+					if val, ok := kvMap[fieldName]; ok {
+						args = append(args, val)
+					} else {
+						args = append(args, "{}")
+					}
+				}
+				e.fs.PushCode(fmt.Sprintf("%s{%s}", typeName, strings.Join(args, ", ")))
+				return
+			}
+		}
+		e.fs.PushCode(fmt.Sprintf("%s{%s}", typeName, strings.Join(elts, ", ")))
+
+	case *types.Slice:
+		elemCppType := getCppTypeName(u.Elem())
+		e.fs.PushCode(fmt.Sprintf("std::vector<%s>{%s}", elemCppType, strings.Join(elts, ", ")))
+
+	case *types.Map:
+		keyTypeConst := 1
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			keyTypeConst = e.getMapKeyTypeConst(node.Type.(*ast.MapType))
+		}
+		if len(elts) == 0 {
+			e.fs.PushCode(fmt.Sprintf("hmap::newHashMap(%d)", keyTypeConst))
+		} else {
+			// Map literal with elements
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("[&]() { auto _m = hmap::newHashMap(%d); ", keyTypeConst))
+			castPfx, castSfx := "", ""
+			if mapType, ok := litType.Underlying().(*types.Map); ok {
+				castPfx, castSfx = getCppKeyCast(mapType.Key())
+			}
+			_ = u
+			for _, elt := range elts {
+				// Each element is ".key = value" from KeyValueExpr
+				parts := strings.SplitN(elt, " = ", 2)
+				if len(parts) == 2 {
+					key := strings.TrimPrefix(parts[0], ".")
+					valStr := parts[1]
+					keyStr := key
+					if castPfx != "" {
+						keyStr = castPfx + key + castSfx
+					}
+					sb.WriteString(fmt.Sprintf("_m = hmap::hashMapSet(_m, %s, %s); ", keyStr, valStr))
+				}
+			}
+			sb.WriteString("return _m; }()")
+			e.fs.PushCode(sb.String())
+		}
+
+	default:
+		e.fs.PushCode("{" + strings.Join(elts, ", ") + "}")
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	cppe.emitToFile(" = ")
+// ============================================================
+// KeyValue Expressions
+// ============================================================
+
+func (e *CppEmitter) PostVisitKeyValueExprKey(node ast.Expr, indent int) {
+	keyCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprKey))
+	e.fs.PushCode(keyCode)
 }
 
-func (cppe *CPPEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	cppe.emitToFile(";")
-	cppe.hasDeclValue = false
+func (e *CppEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprValue))
+	e.fs.PushCode(valCode)
 }
 
-func (cppe *CPPEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
-	str := cppe.emitAsString(node.Tok.String()+";", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	str := cppe.emitAsString(node.Tok.String(), 0)
-	if !cppe.insideForPostCond {
-		str += cppe.emitAsString(";", 0)
+func (e *CppEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitKeyValueExpr))
+	keyCode := ""
+	valCode := ""
+	if len(tokens) >= 1 {
+		keyCode = tokens[0].Content
 	}
-	cppe.emitToFile(str)
+	if len(tokens) >= 2 {
+		valCode = tokens[1].Content
+	}
+	// C++ designated initializer style: .Key = Value
+	e.fs.PushCode("." + keyCode + " = " + valCode)
 }
 
-func (cppe *CPPEmitter) PreVisitForStmtPost(node ast.Stmt, indent int) {
-	if node != nil {
-		cppe.insideForPostCond = true
+// ============================================================
+// Array Type
+// ============================================================
+
+func (e *CppEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitArrayType))
+	elemType := ""
+	for _, t := range tokens {
+		elemType += t.Content
+	}
+	if elemType == "" {
+		elemType = "std::any"
+	}
+	e.fs.Push("std::vector<"+elemType+">", TagType, nil)
+}
+
+// ============================================================
+// Map Type
+// ============================================================
+
+func (e *CppEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitMapKeyType))
+}
+
+func (e *CppEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitMapValueType))
+}
+
+func (e *CppEmitter) PostVisitMapType(node *ast.MapType, indent int) {
+	e.fs.Reduce(string(PreVisitMapType))
+	e.fs.Push("hmap::HashMap", TagType, nil)
+}
+
+// ============================================================
+// Function Type
+// ============================================================
+
+func (e *CppEmitter) PostVisitFuncTypeResults(node *ast.FieldList, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncTypeResults))
+	resultType := "void"
+	if node != nil && len(tokens) > 0 {
+		var parts []string
+		for _, t := range tokens {
+			if t.Content != "" {
+				parts = append(parts, t.Content)
+			}
+		}
+		resultType = strings.Join(parts, ", ")
+	}
+	e.fs.PushCode(resultType)
+}
+
+func (e *CppEmitter) PostVisitFuncTypeResult(node *ast.Field, index int, indent int) {
+	code := e.fs.ReduceToCode(string(PreVisitFuncTypeResult))
+	e.fs.PushCode(code)
+}
+
+func (e *CppEmitter) PostVisitFuncTypeParams(node *ast.FieldList, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncTypeParams))
+	var parts []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			parts = append(parts, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(parts, ", "))
+}
+
+func (e *CppEmitter) PostVisitFuncTypeParam(node *ast.Field, index int, indent int) {
+	code := e.fs.ReduceToCode(string(PreVisitFuncTypeParam))
+	e.fs.PushCode(code)
+}
+
+func (e *CppEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncType))
+	resultType := "void"
+	paramsType := ""
+	if len(tokens) >= 1 {
+		resultType = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		paramsType = tokens[1].Content
+	}
+	e.fs.PushCode(fmt.Sprintf("std::function<%s(%s)>", resultType, paramsType))
+}
+
+// ============================================================
+// Interface / Star / Type Assertions
+// ============================================================
+
+func (e *CppEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {
+	e.fs.Push("std::any", TagType, nil)
+}
+
+func (e *CppEmitter) PreVisitStarExpr(node *ast.StarExpr, indent int) {
+	// Pointers not supported in ULang, but emit * for completeness
+}
+
+func (e *CppEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprType))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *CppEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *CppEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitTypeAssertExpr))
+	typeCode := ""
+	xCode := ""
+	if len(tokens) >= 1 {
+		typeCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		xCode = tokens[1].Content
+	}
+	// Check if expression is already interface{} (std::any)
+	needsAnyWrap := true
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		tv := e.pkg.TypesInfo.Types[node.X]
+		if tv.Type != nil {
+			if iface, ok := tv.Type.Underlying().(*types.Interface); ok && iface.Empty() {
+				needsAnyWrap = false
+			}
+		}
+	}
+	if needsAnyWrap {
+		e.fs.PushCode(fmt.Sprintf("std::any_cast<%s>(std::any(%s))", typeCode, xCode))
+	} else {
+		e.fs.PushCode(fmt.Sprintf("std::any_cast<%s>(%s)", typeCode, xCode))
 	}
 }
-func (cppe *CPPEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
-	cppe.insideForPostCond = false
-	str := cppe.emitAsString(")\n", 0)
-	cppe.emitToFile(str)
+
+// ============================================================
+// Function Literals (closures)
+// ============================================================
+
+func (e *CppEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
+	e.funcLitDepth++
 }
 
-func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	// Check if all LHS are blank identifiers - if so, suppress the statement
+func (e *CppEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
+	// Get type and name tokens
+	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParam))
+	var typeStr string
+	for _, t := range tokens {
+		if t.Content != "" {
+			typeStr = t.Content
+		}
+	}
+	// Push "type name" pairs
+	for _, name := range node.Names {
+		e.fs.Push(typeStr+" "+name.Name, TagIdent, nil)
+	}
+}
+
+func (e *CppEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParams))
+	var paramStrs []string
+	for _, t := range tokens {
+		if t.Tag == TagIdent && t.Content != "" {
+			paramStrs = append(paramStrs, t.Content)
+		}
+	}
+	paramsStr := strings.Join(paramStrs, ", ")
+	if paramsStr == "" {
+		paramsStr = " "
+	}
+	e.fs.PushCode(paramsStr)
+}
+
+func (e *CppEmitter) PostVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeResults))
+	if node == nil || len(tokens) == 0 {
+		e.fs.PushCode("void")
+		return
+	}
+	var parts []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			parts = append(parts, t.Content)
+		}
+	}
+	if len(parts) > 1 {
+		e.fs.PushCode("std::tuple<" + strings.Join(parts, ", ") + ">")
+	} else if len(parts) == 1 {
+		e.fs.PushCode(parts[0])
+	} else {
+		e.fs.PushCode("void")
+	}
+}
+
+func (e *CppEmitter) PostVisitFuncLitTypeResult(node *ast.Field, index int, indent int) {
+	code := e.fs.ReduceToCode(string(PreVisitFuncLitTypeResult))
+	e.fs.PushCode(code)
+}
+
+func (e *CppEmitter) PostVisitFuncLitBody(node *ast.BlockStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncLitBody))
+	e.fs.PushCode(bodyCode)
+}
+
+func (e *CppEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
+	e.funcLitDepth--
+	tokens := e.fs.Reduce(string(PreVisitFuncLit))
+	paramsCode := ""
+	resultCode := ""
+	bodyCode := ""
+	if len(tokens) >= 1 {
+		paramsCode = strings.TrimSpace(tokens[0].Content)
+	}
+	if len(tokens) >= 2 {
+		resultCode = tokens[1].Content
+	}
+	if len(tokens) >= 3 {
+		bodyCode = tokens[2].Content
+	}
+	e.fs.PushCode(fmt.Sprintf("[&](%s)->%s%s", paramsCode, resultCode, bodyCode))
+}
+
+// ============================================================
+// Function Declarations
+// ============================================================
+
+func (e *CppEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	e.numFuncResults = 0
+	if node.Type.Results != nil {
+		e.numFuncResults = node.Type.Results.NumFields()
+	}
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
+	code := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeResultsList))
+	e.fs.PushCode(code)
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResults))
+	if node.Type.Results != nil && len(node.Type.Results.List) > 0 {
+		var parts []string
+		for _, t := range tokens {
+			if t.Content != "" {
+				parts = append(parts, t.Content)
+			}
+		}
+		if len(parts) > 1 {
+			e.fs.PushCode("std::tuple<" + strings.Join(parts, ", ") + ">")
+		} else if len(parts) == 1 {
+			e.fs.PushCode(parts[0])
+		} else {
+			e.fs.PushCode("void")
+		}
+	} else if node.Name.Name == "main" {
+		e.fs.PushCode("int")
+	} else {
+		e.fs.PushCode("void")
+	}
+}
+
+func (e *CppEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeParamsListType))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsArgName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsList))
+	// Collect type and names
+	typeStr := ""
+	var names []string
+	for _, t := range tokens {
+		if t.Tag == TagExpr && typeStr == "" {
+			typeStr = t.Content
+		} else if t.Tag == TagIdent {
+			names = append(names, t.Content)
+		}
+	}
+	for _, name := range names {
+		e.fs.Push(typeStr+" "+name, TagExpr, nil)
+	}
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
+	var params []string
+	for _, t := range tokens {
+		if t.Tag == TagExpr && t.Content != "" {
+			params = append(params, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(params, ", "))
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
+	// Tokens: result-type, name, params
+	resultType := ""
+	funcName := ""
+	paramsStr := ""
+	for _, t := range tokens {
+		if t.Tag == TagIdent && funcName == "" {
+			funcName = t.Content
+		} else if t.Tag == TagExpr {
+			if resultType == "" {
+				resultType = t.Content
+			} else {
+				paramsStr = t.Content
+			}
+		}
+	}
+
+	if e.forwardDecl {
+		e.fs.PushCode(fmt.Sprintf("%s %s(%s);\n", resultType, funcName, paramsStr))
+	} else {
+		e.fs.PushCode(fmt.Sprintf("\n%s %s(%s)", resultType, funcName, paramsStr))
+	}
+}
+
+func (e *CppEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncDeclBody))
+	e.fs.PushCode(bodyCode)
+}
+
+func (e *CppEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
+	sigCode := ""
+	bodyCode := ""
+	if len(tokens) >= 1 {
+		sigCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		bodyCode = tokens[1].Content
+	}
+	e.fs.PushCode(sigCode + "\n" + bodyCode + "\n\n")
+}
+
+// Forward Declaration Signatures
+func (e *CppEmitter) PreVisitFuncDeclSignatures(indent int) {
+	e.forwardDecl = true
+	e.fs.PushCode("// Forward declarations\n")
+}
+
+func (e *CppEmitter) PostVisitFuncDeclSignatures(indent int) {
+	e.forwardDecl = false
+	// Let forward decl tokens flow through
+}
+
+// ============================================================
+// Block Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *CppEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
+	itemCode := e.fs.ReduceToCode(string(PreVisitBlockStmtList))
+	e.fs.PushCode(itemCode)
+}
+
+func (e *CppEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
+	var sb strings.Builder
+	sb.WriteString("{\n")
+	for _, t := range tokens {
+		if t.Content != "" {
+			sb.WriteString(t.Content)
+		}
+	}
+	sb.WriteString(cppIndent(indent) + "}")
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Expression Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *CppEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitExprStmtX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *CppEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitExprStmt))
+	code := ""
+	if len(tokens) >= 1 {
+		code = tokens[0].Content
+	}
+	ind := cppIndent(indent)
+	e.fs.PushCode(ind + code + ";\n")
+}
+
+// ============================================================
+// Assignment Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	e.indent = indent
+	e.mapAssignVar = ""
+	e.mapAssignKey = ""
+	// Capture LHS variable names for move optimization
+	e.currentAssignLhsNames = make(map[string]bool)
+	for _, lhs := range node.Lhs {
+		if ident, ok := lhs.(*ast.Ident); ok {
+			e.currentAssignLhsNames[ident.Name] = true
+		}
+	}
+}
+
+func (e *CppEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
+	lhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtLhsExpr))
+
+	if indexExpr, ok := node.(*ast.IndexExpr); ok {
+		if e.isMapTypeExpr(indexExpr.X) {
+			e.mapAssignVar = e.lastIndexXCode
+			e.mapAssignKey = e.lastIndexKeyCode
+			e.fs.PushCode(lhsCode)
+			return
+		}
+	}
+	e.fs.PushCode(lhsCode)
+}
+
+func (e *CppEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtLhs))
+	var lhsExprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			lhsExprs = append(lhsExprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(lhsExprs, ", "))
+}
+
+func (e *CppEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
+	rhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtRhsExpr))
+	e.fs.PushCode(rhsCode)
+}
+
+func (e *CppEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtRhs))
+	var rhsExprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			rhsExprs = append(rhsExprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(rhsExprs, ", "))
+}
+
+func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	e.currentAssignLhsNames = nil
+	tokens := e.fs.Reduce(string(PreVisitAssignStmt))
+	lhsStr := ""
+	rhsStr := ""
+	if len(tokens) >= 1 {
+		lhsStr = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		rhsStr = tokens[1].Content
+	}
+
+	ind := cppIndent(indent)
+	tokStr := node.Tok.String()
+
+	// Check all-blank assignment: _ = expr (suppress)
 	allBlank := true
 	for _, lhs := range node.Lhs {
 		if ident, ok := lhs.(*ast.Ident); ok {
@@ -1564,769 +1556,753 @@ func (cppe *CPPEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 	}
 	if allBlank {
-		cppe.suppressRangeEmit = true
 		return
 	}
-	// Detect comma-ok: val, ok := m[key]
-	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
-			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-				tv := cppe.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						cppe.isMapCommaOk = true
-						cppe.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-						cppe.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						cppe.mapCommaOkMapName = exprToString(indexExpr.X)
-						cppe.mapCommaOkValueType = getCppTypeName(mapType.Elem())
-						cppe.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
-						cppe.mapCommaOkIndent = indent
-						cppe.mapCommaOkKeyCastPrefix, cppe.mapCommaOkKeyCastSuffix = getCppKeyCast(mapType.Key())
-						cppe.suppressEmit = true
-						return
-					}
-				}
-			}
-		}
-	}
-	// Detect type assertion comma-ok: val, ok := x.(Type)
-	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
-			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-				tv := cppe.pkg.TypesInfo.Types[typeAssert.Type]
-				if tv.Type != nil {
-					cppe.isTypeAssertCommaOk = true
-					cppe.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-					cppe.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-					cppe.typeAssertCommaOkType = getCppTypeName(tv.Type)
-					cppe.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
-					cppe.typeAssertCommaOkIndent = indent
-					cppe.suppressEmit = true
-					return
-				}
-			}
-		}
-	}
-	// Detect map assignment: m[k] = v or nested m[k1][k2] = v
+
+	// Mixed index chain: e.g., mapOfSlices["first"][0] = 100
+	// Needs read-modify-write when intermediate access is a map
 	if len(node.Lhs) == 1 {
-		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
-			if cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-				tv := cppe.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						cppe.isMapAssign = true
-						cppe.mapAssignIndent = indent
-						cppe.mapAssignValueIsString = false
-						cppe.mapAssignKeyCastPrefix, cppe.mapAssignKeyCastSuffix = getCppKeyCast(mapType.Key())
-						valType := mapType.Elem()
-						if basic, isBasic := valType.Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
-							cppe.mapAssignValueIsString = true
-						}
-
-						// Check for nested index: m[k1][k2] = v or sliceOfMaps[0]["key"] = v
-						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
-							// Check if outer expression is a map or a slice
-							outerTv := cppe.pkg.TypesInfo.Types[outerIndexExpr.X]
-							if outerTv.Type != nil {
-								if outerMapType, ok := outerTv.Type.Underlying().(*types.Map); ok {
-									// Nested map assignment: m[k1][k2] = v
-									cppe.isNestedMapAssign = true
-									cppe.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
-									// Extract outer key directly from AST
-									cppe.nestedMapOuterKey = exprToCppString(outerIndexExpr.Index)
-									cppe.nestedMapOuterKeyCastPrefix, cppe.nestedMapOuterKeyCastSuffix = getCppKeyCast(outerMapType.Key())
-									cppe.nestedMapValueCppType = "hmap::HashMap"
-									// Use temp variable for inner map with unique name
-									cppe.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cppe.nestedMapCounter)
-									cppe.nestedMapCounter++
-									cppe.mapAssignVarName = cppe.nestedMapVarName
-								} else {
-									// Check if the slice is accessed from a map further up
-									// e.g., mapVar[k1][sliceIdx]["key"] = v
-									if deeperIndexExpr, isDeeper := outerIndexExpr.X.(*ast.IndexExpr); isDeeper {
-										deeperTv := cppe.pkg.TypesInfo.Types[deeperIndexExpr.X]
-										if deeperTv.Type != nil {
-											if deeperMapType, ok := deeperTv.Type.Underlying().(*types.Map); ok {
-												// map-slice-map assignment pattern
-												cppe.isNestedMapAssign = true
-												cppe.nestedMapOuterVarName = exprToString(deeperIndexExpr.X)
-												cppe.nestedMapOuterKey = exprToCppString(deeperIndexExpr.Index)
-												cppe.nestedMapOuterKeyCastPrefix, cppe.nestedMapOuterKeyCastSuffix = getCppKeyCast(deeperMapType.Key())
-												cppe.nestedMapValueCppType = getCppTypeName(deeperMapType.Elem())
-												cppe.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", cppe.nestedMapCounter)
-												cppe.nestedMapCounter++
-												sliceIdx := exprToCppString(outerIndexExpr.Index)
-												cppe.mapAssignVarName = cppe.nestedMapVarName + "[" + sliceIdx + "]"
-											} else {
-												cppe.isNestedMapAssign = false
-												cppe.mapAssignVarName = exprToCppString(indexExpr.X)
-											}
-										} else {
-											cppe.isNestedMapAssign = false
-											cppe.mapAssignVarName = exprToCppString(indexExpr.X)
-										}
-									} else {
-										// Simple slice-then-map: sliceOfMaps[0]["key"] = v
-										cppe.isNestedMapAssign = false
-										cppe.mapAssignVarName = exprToCppString(indexExpr.X)
-									}
-								}
-							} else {
-								// Fallback: treat as non-nested
-								cppe.isNestedMapAssign = false
-								cppe.mapAssignVarName = exprToCppString(indexExpr.X)
-							}
-						} else {
-							cppe.isNestedMapAssign = false
-							cppe.mapAssignVarName = exprToString(indexExpr.X)
-						}
-						// Suppress normal LHS output (the m[k] part will be captured)
-						cppe.suppressEmit = true
-						return
-					}
-					// Detect mixed index assignment: any pattern where intermediate map
-					// accesses exist below a non-map outermost access
-					// e.g., mapOfSlices["key"][idx] = v, nestedMaps["a"]["b"][idx] = v
-					ops, hasIntermediateMap := cppe.analyzeLhsIndexChain(node.Lhs[0])
-					if hasIntermediateMap && len(ops) > 0 {
-						// Get root variable name
-						rootExpr := node.Lhs[0]
-						for {
-							if ie, ok := rootExpr.(*ast.IndexExpr); ok {
-								rootExpr = ie.X
-							} else {
-								break
-							}
-						}
-						rootVar := exprToString(rootExpr)
-
-						// Assign temp var names to map accesses and build the chain
-						currentVar := rootVar
-						for i := range ops {
-							if ops[i].accessType == "map" {
-								ops[i].mapVarExpr = currentVar
-								ops[i].tempVarName = fmt.Sprintf("__nested_inner_%d", cppe.nestedMapCounter)
-								cppe.nestedMapCounter++
-								currentVar = ops[i].tempVarName
-							} else {
-								// Slice access on current variable
-								ops[i].mapVarExpr = currentVar
-								currentVar = currentVar + "[" + ops[i].keyExpr + "]"
-							}
-						}
-
-						cppe.isMixedIndexAssign = true
-						cppe.mixedIndexAssignOps = ops
-						cppe.mixedAssignIndent = indent
-						cppe.mixedAssignFinalTarget = currentVar
-						cppe.suppressEmit = true
-						return
+		if _, isIndex := node.Lhs[0].(*ast.IndexExpr); isIndex && e.pkg != nil && e.pkg.TypesInfo != nil {
+			ops, hasIntermediateMap := e.analyzeLhsIndexChain(node.Lhs[0])
+			if hasIntermediateMap && len(ops) >= 2 {
+				// Find root variable
+				rootExpr := node.Lhs[0]
+				for {
+					if ie, ok := rootExpr.(*ast.IndexExpr); ok {
+						rootExpr = ie.X
+					} else {
+						break
 					}
 				}
-			}
-		}
-	}
-	// Detect if LHS is interface{}/std::any type (for string literal wrapping)
-	cppe.assignLhsIsInterface = false
-	if len(node.Lhs) == 1 && cppe.pkg != nil && cppe.pkg.TypesInfo != nil {
-		if ident, ok := node.Lhs[0].(*ast.Ident); ok {
-			if obj := cppe.pkg.TypesInfo.ObjectOf(ident); obj != nil {
-				if iface, ok := obj.Type().Underlying().(*types.Interface); ok && iface.Empty() {
-					cppe.assignLhsIsInterface = true
-				}
-			}
-		}
-	}
-	// Capture LHS variable names for move optimization
-	cppe.currentAssignLhsNames = make(map[string]bool)
-	for _, lhs := range node.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			cppe.currentAssignLhsNames[ident.Name] = true
-		}
-	}
-	str := cppe.emitAsString("", indent)
-	cppe.emitToFile(str)
-}
+				rootVar := exprToString(rootExpr)
 
-func (cppe *CPPEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	cppe.currentAssignLhsNames = nil
-	cppe.assignLhsIsInterface = false
-	if cppe.isTypeAssertCommaOk {
-		expr := cppe.capturedMapKey
-		typeName := cppe.typeAssertCommaOkType
-		decl := ""
-		if cppe.typeAssertCommaOkIsDecl {
-			decl = "auto "
-		}
-		indentStr := strings.Repeat("    ", cppe.typeAssertCommaOkIndent/4)
-		cppe.suppressEmit = false
-		cppe.emitToFile(fmt.Sprintf("%s%s%s = (std::any(%s)).type() == typeid(%s);\n",
-			indentStr, decl, cppe.typeAssertCommaOkOkName, expr, typeName))
-		cppe.emitToFile(fmt.Sprintf("%s%s%s = %s ? std::any_cast<%s>(std::any(%s)) : %s{};\n",
-			indentStr, decl, cppe.typeAssertCommaOkValName, cppe.typeAssertCommaOkOkName,
-			typeName, expr, typeName))
-		cppe.isTypeAssertCommaOk = false
-		cppe.capturedMapKey = ""
-		cppe.captureMapKey = false
-		return
-	}
-	if cppe.isMixedIndexAssign {
-		// Finish the value assignment
-		cppe.emitToFile(";\n")
-		// Emit epilogue: set-back chain in reverse order for map accesses
-		for i := len(cppe.mixedIndexAssignOps) - 1; i >= 0; i-- {
-			op := cppe.mixedIndexAssignOps[i]
-			if op.accessType == "map" {
-				key := op.keyExpr
-				if op.keyCastPfx != "" {
-					key = op.keyCastPfx + key + op.keyCastSfx
-				}
-				epilogue := cppe.emitAsString(op.mapVarExpr+" = hmap::hashMapSet("+
-					op.mapVarExpr+", "+key+", "+op.tempVarName+");\n", cppe.mixedAssignIndent)
-				cppe.emitToFile(epilogue)
-			}
-		}
-		// Reset state
-		cppe.isMixedIndexAssign = false
-		cppe.mixedIndexAssignOps = nil
-		cppe.mixedAssignFinalTarget = ""
-		return
-	}
-	if cppe.isMapCommaOk {
-		key := cppe.capturedMapKey
-		if cppe.mapCommaOkKeyCastPrefix != "" {
-			key = cppe.mapCommaOkKeyCastPrefix + key + cppe.mapCommaOkKeyCastSuffix
-		}
-		decl := ""
-		if cppe.mapCommaOkIsDecl {
-			decl = "auto "
-		}
-		indentStr := strings.Repeat("    ", cppe.mapCommaOkIndent/4)
-		cppe.suppressEmit = false
-		cppe.emitToFile(fmt.Sprintf("%s%s%s = hmap::hashMapContains(%s, %s);\n",
-			indentStr, decl, cppe.mapCommaOkOkName, cppe.mapCommaOkMapName, key))
-		cppe.emitToFile(fmt.Sprintf("%s%s%s = %s ? std::any_cast<%s>(hmap::hashMapGet(%s, %s)) : %s{};\n",
-			indentStr, decl, cppe.mapCommaOkValName, cppe.mapCommaOkOkName,
-			cppe.mapCommaOkValueType, cppe.mapCommaOkMapName, key, cppe.mapCommaOkValueType))
-		cppe.isMapCommaOk = false
-		return
-	}
-	if cppe.isMapAssign {
-		if cppe.mapAssignValueIsString {
-			cppe.emitToFile(")")
-		}
-		cppe.emitToFile(");\n")
-
-		// For nested map assignment, emit epilogue to set updated inner map back to outer
-		if cppe.isNestedMapAssign {
-			outerKey := cppe.nestedMapOuterKey
-			if cppe.nestedMapOuterKeyCastPrefix != "" {
-				outerKey = cppe.nestedMapOuterKeyCastPrefix + outerKey + cppe.nestedMapOuterKeyCastSuffix
-			}
-			epilogue := cppe.emitAsString(cppe.nestedMapOuterVarName+" = hmap::hashMapSet("+
-				cppe.nestedMapOuterVarName+", "+outerKey+", "+cppe.nestedMapVarName+");\n", cppe.mapAssignIndent)
-			cppe.emitToFile(epilogue)
-			cppe.isNestedMapAssign = false
-			cppe.nestedMapOuterVarName = ""
-			cppe.nestedMapOuterKey = ""
-			cppe.nestedMapOuterKeyCastPrefix = ""
-			cppe.nestedMapOuterKeyCastSuffix = ""
-		}
-
-		cppe.isMapAssign = false
-		cppe.mapAssignVarName = ""
-		cppe.capturedMapKey = ""
-		cppe.mapAssignKeyCastPrefix = ""
-		cppe.mapAssignKeyCastSuffix = ""
-		cppe.mapAssignValueIsString = false
-		return
-	}
-	// Reset blank identifier suppression if it was set
-	if cppe.suppressRangeEmit {
-		cppe.suppressRangeEmit = false
-		return
-	}
-	// Don't emit semicolon inside for loop post statement
-	if !cppe.insideForPostCond {
-		str := cppe.emitAsString(";", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	assignmentToken := node.Tok.String()
-	if assignmentToken == ":=" && len(node.Lhs) == 1 {
-		// Check if RHS is a string literal - use std::string instead of auto
-		// to avoid const char* which breaks string concatenation
-		if len(node.Rhs) == 1 {
-			if lit, ok := node.Rhs[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-				str := cppe.emitAsString("std::string ", indent)
-				cppe.emitToFile(str)
-			} else {
-				str := cppe.emitAsString("auto ", indent)
-				cppe.emitToFile(str)
-			}
-		} else {
-			str := cppe.emitAsString("auto ", indent)
-			cppe.emitToFile(str)
-		}
-	} else if assignmentToken == ":=" && len(node.Lhs) > 1 {
-		str := cppe.emitAsString("auto [", indent)
-		cppe.emitToFile(str)
-	} else if assignmentToken == "=" && len(node.Lhs) > 1 {
-		str := cppe.emitAsString("std::tie(", indent)
-		cppe.emitToFile(str)
-	}
-	// Preserve compound assignment operators, convert := to =
-	if assignmentToken != "+=" && assignmentToken != "-=" && assignmentToken != "*=" && assignmentToken != "/=" {
-		assignmentToken = "="
-	}
-	cppe.assignmentToken = assignmentToken
-}
-
-func (cppe *CPPEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	if node.Tok.String() == ":=" && len(node.Lhs) > 1 {
-		str := cppe.emitAsString("]", indent)
-		cppe.emitToFile(str)
-	} else if node.Tok.String() == "=" && len(node.Lhs) > 1 {
-		str := cppe.emitAsString(")", indent)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	if cppe.isMixedIndexAssign {
-		// Turn off suppression and emit the preamble + assignment
-		cppe.suppressEmit = false
-		// Emit preamble: extract temp variables for each map access
-		for _, op := range cppe.mixedIndexAssignOps {
-			if op.accessType == "map" {
-				key := op.keyExpr
-				if op.keyCastPfx != "" {
-					key = op.keyCastPfx + key + op.keyCastSfx
-				}
-				preamble := cppe.emitAsString("auto "+op.tempVarName+" = std::any_cast<"+
-					op.valueCppType+">(hmap::hashMapGet("+
-					op.mapVarExpr+", "+key+"));\n", cppe.mixedAssignIndent)
-				cppe.emitToFile(preamble)
-			}
-		}
-		// Emit assignment: finalTarget = value
-		str := cppe.emitAsString(cppe.mixedAssignFinalTarget+" = ", cppe.mixedAssignIndent)
-		cppe.emitToFile(str)
-		return
-	}
-	if cppe.isMapAssign {
-		// Turn off suppression and emit the assignment
-		cppe.suppressEmit = false
-		key := cppe.capturedMapKey
-		if cppe.mapAssignKeyCastPrefix != "" {
-			key = cppe.mapAssignKeyCastPrefix + key + cppe.mapAssignKeyCastSuffix
-		}
-
-		if cppe.isNestedMapAssign {
-			// For nested map: m["outer"]["inner"] = v
-			// Generate:
-			//   auto __nested_inner = std::any_cast<hmap::HashMap>(hmap::hashMapGet(m, outerKey));
-			//   __nested_inner = hmap::hashMapSet(__nested_inner, innerKey, value)
-			// (The epilogue in PostVisitAssignStmt will add the outer set)
-			outerKey := cppe.nestedMapOuterKey
-			if cppe.nestedMapOuterKeyCastPrefix != "" {
-				outerKey = cppe.nestedMapOuterKeyCastPrefix + outerKey + cppe.nestedMapOuterKeyCastSuffix
-			}
-			// Emit preamble: extract inner value (map or slice of maps)
-			castType := cppe.nestedMapValueCppType
-			if castType == "" {
-				castType = "hmap::HashMap"
-			}
-			preamble := cppe.emitAsString("auto "+cppe.nestedMapVarName+" = std::any_cast<"+castType+">(hmap::hashMapGet("+
-				cppe.nestedMapOuterVarName+", "+outerKey+"));\n", cppe.mapAssignIndent)
-			cppe.emitToFile(preamble)
-		}
-
-		str := cppe.emitAsString(cppe.mapAssignVarName+" = hmap::hashMapSet("+cppe.mapAssignVarName+", "+key+", ", cppe.mapAssignIndent)
-		cppe.emitToFile(str)
-		if cppe.mapAssignValueIsString {
-			cppe.emitToFile("std::string(")
-		}
-		return
-	}
-	str := cppe.emitAsString(cppe.assignmentToken+" ", indent+1)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(", ", indent)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	cppe.currentReturnNode = node
-	str := cppe.emitAsString("return ", indent)
-	cppe.emitToFile(str)
-	if len(node.Results) > 1 {
-		str := cppe.emitAsString("std::make_tuple(", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	if len(node.Results) > 1 {
-		str := cppe.emitAsString(")", 0)
-		cppe.emitToFile(str)
-	}
-	str := cppe.emitAsString(";", 0)
-	cppe.emitToFile(str)
-	cppe.currentReturnNode = nil
-}
-
-func (cppe *CPPEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(", ", 0)
-		cppe.emitToFile(str)
-	}
-	// For multi-value returns, add std::move() for the first struct result
-	// when later results don't reference the same identifier
-	cppe.moveCurrentReturn = false
-	if cppe.OptimizeMoves && cppe.pkg != nil && cppe.pkg.TypesInfo != nil && cppe.currentReturnNode != nil && len(cppe.currentReturnNode.Results) > 1 && index == 0 {
-		if ident, ok := node.(*ast.Ident); ok {
-			tv := cppe.pkg.TypesInfo.Types[node]
-			if tv.Type != nil {
-				if named, ok := tv.Type.(*types.Named); ok {
-					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-						// Only move if later results don't reference this identifier
-						needsClone := false
-						for i := 1; i < len(cppe.currentReturnNode.Results); i++ {
-							if cppe.exprContainsIdent(cppe.currentReturnNode.Results[i], ident.Name) {
-								needsClone = true
-								break
-							}
-						}
-						if !needsClone && cppe.funcLitDepth == 0 {
-							cppe.moveCurrentReturn = true
-							cppe.MoveOptCount++
-							str := cppe.emitAsString("std::move(", 0)
-							cppe.emitToFile(str)
-						}
+				// Assign temp var names to map accesses
+				currentVar := rootVar
+				for i := range ops {
+					if ops[i].accessType == "map" {
+						ops[i].mapVarExpr = currentVar
+						ops[i].tempVarName = fmt.Sprintf("__nested_inner_%d", e.nestedMapCounter)
+						e.nestedMapCounter++
+						currentVar = ops[i].tempVarName
+					} else {
+						ops[i].mapVarExpr = currentVar
+						currentVar = currentVar + "[" + ops[i].keyExpr + "]"
 					}
 				}
-			}
-		}
-	}
-}
 
-func (cppe *CPPEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	if cppe.moveCurrentReturn {
-		str := cppe.emitAsString(")", 0)
-		cppe.emitToFile(str)
-		cppe.moveCurrentReturn = false
-	}
-}
+				lastIdx := len(ops) - 1
+				var sb strings.Builder
 
-func (cppe *CPPEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
-	if node.Init != nil {
-		str := cppe.emitAsString("{\n", indent)
-		cppe.emitToFile(str)
-	}
-}
+				// Prologue: extract temp variables for INTERMEDIATE map accesses only
+				for i, op := range ops {
+					if op.accessType == "map" && i < lastIdx {
+						key := op.keyExpr
+						if op.keyCastPfx != "" {
+							key = op.keyCastPfx + key + op.keyCastSfx
+						}
+						sb.WriteString(fmt.Sprintf("%sauto %s = std::any_cast<%s>(hmap::hashMapGet(%s, %s));\n",
+							ind, op.tempVarName, op.valueCppType, op.mapVarExpr, key))
+					}
+				}
 
-func (cppe *CPPEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	if node.Init != nil {
-		str := cppe.emitAsString("}\n", indent)
-		cppe.emitToFile(str)
-	}
-}
+				// Assignment depends on whether the last op is a map or slice access
+				lastOp := ops[lastIdx]
+				if lastOp.accessType == "map" {
+					// Last op is map: use hashMapSet directly
+					key := lastOp.keyExpr
+					if lastOp.keyCastPfx != "" {
+						key = lastOp.keyCastPfx + key + lastOp.keyCastSfx
+					}
+					sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
+						ind, lastOp.mapVarExpr, lastOp.mapVarExpr, key, rhsStr))
+				} else {
+					// Last op is slice: assign to slice element
+					sb.WriteString(fmt.Sprintf("%s%s %s %s;\n", ind, currentVar, tokStr, rhsStr))
+				}
 
-func (cppe *CPPEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	str := cppe.emitAsString("if (", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	str := cppe.emitAsString(")\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	str := cppe.emitAsString("else", 1)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
-	str := cppe.emitAsString("for (", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
-	if node == nil {
-		str := cppe.emitAsString(";", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
-	str := cppe.emitAsString(";", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	// Check if this is a key-value range (both Key and Value present)
-	if node.Key != nil && node.Value != nil {
-		cppe.isKeyValueRange = true
-		cppe.rangeKeyName = node.Key.(*ast.Ident).Name
-		cppe.rangeValueName = node.Value.(*ast.Ident).Name
-		cppe.rangeCollectionExpr = ""
-		cppe.suppressRangeEmit = true
-		cppe.rangeStmtIndent = indent
-		// Don't emit anything yet - we'll emit the complete for loop in PostVisitRangeStmtX
-	} else {
-		cppe.isKeyValueRange = false
-		str := cppe.emitAsString("for (auto ", indent)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitRangeStmtKey(node ast.Expr, indent int) {
-	// For key-value range, we've already captured the key name
-	// For index-only range (for i := range), let it emit normally
-}
-
-func (cppe *CPPEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
-	// Nothing special needed here
-}
-
-func (cppe *CPPEmitter) PreVisitRangeStmtValue(node ast.Expr, indent int) {
-	// For key-value range, we've already captured the value name, keep suppressing
-}
-
-func (cppe *CPPEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
-	if cppe.isKeyValueRange {
-		// Stop suppressing, start capturing collection expression
-		cppe.suppressRangeEmit = false
-		cppe.captureRangeExpr = true
-	} else {
-		str := cppe.emitAsString(" : ", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitRangeStmtX(node ast.Expr, indent int) {
-	// For key-value range, we're already in capture mode
-}
-
-func (cppe *CPPEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
-	if cppe.isKeyValueRange {
-		// Stop capturing and emit the complete for loop
-		cppe.captureRangeExpr = false
-		collection := cppe.rangeCollectionExpr
-		key := cppe.rangeKeyName
-		value := cppe.rangeValueName
-		indent := cppe.rangeStmtIndent
-
-		// Emit: for (size_t key = 0; key < collection.size(); key++)
-		str := cppe.emitAsString(fmt.Sprintf("for (size_t %s = 0; %s < %s.size(); %s++)\n", key, key, collection, key), indent)
-		cppe.emitToFile(str)
-
-		// Set pending value declaration to be emitted at start of body block
-		cppe.pendingRangeValueDecl = true
-		cppe.pendingValueName = value
-		cppe.pendingCollectionExpr = collection
-		cppe.pendingKeyName = key
-
-		// Reset range state
-		cppe.isKeyValueRange = false
-		cppe.rangeKeyName = ""
-		cppe.rangeValueName = ""
-		cppe.rangeCollectionExpr = ""
-	} else {
-		str := cppe.emitAsString(")\n", 0)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitRangeStmtBody(node *ast.BlockStmt, indent int) {
-	// For key-value range, emit the value declaration at the start of the body
-	// This is called from the base_pass when visiting the body
-}
-
-func (cppe *CPPEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	// Reset any range-related state
-}
-func (cppe *CPPEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	str := cppe.emitAsString("switch (", indent)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	str := cppe.emitAsString("}", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
-	str := cppe.emitAsString(") {\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
-	cppe.emitToFile("\n")
-	str := cppe.emitAsString("break;\n", indent+4)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
-	if len(node) == 0 {
-		str := cppe.emitAsString("default:\n", indent+2)
-		cppe.emitToFile(str)
-	}
-}
-
-func (cppe *CPPEmitter) PreVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	str := cppe.emitAsString("case ", indent+2)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	str := cppe.emitAsString(":\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	str := cppe.emitAsString("{\n", indent)
-	cppe.emitToFile(str)
-
-	// If we have a pending value declaration from key-value range, emit it now
-	if cppe.pendingRangeValueDecl {
-		valueDecl := cppe.emitAsString(fmt.Sprintf("auto %s = %s[%s];\n",
-			cppe.pendingValueName, cppe.pendingCollectionExpr, cppe.pendingKeyName), indent+2)
-		cppe.emitToFile(valueDecl)
-		cppe.pendingRangeValueDecl = false
-		cppe.pendingValueName = ""
-		cppe.pendingCollectionExpr = ""
-		cppe.pendingKeyName = ""
-	}
-}
-
-func (cppe *CPPEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	str := cppe.emitAsString("}", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	str := cppe.emitAsString("\n", indent)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	str := cppe.emitAsString("\n\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	str := cppe.emitAsString("\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	if node.Type.Results != nil {
-		if len(node.Type.Results.List) > 1 {
-			str := cppe.emitAsString("std::tuple<", 0)
-			err := cppe.emitToFile(str)
-			if err != nil {
-				fmt.Println("Error writing to file:", err)
+				// Epilogue: write back INTERMEDIATE map entries in reverse
+				for i := lastIdx - 1; i >= 0; i-- {
+					op := ops[i]
+					if op.accessType == "map" {
+						key := op.keyExpr
+						if op.keyCastPfx != "" {
+							key = op.keyCastPfx + key + op.keyCastSfx
+						}
+						sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
+							ind, op.mapVarExpr, op.mapVarExpr, key, op.tempVarName))
+					}
+				}
+				e.fs.PushCode(sb.String())
 				return
 			}
 		}
 	}
-}
 
-func (cppe *CPPEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	str := cppe.emitAsString(")", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncDeclName(node *ast.Ident, indent int) {
-	DebugLogPrintf("CPPEmitter: PreVisitFuncDeclName: %s", node.Name)
-	str := cppe.emitAsString(node.Name, 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	if node.Type.Results != nil {
-		if len(node.Type.Results.List) > 1 {
-			str := cppe.emitAsString(">", 0)
-			cppe.emitToFile(str)
+	// Map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
+	if e.mapAssignVar != "" && e.mapAssignKey != "" {
+		mapVar := e.mapAssignVar
+		mapKey := e.mapAssignKey
+		// Apply key cast
+		mapGoType := e.getExprGoType(node.Lhs[0].(*ast.IndexExpr).X)
+		if mapGoType != nil {
+			if mapType, ok := mapGoType.Underlying().(*types.Map); ok {
+				castPfx, castSfx := getCppKeyCast(mapType.Key())
+				if castPfx != "" {
+					mapKey = castPfx + mapKey + castSfx
+				}
+				// Wrap string values
+				if basic, isBasic := mapType.Elem().Underlying().(*types.Basic); isBasic && basic.Kind() == types.String {
+					rhsStr = "std::string(" + rhsStr + ")"
+				}
+			}
 		}
-	} else if node.Name.Name == "main" {
-		str := cppe.emitAsString("int", 0)
-		cppe.emitToFile(str)
+
+		// Check for nested map: m[k1][k2] = v
+		if outerIndex, isNested := node.Lhs[0].(*ast.IndexExpr).X.(*ast.IndexExpr); isNested {
+			if e.isMapTypeExpr(outerIndex.X) {
+				outerVar := exprToString(outerIndex.X)
+				outerKey := exprToCppString(outerIndex.Index)
+				outerMapType := e.getExprGoType(outerIndex.X)
+				if outerMapType != nil {
+					if omt, ok := outerMapType.Underlying().(*types.Map); ok {
+						oCastPfx, oCastSfx := getCppKeyCast(omt.Key())
+						if oCastPfx != "" {
+							outerKey = oCastPfx + outerKey + oCastSfx
+						}
+					}
+				}
+				tempVar := fmt.Sprintf("__nested_inner_%d", e.nestedMapCounter)
+				e.nestedMapCounter++
+				e.fs.PushCode(fmt.Sprintf("%sauto %s = std::any_cast<hmap::HashMap>(hmap::hashMapGet(%s, %s));\n",
+					ind, tempVar, outerVar, outerKey))
+				e.fs.PushCode(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
+					ind, tempVar, tempVar, mapKey, rhsStr))
+				e.fs.PushCode(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
+					ind, outerVar, outerVar, outerKey, tempVar))
+				e.mapAssignVar = ""
+				e.mapAssignKey = ""
+				return
+			}
+		}
+
+		e.fs.PushCode(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n", ind, mapVar, mapVar, mapKey, rhsStr))
+		e.mapAssignVar = ""
+		e.mapAssignKey = ""
+		return
+	}
+
+	// Comma-ok map read: val, ok := m[key]
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
+			if e.isMapTypeExpr(indexExpr.X) {
+				valName := exprToString(node.Lhs[0])
+				okName := exprToString(node.Lhs[1])
+				mapName := exprToString(indexExpr.X)
+				keyStr := exprToCppString(indexExpr.Index)
+				valueCppType := "std::any"
+				mapGoType := e.getExprGoType(indexExpr.X)
+				if mapGoType != nil {
+					if mapType, ok2 := mapGoType.Underlying().(*types.Map); ok2 {
+						valueCppType = getCppTypeName(mapType.Elem())
+						castPfx, castSfx := getCppKeyCast(mapType.Key())
+						if castPfx != "" {
+							keyStr = castPfx + keyStr + castSfx
+						}
+					}
+				}
+				decl := ""
+				if tokStr == ":=" {
+					decl = "auto "
+				}
+				e.fs.PushCode(fmt.Sprintf("%s%s%s = hmap::hashMapContains(%s, %s);\n",
+					ind, decl, okName, mapName, keyStr))
+				e.fs.PushCode(fmt.Sprintf("%s%s%s = %s ? std::any_cast<%s>(hmap::hashMapGet(%s, %s)) : %s{};\n",
+					ind, decl, valName, okName, valueCppType, mapName, keyStr, valueCppType))
+				return
+			}
+		}
+	}
+
+	// Comma-ok type assertion: val, ok := x.(Type)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+			valName := exprToString(node.Lhs[0])
+			okName := exprToString(node.Lhs[1])
+			typeName := ""
+			if e.pkg != nil && e.pkg.TypesInfo != nil {
+				tv := e.pkg.TypesInfo.Types[typeAssert.Type]
+				if tv.Type != nil {
+					typeName = getCppTypeName(tv.Type)
+				}
+			}
+			xExpr := exprToString(typeAssert.X)
+			decl := ""
+			if tokStr == ":=" {
+				decl = "auto "
+			}
+			e.fs.PushCode(fmt.Sprintf("%s%s%s = (std::any(%s)).type() == typeid(%s);\n",
+				ind, decl, okName, xExpr, typeName))
+			e.fs.PushCode(fmt.Sprintf("%s%s%s = %s ? std::any_cast<%s>(std::any(%s)) : %s{};\n",
+				ind, decl, valName, okName, typeName, xExpr, typeName))
+			return
+		}
+	}
+
+	// Multi-value return: a, b := func() → auto [a, b] = func()
+	if len(node.Lhs) > 1 && len(node.Rhs) == 1 {
+		lhsParts := make([]string, len(node.Lhs))
+		for i, lhs := range node.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok {
+				lhsParts[i] = ident.Name
+			} else {
+				lhsParts[i] = exprToString(lhs)
+			}
+		}
+		if tokStr == ":=" {
+			e.fs.PushCode(fmt.Sprintf("%sauto [%s] = %s;\n", ind, strings.Join(lhsParts, ", "), rhsStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%sstd::tie(%s) = %s;\n", ind, strings.Join(lhsParts, ", "), rhsStr))
+		}
+		return
+	}
+
+	// Detect if LHS is interface{}/std::any for string wrapping
+	assignLhsIsInterface := false
+	if len(node.Lhs) == 1 && e.pkg != nil && e.pkg.TypesInfo != nil {
+		if ident, ok := node.Lhs[0].(*ast.Ident); ok {
+			if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+				if iface, ok := obj.Type().Underlying().(*types.Interface); ok && iface.Empty() {
+					assignLhsIsInterface = true
+				}
+			}
+		}
+	}
+
+	// Wrap string literals assigned to interface{}/std::any
+	if assignLhsIsInterface && len(node.Rhs) == 1 {
+		if lit, ok := node.Rhs[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			rhsStr = "std::string(" + rhsStr + ")"
+		}
+	}
+
+	switch tokStr {
+	case ":=":
+		// Check if RHS is a string literal → use std::string instead of auto
+		if len(node.Rhs) == 1 {
+			if lit, ok := node.Rhs[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				e.fs.PushCode(fmt.Sprintf("%sstd::string %s = %s;\n", ind, lhsStr, rhsStr))
+			} else {
+				e.fs.PushCode(fmt.Sprintf("%sauto %s = %s;\n", ind, lhsStr, rhsStr))
+			}
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%sauto %s = %s;\n", ind, lhsStr, rhsStr))
+		}
+	case "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=":
+		e.fs.PushCode(fmt.Sprintf("%s%s %s %s;\n", ind, lhsStr, tokStr, rhsStr))
+	default:
+		e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, lhsStr, rhsStr))
+	}
+}
+
+// ============================================================
+// Declaration Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *CppEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitDeclStmtValueSpecType))
+	typeStr := ""
+	for _, t := range tokens {
+		typeStr += t.Content
+	}
+	var goType types.Type
+	if e.pkg != nil && e.pkg.TypesInfo != nil && index < len(node.Names) {
+		if obj := e.pkg.TypesInfo.Defs[node.Names[index]]; obj != nil {
+			goType = obj.Type()
+		}
+	}
+	e.fs.Push(typeStr, TagType, goType)
+}
+
+func (e *CppEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
+	e.fs.Reduce(string(PreVisitDeclStmtValueSpecNames))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *CppEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitDeclStmtValueSpecValue))
+	e.fs.Push(valCode, TagExpr, nil)
+}
+
+func (e *CppEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
+	ind := cppIndent(indent)
+
+	var sb strings.Builder
+	i := 0
+	for i < len(tokens) {
+		typeStr := ""
+		nameStr := ""
+		valueStr := ""
+		var goType types.Type
+
+		if i < len(tokens) && tokens[i].Tag == TagType {
+			typeStr = tokens[i].Content
+			goType = tokens[i].GoType
+			i++
+		}
+		if i < len(tokens) && tokens[i].Tag == TagIdent {
+			nameStr = tokens[i].Content
+			i++
+		}
+		if i < len(tokens) && tokens[i].Tag == TagExpr {
+			valueStr = tokens[i].Content
+			i++
+		}
+
+		if nameStr == "" {
+			continue
+		}
+
+		if valueStr != "" {
+			sb.WriteString(fmt.Sprintf("%s%s %s = %s;\n", ind, typeStr, nameStr, valueStr))
+		} else {
+			// Check for map type → default init with newHashMap
+			if goType != nil {
+				if _, isMap := goType.Underlying().(*types.Map); isMap {
+					// Get key type constant
+					keyType := 1
+					// Try to get from AST
+					if genDecl, ok := node.Decl.(*ast.GenDecl); ok {
+						for _, spec := range genDecl.Specs {
+							if vSpec, ok := spec.(*ast.ValueSpec); ok {
+								if mapAst, ok := vSpec.Type.(*ast.MapType); ok {
+									keyType = e.getMapKeyTypeConst(mapAst)
+								}
+							}
+						}
+					}
+					sb.WriteString(fmt.Sprintf("%s%s %s = hmap::newHashMap(%d);\n", ind, typeStr, nameStr, keyType))
+					continue
+				}
+			}
+			sb.WriteString(fmt.Sprintf("%s%s %s;\n", ind, typeStr, nameStr))
+		}
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Return Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *CppEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
+	resultCode := e.fs.ReduceToCode(string(PreVisitReturnStmtResult))
+
+	// Move optimization for struct return values
+	if e.OptimizeMoves && e.funcLitDepth == 0 && e.numFuncResults > 1 && index == 0 {
+		if ident, ok := node.(*ast.Ident); ok {
+			tv := e.getExprGoType(node)
+			if tv != nil {
+				if named, ok := tv.(*types.Named); ok {
+					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+						_ = ident
+						resultCode = "std::move(" + resultCode + ")"
+						e.MoveOptCount++
+					}
+				}
+			}
+		}
+	}
+
+	e.fs.PushCode(resultCode)
+}
+
+func (e *CppEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitReturnStmt))
+	ind := cppIndent(indent)
+
+	if len(tokens) == 0 {
+		e.fs.PushCode(ind + "return;\n")
+	} else if len(tokens) == 1 {
+		e.fs.PushCode(fmt.Sprintf("%sreturn %s;\n", ind, tokens[0].Content))
 	} else {
-		str := cppe.emitAsString("void", 0)
-		cppe.emitToFile(str)
-	}
-	str := cppe.emitAsString("", 1)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(",", 0)
-		cppe.emitToFile(str)
+		var vals []string
+		for _, t := range tokens {
+			vals = append(vals, t.Content)
+		}
+		e.fs.PushCode(fmt.Sprintf("%sreturn std::make_tuple(%s);\n", ind, strings.Join(vals, ", ")))
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	str := cppe.emitAsString("(", 0)
-	cppe.emitToFile(str)
+// ============================================================
+// If Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
+	e.indent = indent
+	e.ifInitStack = append(e.ifInitStack, "")
+	e.ifCondStack = append(e.ifCondStack, "")
+	e.ifBodyStack = append(e.ifBodyStack, "")
+	e.ifElseStack = append(e.ifElseStack, "")
 }
 
-func (cppe *CPPEmitter) PreVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	if index > 0 {
-		str := cppe.emitAsString(", ", 0)
-		cppe.emitToFile(str)
+func (e *CppEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
+	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtInit))
+}
+
+func (e *CppEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
+	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtCond))
+}
+
+func (e *CppEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
+	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtBody))
+}
+
+func (e *CppEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
+	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtElse))
+}
+
+func (e *CppEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+	e.fs.Reduce(string(PreVisitIfStmt))
+	ind := cppIndent(indent)
+
+	n := len(e.ifInitStack)
+	initCode := e.ifInitStack[n-1]
+	condCode := e.ifCondStack[n-1]
+	bodyCode := e.ifBodyStack[n-1]
+	elseCode := e.ifElseStack[n-1]
+	e.ifInitStack = e.ifInitStack[:n-1]
+	e.ifCondStack = e.ifCondStack[:n-1]
+	e.ifBodyStack = e.ifBodyStack[:n-1]
+	e.ifElseStack = e.ifElseStack[:n-1]
+
+	var sb strings.Builder
+	if initCode != "" {
+		sb.WriteString(fmt.Sprintf("%s{\n", ind))
+		sb.WriteString(initCode)
+		sb.WriteString(fmt.Sprintf("%sif (%s)\n%s", ind, condCode, bodyCode))
+	} else {
+		sb.WriteString(fmt.Sprintf("%sif (%s)\n%s", ind, condCode, bodyCode))
+	}
+	if elseCode != "" {
+		trimmed := strings.TrimLeft(elseCode, " \t\n")
+		if strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(") {
+			sb.WriteString("\nelse " + trimmed)
+		} else {
+			sb.WriteString("\nelse\n" + elseCode)
+		}
+	}
+	sb.WriteString("\n")
+	if initCode != "" {
+		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// For Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
+	e.indent = indent
+	e.forInitStack = append(e.forInitStack, "")
+	e.forCondStack = append(e.forCondStack, "")
+	e.forPostStack = append(e.forPostStack, "")
+}
+
+func (e *CppEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
+	initCode := e.fs.ReduceToCode(string(PreVisitForStmtInit))
+	initCode = strings.TrimRight(initCode, ";\n \t")
+	initCode = strings.TrimLeft(initCode, " \t")
+	e.forInitStack[len(e.forInitStack)-1] = initCode
+}
+
+func (e *CppEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
+	e.forCondStack[len(e.forCondStack)-1] = e.fs.ReduceToCode(string(PreVisitForStmtCond))
+}
+
+func (e *CppEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
+	postCode := e.fs.ReduceToCode(string(PreVisitForStmtPost))
+	postCode = strings.TrimRight(postCode, ";\n \t")
+	postCode = strings.TrimLeft(postCode, " \t")
+	e.forPostStack[len(e.forPostStack)-1] = postCode
+}
+
+func (e *CppEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitForStmt))
+	ind := cppIndent(indent)
+
+	n := len(e.forInitStack)
+	initCode := e.forInitStack[n-1]
+	condCode := e.forCondStack[n-1]
+	postCode := e.forPostStack[n-1]
+	e.forInitStack = e.forInitStack[:n-1]
+	e.forCondStack = e.forCondStack[:n-1]
+	e.forPostStack = e.forPostStack[:n-1]
+
+	if node.Init == nil && node.Cond == nil && node.Post == nil {
+		e.fs.PushCode(fmt.Sprintf("%sfor (;;)\n%s\n", ind, bodyCode))
+		return
+	}
+	if node.Init == nil && node.Post == nil && node.Cond != nil {
+		e.fs.PushCode(fmt.Sprintf("%sfor (;%s;)\n%s\n", ind, condCode, bodyCode))
+		return
+	}
+	e.fs.PushCode(fmt.Sprintf("%sfor (%s;%s;%s)\n%s\n", ind, initCode, condCode, postCode, bodyCode))
+}
+
+// ============================================================
+// Range Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *CppEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
+	keyCode := e.fs.ReduceToCode(string(PreVisitRangeStmtKey))
+	e.fs.Push(keyCode, TagIdent, nil)
+}
+
+func (e *CppEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitRangeStmtValue))
+	e.fs.Push(valCode, TagIdent, nil)
+}
+
+func (e *CppEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitRangeStmtX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitRangeStmt))
+	ind := cppIndent(indent)
+
+	keyCode := ""
+	valCode := ""
+	xCode := ""
+	bodyCode := ""
+
+	idx := 0
+	if node.Key != nil {
+		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+			keyCode = tokens[idx].Content
+			idx++
+		}
+	}
+	if node.Value != nil {
+		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+			valCode = tokens[idx].Content
+			idx++
+		}
+	}
+	if idx < len(tokens) {
+		xCode = tokens[idx].Content
+		idx++
+	}
+	if idx < len(tokens) {
+		bodyCode = tokens[idx].Content
+	}
+
+	if node.Key == nil && valCode != "" {
+		keyCode = "_"
+	}
+
+	// Key-value range
+	if valCode != "" && valCode != "_" {
+		loopVar := keyCode
+		if loopVar == "_" || loopVar == "" {
+			loopVar = "_i"
+		}
+
+		valDecl := fmt.Sprintf("%s    auto %s = %s[%s];\n", ind, valCode, xCode, loopVar)
+		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+
+		e.fs.PushCode(fmt.Sprintf("%sfor (size_t %s = 0; %s < %s.size(); %s++)\n%s\n",
+			ind, loopVar, loopVar, xCode, loopVar, bodyWithDecl))
+	} else {
+		// Key-only range → for (auto key : collection)
+		loopVar := keyCode
+		if loopVar == "_" || loopVar == "" {
+			loopVar = "_i"
+		}
+		e.fs.PushCode(fmt.Sprintf("%sfor (auto %s : %s)\n%s\n",
+			ind, loopVar, xCode, bodyCode))
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	cppe.emitToFile(" ")
+// ============================================================
+// Switch / Case Statements
+// ============================================================
+
+func (e *CppEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+	e.indent = indent
 }
 
-func (cppe *CPPEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	if cppe.forwardDecl {
-		str := cppe.emitAsString(";\n", 0)
-		cppe.emitToFile(str)
+func (e *CppEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
+	tagCode := e.fs.ReduceToCode(string(PreVisitSwitchStmtTag))
+	e.fs.PushCode(tagCode)
+}
+
+func (e *CppEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSwitchStmt))
+	ind := cppIndent(indent)
+
+	tagCode := ""
+	idx := 0
+	if idx < len(tokens) {
+		tagCode = tokens[idx].Content
+		idx++
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%sswitch (%s) {\n", ind, tagCode))
+	for i := idx; i < len(tokens); i++ {
+		sb.WriteString(tokens[i].Content)
+	}
+	sb.WriteString(ind + "}\n")
+	e.fs.PushCode(sb.String())
+}
+
+func (e *CppEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
+	e.indent = indent
+}
+
+func (e *CppEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
+	exprCode := e.fs.ReduceToCode(string(PreVisitCaseClauseListExpr))
+	e.fs.PushCode(exprCode)
+}
+
+func (e *CppEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCaseClauseList))
+	var exprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			exprs = append(exprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(exprs, ", "))
+}
+
+func (e *CppEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCaseClause))
+	ind := cppIndent(indent)
+
+	var sb strings.Builder
+	idx := 0
+	if len(node.List) == 0 {
+		// Default case: PushCode("") is a no-op (empty tokens are dropped),
+		// so all tokens on the stack are body statements.
+		sb.WriteString(ind + "  default:\n")
+	} else {
+		// Regular case: token[0] is case expressions, rest is body
+		caseExprs := ""
+		if idx < len(tokens) {
+			caseExprs = tokens[idx].Content
+			idx++
+		}
+		vals := strings.Split(caseExprs, ", ")
+		for _, v := range vals {
+			sb.WriteString(fmt.Sprintf("%s  case %s:\n", ind, v))
+		}
+	}
+	for i := idx; i < len(tokens); i++ {
+		sb.WriteString(tokens[i].Content)
+	}
+	sb.WriteString(ind + "    break;\n")
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Inc/Dec Statements
+// ============================================================
+
+func (e *CppEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
+	ind := cppIndent(indent)
+	e.fs.PushCode(fmt.Sprintf("%s%s%s;\n", ind, xCode, node.Tok.String()))
+}
+
+// ============================================================
+// Branch Statements (break, continue)
+// ============================================================
+
+func (e *CppEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
+	ind := cppIndent(indent)
+	switch node.Tok {
+	case token.BREAK:
+		e.fs.PushCode(ind + "break;\n")
+	case token.CONTINUE:
+		e.fs.PushCode(ind + "continue;\n")
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
-	str := cppe.emitAsString(fmt.Sprintf("struct %s\n", node.Name), 0)
-	err := cppe.emitToFile(str)
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-	}
-	str = cppe.emitAsString("{\n", 0)
-	err = cppe.emitToFile(str)
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-	}
-}
-func (cppe *CPPEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
-	str := cppe.emitAsString("};\n\n", 0)
-	err := cppe.emitToFile(str)
-	if err != nil {
-		fmt.Println("Error writing to file:", err)
-	}
+// ============================================================
+// Struct Declarations
+// ============================================================
 
-	// Generate operator== and std::hash for structs with primitive fields
-	// This enables using them as map keys
-	if node.Struct != nil && cppe.structHasOnlyPrimitiveFields(node.Name) {
-		cppe.generateStructHashAndEquality(node)
-	}
+func (e *CppEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitGenStructFieldType))
+	e.fs.PushCode(typeCode)
 }
 
-// structHasOnlyPrimitiveFields checks if a struct has only hashable fields (primitives or structs with primitive fields)
-func (cppe *CPPEmitter) structHasOnlyPrimitiveFields(structName string) bool {
-	for _, file := range cppe.pkg.Syntax {
+func (e *CppEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitGenStructFieldName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *CppEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitGenStructInfo))
+
+	if node.Struct == nil {
+		return
+	}
+
+	// Collect type-name pairs
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("struct %s\n{\n", node.Name))
+
+	i := 0
+	for i < len(tokens) {
+		typeStr := ""
+		nameStr := ""
+		if i < len(tokens) && tokens[i].Tag == TagExpr {
+			typeStr = tokens[i].Content
+			i++
+		}
+		if i < len(tokens) && tokens[i].Tag == TagIdent {
+			nameStr = tokens[i].Content
+			i++
+		}
+		if typeStr != "" && nameStr != "" {
+			sb.WriteString(fmt.Sprintf("%s %s;\n", typeStr, nameStr))
+		}
+	}
+	sb.WriteString("};\n\n")
+
+	// Generate operator== and std::hash for hashable structs
+	if node.Struct != nil && e.structHasOnlyPrimitiveFields(node.Name) {
+		e.generateStructHashAndEquality(node)
+	}
+
+	e.fs.PushCode(sb.String())
+}
+
+func (e *CppEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
+	// Let struct code flow through
+}
+
+// structHasOnlyPrimitiveFields checks if a struct has only hashable fields
+func (e *CppEmitter) structHasOnlyPrimitiveFields(structName string) bool {
+	for _, file := range e.pkg.Syntax {
 		for _, decl := range file.Decls {
 			if genDecl, ok := decl.(*ast.GenDecl); ok {
 				for _, spec := range genDecl.Specs {
@@ -2335,8 +2311,8 @@ func (cppe *CPPEmitter) structHasOnlyPrimitiveFields(structName string) bool {
 							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
-										fieldType := cppe.pkg.TypesInfo.Types[field.Type].Type
-										if !cppe.isHashableType(fieldType, make(map[string]bool)) {
+										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										if !e.isHashableType(fieldType, make(map[string]bool)) {
 											return false
 										}
 									}
@@ -2352,8 +2328,7 @@ func (cppe *CPPEmitter) structHasOnlyPrimitiveFields(structName string) bool {
 	return false
 }
 
-// isHashableType checks if a type can have operator== and std::hash in C++ (recursively)
-func (cppe *CPPEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
+func (e *CppEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
 	if named, ok := t.(*types.Named); ok {
 		name := named.Obj().Name()
 		if named.Obj().Pkg() != nil {
@@ -2370,7 +2345,7 @@ func (cppe *CPPEmitter) isHashableType(t types.Type, visited map[string]bool) bo
 	}
 	if structType, isStruct := underlying.(*types.Struct); isStruct {
 		for i := 0; i < structType.NumFields(); i++ {
-			if !cppe.isHashableType(structType.Field(i).Type(), visited) {
+			if !e.isHashableType(structType.Field(i).Type(), visited) {
 				return false
 			}
 		}
@@ -2379,16 +2354,20 @@ func (cppe *CPPEmitter) isHashableType(t types.Type, visited map[string]bool) bo
 	return false
 }
 
-// generateStructHashAndEquality stores struct info for deferred hash/equality generation
-// The actual generation happens in emitPendingHashSpecs after namespace close
-func (cppe *CPPEmitter) generateStructHashAndEquality(node GenTypeInfo) {
+func (e *CppEmitter) generateStructHashAndEquality(node GenTypeInfo) {
 	structName := node.Name
 	pkgName := ""
-	if cppe.pkg != nil && cppe.pkg.Name != "main" {
-		pkgName = cppe.pkg.Name
+	if e.pkg != nil && e.pkg.Name != "main" {
+		pkgName = e.pkg.Name
 	}
 
-	// Collect field names
+	// Check if already in pendingHashSpecs (may have been added as a dependency)
+	for _, spec := range e.pendingHashSpecs {
+		if spec.structName == structName && spec.pkgName == pkgName {
+			return
+		}
+	}
+
 	var fieldNames []string
 	if node.Struct.Fields != nil {
 		for _, field := range node.Struct.Fields.List {
@@ -2398,138 +2377,279 @@ func (cppe *CPPEmitter) generateStructHashAndEquality(node GenTypeInfo) {
 		}
 	}
 
-	// Store for later emission (after namespace close)
-	cppe.pendingHashSpecs = append(cppe.pendingHashSpecs, pendingHashSpec{
+	// Also generate operator== for dependency struct types (e.g., cross-package structs
+	// used as fields) that wouldn't otherwise get operator== generated
+	if node.Struct != nil && e.pkg != nil && e.pkg.TypesInfo != nil {
+		e.ensureDependencyHashSpecs(node.Struct, make(map[string]bool))
+	}
+
+	e.pendingHashSpecs = append(e.pendingHashSpecs, pendingHashSpec{
 		structName: structName,
 		pkgName:    pkgName,
 		fieldNames: fieldNames,
 	})
 }
 
-// emitPendingHashSpecs emits all pending hash specializations for a package
-// Called after namespace close so hash specs are at global scope
-func (cppe *CPPEmitter) emitPendingHashSpecs(pkgName string) {
+// ensureDependencyHashSpecs generates operator== and hash for struct field types from other packages
+func (e *CppEmitter) ensureDependencyHashSpecs(structType *ast.StructType, visited map[string]bool) {
+	if structType.Fields == nil {
+		return
+	}
+	for _, field := range structType.Fields.List {
+		fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+		if fieldType == nil {
+			continue
+		}
+		named, ok := fieldType.(*types.Named)
+		if !ok {
+			continue
+		}
+		depStruct, ok := named.Underlying().(*types.Struct)
+		if !ok {
+			continue
+		}
+		depName := named.Obj().Name()
+		depPkg := ""
+		if named.Obj().Pkg() != nil {
+			pkgName := named.Obj().Pkg().Name()
+			if pkgName != "main" {
+				depPkg = pkgName
+			}
+		}
+		key := depPkg + "::" + depName
+		if visited[key] {
+			continue
+		}
+		visited[key] = true
+
+		// Check if already in pendingHashSpecs
+		alreadyPending := false
+		for _, spec := range e.pendingHashSpecs {
+			if spec.structName == depName && spec.pkgName == depPkg {
+				alreadyPending = true
+				break
+			}
+		}
+		if alreadyPending {
+			continue
+		}
+		// Collect field names from the dependency struct
+		var depFieldNames []string
+		for i := 0; i < depStruct.NumFields(); i++ {
+			depFieldNames = append(depFieldNames, depStruct.Field(i).Name())
+		}
+		e.pendingHashSpecs = append(e.pendingHashSpecs, pendingHashSpec{
+			structName: depName,
+			pkgName:    depPkg,
+			fieldNames: depFieldNames,
+		})
+	}
+}
+
+func (e *CppEmitter) emitHashSpec(spec pendingHashSpec) {
+	qualifiedName := spec.structName
+	if spec.pkgName != "" {
+		qualifiedName = spec.pkgName + "::" + spec.structName
+	}
+
+	var sb strings.Builder
+	// operator==
+	sb.WriteString(fmt.Sprintf("inline bool operator==(const %s& a, const %s& b) {\n", qualifiedName, qualifiedName))
+	sb.WriteString("    return ")
+	for i, fieldName := range spec.fieldNames {
+		if i > 0 {
+			sb.WriteString(" && ")
+		}
+		sb.WriteString(fmt.Sprintf("a.%s == b.%s", fieldName, fieldName))
+	}
+	if len(spec.fieldNames) == 0 {
+		sb.WriteString("true")
+	}
+	sb.WriteString(";\n}\n\n")
+
+	// std::hash
+	sb.WriteString("namespace std {\n")
+	sb.WriteString(fmt.Sprintf("    template<> struct hash<%s> {\n", qualifiedName))
+	sb.WriteString(fmt.Sprintf("        size_t operator()(const %s& s) const {\n", qualifiedName))
+	sb.WriteString("            size_t h = 0;\n")
+	for _, fieldName := range spec.fieldNames {
+		sb.WriteString(fmt.Sprintf("            h ^= std::hash<decltype(s.%s)>{}(s.%s) + 0x9e3779b9 + (h << 6) + (h >> 2);\n", fieldName, fieldName))
+	}
+	sb.WriteString("            return h;\n")
+	sb.WriteString("        }\n")
+	sb.WriteString("    };\n")
+	sb.WriteString("}\n\n")
+
+	e.fs.PushCode(sb.String())
+}
+
+func (e *CppEmitter) emitPendingHashSpecs(pkgName string) {
 	var specsForPkg []pendingHashSpec
 	var remaining []pendingHashSpec
 
-	for _, spec := range cppe.pendingHashSpecs {
+	for _, spec := range e.pendingHashSpecs {
 		if spec.pkgName == pkgName {
 			specsForPkg = append(specsForPkg, spec)
 		} else {
 			remaining = append(remaining, spec)
 		}
 	}
-	cppe.pendingHashSpecs = remaining
+	e.pendingHashSpecs = remaining
 
 	for _, spec := range specsForPkg {
-		// Fully qualified name for non-main packages
 		qualifiedName := spec.structName
 		if spec.pkgName != "" {
 			qualifiedName = spec.pkgName + "::" + spec.structName
 		}
 
-		// Generate operator== at global scope
-		cppe.emitToFile(fmt.Sprintf("inline bool operator==(const %s& a, const %s& b) {\n", qualifiedName, qualifiedName))
-		cppe.emitToFile("    return ")
+		e.file.WriteString(fmt.Sprintf("inline bool operator==(const %s& a, const %s& b) {\n", qualifiedName, qualifiedName))
+		e.file.WriteString("    return ")
 		for i, fieldName := range spec.fieldNames {
 			if i > 0 {
-				cppe.emitToFile(" && ")
+				e.file.WriteString(" && ")
 			}
-			cppe.emitToFile(fmt.Sprintf("a.%s == b.%s", fieldName, fieldName))
+			e.file.WriteString(fmt.Sprintf("a.%s == b.%s", fieldName, fieldName))
 		}
 		if len(spec.fieldNames) == 0 {
-			cppe.emitToFile("true")
+			e.file.WriteString("true")
 		}
-		cppe.emitToFile(";\n}\n\n")
+		e.file.WriteString(";\n}\n\n")
 
-		// Generate std::hash specialization at global scope
-		cppe.emitToFile("namespace std {\n")
-		cppe.emitToFile(fmt.Sprintf("    template<> struct hash<%s> {\n", qualifiedName))
-		cppe.emitToFile(fmt.Sprintf("        size_t operator()(const %s& s) const {\n", qualifiedName))
-		cppe.emitToFile("            size_t h = 0;\n")
+		e.file.WriteString("namespace std {\n")
+		e.file.WriteString(fmt.Sprintf("    template<> struct hash<%s> {\n", qualifiedName))
+		e.file.WriteString(fmt.Sprintf("        size_t operator()(const %s& s) const {\n", qualifiedName))
+		e.file.WriteString("            size_t h = 0;\n")
 		for _, fieldName := range spec.fieldNames {
-			cppe.emitToFile(fmt.Sprintf("            h ^= std::hash<decltype(s.%s)>{}(s.%s) + 0x9e3779b9 + (h << 6) + (h >> 2);\n", fieldName, fieldName))
+			e.file.WriteString(fmt.Sprintf("            h ^= std::hash<decltype(s.%s)>{}(s.%s) + 0x9e3779b9 + (h << 6) + (h >> 2);\n", fieldName, fieldName))
 		}
-		cppe.emitToFile("            return h;\n")
-		cppe.emitToFile("        }\n")
-		cppe.emitToFile("    };\n")
-		cppe.emitToFile("}\n\n")
+		e.file.WriteString("            return h;\n")
+		e.file.WriteString("        }\n")
+		e.file.WriteString("    };\n")
+		e.file.WriteString("}\n\n")
 	}
 }
 
-func (cppe *CPPEmitter) PreVisitFuncDeclSignatures(indent int) {
-	// Generate forward function declarations
-	str := cppe.emitAsString("// Forward declarations\n", 0)
-	cppe.emitToFile(str)
-	cppe.forwardDecl = true
+// ============================================================
+// Constants
+// ============================================================
+
+func (e *CppEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
+	valTokens := e.fs.Reduce(string(PreVisitGenDeclConstName))
+	valCode := ""
+	for _, t := range valTokens {
+		valCode += t.Content
+	}
+	if valCode == "" {
+		valCode = "0"
+	}
+	e.fs.PushCode(fmt.Sprintf("constexpr auto %s = %s;\n", node.Name, valCode))
 }
 
-func (cppe *CPPEmitter) PostVisitFuncDeclSignatures(indent int) {
-	str := cppe.emitAsString("\n", 0)
-	cppe.emitToFile(str)
-	cppe.forwardDecl = false
+func (e *CppEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
+	// Let const tokens flow through
 }
 
-func (cppe *CPPEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
-	str := cppe.emitAsString("\n", 0)
-	cppe.emitToFile(str)
+// ============================================================
+// Type Aliases
+// ============================================================
+
+func (e *CppEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitTypeAliasName))
+	// Tokens should have name and type
+	// The PreVisitTypeAliasName marker captures everything
+	nameCode := ""
+	typeCode := ""
+	for _, t := range tokens {
+		if t.Tag == TagIdent && nameCode == "" {
+			nameCode = t.Content
+		} else if t.Content != "" {
+			typeCode += t.Content
+		}
+	}
+	if nameCode != "" && typeCode != "" {
+		e.fs.PushCode(fmt.Sprintf("using %s = %s;\n\n", nameCode, typeCode))
+	}
 }
 
-func (cppe *CPPEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
-	cppe.emitToFile(" ")
+// ============================================================
+// Struct Key Functions
+// ============================================================
+
+func (e *CppEmitter) replaceStructKeyFunctions() {
+	outputPath := e.Output
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		log.Printf("Warning: could not read file for struct key replacement: %v", err)
+		return
+	}
+
+	var hashCode strings.Builder
+	hashCode.WriteString("int hashStructKey(std::any key)\n{\n")
+	for _, qualifiedName := range e.structKeyTypes {
+		hashCode.WriteString(fmt.Sprintf("    if (key.type() == typeid(%s)) {\n", qualifiedName))
+		hashCode.WriteString(fmt.Sprintf("        int h = static_cast<int>(std::hash<%s>{}(std::any_cast<%s>(key)));\n", qualifiedName, qualifiedName))
+		hashCode.WriteString("        if (h < 0) h = -h;\n")
+		hashCode.WriteString("        return h;\n")
+		hashCode.WriteString("    }\n")
+	}
+	hashCode.WriteString("    return 0;\n}")
+
+	var eqCode strings.Builder
+	eqCode.WriteString("bool structKeysEqual(std::any a, std::any b)\n{\n")
+	eqCode.WriteString("    if (a.type() != b.type()) return false;\n")
+	for _, qualifiedName := range e.structKeyTypes {
+		eqCode.WriteString(fmt.Sprintf("    if (a.type() == typeid(%s)) {\n", qualifiedName))
+		eqCode.WriteString(fmt.Sprintf("        return std::any_cast<%s>(a) == std::any_cast<%s>(b);\n", qualifiedName, qualifiedName))
+		eqCode.WriteString("    }\n")
+	}
+	eqCode.WriteString("    return false;\n}")
+
+	newContent := string(content)
+
+	hashPattern := regexp.MustCompile(`(?s)int hashStructKey\(std::any key\)\s*\{\s*return 0;\s*\}`)
+	newContent = hashPattern.ReplaceAllString(newContent, "int hashStructKey(std::any key);\n")
+
+	eqPattern := regexp.MustCompile(`(?s)bool structKeysEqual\(std::any a, std::any b\)\s*\{\s*return false;\s*\}`)
+	newContent = eqPattern.ReplaceAllString(newContent, "bool structKeysEqual(std::any a, std::any b);\n")
+
+	newContent += "\n// Struct map key support - implementations after struct definitions\n"
+	newContent += "namespace hmap {\n"
+	newContent += hashCode.String() + "\n"
+	newContent += eqCode.String() + "\n"
+	newContent += "} // namespace hmap\n"
+
+	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
+		log.Printf("Warning: could not write struct key replacements: %v", err)
+	}
 }
 
-func (cppe *CPPEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
-	cppe.emitToFile(";\n")
-}
+// ============================================================
+// Makefile Generation
+// ============================================================
 
-func (cppe *CPPEmitter) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
-	str := cppe.emitAsString(fmt.Sprintf("constexpr auto %s = ", node.Name), 0)
-	cppe.emitToFile(str)
-}
-func (cppe *CPPEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
-	str := cppe.emitAsString(";\n", 0)
-	cppe.emitToFile(str)
-}
-
-func (cppe *CPPEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
-	cppe.emitToFile(fmt.Sprintf("using "))
-}
-
-func (cppe *CPPEmitter) PostVisitTypeAliasName(node *ast.Ident, indent int) {
-	cppe.emitToFile(" = ")
-}
-
-func (cppe *CPPEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
-	cppe.emitToFile(";\n\n")
-}
-
-// GenerateMakefile creates a Makefile for building the C++ project
-func (cppe *CPPEmitter) GenerateMakefile() error {
-	if cppe.LinkRuntime == "" {
+func (e *CppEmitter) GenerateMakefile() error {
+	if e.LinkRuntime == "" {
 		return nil
 	}
 
-	makefilePath := filepath.Join(cppe.OutputDir, "Makefile")
+	makefilePath := filepath.Join(e.OutputDir, "Makefile")
 	file, err := os.Create(makefilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create Makefile: %w", err)
 	}
 	defer file.Close()
 
-	// Convert LinkRuntime to absolute path so Makefile works from any directory
-	absRuntimePath, err := filepath.Abs(cppe.LinkRuntime)
+	absRuntimePath, err := filepath.Abs(e.LinkRuntime)
 	if err != nil {
-		absRuntimePath = cppe.LinkRuntime // Fall back to original if Abs fails
+		absRuntimePath = e.LinkRuntime
+	}
+
+	graphicsBackend := e.RuntimePackages["graphics"]
+	if graphicsBackend == "" {
+		graphicsBackend = "none"
 	}
 
 	var makefile string
-
-	// Determine graphics backend from RuntimePackages
-	graphicsBackend := cppe.RuntimePackages["graphics"]
-	if graphicsBackend == "" {
-		graphicsBackend = "none" // no graphics import detected
-	}
 
 	switch graphicsBackend {
 	case "sdl2":
@@ -2549,7 +2669,7 @@ clean:
 	rm -f $(TARGET)
 
 .PHONY: all clean
-`, absRuntimePath, cppe.OutputName, cppe.OutputName)
+`, absRuntimePath, e.OutputName, e.OutputName)
 
 	case "none":
 		makefile = fmt.Sprintf(`CXX = g++
@@ -2568,9 +2688,9 @@ clean:
 	rm -f $(TARGET)
 
 .PHONY: all clean
-`, absRuntimePath, cppe.OutputName, cppe.OutputName)
+`, absRuntimePath, e.OutputName, e.OutputName)
 
-	default: // tigr (default)
+	default: // tigr
 		makefile = fmt.Sprintf(`CXX = g++
 CC = gcc
 CXXFLAGS = -O3 -fwrapv -std=c++17 -I%s
@@ -2609,13 +2729,11 @@ clean:
 	rm -f $(TARGET) tigr.o screen_helper.o
 
 .PHONY: all clean
-`, absRuntimePath, cppe.OutputName, cppe.OutputName, absRuntimePath, absRuntimePath)
+`, absRuntimePath, e.OutputName, e.OutputName, absRuntimePath, absRuntimePath)
 	}
 
-	// Add platform-specific linker flags if HTTP or NET runtime is used
-	// These need -pthread on Unix and -lws2_32 on Windows
-	_, hasHTTP := cppe.RuntimePackages["http"]
-	_, hasNet := cppe.RuntimePackages["net"]
+	_, hasHTTP := e.RuntimePackages["http"]
+	_, hasNet := e.RuntimePackages["net"]
 	if hasHTTP || hasNet {
 		networkFlags := `
 # Network runtime linker flags

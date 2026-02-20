@@ -128,9 +128,8 @@ func main() {
 	useCpp := useAll || backendSet["cpp"]
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
-	useJs := backendSet["js"]           // JS is opt-in, not included in "all"
-	useJava := backendSet["java"]       // Java is opt-in, not included in "all"
-	useCppPrim := backendSet["cppprim"] // CppPrim is opt-in, not included in "all"
+	useJs := backendSet["js"]     // JS is opt-in, not included in "all"
+	useJava := backendSet["java"] // Java is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -166,7 +165,7 @@ func main() {
 	var programFiles []string
 
 	if useCpp {
-		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CPPEmitter{
+		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CppEmitter{
 			Emitter:         &compiler.BaseEmitter{},
 			Output:          output + ".cpp",
 			LinkRuntime:     linkRuntime,
@@ -228,19 +227,6 @@ func main() {
 		passes = append(passes, javaBackend)
 		programFiles = append(programFiles, "java")
 	}
-	if useCppPrim {
-		cppPrimBackend := &compiler.BasePass{PassName: "CppPrimGen", Emitter: &compiler.CPPPrimEmitter{
-			Emitter:         &compiler.BaseEmitter{},
-			Output:          output + ".cppprim.cpp",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-			OptimizeMoves:   optimizeMoves,
-		}}
-		passes = append(passes, cppPrimBackend)
-		programFiles = append(programFiles, "cppprim.cpp")
-	}
 
 	passManager := &compiler.PassManager{
 		Pkgs:   allPkgs,
@@ -251,7 +237,7 @@ func main() {
 
 	// Format generated files
 	// Use astyle for C++/C#/Java, rustfmt for Rust
-	hasAstyleFiles := useCpp || useCs || useJava || useCppPrim
+	hasAstyleFiles := useCpp || useCs || useJava
 	if hasAstyleFiles {
 		compiler.DebugLogPrintf("Using astyle version: %s\n", compiler.GetAStyleVersion())
 		const astyleOptions = "--style=webkit"
@@ -277,13 +263,6 @@ func main() {
 				javaOutputName = strings.TrimSuffix(javaOutputName, ".java")
 			}
 			filePath := filepath.Join(outputDir, javaOutputName+".java")
-			err = compiler.FormatFile(filePath, astyleOptions)
-			if err != nil {
-				log.Fatalf("Failed to format %s: %v", filePath, err)
-			}
-		}
-		if useCppPrim {
-			filePath := fmt.Sprintf("%s.cppprim.cpp", output)
 			err = compiler.FormatFile(filePath, astyleOptions)
 			if err != nil {
 				log.Fatalf("Failed to format %s: %v", filePath, err)
