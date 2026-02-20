@@ -58,15 +58,6 @@ func jsIndent(indent int) string {
 	return strings.Repeat("  ", indent)
 }
 
-// concatTokenContents concatenates Content fields of tokens.
-func concatTokenContents(tokens []Token) string {
-	var sb strings.Builder
-	for _, t := range tokens {
-		sb.WriteString(t.Content)
-	}
-	return sb.String()
-}
-
 // jsDefaultForGoType returns JS default value for a Go type.
 func jsDefaultForGoType(t types.Type) string {
 	if t == nil {
@@ -679,7 +670,6 @@ func (e *JSEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 	goType := e.getExprGoType(node)
 	e.fs.Push(name, TagIdent, goType)
 }
-
 
 // ============================================================
 // Binary Expressions
@@ -2119,7 +2109,6 @@ func (e *JSEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 // Struct Declarations (GenStructInfo)
 // ============================================================
 
-
 func (e *JSEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
 	// After all struct classes are emitted, open the namespace object if needed
 	if e.inNamespace {
@@ -2248,4 +2237,3 @@ func (e *JSEmitter) ensureNpmDependencies() {
 		}
 	}
 }
-
