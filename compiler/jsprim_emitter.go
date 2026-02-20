@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -520,6 +521,9 @@ func (e *JSPrimEmitter) PostVisitProgram(indent int) {
 	if _, hasGraphics := e.RuntimePackages["graphics"]; hasGraphics {
 		e.createHTMLWrapper()
 	}
+
+	// Auto-install npm dependencies if needed
+	e.ensureNpmDependencies()
 }
 
 // createHTMLWrapper generates an HTML file that loads the generated JS.
@@ -2223,5 +2227,25 @@ func (e *JSPrimEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
 func (e *JSPrimEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
 	// Discard type alias - no output for JS
 	e.fs.Reduce(string(PreVisitTypeAliasName))
+}
+
+// ensureNpmDependencies generates package.json and runs npm install if runtime
+// packages require third-party npm dependencies (e.g. net runtime needs deasync).
+func (e *JSPrimEmitter) ensureNpmDependencies() {
+	if _, hasNet := e.RuntimePackages["net"]; !hasNet {
+		return
+	}
+	pkgJsonPath := filepath.Join(e.OutputDir, "package.json")
+	if _, err := os.Stat(pkgJsonPath); os.IsNotExist(err) {
+		os.WriteFile(pkgJsonPath, []byte("{\"private\":true,\"dependencies\":{\"deasync\":\"^0.1.30\"}}\n"), 0644)
+	}
+	deasyncDir := filepath.Join(e.OutputDir, "node_modules", "deasync")
+	if _, err := os.Stat(deasyncDir); os.IsNotExist(err) {
+		cmd := exec.Command("npm", "install", "--no-audit", "--no-fund")
+		cmd.Dir = e.OutputDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("Warning: npm install failed in %s: %v\n%s", e.OutputDir, err, out)
+		}
+	}
 }
 

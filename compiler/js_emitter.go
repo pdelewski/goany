@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -712,6 +713,9 @@ func (jse *JSEmitter) PostVisitProgram(indent int) {
 	if jse.LinkRuntime != "" {
 		jse.createHTMLWrapper()
 	}
+
+	// Auto-install npm dependencies if needed
+	jse.ensureNpmDependencies()
 }
 
 // replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
@@ -2835,5 +2839,25 @@ func (jse *JSEmitter) mapGoTypeToJS(t types.Type) string {
 		return "Object"
 	default:
 		return "any"
+	}
+}
+
+// ensureNpmDependencies generates package.json and runs npm install if runtime
+// packages require third-party npm dependencies (e.g. net runtime needs deasync).
+func (jse *JSEmitter) ensureNpmDependencies() {
+	if _, hasNet := jse.RuntimePackages["net"]; !hasNet {
+		return
+	}
+	pkgJsonPath := filepath.Join(jse.OutputDir, "package.json")
+	if _, err := os.Stat(pkgJsonPath); os.IsNotExist(err) {
+		os.WriteFile(pkgJsonPath, []byte("{\"private\":true,\"dependencies\":{\"deasync\":\"^0.1.30\"}}\n"), 0644)
+	}
+	deasyncDir := filepath.Join(jse.OutputDir, "node_modules", "deasync")
+	if _, err := os.Stat(deasyncDir); os.IsNotExist(err) {
+		cmd := exec.Command("npm", "install", "--no-audit", "--no-fund")
+		cmd.Dir = jse.OutputDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("Warning: npm install failed in %s: %v\n%s", jse.OutputDir, err, out)
+		}
 	}
 }
