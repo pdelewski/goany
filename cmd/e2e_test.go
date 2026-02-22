@@ -14,42 +14,44 @@ func joinStrings(strs []string, sep string) string {
 }
 
 type TestCase struct {
-	Name           string
-	SourceDir      string
-	CppEnabled     bool
-	DotnetEnabled  bool
-	DotnetRunnable bool // Can run with dotnet run (false for graphics apps)
-	RustEnabled    bool
-	JsEnabled      bool
-	JsRunnable     bool // Can run with Node.js (false for graphics apps that need browser)
-	JavaEnabled    bool
-	JavaRunnable   bool // Can run standalone (false for apps that need special setup)
+	Name             string
+	SourceDir        string
+	CppEnabled       bool
+	DotnetEnabled    bool
+	DotnetRunnable   bool // Can run with dotnet run (false for graphics apps)
+	RustEnabled      bool
+	JsEnabled        bool
+	JsRunnable       bool // Can run with Node.js (false for graphics apps that need browser)
+	JavaEnabled      bool
+	JavaRunnable     bool // Can run standalone (false for apps that need special setup)
+	CsPrimEnabled    bool
+	CsPrimRunnable   bool // Can run with dotnet run (false for graphics apps)
 }
 
 const runtimePath = "../runtime"
 
 var e2eTestCases = []TestCase{
-	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true},
-	{"containers", "../examples/containers", true, true, true, true, true, true, true, false},
-	{"uql", "../examples/uql", true, true, true, true, true, true, true, false},
-	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false},
-	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true},
-	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true},
-	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false},       // Dotnet/JS/Java: transpile only (needs graphics)
-	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false},             // Dotnet/JS/Java: transpile only (needs graphics)
-	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false},                       // Dotnet/JS/Java: transpile only (needs graphics)
-	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false},     // Dotnet/JS/Java: transpile only (needs graphics)
-	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false},           // Dotnet/JS/Java: transpile only (needs graphics)
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false}, // Dotnet/JS/Java: transpile only (needs graphics)
-	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false},             // Dotnet/JS/Java: transpile only (needs graphics)
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false},       // Dotnet/JS/Java: transpile only (needs graphics)
-	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false},
-	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false},
-	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true},
-	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false},                       // JS transpile only (needs deasync npm package)
-	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false},         // Server example - transpile/compile only
-	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false},         // Client example - transpile/compile only
-	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true},
+	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true, true, true},
+	{"containers", "../examples/containers", true, true, true, true, true, true, true, false, true, true},
+	{"uql", "../examples/uql", true, true, true, true, true, true, true, false, true, true},
+	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false, true, true},
+	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true, true, true},
+	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true, true, true},
+	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false, true, false},
+	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false, true, false},
+	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false, true, false},
+	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false, true, false},
+	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false, true, false},
+	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true, true, true},
+	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false, true, false},
+	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false, true, false},
+	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false, true, false},
+	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true, true, true},
 }
 
 func TestE2E(t *testing.T) {
@@ -114,6 +116,9 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 	if tc.JavaEnabled {
 		optInBackends = append(optInBackends, "java")
 	}
+	if tc.CsPrimEnabled {
+		optInBackends = append(optInBackends, "csprim")
+	}
 	if len(optInBackends) > 0 {
 		args = append(args, fmt.Sprintf("--backend=all,%s", joinStrings(optInBackends, ",")))
 	}
@@ -151,8 +156,9 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 
 	// Step 3: Compile C# using dotnet build
 	if tc.DotnetEnabled {
+		csproj := filepath.Join(outputDir, tc.Name+".csproj")
 		t.Logf("Compiling C# for %s", tc.Name)
-		cmd = exec.Command("dotnet", "build")
+		cmd = exec.Command("dotnet", "build", csproj)
 		cmd.Dir = outputDir
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -162,7 +168,7 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 
 		if tc.DotnetRunnable {
 			t.Logf("Running C# for %s", tc.Name)
-			cmd = exec.Command("dotnet", "run", "--no-build")
+			cmd = exec.Command("dotnet", "run", "--no-build", "--project", csproj)
 			cmd.Dir = outputDir
 			output, err = cmd.CombinedOutput()
 			if err != nil {
@@ -225,6 +231,30 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 				t.Fatalf("Java execution failed: %v\nOutput: %s", err, output)
 			}
 			t.Logf("Java execution output: %s", output)
+		}
+	}
+
+	// Step 7: Compile and run CsPrim (shift/reduce C# backend)
+	if tc.CsPrimEnabled {
+		csprimProj := filepath.Join(outputDir, tc.Name+".csprim.csproj")
+		t.Logf("Compiling CsPrim for %s", tc.Name)
+		cmd = exec.Command("dotnet", "build", csprimProj)
+		cmd.Dir = outputDir
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("CsPrim compilation failed: %v\nOutput: %s", err, output)
+		}
+		t.Logf("CsPrim compilation output: %s", output)
+
+		if tc.CsPrimRunnable {
+			t.Logf("Running CsPrim for %s", tc.Name)
+			cmd = exec.Command("dotnet", "run", "--no-build", "--project", csprimProj)
+			cmd.Dir = outputDir
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("CsPrim execution failed: %v\nOutput: %s", err, output)
+			}
+			t.Logf("CsPrim execution output: %s", output)
 		}
 	}
 

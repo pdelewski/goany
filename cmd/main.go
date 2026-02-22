@@ -128,8 +128,9 @@ func main() {
 	useCpp := useAll || backendSet["cpp"]
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
-	useJs := backendSet["js"]     // JS is opt-in, not included in "all"
-	useJava := backendSet["java"] // Java is opt-in, not included in "all"
+	useJs := backendSet["js"]         // JS is opt-in, not included in "all"
+	useJava := backendSet["java"]     // Java is opt-in, not included in "all"
+	useCsPrim := backendSet["csprim"] // CsPrim is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -227,6 +228,18 @@ func main() {
 		passes = append(passes, javaBackend)
 		programFiles = append(programFiles, "java")
 	}
+	if useCsPrim {
+		csPrimBackend := &compiler.BasePass{PassName: "CsPrimGen", Emitter: &compiler.CSharpPrimEmitter{
+			Emitter:         &compiler.BaseEmitter{},
+			Output:          output + ".csprim.cs",
+			LinkRuntime:     linkRuntime,
+			RuntimePackages: runtimePackages,
+			OutputDir:       outputDir,
+			OutputName:      outputName,
+		}}
+		passes = append(passes, csPrimBackend)
+		programFiles = append(programFiles, "csprim")
+	}
 
 	passManager := &compiler.PassManager{
 		Pkgs:   allPkgs,
@@ -237,7 +250,7 @@ func main() {
 
 	// Format generated files
 	// Use astyle for C++/C#/Java, rustfmt for Rust
-	hasAstyleFiles := useCpp || useCs || useJava
+	hasAstyleFiles := useCpp || useCs || useJava || useCsPrim
 	if hasAstyleFiles {
 		compiler.DebugLogPrintf("Using astyle version: %s\n", compiler.GetAStyleVersion())
 		const astyleOptions = "--style=webkit"
@@ -263,6 +276,13 @@ func main() {
 				javaOutputName = strings.TrimSuffix(javaOutputName, ".java")
 			}
 			filePath := filepath.Join(outputDir, javaOutputName+".java")
+			err = compiler.FormatFile(filePath, astyleOptions)
+			if err != nil {
+				log.Fatalf("Failed to format %s: %v", filePath, err)
+			}
+		}
+		if useCsPrim {
+			filePath := fmt.Sprintf("%s.csprim.cs", output)
 			err = compiler.FormatFile(filePath, astyleOptions)
 			if err != nil {
 				log.Fatalf("Failed to format %s: %v", filePath, err)

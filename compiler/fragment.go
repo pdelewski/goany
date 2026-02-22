@@ -25,6 +25,11 @@ func NewFragmentStack(gir *GoFIR) *FragmentStack {
 	return &FragmentStack{gir: gir}
 }
 
+// PushMarker pushes a named marker onto the stack (for Reduce to find later).
+func (fs *FragmentStack) PushMarker(name string) {
+	fs.gir.emitToFileBufferString("", name)
+}
+
 // Push adds a token to the GoFIR's tokenSlice with the given code, tag, and Go type.
 func (fs *FragmentStack) Push(code string, tag int, goType types.Type) {
 	token := Token{Content: code, Tag: tag, GoType: goType}

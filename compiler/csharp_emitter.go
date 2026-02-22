@@ -2889,6 +2889,10 @@ func (cse *CSharpEmitter) GenerateCsproj() error {
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <ItemGroup>
+    <Compile Remove="*.csprim.cs" />
+  </ItemGroup>
+
 </Project>
 `
 	case "tigr":
@@ -2902,6 +2906,10 @@ func (cse *CSharpEmitter) GenerateCsproj() error {
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="*.csprim.cs" />
+  </ItemGroup>
 
   <!-- Compile tigr.c to native library before build -->
   <Target Name="CompileTigr" BeforeTargets="Build">
@@ -2937,6 +2945,10 @@ func (cse *CSharpEmitter) GenerateCsproj() error {
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="*.csprim.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Sayers.SDL2.Core" Version="1.0.11" />
