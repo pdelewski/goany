@@ -236,21 +236,21 @@ func (e *RustPrimEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 
 	// Track callee name and push read-only flags for ref optimization
 	if ident, ok := node.(*ast.Ident); ok {
-		e.currentCalleeName = ident.Name
-		e.currentCallIsLen = (ident.Name == "len")
+		e.Opt.currentCalleeName = ident.Name
+		e.Opt.currentCallIsLen = (ident.Name == "len")
 	} else if sel, ok := node.(*ast.SelectorExpr); ok {
-		e.currentCalleeName = sel.Sel.Name
+		e.Opt.currentCalleeName = sel.Sel.Name
 	} else {
-		e.currentCalleeName = ""
+		e.Opt.currentCalleeName = ""
 	}
 
 	// Push callee's read-only parameter flags for ref optimization
-	if e.OptimizeRefs && e.refOptReadOnly != nil {
-		funcKey := e.refOptFuncKey(funCode)
-		if flags, ok := e.refOptReadOnly.ReadOnly[funcKey]; ok {
-			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, flags)
+	if e.Opt.OptimizeRefs && e.Opt.refOptReadOnly != nil {
+		funcKey := e.Opt.refOptFuncKey(funCode)
+		if flags, ok := e.Opt.refOptReadOnly.ReadOnly[funcKey]; ok {
+			e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, flags)
 		} else {
-			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, nil)
+			e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, nil)
 		}
 	}
 
@@ -265,11 +265,11 @@ func (e *RustPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent 
 	e.callExprArgDepth--
 
 	// Move extraction: replace arg with temp variable name
-	if e.moveOptActive && e.moveOptArgReplacements != nil {
-		if replacement, ok := e.moveOptArgReplacements[index]; ok {
+	if e.Opt.moveOptActive && e.Opt.moveOptArgReplacements != nil {
+		if replacement, ok := e.Opt.moveOptArgReplacements[index]; ok {
 			e.fs.Reduce(string(PreVisitCallExprArg))
 			e.fs.PushCode(replacement)
-			e.MoveOptCount++
+			e.Opt.MoveOptCount++
 			return
 		}
 	}
@@ -277,29 +277,29 @@ func (e *RustPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent 
 	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
 
 	// Reference optimization: if callee param is read-only, use & instead of .clone()
-	if e.isRefOptArg(index) {
+	if e.Opt.isRefOptArg(index) {
 		// If the argument is already a reference param in the current function, pass as-is
 		isAlreadyRef := false
 		if ident, ok := node.(*ast.Ident); ok {
-			isAlreadyRef = e.refOptCurrentRefParams[ident.Name]
+			isAlreadyRef = e.Opt.refOptCurrentRefParams[ident.Name]
 		}
 		if !isAlreadyRef {
 			argCode = "&" + argCode
 		}
-		e.RefOptCount++
+		e.Opt.RefOptCount++
 		e.fs.PushCode(argCode)
 		return
 	}
 
 	// std::mem::take optimization: replace state.Field with std::mem::take(&mut state.Field)
-	if e.memTakeActive && index == e.memTakeArgIdx && len(e.currentCallArgIdentsStack) <= 1 {
-		e.fs.PushCode("std::mem::take(&mut " + e.memTakeLhsExpr + ")")
-		e.MoveOptCount++
+	if e.Opt.memTakeActive && index == e.Opt.memTakeArgIdx && len(e.Opt.currentCallArgIdentsStack) <= 1 {
+		e.fs.PushCode("std::mem::take(&mut " + e.Opt.memTakeLhsExpr + ")")
+		e.Opt.MoveOptCount++
 		return
 	}
 
 	// len() is read-only — skip all cloning for its arguments
-	if e.currentCallIsLen && e.OptimizeMoves {
+	if e.Opt.currentCallIsLen && e.Opt.OptimizeMoves {
 		e.fs.PushCode(argCode)
 		return
 	}
@@ -316,7 +316,7 @@ func (e *RustPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent 
 					// Don't clone function literals (closures) — they are passed by value
 					if _, isFuncLit := node.(*ast.FuncLit); !isFuncLit {
 						// Move optimization: skip .clone() if the variable can be moved
-						if identNode, isIdent := node.(*ast.Ident); isIdent && e.canMoveArg(identNode.Name) {
+						if identNode, isIdent := node.(*ast.Ident); isIdent && e.Opt.canMoveArg(identNode.Name) {
 							e.fs.PushCode(argCode)
 							return
 						}
@@ -354,10 +354,10 @@ func (e *RustPrimEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 
 	// Clear callee state after processing call
 	defer func() {
-		e.currentCalleeName = ""
-		e.currentCallIsLen = false
-		if e.OptimizeRefs && len(e.refOptCalleeReadOnly) > 0 {
-			e.refOptCalleeReadOnly = e.refOptCalleeReadOnly[:len(e.refOptCalleeReadOnly)-1]
+		e.Opt.currentCalleeName = ""
+		e.Opt.currentCallIsLen = false
+		if e.Opt.OptimizeRefs && len(e.Opt.refOptCalleeReadOnly) > 0 {
+			e.Opt.refOptCalleeReadOnly = e.Opt.refOptCalleeReadOnly[:len(e.Opt.refOptCalleeReadOnly)-1]
 		}
 	}()
 
@@ -380,10 +380,10 @@ func (e *RustPrimEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	case "len":
 		if len(node.Args) > 0 {
 			if e.isMapTypeExpr(node.Args[0]) {
-				if e.OptimizeRefs {
+				if e.Opt.OptimizeRefs {
 					// Ref opt: use &map instead of map.clone()
 					e.fs.PushCode(fmt.Sprintf("hmap::hashMapLen(&%s)", argsStr))
-					e.RefOptCount++
+					e.Opt.RefOptCount++
 				} else {
 					e.fs.PushCode(fmt.Sprintf("hmap::hashMapLen(%s.clone())", argsStr))
 				}
@@ -664,9 +664,9 @@ func (e *RustPrimEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			castExpr = fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType)
 		}
 		mapRef := xCode + ".clone()"
-		if e.OptimizeRefs {
+		if e.Opt.OptimizeRefs {
 			mapRef = "&" + xCode
-			e.RefOptCount++
+			e.Opt.RefOptCount++
 		}
 		e.fs.PushCodeWithType(
 			fmt.Sprintf("hmap::hashMapGet(%s, %s)%s", mapRef, keyExpr, castExpr),
@@ -1140,7 +1140,7 @@ func (e *RustPrimEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
 // ============================================================
 
 func (e *RustPrimEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
-	e.funcLitDepth++
+	e.Opt.funcLitDepth++
 	// Save the current funcReturnType and set the closure's return type
 	e.savedFuncRetTypes = append(e.savedFuncRetTypes, e.funcReturnType)
 	e.funcReturnType = nil
@@ -1226,7 +1226,7 @@ func (e *RustPrimEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 		e.savedFuncRetTypes = e.savedFuncRetTypes[:len(e.savedFuncRetTypes)-1]
 	}
 
-	e.funcLitDepth--
+	e.Opt.funcLitDepth--
 
 	// Wrap in Rc::new() only when used as a struct field value (inside composite literal)
 	// Local variable closures and call arguments should be bare closures

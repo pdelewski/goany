@@ -41,21 +41,21 @@ func (e *RustPrimEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	e.mapAssignKey = ""
 
 	// Track LHS names for move optimization
-	if e.OptimizeMoves && len(node.Lhs) >= 1 && len(node.Rhs) == 1 {
-		e.currentAssignLhsNames = make(map[string]bool)
+	if e.Opt.OptimizeMoves && len(node.Lhs) >= 1 && len(node.Rhs) == 1 {
+		e.Opt.currentAssignLhsNames = make(map[string]bool)
 		for _, lhs := range node.Lhs {
 			if ident, ok := lhs.(*ast.Ident); ok {
-				e.currentAssignLhsNames[ident.Name] = true
+				e.Opt.currentAssignLhsNames[ident.Name] = true
 			}
 		}
 		// Build call arg ident counts for the RHS call
 		if callExpr, ok := node.Rhs[0].(*ast.CallExpr); ok {
 			counts := CollectCallArgIdentCounts(callExpr.Args, e.pkg)
-			e.currentCallArgIdentsStack = append(e.currentCallArgIdentsStack, counts)
+			e.Opt.currentCallArgIdentsStack = append(e.Opt.currentCallArgIdentsStack, counts)
 		}
 		// Analyze for temp extraction and std::mem::take
-		e.analyzeMoveOptExtraction(node)
-		e.analyzeMemTakeOpt(node)
+		e.Opt.analyzeMoveOptExtraction(node)
+		e.Opt.analyzeMemTakeOpt(node)
 	}
 }
 
@@ -108,17 +108,17 @@ func (e *RustPrimEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent in
 func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Clean up move optimization tracking
 	defer func() {
-		e.currentAssignLhsNames = nil
-		if len(e.currentCallArgIdentsStack) > 0 {
-			e.currentCallArgIdentsStack = e.currentCallArgIdentsStack[:len(e.currentCallArgIdentsStack)-1]
+		e.Opt.currentAssignLhsNames = nil
+		if len(e.Opt.currentCallArgIdentsStack) > 0 {
+			e.Opt.currentCallArgIdentsStack = e.Opt.currentCallArgIdentsStack[:len(e.Opt.currentCallArgIdentsStack)-1]
 		}
-		e.moveOptActive = false
-		e.moveOptTempBindings = nil
-		e.moveOptArgReplacements = nil
-		e.moveOptModifiedCounts = nil
-		e.memTakeActive = false
-		e.memTakeLhsExpr = ""
-		e.memTakeArgIdx = -1
+		e.Opt.moveOptActive = false
+		e.Opt.moveOptTempBindings = nil
+		e.Opt.moveOptArgReplacements = nil
+		e.Opt.moveOptModifiedCounts = nil
+		e.Opt.memTakeActive = false
+		e.Opt.memTakeLhsExpr = ""
+		e.Opt.memTakeArgIdx = -1
 	}()
 
 	tokens := e.fs.Reduce(string(PreVisitAssignStmt))
@@ -209,9 +209,9 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 				}
 
 				mapRef := mapName + ".clone()"
-				if e.OptimizeRefs {
+				if e.Opt.OptimizeRefs {
 					mapRef = "&" + mapName
-					e.RefOptCount += 2 // hashMapContains + hashMapGet
+					e.Opt.RefOptCount += 2 // hashMapContains + hashMapGet
 				}
 				if tokStr == ":=" {
 					e.fs.PushCode(fmt.Sprintf("%slet mut %s = hmap::hashMapContains(%s, %s);\n",
@@ -261,8 +261,8 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 	// Multi-value return: a, b := func() -> let (mut a, mut b) = func()
 	if len(node.Lhs) > 1 && len(node.Rhs) == 1 {
 		// Emit temp bindings from move extraction before the assignment
-		if e.moveOptActive && len(e.moveOptTempBindings) > 0 {
-			for _, binding := range e.moveOptTempBindings {
+		if e.Opt.moveOptActive && len(e.Opt.moveOptTempBindings) > 0 {
+			for _, binding := range e.Opt.moveOptTempBindings {
 				e.fs.PushCode(ind + binding)
 			}
 		}
@@ -362,8 +362,8 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 			e.fs.PushCode(fmt.Sprintf("%s%s %s %s;\n", ind, lhsStr, tokStr, rhsStr))
 		default:
 			// Emit temp bindings from move extraction before the assignment
-			if e.moveOptActive && len(e.moveOptTempBindings) > 0 {
-				for _, binding := range e.moveOptTempBindings {
+			if e.Opt.moveOptActive && len(e.Opt.moveOptTempBindings) > 0 {
+				for _, binding := range e.Opt.moveOptTempBindings {
 					e.fs.PushCode(ind + binding)
 				}
 			}
@@ -518,7 +518,7 @@ func (e *RustPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) 
 					resultType := e.getExprGoType(node.Results[i])
 					if resultType != nil && !isCopyType(resultType) {
 						// Move optimization: check if later results reference the first
-						if e.OptimizeMoves {
+						if e.Opt.OptimizeMoves {
 							firstName := ""
 							if ident, ok := node.Results[0].(*ast.Ident); ok {
 								firstName = ident.Name
@@ -534,7 +534,7 @@ func (e *RustPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) 
 								}
 								if !referencesFirst {
 									needsClone = false
-									e.MoveOptCount++
+									e.Opt.MoveOptCount++
 								}
 							}
 							if needsClone {
@@ -986,9 +986,9 @@ func (e *RustPrimEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("%s{\n", ind))
 		mapKeysRef := xCode + ".clone()"
-		if e.OptimizeRefs {
+		if e.Opt.OptimizeRefs {
 			mapKeysRef = "&" + xCode
-			e.RefOptCount++
+			e.Opt.RefOptCount++
 		}
 		sb.WriteString(fmt.Sprintf("%s    let %s = hmap::hashMapKeys(%s);\n", ind, keysVar, mapKeysRef))
 		sb.WriteString(fmt.Sprintf("%s    let mut %s: i32 = 0;\n", ind, loopIdx))

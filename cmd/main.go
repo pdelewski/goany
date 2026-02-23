@@ -236,8 +236,10 @@ func main() {
 			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
-			OptimizeMoves:   optimizeMoves,
-			OptimizeRefs:    optimizeRefs,
+			Opt: compiler.RustOptState{
+				OptimizeMoves: optimizeMoves,
+				OptimizeRefs:  optimizeRefs,
+			},
 		}}
 		passes = append(passes, rustPrimBackend)
 		programFiles = append(programFiles, "rustprim")
