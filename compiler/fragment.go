@@ -46,6 +46,12 @@ func (fs *FragmentStack) PushCodeWithType(code string, t types.Type) {
 	fs.Push(code, TagExpr, t)
 }
 
+// PushWithMeta adds a token with optimization metadata to the stack.
+func (fs *FragmentStack) PushWithMeta(code string, tag int, meta *OptMeta) {
+	token := Token{Content: code, Tag: tag, OptMeta: meta}
+	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
+}
+
 // Reduce finds the last marker matching the given visitMethod string, extracts all tokens
 // from that position to the end, trims both tokenSlice and pointerAndIndexVec,
 // and returns the extracted tokens.

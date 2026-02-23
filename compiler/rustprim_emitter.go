@@ -62,6 +62,31 @@ type RustPrimEmitter struct {
 	callExprArgDepth    int  // >0 when inside a call expression argument
 	compositeLitDepth   int  // >0 when inside a composite literal (struct/slice init)
 	localClosureBodies  map[string]string // maps local closure variable names to their body code
+	// Ref optimization
+	refOptReadOnly           *ReadOnlyAnalysis  // from AnalyzeReadOnlyParams()
+	refOptCurrentFunc        string             // current function key for param lookup
+	refOptCurrentPkg         string             // current package name for func key construction
+	refOptCalleeReadOnly     [][]bool           // stack of callee read-only flags for nested calls
+	refOptCurrentRefParams   map[string]bool    // params that are &T in current function
+	// Move optimization
+	currentAssignLhsNames    map[string]bool    // LHS names for canMove decisions
+	funcLitDepth             int                // closure nesting depth
+	currentCallArgIdentsStack []map[string]int  // stack of arg ident counts for nested calls
+	currentCalleeName        string             // name of function being called
+	currentParamIndex        int                // running parameter index within a function signature
+	currentCallIsLen         bool               // true when current call is len()
+	// Move extraction (temp binding) state
+	moveOptActive            bool
+	moveOptTempBindings      []string
+	moveOptArgReplacements   map[int]string
+	moveOptModifiedCounts    map[string]int
+	moveOptReplacingArg      bool
+	moveOptArgStartIdx       int // token slice marker for arg replacement
+	// std::mem::take state
+	memTakeActive            bool
+	memTakeLhsExpr           string
+	memTakeArgIdx            int
+	memTakeArgStartIdx       int // token slice marker for arg replacement
 }
 
 func (e *RustPrimEmitter) SetFile(file *os.File) { e.file = file }
@@ -225,13 +250,23 @@ func (e *RustPrimEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr str
 
 	// Build the hashMapGet chain to read the slice
 	getExpr := fmt.Sprintf("%s.clone()", rootMapName)
+	if e.OptimizeRefs {
+		getExpr = "&" + rootMapName
+		e.RefOptCount++
+	}
 	for i, lvl := range levels {
 		castType := "hmap::HashMap"
 		if i == len(levels)-1 {
 			castType = sliceType
 		}
-		getExpr = fmt.Sprintf("hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone()",
+		innerGetExpr := fmt.Sprintf("hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone()",
 			getExpr, lvl.keyExpr, castType)
+		if e.OptimizeRefs && i < len(levels)-1 {
+			getExpr = "&" + innerGetExpr
+			e.RefOptCount++
+		} else {
+			getExpr = innerGetExpr
+		}
 	}
 	sb.WriteString(fmt.Sprintf("%slet mut %s = %s;\n", ind, sliceTempVar, getExpr))
 
@@ -253,12 +288,20 @@ func (e *RustPrimEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr str
 		tempVars := make([]string, len(levels))
 		// Extract maps from outermost to one-before-innermost
 		extractExpr := fmt.Sprintf("%s.clone()", rootMapName)
+		if e.OptimizeRefs {
+			extractExpr = "&" + rootMapName
+			e.RefOptCount++
+		}
 		for i := 0; i < len(levels)-1; i++ {
 			e.nestedMapCounter++
 			tempVars[i] = fmt.Sprintf("__temp_%d", e.nestedMapCounter)
 			sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<hmap::HashMap>().unwrap().clone();\n",
 				ind, tempVars[i], extractExpr, levels[i].keyExpr))
 			extractExpr = fmt.Sprintf("%s.clone()", tempVars[i])
+			if e.OptimizeRefs {
+				extractExpr = "&" + tempVars[i]
+				e.RefOptCount++
+			}
 		}
 		// Set slice into innermost map
 		innermostMap := tempVars[len(levels)-2]
@@ -359,8 +402,13 @@ func (e *RustPrimEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind
 	var sb strings.Builder
 
 	// Extract from root map
-	sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s.clone(), %s).downcast_ref::<%s>().unwrap().clone();\n",
-		ind, tempVar, rootMapName, rootKeyExpr, rootValType))
+	rootMapRef := rootMapName + ".clone()"
+	if e.OptimizeRefs {
+		rootMapRef = "&" + rootMapName
+		e.RefOptCount++
+	}
+	sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
+		ind, tempVar, rootMapRef, rootKeyExpr, rootValType))
 
 	// Build the intermediate index chain between root and the final map assign
 	// For chain[rootMapIdx+1 .. len(chain)-1], apply indices to tempVar
@@ -384,8 +432,13 @@ func (e *RustPrimEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind
 					intermValType := e.qualifiedRustTypeName(intermMapUnderlying.Elem())
 					e.nestedMapCounter++
 					innerTemp := fmt.Sprintf("__temp_%d", e.nestedMapCounter)
-					sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s.clone(), %s).downcast_ref::<%s>().unwrap().clone();\n",
-						ind, innerTemp, indexPrefix, intermKeyExpr, intermValType))
+					intermMapRef := indexPrefix + ".clone()"
+					if e.OptimizeRefs {
+						intermMapRef = "&" + indexPrefix
+						e.RefOptCount++
+					}
+					sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
+						ind, innerTemp, intermMapRef, intermKeyExpr, intermValType))
 					indexPrefix = innerTemp
 				}
 			}
@@ -997,11 +1050,34 @@ func (e *RustPrimEmitter) PostVisitProgram(indent int) {
 			log.Printf("Warning: %v", err)
 		}
 	}
+
+	if e.OptimizeMoves && e.MoveOptCount > 0 {
+		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", e.MoveOptCount)
+	}
+	if e.OptimizeRefs && e.RefOptCount > 0 {
+		fmt.Printf("  Rust: %d clone(s) removed by reference optimization\n", e.RefOptCount)
+	}
 }
 
 func (e *RustPrimEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	e.pkg = pkg
 	e.currentPackage = pkg.Name
+	e.refOptCurrentPkg = pkg.Name
+
+	if e.OptimizeRefs {
+		pkgAnalysis := AnalyzeReadOnlyParams(pkg)
+		// Accumulate across packages so cross-package call sites see callee flags
+		if e.refOptReadOnly == nil {
+			e.refOptReadOnly = pkgAnalysis
+		} else {
+			for k, v := range pkgAnalysis.ReadOnly {
+				e.refOptReadOnly.ReadOnly[k] = v
+			}
+			for k, v := range pkgAnalysis.FuncsAsValues {
+				e.refOptReadOnly.FuncsAsValues[k] = v
+			}
+		}
+	}
 
 	if pkg.Name != "main" {
 		e.fs.PushCode(fmt.Sprintf("pub mod %s {\nuse crate::*;\n\n", pkg.Name))
@@ -1070,6 +1146,10 @@ func (e *RustPrimEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDe
 func (e *RustPrimEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 	e.fs.Reduce(string(PreVisitFuncDeclName))
 	e.fs.Push(node.Name, TagIdent, nil)
+	// Track current function key for optimization
+	e.refOptCurrentFunc = e.refOptCurrentPkg + "." + node.Name
+	e.currentParamIndex = 0
+	e.refOptCurrentRefParams = make(map[string]bool)
 }
 
 func (e *RustPrimEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
@@ -1094,11 +1174,30 @@ func (e *RustPrimEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Fie
 			names = append(names, t.Content)
 		}
 	}
-	// Rust params: name: mut Type
+	// Rust params: name: mut Type (or name: &Type for ref-opt)
+	paramIdx := e.currentParamIndex
 	for _, name := range names {
 		escapedName := escapeRustKeyword(name)
-		e.fs.Push(fmt.Sprintf("mut %s: %s", escapedName, typeStr), TagIdent, nil)
+		isRefOpt := false
+		if e.OptimizeRefs && e.refOptReadOnly != nil {
+			if readOnlyFlags, ok := e.refOptReadOnly.ReadOnly[e.refOptCurrentFunc]; ok {
+				if paramIdx >= 0 && paramIdx < len(readOnlyFlags) && readOnlyFlags[paramIdx] {
+					isRefOpt = true
+				}
+			}
+		}
+		if isRefOpt {
+			e.fs.Push(fmt.Sprintf("%s: &%s", escapedName, typeStr), TagIdent, nil)
+			if e.refOptCurrentRefParams == nil {
+				e.refOptCurrentRefParams = make(map[string]bool)
+			}
+			e.refOptCurrentRefParams[escapedName] = true
+		} else {
+			e.fs.Push(fmt.Sprintf("mut %s: %s", escapedName, typeStr), TagIdent, nil)
+		}
+		paramIdx++
 	}
+	e.currentParamIndex = paramIdx
 }
 
 func (e *RustPrimEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {

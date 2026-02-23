@@ -1475,26 +1475,6 @@ func (re *RustEmitter) collectAssignedFromVarsInStmt(stmt ast.Stmt, result map[s
 // which parameters are read-only (eligible for &T in Rust).
 // A parameter is read-only if: it's non-Copy, not mutated, not returned, and not
 // assigned as a whole value to another variable.
-// isRefOptEligibleType checks if a Go type is eligible for &T optimization in Rust.
-// Only struct types and slice types benefit from pass-by-reference.
-// String, basic types (int, bool, float), and function types are excluded.
-func isRefOptEligibleType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	// Check underlying type
-	switch t.Underlying().(type) {
-	case *types.Struct:
-		return true
-	case *types.Slice:
-		return true
-	case *types.Basic:
-		// All basic types (including string) are excluded
-		return false
-	}
-	return false
-}
-
 // collectFuncsUsedAsValues finds function names that are used as values (not calls)
 // in any expression in the package. Functions passed as callbacks cannot have their
 // signatures changed by the optimization.

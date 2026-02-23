@@ -233,6 +233,27 @@ func (e *RustPrimEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) 
 
 func (e *RustPrimEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 	funCode := e.fs.ReduceToCode(string(PreVisitCallExprFun))
+
+	// Track callee name and push read-only flags for ref optimization
+	if ident, ok := node.(*ast.Ident); ok {
+		e.currentCalleeName = ident.Name
+		e.currentCallIsLen = (ident.Name == "len")
+	} else if sel, ok := node.(*ast.SelectorExpr); ok {
+		e.currentCalleeName = sel.Sel.Name
+	} else {
+		e.currentCalleeName = ""
+	}
+
+	// Push callee's read-only parameter flags for ref optimization
+	if e.OptimizeRefs && e.refOptReadOnly != nil {
+		funcKey := e.refOptFuncKey(funCode)
+		if flags, ok := e.refOptReadOnly.ReadOnly[funcKey]; ok {
+			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, flags)
+		} else {
+			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, nil)
+		}
+	}
+
 	e.fs.PushCode(funCode)
 }
 
@@ -242,7 +263,46 @@ func (e *RustPrimEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent i
 
 func (e *RustPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth--
+
+	// Move extraction: replace arg with temp variable name
+	if e.moveOptActive && e.moveOptArgReplacements != nil {
+		if replacement, ok := e.moveOptArgReplacements[index]; ok {
+			e.fs.Reduce(string(PreVisitCallExprArg))
+			e.fs.PushCode(replacement)
+			e.MoveOptCount++
+			return
+		}
+	}
+
 	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
+
+	// Reference optimization: if callee param is read-only, use & instead of .clone()
+	if e.isRefOptArg(index) {
+		// If the argument is already a reference param in the current function, pass as-is
+		isAlreadyRef := false
+		if ident, ok := node.(*ast.Ident); ok {
+			isAlreadyRef = e.refOptCurrentRefParams[ident.Name]
+		}
+		if !isAlreadyRef {
+			argCode = "&" + argCode
+		}
+		e.RefOptCount++
+		e.fs.PushCode(argCode)
+		return
+	}
+
+	// std::mem::take optimization: replace state.Field with std::mem::take(&mut state.Field)
+	if e.memTakeActive && index == e.memTakeArgIdx && len(e.currentCallArgIdentsStack) <= 1 {
+		e.fs.PushCode("std::mem::take(&mut " + e.memTakeLhsExpr + ")")
+		e.MoveOptCount++
+		return
+	}
+
+	// len() is read-only — skip all cloning for its arguments
+	if e.currentCallIsLen && e.OptimizeMoves {
+		e.fs.PushCode(argCode)
+		return
+	}
 
 	// Add .clone() for non-Copy types passed as arguments
 	argType := e.getExprGoType(node)
@@ -255,6 +315,11 @@ func (e *RustPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent 
 				if _, isCallExpr := node.(*ast.CallExpr); !isCallExpr {
 					// Don't clone function literals (closures) — they are passed by value
 					if _, isFuncLit := node.(*ast.FuncLit); !isFuncLit {
+						// Move optimization: skip .clone() if the variable can be moved
+						if identNode, isIdent := node.(*ast.Ident); isIdent && e.canMoveArg(identNode.Name) {
+							e.fs.PushCode(argCode)
+							return
+						}
 						argCode = argCode + ".clone()"
 					}
 				}
@@ -287,6 +352,15 @@ func (e *RustPrimEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		argsStr = tokens[1].Content
 	}
 
+	// Clear callee state after processing call
+	defer func() {
+		e.currentCalleeName = ""
+		e.currentCallIsLen = false
+		if e.OptimizeRefs && len(e.refOptCalleeReadOnly) > 0 {
+			e.refOptCalleeReadOnly = e.refOptCalleeReadOnly[:len(e.refOptCalleeReadOnly)-1]
+		}
+	}()
+
 	// Local closure inlining: replace call with inline body block
 	if ident, ok := node.Fun.(*ast.Ident); ok {
 		if body, found := e.localClosureBodies[ident.Name]; found {
@@ -306,7 +380,13 @@ func (e *RustPrimEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	case "len":
 		if len(node.Args) > 0 {
 			if e.isMapTypeExpr(node.Args[0]) {
-				e.fs.PushCode(fmt.Sprintf("hmap::hashMapLen(%s.clone())", argsStr))
+				if e.OptimizeRefs {
+					// Ref opt: use &map instead of map.clone()
+					e.fs.PushCode(fmt.Sprintf("hmap::hashMapLen(&%s)", argsStr))
+					e.RefOptCount++
+				} else {
+					e.fs.PushCode(fmt.Sprintf("hmap::hashMapLen(%s.clone())", argsStr))
+				}
 				return
 			}
 			// Check for string len
@@ -583,8 +663,13 @@ func (e *RustPrimEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		if valType != "Rc<dyn Any>" {
 			castExpr = fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType)
 		}
+		mapRef := xCode + ".clone()"
+		if e.OptimizeRefs {
+			mapRef = "&" + xCode
+			e.RefOptCount++
+		}
 		e.fs.PushCodeWithType(
-			fmt.Sprintf("hmap::hashMapGet(%s.clone(), %s)%s", xCode, keyExpr, castExpr),
+			fmt.Sprintf("hmap::hashMapGet(%s, %s)%s", mapRef, keyExpr, castExpr),
 			e.getExprGoType(node),
 		)
 	} else {
@@ -1055,6 +1140,7 @@ func (e *RustPrimEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
 // ============================================================
 
 func (e *RustPrimEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
+	e.funcLitDepth++
 	// Save the current funcReturnType and set the closure's return type
 	e.savedFuncRetTypes = append(e.savedFuncRetTypes, e.funcReturnType)
 	e.funcReturnType = nil
@@ -1139,6 +1225,8 @@ func (e *RustPrimEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 		e.funcReturnType = e.savedFuncRetTypes[len(e.savedFuncRetTypes)-1]
 		e.savedFuncRetTypes = e.savedFuncRetTypes[:len(e.savedFuncRetTypes)-1]
 	}
+
+	e.funcLitDepth--
 
 	// Wrap in Rc::new() only when used as a struct field value (inside composite literal)
 	// Local variable closures and call arguments should be bare closures
