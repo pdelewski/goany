@@ -128,8 +128,9 @@ func main() {
 	useCpp := useAll || backendSet["cpp"]
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
-	useJs := backendSet["js"]         // JS is opt-in, not included in "all"
-	useJava := backendSet["java"]     // Java is opt-in, not included in "all"
+	useJs := backendSet["js"]             // JS is opt-in, not included in "all"
+	useJava := backendSet["java"]         // Java is opt-in, not included in "all"
+	useRustPrim := backendSet["rustprim"] // RustPrim is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -227,6 +228,20 @@ func main() {
 		passes = append(passes, javaBackend)
 		programFiles = append(programFiles, "java")
 	}
+	if useRustPrim {
+		rustPrimBackend := &compiler.BasePass{PassName: "RustPrimGen", Emitter: &compiler.RustPrimEmitter{
+			Emitter:         &compiler.BaseEmitter{},
+			Output:          output + ".rs",
+			LinkRuntime:     linkRuntime,
+			RuntimePackages: runtimePackages,
+			OutputDir:       outputDir,
+			OutputName:      outputName,
+			OptimizeMoves:   optimizeMoves,
+			OptimizeRefs:    optimizeRefs,
+		}}
+		passes = append(passes, rustPrimBackend)
+		programFiles = append(programFiles, "rustprim")
+	}
 	passManager := &compiler.PassManager{
 		Pkgs:   allPkgs,
 		Passes: passes,
@@ -281,6 +296,22 @@ func main() {
 		cmd := exec.Command("rustfmt", rustFile)
 		if err := cmd.Run(); err != nil {
 			// rustfmt not available or failed - just log warning, don't fail
+			log.Printf("Warning: rustfmt failed for %s: %v (install with: rustup component add rustfmt)", rustFile, err)
+		} else {
+			compiler.DebugLogPrintf("Successfully formatted: %s", rustFile)
+		}
+	}
+
+	// Use rustfmt for RustPrim files
+	if useRustPrim {
+		var rustFile string
+		if linkRuntime != "" {
+			rustFile = filepath.Join(outputDir, "src", "main.rs")
+		} else {
+			rustFile = fmt.Sprintf("%s.rs", output)
+		}
+		cmd := exec.Command("rustfmt", rustFile)
+		if err := cmd.Run(); err != nil {
 			log.Printf("Warning: rustfmt failed for %s: %v (install with: rustup component add rustfmt)", rustFile, err)
 		} else {
 			compiler.DebugLogPrintf("Successfully formatted: %s", rustFile)

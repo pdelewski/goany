@@ -24,32 +24,34 @@ type TestCase struct {
 	JsRunnable       bool // Can run with Node.js (false for graphics apps that need browser)
 	JavaEnabled      bool
 	JavaRunnable     bool // Can run standalone (false for apps that need special setup)
+	RustPrimEnabled  bool
+	RustPrimRunnable bool // Can run the rustprim binary
 }
 
 const runtimePath = "../runtime"
 
 var e2eTestCases = []TestCase{
-	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true},
-	{"containers", "../examples/containers", true, true, true, true, true, true, true, false},
-	{"uql", "../examples/uql", true, true, true, true, true, true, true, false},
-	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false},
-	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true},
-	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true},
-	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false},
-	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false},
-	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false},
-	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false},
-	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false},
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false},
-	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false},
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false},
-	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false},
-	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false},
-	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true},
-	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false},
-	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false},
-	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false},
-	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true},
+	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true, true, true},
+	{"containers", "../examples/containers", true, true, true, true, true, true, true, false, true, true},
+	{"uql", "../examples/uql", true, true, true, true, true, true, true, false, true, true},
+	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false, true, true},
+	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true, true, true},
+	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true, true, true},
+	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false, true, false},
+	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false, true, false},
+	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false, true, false},
+	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false, true, false},
+	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false, true, false},
+	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true, true, true},
+	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false, true, false},
+	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false, true, false},
+	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false, true, false},
+	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true, true, true},
 }
 
 func TestE2E(t *testing.T) {
@@ -226,6 +228,58 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 				t.Fatalf("Java execution failed: %v\nOutput: %s", err, output)
 			}
 			t.Logf("Java execution output: %s", output)
+		}
+	}
+
+	// Step 7: Compile and optionally run RustPrim (separate transpilation to avoid .rs conflict with Rust)
+	if tc.RustPrimEnabled {
+		rustprimDir := outputDir + "-rustprim"
+		if err := os.MkdirAll(rustprimDir, 0755); err != nil {
+			t.Fatalf("Failed to create rustprim output directory: %v", err)
+		}
+		t.Cleanup(func() {
+			os.RemoveAll(rustprimDir)
+		})
+
+		// Transpile with rustprim backend only
+		rustprimOutput := filepath.Join(rustprimDir, tc.Name)
+		rpArgs := []string{
+			"run", ".",
+			fmt.Sprintf("--source=%s", tc.SourceDir),
+			fmt.Sprintf("--output=%s", rustprimOutput),
+			fmt.Sprintf("--link-runtime=%s", runtimePath),
+			"--optimize-moves",
+			"--optimize-refs",
+			"--backend=rustprim",
+		}
+		t.Logf("Generating rustprim code for %s", tc.Name)
+		cmd = exec.Command("go", rpArgs...)
+		cmd.Dir = wd
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("RustPrim code generation failed: %v\nOutput: %s", err, output)
+		}
+		t.Logf("RustPrim code generation output: %s", output)
+
+		// Compile with cargo build --release
+		t.Logf("Compiling RustPrim for %s", tc.Name)
+		cmd = exec.Command("cargo", "build", "--release")
+		cmd.Dir = rustprimDir
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("RustPrim compilation failed: %v\nOutput: %s", err, output)
+		}
+		t.Logf("RustPrim compilation output: %s", output)
+
+		if tc.RustPrimRunnable {
+			t.Logf("Running RustPrim for %s", tc.Name)
+			cmd = exec.Command(filepath.Join(rustprimDir, "target", "release", tc.Name))
+			cmd.Dir = rustprimDir
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("RustPrim execution failed: %v\nOutput: %s", err, output)
+			}
+			t.Logf("RustPrim execution output: %s", output)
 		}
 	}
 
