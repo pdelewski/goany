@@ -9,6 +9,17 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// rpMoveOptCallExt tracks a function call arg that needs to be extracted
+// into a temp variable before the assignment to avoid borrow conflicts.
+// Pattern: c = doADC(c, ReadIndirectX(c, zp))
+// Becomes: let __mv0: u8 = ReadIndirectX(&c, zp); c = doADC(c, __mv0);
+type rpMoveOptCallExt struct {
+	argIdx   int    // which argument index in the outer call
+	tempName string // temp variable name (e.g., "__mv0")
+	rustType string // Rust type of the result (e.g., "u8")
+	code     string // captured Rust code for the function call (filled during PostVisitCallExprArg)
+}
+
 // RustOptState holds all optimization-related state, separated from the core emitter.
 // Methods on this struct implement move optimization, reference optimization, and
 // related analysis. The emitter embeds this as Opt and wires up the pkg and
@@ -46,6 +57,17 @@ type RustOptState struct {
 	moveOptModifiedCounts  map[string]int
 	moveOptReplacingArg    bool
 	moveOptArgStartIdx     int
+
+	// Call expression extraction: capture function call args that reference a moved struct
+	// Pattern: c = func(c, ReadIndirectX(c, zp)) → let __mv0 = ReadIndirectX(&c, zp); c = func(c, __mv0);
+	moveOptCallExts []rpMoveOptCallExt
+
+	// Return temp extraction: extract later return results into temps so first result can be moved
+	// Pattern: return c, c.Memory[addr] → let __mv0: u8 = c.Memory[addr]; return (c, __mv0);
+	returnTempReplacements map[int]string
+
+	// argAlreadyCloned: when a vec element access already added .clone(), skip redundant clone
+	argAlreadyCloned bool
 
 	// std::mem::take state
 	memTakeActive      bool
@@ -192,6 +214,8 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 	var bindings []string
 	modifiedCounts := CollectCallArgIdentCounts(callExpr.Args, o.pkg)
 
+	var callExts []rpMoveOptCallExt
+
 	for i, arg := range callExpr.Args {
 		if i == structArgIdx {
 			continue
@@ -210,20 +234,35 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 		tempName := fmt.Sprintf("__mv%d", tempIdx)
 		tempIdx++
 		rustType := o.goTypeToRust(basic.Name())
+		// Try string-based extraction first (for simple expressions like c.A)
 		exprStr := o.exprToRustCodeOpt(arg)
 		if exprStr != "" {
 			binding := fmt.Sprintf("let %s: %s = %s;\n", tempName, rustType, exprStr)
 			bindings = append(bindings, binding)
 			replacements[i] = tempName
 			SubtractIdentsInExpr(arg, o.pkg, modifiedCounts)
+			continue
+		}
+		// For function call expressions that can't be stringified, use deferred
+		// code capture. The arg will be emitted normally, then its code is
+		// captured in PostVisitCallExprArg and relocated before the assignment.
+		if _, isCall := arg.(*ast.CallExpr); isCall {
+			callExts = append(callExts, rpMoveOptCallExt{
+				argIdx:   i,
+				tempName: tempName,
+				rustType: rustType,
+			})
+			SubtractIdentsInExpr(arg, o.pkg, modifiedCounts)
+			continue
 		}
 	}
 
-	if len(replacements) > 0 {
+	if len(replacements) > 0 || len(callExts) > 0 {
 		o.moveOptTempBindings = bindings
 		o.moveOptArgReplacements = replacements
 		o.moveOptModifiedCounts = modifiedCounts
 		o.moveOptActive = true
+		o.moveOptCallExts = callExts
 	}
 }
 

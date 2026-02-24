@@ -106,6 +106,9 @@ func (e *RustPrimEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent in
 }
 
 func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Save call extractions before cleanup resets them
+	callExts := e.Opt.moveOptCallExts
+
 	// Clean up move optimization tracking
 	defer func() {
 		e.Opt.currentAssignLhsNames = nil
@@ -116,6 +119,7 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 		e.Opt.moveOptTempBindings = nil
 		e.Opt.moveOptArgReplacements = nil
 		e.Opt.moveOptModifiedCounts = nil
+		e.Opt.moveOptCallExts = nil
 		e.Opt.memTakeActive = false
 		e.Opt.memTakeLhsExpr = ""
 		e.Opt.memTakeArgIdx = -1
@@ -266,6 +270,14 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 				e.fs.PushCode(ind + binding)
 			}
 		}
+		// Emit call extraction bindings before the assignment
+		if len(callExts) > 0 {
+			for _, ext := range callExts {
+				if ext.code != "" {
+					e.fs.PushCode(fmt.Sprintf("%slet %s: %s = %s;\n", ind, ext.tempName, ext.rustType, ext.code))
+				}
+			}
+		}
 		if tokStr == ":=" {
 			lhsParts := make([]string, len(node.Lhs))
 			for i, lhs := range node.Lhs {
@@ -365,6 +377,14 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 			if e.Opt.moveOptActive && len(e.Opt.moveOptTempBindings) > 0 {
 				for _, binding := range e.Opt.moveOptTempBindings {
 					e.fs.PushCode(ind + binding)
+				}
+			}
+			// Emit call extraction bindings before the assignment
+			if len(callExts) > 0 {
+				for _, ext := range callExts {
+					if ext.code != "" {
+						e.fs.PushCode(fmt.Sprintf("%slet %s: %s = %s;\n", ind, ext.tempName, ext.rustType, ext.code))
+					}
 				}
 			}
 			e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, lhsStr, rhsStr))
@@ -475,6 +495,44 @@ func (e *RustPrimEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 
 func (e *RustPrimEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	e.indent = indent
+	e.Opt.returnTempReplacements = nil
+
+	// Return temp extraction: when the first return result is an identifier and
+	// later results reference it, extract those later results into temp variables
+	// so the first result can be moved instead of cloned.
+	if e.Opt.OptimizeMoves && len(node.Results) > 1 {
+		if ident, ok := node.Results[0].(*ast.Ident); ok {
+			ind := rustpIndent(indent / 2)
+			replacements := make(map[int]string)
+			tempIdx := 0
+			for i := 1; i < len(node.Results); i++ {
+				if !ExprContainsIdent(node.Results[i], ident.Name) {
+					continue
+				}
+				// Check if the result type is Copy
+				tv := e.pkg.TypesInfo.Types[node.Results[i]]
+				if tv.Type == nil || !isCopyType(tv.Type) {
+					continue
+				}
+				basic, isBasic := tv.Type.Underlying().(*types.Basic)
+				if !isBasic {
+					continue
+				}
+				exprStr := e.Opt.exprToRustCodeOpt(node.Results[i])
+				if exprStr == "" {
+					continue
+				}
+				tempName := fmt.Sprintf("__mv%d", tempIdx)
+				tempIdx++
+				rustType := e.Opt.goTypeToRust(basic.Name())
+				e.fs.PushCode(fmt.Sprintf("%slet %s: %s = %s;\n", ind, tempName, rustType, exprStr))
+				replacements[i] = tempName
+			}
+			if len(replacements) > 0 {
+				e.Opt.returnTempReplacements = replacements
+			}
+		}
+	}
 }
 
 func (e *RustPrimEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
@@ -509,8 +567,22 @@ func (e *RustPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) 
 		// For multi-value returns, clone non-Copy values that might be referenced
 		// by other return values (avoids borrow-after-move)
 		var vals []string
+
+		// Return temp extraction: try to extract later results that reference the first
+		// into temp variables so the first result can be moved instead of cloned.
+		returnTempReplacements := e.Opt.returnTempReplacements
+		e.Opt.returnTempReplacements = nil
+
 		for i, t := range tokens {
 			val := t.Content
+			// If this result was extracted to a temp, use the temp name
+			if returnTempReplacements != nil {
+				if tempName, ok := returnTempReplacements[i]; ok {
+					val = tempName
+					vals = append(vals, val)
+					continue
+				}
+			}
 			if i == 0 && len(node.Results) > 1 {
 				// Clone the first return value if it's a non-Copy type
 				// to avoid move-before-borrow issues
@@ -538,7 +610,28 @@ func (e *RustPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) 
 								}
 							}
 							if needsClone {
-								val = val + ".clone()"
+								// Check if all conflicting results have been extracted to temps
+								if returnTempReplacements != nil {
+									allExtracted := true
+									if firstName != "" {
+										for j := 1; j < len(node.Results); j++ {
+											if ExprContainsIdent(node.Results[j], firstName) {
+												if _, replaced := returnTempReplacements[j]; !replaced {
+													allExtracted = false
+													break
+												}
+											}
+										}
+									}
+									if allExtracted {
+										// All conflicting results extracted - no clone needed
+										needsClone = false
+										e.Opt.MoveOptCount++
+									}
+								}
+								if needsClone {
+									val = val + ".clone()"
+								}
 							}
 						} else {
 							val = val + ".clone()"

@@ -259,18 +259,33 @@ func (e *RustPrimEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 
 func (e *RustPrimEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth++
+	e.Opt.argAlreadyCloned = false
 }
 
 func (e *RustPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth--
 
-	// Move extraction: replace arg with temp variable name
+	// Move extraction: replace arg with temp variable name (simple expression case)
 	if e.Opt.moveOptActive && e.Opt.moveOptArgReplacements != nil {
 		if replacement, ok := e.Opt.moveOptArgReplacements[index]; ok {
 			e.fs.Reduce(string(PreVisitCallExprArg))
 			e.fs.PushCode(replacement)
 			e.Opt.MoveOptCount++
 			return
+		}
+	}
+
+	// Call expression extraction: capture emitted code and replace with temp name
+	// Only at the outermost call arg level (callExprArgDepth == 0 means just decremented from 1)
+	if e.Opt.moveOptActive && len(e.Opt.moveOptCallExts) > 0 && e.callExprArgDepth == 0 {
+		for i := range e.Opt.moveOptCallExts {
+			if e.Opt.moveOptCallExts[i].argIdx == index {
+				argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
+				e.Opt.moveOptCallExts[i].code = argCode
+				e.fs.PushCode(e.Opt.moveOptCallExts[i].tempName)
+				e.Opt.MoveOptCount++
+				return
+			}
 		}
 	}
 
@@ -300,6 +315,14 @@ func (e *RustPrimEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent 
 
 	// len() is read-only — skip all cloning for its arguments
 	if e.Opt.currentCallIsLen && e.Opt.OptimizeMoves {
+		e.fs.PushCode(argCode)
+		return
+	}
+
+	// Skip redundant .clone() when vec element access already produced an owned value
+	if e.Opt.argAlreadyCloned && e.Opt.OptimizeMoves {
+		e.Opt.argAlreadyCloned = false
+		e.Opt.MoveOptCount++
 		e.fs.PushCode(argCode)
 		return
 	}
@@ -685,6 +708,9 @@ func (e *RustPrimEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		elemType := e.getExprGoType(node)
 		if elemType != nil && !isCopyType(elemType) && !e.inAssignLhs {
 			e.fs.PushCode(fmt.Sprintf("%s[(%s) as usize].clone()", xCode, idxCode))
+			if e.callExprArgDepth > 0 {
+				e.Opt.argAlreadyCloned = true
+			}
 		} else {
 			e.fs.PushCode(fmt.Sprintf("%s[(%s) as usize]", xCode, idxCode))
 		}
