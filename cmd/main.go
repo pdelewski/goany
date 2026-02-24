@@ -128,8 +128,8 @@ func main() {
 	useCpp := useAll || backendSet["cpp"]
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
-	useJs := backendSet["js"]         // JS is opt-in, not included in "all"
-	useJava := backendSet["java"]     // Java is opt-in, not included in "all"
+	useJs := backendSet["js"]             // JS is opt-in, not included in "all"
+	useJava := backendSet["java"]         // Java is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -191,14 +191,16 @@ func main() {
 	}
 	if useRust {
 		rustBackend := &compiler.BasePass{PassName: "RustGen", Emitter: &compiler.RustEmitter{
-			BaseEmitter:     compiler.BaseEmitter{},
+			Emitter:         &compiler.BaseEmitter{},
 			Output:          output + ".rs",
 			LinkRuntime:     linkRuntime,
 			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
-			OptimizeMoves:   optimizeMoves,
-			OptimizeRefs:    optimizeRefs,
+			Opt: compiler.RustOptState{
+				OptimizeMoves: optimizeMoves,
+				OptimizeRefs:  optimizeRefs,
+			},
 		}}
 		passes = append(passes, rustBackend)
 		programFiles = append(programFiles, "rs")
@@ -286,6 +288,7 @@ func main() {
 			compiler.DebugLogPrintf("Successfully formatted: %s", rustFile)
 		}
 	}
+
 
 	// Use prettier for JS files
 	if useJs {

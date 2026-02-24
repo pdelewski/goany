@@ -14,16 +14,16 @@ func joinStrings(strs []string, sep string) string {
 }
 
 type TestCase struct {
-	Name             string
-	SourceDir        string
-	CppEnabled       bool
-	DotnetEnabled    bool
-	DotnetRunnable   bool // Can run with dotnet run (false for graphics apps)
-	RustEnabled      bool
-	JsEnabled        bool
-	JsRunnable       bool // Can run with Node.js (false for graphics apps that need browser)
-	JavaEnabled      bool
-	JavaRunnable     bool // Can run standalone (false for apps that need special setup)
+	Name           string
+	SourceDir      string
+	CppEnabled     bool
+	DotnetEnabled  bool
+	DotnetRunnable bool // Can run with dotnet run (false for graphics apps)
+	RustEnabled    bool
+	JsEnabled      bool
+	JsRunnable     bool // Can run with Node.js (false for graphics apps that need browser)
+	JavaEnabled    bool
+	JavaRunnable   bool // Can run standalone (false for apps that need special setup)
 }
 
 const runtimePath = "../runtime"

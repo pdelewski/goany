@@ -84,7 +84,7 @@ func testLoopConstructs() {
 	var a []int
 
 	// C-style for loop
-	// @test cpp="for (auto x = 0; x < 10; x++)" cs="for (var x = 0; (x < 10 ); x++)" rust="for x in 0..10"
+	// @test cpp="for (auto x = 0; x < 10; x++)" cs="for (var x = 0; x < 10; x++)" rust="for x in 0..10"
 	for x := 0; x < 10; x++ {
 		if !(len(a) == 0) {
 		} else if len(a) == 0 {
@@ -98,7 +98,7 @@ func testLoopConstructs() {
 	}
 
 	// Range-based for loop with index and value
-	// @test cpp="for (size_t i = 0; i < nums2.size(); i++)" cs="for (int i = 0; i < nums2.Count; i++)" rust="for (i, v) in nums2.clone().iter().enumerate()"
+	// @test cpp="for (size_t i = 0; i < nums2.size(); i++)" cs="for (var i = 0; i < nums2.Count; i++)" rust="for i in 0..nums2.len() as i32"
 	nums2 := []int{10, 20, 30}
 	for i, v := range nums2 {
 		fmt.Println(i)
@@ -106,7 +106,7 @@ func testLoopConstructs() {
 	}
 
 	// While-style loop
-	// @test cpp="for (; counter < 5;)" cs="for (; (counter < 5 );)" rust="while (counter < 5)"
+	// @test cpp="for (; counter < 5;)" cs="while (counter < 5)" rust="while counter < 5"
 	counter := 0
 	for counter < 5 {
 		counter++
@@ -118,7 +118,7 @@ func testLoopConstructs() {
 	}
 
 	// Infinite loop with break
-	// @test cpp="for (;;)" cs="for (;;)" rust="loop"
+	// @test cpp="for (;;)" cs="while (true)" rust="loop"
 	counter2 := 0
 	for {
 		counter2++
@@ -153,7 +153,7 @@ func testLoopConstructs() {
 	}
 
 	// Step by 2: i += 2
-	// @test cpp="for (auto i = 0; i < 10; i += 2)" cs="for (var i = 0; (i < 10 ); i += 2)" rust="for i in (0..10).step_by(2)"
+	// @test cpp="for (auto i = 0; i < 10; i += 2)" cs="for (var i = 0; i < 10; i += 2)" rust="for i in (0..10).step_by(2)"
 	sumStep := 0
 	for i := 0; i < 10; i += 2 {
 		sumStep += i // 0 + 2 + 4 + 6 + 8 = 20
@@ -165,7 +165,7 @@ func testLoopConstructs() {
 	}
 
 	// Decrement loop: i--
-	// @test cpp="for (auto i = 5; i > 0; i--)" cs="for (var i = 5; (i > 0 ); i--)" rust="for i in ((0 + 1)..=5).rev()"
+	// @test cpp="for (auto i = 5; i > 0; i--)" cs="for (var i = 5; i > 0; i--)" rust="for i in (0 + 1..=5).rev()"
 	sumDecr := 0
 	for i := 5; i > 0; i-- {
 		sumDecr += i // 5 + 4 + 3 + 2 + 1 = 15
@@ -177,7 +177,7 @@ func testLoopConstructs() {
 	}
 
 	// Inclusive range: i <= n
-	// @test cpp="for (auto i = 1; i <= 5; i++)" cs="for (var i = 1; (i <= 5 ); i++)" rust="for i in 1..=5"
+	// @test cpp="for (auto i = 1; i <= 5; i++)" cs="for (var i = 1; i <= 5; i++)" rust="for i in 1..=5"
 	sumIncl := 0
 	for i := 1; i <= 5; i++ {
 		sumIncl += i // 1 + 2 + 3 + 4 + 5 = 15
@@ -189,7 +189,7 @@ func testLoopConstructs() {
 	}
 
 	// Decrement with inclusive: i >= 0
-	// @test cpp="for (auto i = 3; i >= 0; i--)" cs="for (var i = 3; (i >= 0 ); i--)" rust="for i in (0..=3).rev()"
+	// @test cpp="for (auto i = 3; i >= 0; i--)" cs="for (var i = 3; i >= 0; i--)" rust="for i in (0..=3).rev()"
 	sumDecrIncl := 0
 	for i := 3; i >= 0; i-- {
 		sumDecrIncl += i // 3 + 2 + 1 + 0 = 6
@@ -201,7 +201,7 @@ func testLoopConstructs() {
 	}
 
 	// Step by 3 decrement: i -= 3
-	// @test cpp="for (auto i = 9; i > 0; i -= 3)" cs="for (var i = 9; (i > 0 ); i -= 3)" rust="for i in ((0 + 1)..=9).rev().step_by(3)"
+	// @test cpp="for (auto i = 9; i > 0; i -= 3)" cs="for (var i = 9; i > 0; i -= 3)" rust="for i in (0 + 1..=9).rev().step_by(3)"
 	sumDecrStep := 0
 	for i := 9; i > 0; i -= 3 {
 		sumDecrStep += i // 9 + 6 + 3 = 18
@@ -213,7 +213,7 @@ func testLoopConstructs() {
 	}
 
 	// Compound condition with && (cannot be converted to simple range)
-	// @test rust="while ((i < 10) && (i < limit))"
+	// @test rust="if !(i < 10 && i < limit)"
 	limit := 5
 	sumCompound := 0
 	for i := 0; i < 10 && i < limit; i++ {
@@ -226,7 +226,7 @@ func testLoopConstructs() {
 	}
 
 	// Compound condition with || (cannot be converted to simple range)
-	// @test rust="while ((i < 3) || flag)"
+	// @test rust="if !(i < 3 || flag)"
 	sumOr := 0
 	flag := false
 	for i := 0; i < 3 || flag; i++ {
@@ -242,7 +242,7 @@ func testLoopConstructs() {
 	}
 
 	// Compound condition with slice length check (common pattern)
-	// @test rust="while ((i < maxItems) && (i < len(&items.clone())))"
+	// @test rust="if !(i < maxItems && i < len(&items.clone()))"
 	items := []int{10, 20, 30}
 	maxItems := 5
 	sumItems := 0
@@ -256,7 +256,7 @@ func testLoopConstructs() {
 	}
 
 	// Multiple compound conditions
-	// @test rust="while (((i < 10) && (i < limit2)) && (sumMulti < 20))"
+	// @test rust="if !(i < 10 && i < limit2 && sumMulti < 20)"
 	limit2 := 8
 	sumMulti := 0
 	for i := 0; i < 10 && i < limit2 && sumMulti < 20; i++ {

@@ -1,6 +1,9 @@
 package compiler
 
-import "go/types"
+import (
+	"go/ast"
+	"go/types"
+)
 
 // TokenType represents different types of tokens in the code generation
 type TokenType int
@@ -98,12 +101,46 @@ const (
 	ReturnType
 )
 
+// OptKind identifies what kind of optimizable construct a token represents.
+type OptKind int
+
+const (
+	OptNone        OptKind = iota
+	OptClone                 // .clone() on a call arg or return value
+	OptFuncParam             // function parameter declaration
+	OptCallArg               // function call argument (for ref-opt callee lookup)
+	OptMapOp                 // map operation (hashMapGet, hashMapLen, etc.)
+	OptReturnValue           // return value expression
+	OptAssignment            // full assignment statement
+)
+
+// OptMeta carries optimization-relevant context from emitter to optimizer.
+// Attached as a pointer on Token so non-annotated tokens have zero overhead.
+type OptMeta struct {
+	Kind            OptKind
+	VarName         string        // variable name for clone/move decisions
+	ParamIndex      int           // parameter index in function signature or call
+	FuncKey         string        // qualified function key ("pkg.FuncName")
+	CalleeName      string        // name of function being called
+	ParamName       string        // parameter name (for signature changes)
+	TypeStr         string        // type string (for signature changes)
+	IsInsideClosure bool          // whether this is inside a FuncLit
+	NodeExpr        ast.Expr      // original Go AST expression
+	NodeStmt        ast.Stmt      // original Go AST statement
+	ReturnNode      *ast.ReturnStmt // for multi-return analysis
+	AssignNode      *ast.AssignStmt // for move extraction analysis
+	ResultIndex     int           // index in multi-return
+	NumResults      int           // total number of return results
+	MapContent      string        // map variable code (for &map vs map.clone())
+}
+
 // Token represents a single token with its type and content
 type Token struct {
 	Type    TokenType
 	Content string
 	GoType  types.Type // Go type info for shift/reduce backends, nil if N/A
 	Tag     int        // Fragment tag (TagExpr, TagStmt, etc.), 0 if unset
+	OptMeta *OptMeta   // nil when no optimization metadata
 }
 
 // TokenTypeNames provides string representations for token types

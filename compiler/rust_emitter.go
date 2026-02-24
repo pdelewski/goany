@@ -3,7 +3,6 @@ package compiler
 import (
 	"fmt"
 	"go/ast"
-	"go/token"
 	"go/types"
 	"log"
 	"os"
@@ -16,270 +15,633 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-var rustDestTypes = []string{"i8", "i16", "i32", "i64", "u8", "u16", "Rc<dyn Any>", "String", "i32"}
-
-var rustTypesMap = map[string]string{
-	"int8":    rustDestTypes[0],
-	"int16":   rustDestTypes[1],
-	"int32":   rustDestTypes[2],
-	"int64":   rustDestTypes[3],
-	"uint8":   rustDestTypes[4],
-	"uint16":  rustDestTypes[5],
-	"uint32":  "u32",
-	"uint64":  "u64",
-	"byte":    "u8", // Go byte is alias for uint8
-	"any":     rustDestTypes[6],
-	"string":  rustDestTypes[7],
-	"int":     rustDestTypes[8],
-	"bool":    "bool",
-	"float32": "f32",
-	"float64": "f64",
-}
-
-// mapGoTypeToRust converts a Go type string to its Rust equivalent
-func (re *RustEmitter) mapGoTypeToRust(goType string) string {
-	if rustType, ok := rustTypesMap[goType]; ok {
-		return rustType
-	}
-	// Return the original if not found in map
-	return goType
-}
-
-// moveOptCallExt tracks a function call arg that needs to be extracted
-// into a temp variable before the assignment to avoid borrow conflicts.
-// Pattern: c = doADC(c, ReadIndirectX(c, zp))
-// Becomes: let __mv0: u8 = ReadIndirectX(&c, zp); c = doADC(c, __mv0);
-type moveOptCallExt struct {
-	argIdx   int    // which argument index in the outer call
-	tempName string // temp variable name (e.g., "__mv0")
-	rustType string // Rust type of the result (e.g., "u8")
-	// Token capture (filled during emission)
-	argMarker int     // token buffer position at start of arg emission
-	tokens    []Token // captured tokens for the function call
-}
-
-// forLoopState saves for-loop tracking flags across nested loops
-type forLoopState struct {
-	sawIncrement         bool
-	sawDecrement         bool
-	forLoopStep          int
-	forLoopInclusive     bool
-	forLoopReverse       bool
-	isInfiniteLoop       bool
-	pendingLoopIncrement bool
-	inForLoopBody        bool
-	loopIncrementVar     string
-	loopIncrementOp      string
-	loopIncrementVal     string
-}
-
-// rustKeyCastState holds key cast values for nested map reads
-type rustKeyCastState struct {
-	keyCastSuffix string
-	valueType     string
-}
-
-// rustMixedIndexOp represents a single index operation in a chain
-type rustMixedIndexOp struct {
-	accessType     string // "map" or "slice"
-	keyExpr        string // Key/index expression
-	keyCastSuffix  string // Cast suffix for map key (e.g. " as i64")
-	isStringKey    bool   // True if the map key type is string
-	valueRustType  string // Rust type of the value at this level
-	tempVarName    string // Temp variable name (only for map access)
-	mapVarExpr     string // The expression to call hashMapGet on
-}
-
+// RustEmitter implements the Emitter interface using a shift/reduce FragmentStack
+// architecture for Rust code generation.
 type RustEmitter struct {
+	fs              *FragmentStack
 	Output          string
 	OutputDir       string
 	OutputName      string
-	LinkRuntime     string            // Path to runtime directory (empty = disabled)
-	RuntimePackages map[string]string // Detected runtime packages with variant (e.g. "graphics":"tigr", "http":"")
-	OptimizeMoves   bool            // Enable move optimizations to reduce struct cloning
-	MoveOptCount    int    // Count of clones removed by move optimizations
-	OptimizeRefs    bool   // Enable reference optimization for read-only parameters
-	RefOptCount     int    // Count of clones removed by reference optimization
+	LinkRuntime     string
+	RuntimePackages map[string]string
+	Opt             RustOptState
 	file            *os.File
-	BaseEmitter
-	pkg                          *packages.Package
-	insideForPostCond            bool
-	assignmentToken              string
-	forwardDecls                 bool
-	shouldGenerate               bool
-	numFuncResults               int
-	aliases                      map[string]Alias
-	currentPackage               string
-	isArray                      bool
-	arrayType                    string
-	isTuple                      bool
-	sawIncrement                 bool                    // Track if we saw ++ in for loop post statement
-	sawDecrement                 bool                    // Track if we saw -- in for loop post statement
-	forLoopStep                  int                     // Step value for += n or -= n (0 means not set)
-	forLoopInclusive             bool                    // Track if condition uses <= or >= (inclusive range)
-	forLoopReverse               bool                    // Track if loop should be reversed (decrement or >)
-	isInfiniteLoop               bool                    // Track if current for loop is infinite (no init, cond, post)
-	forLoopStateStack            []forLoopState          // Stack to save/restore for-loop state across nested loops
-	declType                     string                  // Store the type for multi-name declarations
-	declNameCount                int                     // Count of names in current declaration
-	declNameIndex                int                     // Current name index
-	inAssignRhs                  bool                    // Track if we're in assignment RHS
-	inAssignLhs                  bool                    // Track if we're in assignment LHS
-	inFieldAssign                bool                    // Track if we're assigning to a struct field
-	isArrayStack                 []bool                  // Stack to save/restore isArray for nested composite literals
-	pkgHasInterfaceTypes         bool                    // Track if current package has any interface{} types
-	currentCompLitTypeNoDefault  bool                    // Track if current composite literal's type doesn't derive Default
-	compLitTypeNoDefaultStack    []bool                  // Stack to save/restore currentCompLitTypeNoDefault for nested composite literals
-	inFuncParam                  bool                    // Track if we're in function parameter type (for slice -> &[T])
-	currentCallIsAppend          bool                    // Track if current function call is to append (takes ownership)
-	currentCallIsLen             bool                    // Track if current function call is to len (read-only, no clone needed)
-	argAlreadyCloned             bool                    // Track if current call arg already got .clone() from vec element access
-	inCallExprArg                bool                    // Track if we're inside a call expression argument (for closure wrapping)
-	closureWrappedInRc           bool                    // Track if current closure was wrapped in Rc::new()
-	currentCompLitType           types.Type              // Track the current composite literal's type for checking at post-visit
-	compLitTypeStack             []types.Type            // Stack of composite literal types
-	processedPkgsInterfaceTypes  map[string]bool         // Cache for package interface{} type checks
-	inKeyValueExpr               bool                    // Track if we're inside a KeyValueExpr (struct field init)
-	inMultiValueReturn           bool                    // Track if we're in a multi-value return statement
-	multiValueReturnResultIndex  int                     // Current result index in multi-value return
-	inReturnStmt                 bool                    // Track if we're inside a return statement
-	inMultiValueDecl             bool                    // Track if we're in a multi-value := declaration
-	currentFuncReturnsAny        bool                    // Track if current function returns any/interface{}
-	callExprFunMarkerStack       []int                   // Stack of indices for nested call markers
-	callExprFunEndMarkerStack    []int                   // Stack of end indices for nested call markers
-	callExprArgsMarkerStack      []int                   // Stack of indices for nested call arg markers
-	localClosureAssign           bool                    // Track if current assignment has a function literal RHS
-	localClosures                map[string]*ast.FuncLit // Map of local closure names to their AST
-	localClosureBodyTokens       map[string][]Token      // Map of local closure names to their body tokens
-	currentClosureName           string                  // Name of the variable being assigned a closure
-	inLocalClosureInline         bool                    // Track if we're inlining a local closure
-	inLocalClosureBody           bool                    // Track if we're inside a local closure body being processed
-	localClosureBodyStartIndex   int                     // Token index where closure body starts (after opening brace)
-	localClosureAssignStartIndex int                     // Token index where the assignment statement starts
-	currentCompLitIsSlice        bool                    // Track if current composite literal is a slice type alias
-	binaryNeedsLeftCast          bool                    // Track if left operand of binary expr needs cast to i32
-	binaryNeedsLeftCastStack     []bool                  // Stack for nested binary expressions
-	binaryNeedsRightCast         string                  // Type to cast right operand of binary expr (e.g., "u8")
-	binaryNeedsRightCastStack    []string                // Stack for nested binary expressions
-	inFloatBinaryExpr            bool                    // Track if we're in a binary expr where operands should be float
-	inFloatBinaryExprStack       []bool                  // Stack for nested binary expressions
-	// Key-value range loop support
-	isKeyValueRange              bool
-	rangeKeyName                 string
-	rangeValueName               string
-	rangeCollectionExpr          string
-	captureRangeExpr             bool
-	suppressRangeEmit            bool
-	rangeStmtIndent              int
-	// Liveness analysis for cross-statement clone detection
-	varFutureUses                map[string]bool   // Variables that will be used in later statements from current position
-	currentFuncBody              *ast.BlockStmt    // Current function body being processed
-	currentStmtIndex             int               // Index of current statement in function body
-	stmtVarUsages                []map[string]bool // Variable usages per statement
-	// Parameter mutation tracking
-	mutatedParams                map[string]bool   // Parameters that are assigned to in the function body
-	// Compound condition for loop support (generates while loop with manual increment)
-	pendingLoopIncrement         bool              // Track if we need to add increment at end of next block
-	loopIncrementVar             string            // Variable to increment
-	loopIncrementOp              string            // Operator: += or -=
-	loopIncrementVal             string            // Value to increment by
-	inForLoopBody                bool              // Track if current block is the for loop body
-	forLoopBodyDepth             int               // Depth counter to track nested blocks within loop body
-	// Move optimization: avoid unnecessary .clone() for structs
-	currentAssignLhsNames        map[string]bool   // LHS variable names of current assignment
-	currentCallArgIdentsStack    []map[string]int  // Stack of identifier counts per nested call
-	currentReturnNode            *ast.ReturnStmt   // Current return statement being processed
-	funcLitDepth                 int               // Nesting depth of function literals (closures)
-	// Condition-only for loop support (emit while directly, no token rewriting needed)
-	isCondOnlyLoopStack          []bool            // Stack to track condition-only for loops for nested support
-	// Temp extraction: pre-extract field accesses so struct can be moved
-	moveOptTempBindings          []string          // temp var declarations to emit before assignment
-	moveOptArgReplacements       map[int]string    // arg index → replacement variable name
-	moveOptModifiedCounts        map[string]int    // modified ident counts excluding extracted fields
-	moveOptActive                bool              // whether extraction is active for current assignment
-	moveOptReplacingArg          bool              // whether current arg is being replaced
-	moveOptArgStartMarker        int               // token buffer position at start of replaced arg
-	// Reference optimization: pass read-only params by &T
-	refOptReadOnly               map[string][]bool // funcKey → per-param read-only flags
-	refOptCurrentFunc            string            // qualified name of current function being emitted
-	refOptCurrentRefParams       map[string]bool   // params that are &T in current function
-	refOptCalleeReadOnly         [][]bool          // stack of callee read-only flags for nested calls
-	// std::mem::take optimization for struct field reassignment
-	// Pattern: state.C = func(state.C.clone()) → state.C = func(std::mem::take(&mut state.C))
-	memTakeActive                bool              // whether take optimization is active for current assignment
-	memTakeLhsExpr               string            // the LHS selector expression string (e.g., "state.C")
-	memTakeArgIdx                int               // which argument index to replace with std::mem::take
-	memTakeArgMarker             int               // token buffer position at start of the arg being replaced
-	// Call expression extraction: extract function call args that borrow a moved struct
-	// Pattern: c = func(c, ReadIndirectX(c, zp)) → let __mv0 = ReadIndirectX(&c, zp); c = func(c, __mv0);
-	moveOptCallExts              []moveOptCallExt  // function call args to extract
-	moveOptAssignStartMarker     int               // token buffer position at start of assignment
-	// Return temp extraction: extract later return results into temps so first result can be moved
-	// Pattern: return c, c.Memory[addr] → let __mv0: u8 = c.Memory[addr]; return (c, __mv0);
-	returnTempReplacements       map[int]string    // return result index → replacement temp variable name
-	returnTempResultMarker       int               // token buffer position at start of a return result being replaced
-	returnTempReplacing          bool              // whether current return result is being replaced
-	// Map support
-	isMapMakeCall                bool              // Inside make(map[K]V) call
-	mapMakeKeyType               int               // Key type constant for make(map[K]V)
-	isMapIndex                   bool              // Inside m[k] read on a map
-	mapIndexValueType            string            // Value type for map index (for type assertion)
-	isMapAssign                  bool              // Inside m[k]=v assignment
-	mapAssignVarName             string            // Variable name for map assignment
-	mapAssignIndent              int               // Indent level for map assignment
-	// Nested map assignment: m["outer"]["inner"] = v
-	isNestedMapAssign     bool
-	nestedMapOuterVarName string
-	nestedMapOuterKey     string
-	nestedMapCounter      int
-	nestedMapVarName      string
-	captureMapKey         bool // Redirect emit to capturedMapKey
-	capturedMapKey               string            // Captured key expression
-	suppressMapEmit              bool              // Suppress all token emission
-	// Mixed nested composites: []map[string]int, map[string][]int, etc.
-	indexAccessTypeStack         []string          // Stack of access types: "map" or "slice" for each IndexExpr level
-	suppressMapEmitStack         []bool            // Save/restore stack for suppressMapEmit
-	// General mixed index assignment: any combination of map[k] and slice[i] on LHS
-	isMixedIndexAssign           bool              // Assignment involves map access below outermost level
-	mixedIndexAssignOps          []rustMixedIndexOp // Chain of operations from root to outermost
-	mixedAssignIndent            int               // Indent level
-	mixedAssignFinalTarget       string            // Final assignment target expression
-	// Nested map assign dynamic cast type and outer key cast
-	nestedMapValueRustType       string            // Rust type for nested map value extraction
-	nestedMapOuterKeyCastSuffix  string            // Cast suffix for outer key in nested map assign
-	nestedMapOuterKeyIsString    bool              // True if outer key type is string in nested map assign
-	isDeleteCall                 bool              // Inside delete(m, k) call
-	deleteMapVarName             string            // Variable name for delete
-	mapKeyCastSuffix             string            // Rust cast suffix for map keys (e.g. " as i64")
-	mapKeyIsString               bool              // True if the map key type is string
-	mapKeyCastStack              []rustKeyCastState // Stack to save/restore key cast values for nested reads
-	isMapLenCall                 bool              // Inside len(m) on map
-	isSliceMakeCall              bool              // Inside make([]T, n) for runtime
-	sliceMakeElemType            string            // Element type for make([]T, n)
-	pendingMapInit               bool              // var m map[K]V needs default init
-	pendingMapKeyType            int               // Key type for pending map init
-	// Comma-ok idiom: val, ok := m[key]
-	isMapCommaOk      bool
-	mapCommaOkValName string
-	mapCommaOkOkName  string
-	mapCommaOkMapName string
-	mapCommaOkValType string
-	mapCommaOkIsDecl  bool
-	mapCommaOkIndent  int
-	// Type assertion comma-ok: val, ok := x.(Type)
-	isTypeAssertCommaOk      bool
-	typeAssertCommaOkValName string
-	typeAssertCommaOkOkName  string
-	typeAssertCommaOkType    string
-	typeAssertCommaOkIsDecl  bool
-	typeAssertCommaOkIndent  int
-	// Variable declaration value tracking
-	hasDeclValue bool // True if current declaration has an explicit initialization value
-	// Struct map key support
-	structKeyTypes map[string]string // Track struct types used as map keys: name -> Rust path (e.g., "super::Point" or "super::types::MyStruct")
+	Emitter
+	pkg            *packages.Package
+	currentPackage string
+	indent         int
+	numFuncResults int
+	// Map assignment detection
+	lastIndexXCode   string
+	lastIndexKeyCode string
+	mapAssignVar     string
+	mapAssignKey     string
+	structKeyTypes   map[string]string
+	// For loop components (stacks for nesting)
+	forInitStack []string
+	forCondStack []string
+	forPostStack []string
+	// If statement components (stacks for nesting)
+	ifInitStack []string
+	ifCondStack []string
+	ifBodyStack []string
+	ifElseStack []string
+	// Rust-specific
+	forwardDecl      bool
+	nestedMapCounter int
+	typeAliasMap     map[string]string
+	aliases          map[string]Alias
+	currentAliasName string
+	funcReturnType      types.Type
+	savedFuncRetTypes   []types.Type // stack for nested closures
+	rangeVarCounter     int
+	inAssignLhs         bool // true when visiting LHS of assignment
+	callExprArgDepth    int  // >0 when inside a call expression argument
+	compositeLitDepth   int  // >0 when inside a composite literal (struct/slice init)
+	localClosureBodies  map[string]string // maps local closure variable names to their body code
 }
 
-func (*RustEmitter) lowerToBuiltins(selector string) string {
+func (e *RustEmitter) SetFile(file *os.File) { e.file = file }
+func (e *RustEmitter) GetFile() *os.File     { return e.file }
+
+// rustIndent returns indentation string for the given level.
+func rustIndent(indent int) string {
+	return strings.Repeat("    ", indent/2)
+}
+
+// injectBeforeLastBrace inserts text before the last closing brace in a block string.
+func injectBeforeLastBrace(body string, text string) string {
+	lastBrace := strings.LastIndex(body, "}")
+	if lastBrace < 0 {
+		return body + text
+	}
+	return body[:lastBrace] + text + body[lastBrace:]
+}
+
+// ============================================================
+// Helper methods
+// ============================================================
+
+func (e *RustEmitter) getExprGoType(expr ast.Expr) types.Type {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return nil
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	return tv.Type
+}
+
+func (e *RustEmitter) isMapTypeExpr(expr ast.Expr) bool {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return false
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	if tv.Type != nil {
+		_, ok := tv.Type.Underlying().(*types.Map)
+		if ok {
+			return true
+		}
+	}
+	if ident, ok := expr.(*ast.Ident); ok {
+		if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+			_, isMap := obj.Type().Underlying().(*types.Map)
+			return isMap
+		}
+	}
+	return false
+}
+
+// collectMapIndexChain walks an IndexExpr chain from outermost to innermost,
+// collecting all IndexExpr levels. Returns the chain from innermost to outermost.
+// For `a[x][y][z]`, returns [{X:a, Index:x}, {X:a[x], Index:y}, {X:a[x][y], Index:z}]
+func collectMapIndexChain(expr ast.Expr) []*ast.IndexExpr {
+	var chain []*ast.IndexExpr
+	for {
+		idx, ok := expr.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append([]*ast.IndexExpr{idx}, chain...)
+		expr = idx.X
+	}
+	return chain
+}
+
+// emitMapSliceAssign handles map-chain-then-slice assignments like:
+//   map[key][sliceIdx] = value
+//   map[k1][k2][sliceIdx] = value
+// It generates extract-modify-put-back code.
+// Returns the generated code or "" if the pattern doesn't match.
+func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string, ind string) string {
+	// Collect the full index chain from LHS
+	chain := collectMapIndexChain(outerIdx)
+	if len(chain) < 2 {
+		return ""
+	}
+
+	// The last index is the slice index (non-map)
+	// The chain before that should all be map accesses
+	// Find how many leading indices are map accesses
+	mapCount := 0
+	for i, idx := range chain {
+		if i == len(chain)-1 {
+			break // last one is the slice index
+		}
+		if e.isMapTypeExpr(idx.X) {
+			mapCount++
+		} else {
+			break
+		}
+	}
+
+	if mapCount == 0 {
+		return ""
+	}
+
+	// Verify the last chain element is a non-map access (slice index)
+	lastChainX := chain[len(chain)-1].X
+	if e.isMapTypeExpr(lastChainX) {
+		return "" // all indices are map accesses, not a map-then-slice pattern
+	}
+
+	// Build hashMapGet chain for reading the slice
+	// Start from the root map variable
+	rootMapExpr := chain[0].X
+	rootMapName := exprToString(rootMapExpr)
+
+	type mapLevel struct {
+		mapExpr  ast.Expr // the map expression
+		keyStr   string   // the key as string
+		keyExpr  string   // Rc::new(...) key expression
+		valType  string   // Rust type of the value
+	}
+
+	var levels []mapLevel
+	currentExpr := rootMapExpr
+	for i := 0; i < mapCount; i++ {
+		idx := chain[i]
+		mapGoType := e.getExprGoType(currentExpr)
+		if mapGoType == nil {
+			return ""
+		}
+		mapUnderlying, ok := mapGoType.Underlying().(*types.Map)
+		if !ok {
+			return ""
+		}
+		keyCast := getRustKeyCast(mapUnderlying.Key())
+		keyIsStr := isRustStringKey(mapUnderlying.Key())
+		keyStr := exprToString(idx.Index)
+		var keyExpr string
+		if keyIsStr {
+			keyExpr = fmt.Sprintf("Rc::new(%s.to_string())", keyStr)
+		} else {
+			keyExpr = fmt.Sprintf("Rc::new(%s%s)", keyStr, keyCast)
+		}
+		valType := e.qualifiedRustTypeName(mapUnderlying.Elem())
+		levels = append(levels, mapLevel{
+			mapExpr: currentExpr,
+			keyStr:  keyStr,
+			keyExpr: keyExpr,
+			valType: valType,
+		})
+		currentExpr = idx // advance to the result type
+	}
+
+	// Get the final slice type (the type of the innermost map's value)
+	sliceType := levels[len(levels)-1].valType
+
+	// Collect all trailing slice indices (there may be more than one, e.g. map[k][0][1])
+	var sliceIndices []string
+	for i := mapCount; i < len(chain); i++ {
+		sliceIndices = append(sliceIndices, exprToString(chain[i].Index))
+	}
+
+	e.nestedMapCounter++
+	sliceTempVar := fmt.Sprintf("__temp_%d", e.nestedMapCounter)
+
+	var sb strings.Builder
+
+	// Build the hashMapGet chain to read the slice
+	getExpr := fmt.Sprintf("%s.clone()", rootMapName)
+	if e.Opt.OptimizeRefs {
+		getExpr = "&" + rootMapName
+		e.Opt.RefOptCount++
+	}
+	for i, lvl := range levels {
+		castType := "hmap::HashMap"
+		if i == len(levels)-1 {
+			castType = sliceType
+		}
+		innerGetExpr := fmt.Sprintf("hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone()",
+			getExpr, lvl.keyExpr, castType)
+		if e.Opt.OptimizeRefs && i < len(levels)-1 {
+			getExpr = "&" + innerGetExpr
+			e.Opt.RefOptCount++
+		} else {
+			getExpr = innerGetExpr
+		}
+	}
+	sb.WriteString(fmt.Sprintf("%slet mut %s = %s;\n", ind, sliceTempVar, getExpr))
+
+	// Build the slice indexing chain (e.g. __temp[0 as usize][1 as usize] = value)
+	indexChain := sliceTempVar
+	for _, idx := range sliceIndices {
+		indexChain = fmt.Sprintf("%s[%s as usize]", indexChain, idx)
+	}
+	sb.WriteString(fmt.Sprintf("%s%s = %s;\n", ind, indexChain, rhsStr))
+
+	// Write back: propagate changes from innermost map to outermost
+	// For 1 map level: mapName = hashMapSet(mapName, key, Rc::new(sliceTemp))
+	// For 2 map levels: extract inner map, set slice, set inner back into outer
+	if len(levels) == 1 {
+		sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+			ind, rootMapName, rootMapName, levels[0].keyExpr, sliceTempVar))
+	} else {
+		// Multi-level: extract each intermediate map, modify, write back
+		tempVars := make([]string, len(levels))
+		// Extract maps from outermost to one-before-innermost
+		extractExpr := fmt.Sprintf("%s.clone()", rootMapName)
+		if e.Opt.OptimizeRefs {
+			extractExpr = "&" + rootMapName
+			e.Opt.RefOptCount++
+		}
+		for i := 0; i < len(levels)-1; i++ {
+			e.nestedMapCounter++
+			tempVars[i] = fmt.Sprintf("__temp_%d", e.nestedMapCounter)
+			sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<hmap::HashMap>().unwrap().clone();\n",
+				ind, tempVars[i], extractExpr, levels[i].keyExpr))
+			extractExpr = fmt.Sprintf("%s.clone()", tempVars[i])
+			if e.Opt.OptimizeRefs {
+				extractExpr = "&" + tempVars[i]
+				e.Opt.RefOptCount++
+			}
+		}
+		// Set slice into innermost map
+		innermostMap := tempVars[len(levels)-2]
+		sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+			ind, innermostMap, innermostMap, levels[len(levels)-1].keyExpr, sliceTempVar))
+		// Propagate back up
+		for i := len(levels) - 2; i > 0; i-- {
+			parentMap := tempVars[i-1]
+			sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+				ind, parentMap, parentMap, levels[i].keyExpr, tempVars[i]))
+		}
+		// Set outermost
+		sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+			ind, rootMapName, rootMapName, levels[0].keyExpr, tempVars[0]))
+	}
+
+	return sb.String()
+}
+
+// emitMapAssign generates code for all map assignment patterns.
+// Handles: simple m[k]=v, nested map-of-maps m[k1][k2]=v, and mixed chains like map[k][sliceIdx][k2]=v.
+func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind string) string {
+	outerIdxExpr := node.Lhs[0].(*ast.IndexExpr)
+
+	// Get the key info for the outermost (final) map access
+	mapGoType := e.getExprGoType(outerIdxExpr.X)
+	keyCast := ""
+	keyIsStr := false
+	if mapGoType != nil {
+		if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
+			keyCast = getRustKeyCast(mapUnderlying.Key())
+			keyIsStr = isRustStringKey(mapUnderlying.Key())
+		}
+	}
+	var keyExpr string
+	if keyIsStr {
+		keyExpr = fmt.Sprintf("Rc::new(%s)", e.mapAssignKey)
+	} else {
+		keyExpr = fmt.Sprintf("Rc::new(%s%s)", e.mapAssignKey, keyCast)
+	}
+
+	// Collect the full chain of IndexExprs from the LHS
+	chain := collectMapIndexChain(outerIdxExpr)
+	if len(chain) <= 1 {
+		// Simple case: m[k] = v
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
+	}
+
+	// Multi-level: find the root map (the first map in the chain)
+	// Walk from the beginning to find the first map access
+	rootMapIdx := -1
+	for i := 0; i < len(chain); i++ {
+		if e.isMapTypeExpr(chain[i].X) {
+			rootMapIdx = i
+			break
+		}
+	}
+	if rootMapIdx < 0 || rootMapIdx > 0 {
+		// No root map found, or root map is accessed through slice indices only.
+		// Simple case: the simple hashMapSet assignment works because Rust
+		// can assign to slice elements (vec[idx] = ...) directly.
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
+	}
+
+	rootMapExpr := chain[rootMapIdx].X
+	rootMapName := exprToString(rootMapExpr)
+	rootMapGoType := e.getExprGoType(rootMapExpr)
+	if rootMapGoType == nil {
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
+	}
+
+	rootMapUnderlying, ok := rootMapGoType.Underlying().(*types.Map)
+	if !ok {
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
+	}
+
+	// Get the root map's key info
+	rootKeyCast := getRustKeyCast(rootMapUnderlying.Key())
+	rootKeyIsStr := isRustStringKey(rootMapUnderlying.Key())
+	rootKey := exprToString(chain[rootMapIdx].Index)
+	var rootKeyExpr string
+	if rootKeyIsStr {
+		rootKeyExpr = fmt.Sprintf("Rc::new(%s.to_string())", rootKey)
+	} else {
+		rootKeyExpr = fmt.Sprintf("Rc::new(%s%s)", rootKey, rootKeyCast)
+	}
+
+	// Extract the value type from root map
+	rootValType := e.qualifiedRustTypeName(rootMapUnderlying.Elem())
+
+	e.nestedMapCounter++
+	tempVar := fmt.Sprintf("__temp_%d", e.nestedMapCounter)
+
+	var sb strings.Builder
+
+	// Extract from root map
+	rootMapRef := rootMapName + ".clone()"
+	if e.Opt.OptimizeRefs {
+		rootMapRef = "&" + rootMapName
+		e.Opt.RefOptCount++
+	}
+	sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
+		ind, tempVar, rootMapRef, rootKeyExpr, rootValType))
+
+	// Build the intermediate index chain between root and the final map assign
+	// For chain[rootMapIdx+1 .. len(chain)-1], apply indices to tempVar
+	indexPrefix := tempVar
+	for i := rootMapIdx + 1; i < len(chain)-1; i++ {
+		idx := chain[i]
+		if e.isMapTypeExpr(idx.X) {
+			// This intermediate level is a map access on the temp
+			intermMapGoType := e.getExprGoType(idx.X)
+			if intermMapGoType != nil {
+				if intermMapUnderlying, ok := intermMapGoType.Underlying().(*types.Map); ok {
+					intermKeyCast := getRustKeyCast(intermMapUnderlying.Key())
+					intermKeyIsStr := isRustStringKey(intermMapUnderlying.Key())
+					intermKey := exprToString(idx.Index)
+					var intermKeyExpr string
+					if intermKeyIsStr {
+						intermKeyExpr = fmt.Sprintf("Rc::new(%s.to_string())", intermKey)
+					} else {
+						intermKeyExpr = fmt.Sprintf("Rc::new(%s%s)", intermKey, intermKeyCast)
+					}
+					intermValType := e.qualifiedRustTypeName(intermMapUnderlying.Elem())
+					e.nestedMapCounter++
+					innerTemp := fmt.Sprintf("__temp_%d", e.nestedMapCounter)
+					intermMapRef := indexPrefix + ".clone()"
+					if e.Opt.OptimizeRefs {
+						intermMapRef = "&" + indexPrefix
+						e.Opt.RefOptCount++
+					}
+					sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
+						ind, innerTemp, intermMapRef, intermKeyExpr, intermValType))
+					indexPrefix = innerTemp
+				}
+			}
+		} else {
+			// Slice index on the temp
+			sliceIdx := exprToString(idx.Index)
+			indexPrefix = fmt.Sprintf("%s[%s as usize]", indexPrefix, sliceIdx)
+		}
+	}
+
+	// Apply the final map assign
+	sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		ind, indexPrefix, indexPrefix, keyExpr, rhsStr))
+
+	// Write back: propagate temp vars to root
+	// We need to write back all intermediate temps and finally the root
+	// For now, just write back the root
+	sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		ind, rootMapName, rootMapName, rootKeyExpr, tempVar))
+
+	return sb.String()
+}
+
+// mapGoTypeToRust converts a Go type string to its Rust equivalent.
+func (e *RustEmitter) mapGoTypeToRust(goType string) string {
+	if rustType, ok := rustTypesMap[goType]; ok {
+		return rustType
+	}
+	return goType
+}
+
+// qualifiedRustTypeName converts a Go type to its fully-qualified Rust type name.
+// For cross-package named types, it adds the Rust module prefix (e.g., ast::Statement).
+func (e *RustEmitter) qualifiedRustTypeName(t types.Type) string {
+	// Handle named types from other packages
+	if named, ok := t.(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			typeName := named.Obj().Name()
+			if named.Obj().Pkg() != nil && e.pkg != nil && named.Obj().Pkg() != e.pkg.Types {
+				return named.Obj().Pkg().Name() + "::" + typeName
+			}
+			return typeName
+		}
+	}
+	// Handle slice of cross-package types
+	if slice, ok := t.(*types.Slice); ok {
+		elemType := e.qualifiedRustTypeName(slice.Elem())
+		return "Vec<" + elemType + ">"
+	}
+	return getRustValueTypeCast(t)
+}
+
+// castSmallIntFieldValue wraps a value expression with an `as` cast when the
+// target field type is a small integer (i8, u8, i16, u16). This handles Go
+// untyped constants that are emitted as i32 but assigned to small-int fields.
+func (e *RustEmitter) castSmallIntFieldValue(fieldType types.Type, val string) string {
+	if basic, ok := fieldType.Underlying().(*types.Basic); ok {
+		switch basic.Kind() {
+		case types.Int8:
+			return fmt.Sprintf("(%s as i8)", val)
+		case types.Uint8:
+			return fmt.Sprintf("(%s as u8)", val)
+		case types.Int16:
+			return fmt.Sprintf("(%s as i16)", val)
+		case types.Uint16:
+			return fmt.Sprintf("(%s as u16)", val)
+		}
+	}
+	return val
+}
+
+// cloneStructFieldValue adds .clone() to non-Copy struct field values that are
+// simple identifiers (variables). This prevents move-in-loop errors in Rust.
+func (e *RustEmitter) cloneStructFieldValue(fieldType types.Type, val string) string {
+	if !isCopyType(fieldType) {
+		// Don't clone values that are already calls (end with ")"), literals, or already cloned
+		trimmed := strings.TrimSpace(val)
+		if !strings.HasSuffix(trimmed, ")") &&
+			!strings.HasSuffix(trimmed, ".clone()") &&
+			!strings.HasPrefix(trimmed, "\"") &&
+			!strings.HasPrefix(trimmed, "vec![") &&
+			!strings.HasPrefix(trimmed, "Vec::") &&
+			trimmed != "Default::default()" &&
+			trimmed != "true" && trimmed != "false" {
+			return val + ".clone()"
+		}
+	}
+	return val
+}
+
+// getMapKeyTypeConst returns the integer constant for a map's key type.
+func (e *RustEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
+	if ident, ok := mapType.Key.(*ast.Ident); ok {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if tv, ok2 := e.pkg.TypesInfo.Types[ident]; ok2 && tv.Type != nil {
+				if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
+					switch basic.Kind() {
+					case types.String:
+						return 1
+					case types.Int:
+						return 2
+					case types.Bool:
+						return 3
+					case types.Int8:
+						return 4
+					case types.Int16:
+						return 5
+					case types.Int32:
+						return 6
+					case types.Int64:
+						return 7
+					case types.Uint8:
+						return 8
+					case types.Uint16:
+						return 9
+					case types.Uint32:
+						return 10
+					case types.Uint64:
+						return 11
+					case types.Float32:
+						return 12
+					case types.Float64:
+						return 13
+					}
+				}
+				if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
+					if e.structKeyTypes == nil {
+						e.structKeyTypes = make(map[string]string)
+					}
+					rustPath := "super::" + ident.Name
+					if named, ok3 := tv.Type.(*types.Named); ok3 {
+						if structPkg := named.Obj().Pkg(); structPkg != nil {
+							pkgName := structPkg.Name()
+							if pkgName != "" && pkgName != "main" {
+								rustPath = "super::" + pkgName + "::" + ident.Name
+							}
+						}
+					}
+					e.structKeyTypes[ident.Name] = rustPath
+					return 100
+				}
+			}
+		}
+	}
+	return 1
+}
+
+// rustDefaultForGoType returns the Rust default value for a Go type.
+func (e *RustEmitter) rustDefaultForGoType(t types.Type) string {
+	if t == nil {
+		return "Default::default()"
+	}
+	typeStr := t.String()
+	if strings.HasPrefix(typeStr, "[]") {
+		return "Vec::new()"
+	}
+	if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") || typeStr == "any" {
+		return "Rc::new(0_i32)"
+	}
+	if strings.HasPrefix(typeStr, "func(") {
+		return "Rc::new(|_| {})"
+	}
+	switch typeStr {
+	case "int", "int8", "int16", "int32", "int64":
+		return "0"
+	case "uint8", "uint16", "uint32", "uint64":
+		return "0"
+	case "float32":
+		return "0.0_f32"
+	case "float64":
+		return "0.0"
+	case "bool":
+		return "false"
+	case "string":
+		return "String::new()"
+	}
+	if named, ok := t.(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			return named.Obj().Name() + "::default()"
+		}
+		if _, isSlice := named.Underlying().(*types.Slice); isSlice {
+			return "Vec::new()"
+		}
+	}
+	return "Default::default()"
+}
+
+// rustDefaultForRustType returns the default value for a Rust type string.
+func rustDefaultForRustType(rustType string) string {
+	switch rustType {
+	case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64":
+		return "0"
+	case "f32":
+		return "0.0_f32"
+	case "f64":
+		return "0.0"
+	case "bool":
+		return "false"
+	case "String":
+		return "String::new()"
+	}
+	if strings.HasPrefix(rustType, "Vec<") {
+		// Extract element type for typed Vec::new() (needed when used as default in vec![...])
+		elemType := rustType[4 : len(rustType)-1]
+		return fmt.Sprintf("Vec::<%s>::new()", elemType)
+	}
+	if rustType == "hmap::HashMap" {
+		return "hmap::newHashMap(1)"
+	}
+	return "Default::default()"
+}
+
+// isTypeConversion checks if a function name represents a type conversion.
+func (e *RustEmitter) isTypeConversion(funName string) (bool, string) {
+	typeConversions := map[string]string{
+		"int8": "i8", "int16": "i16", "int32": "i32", "int64": "i64",
+		"int": "i32", "uint8": "u8", "uint16": "u16", "uint32": "u32",
+		"uint64": "u64", "uint": "u32", "float32": "f32", "float64": "f64",
+		"byte": "u8", "rune": "i32",
+		"i8": "i8", "i16": "i16", "i32": "i32", "i64": "i64",
+		"u8": "u8", "u16": "u16", "u32": "u32", "u64": "u64",
+		"f32": "f32", "f64": "f64",
+	}
+	if rustType, ok := typeConversions[funName]; ok {
+		return true, rustType
+	}
+	return false, ""
+}
+
+// lowerToBuiltins maps Go builtins to Rust equivalents.
+func (e *RustEmitter) lowerToBuiltins(selector string) string {
 	switch selector {
 	case "fmt":
 		return ""
@@ -299,1370 +661,219 @@ func (*RustEmitter) lowerToBuiltins(selector string) string {
 	return selector
 }
 
-// escapeRustKeyword escapes Rust reserved keywords with r# prefix
-func escapeRustKeyword(name string) string {
-	// Rust reserved keywords that might conflict with Go identifiers
-	rustKeywords := map[string]bool{
-		"as": true, "break": true, "const": true, "continue": true,
-		"crate": true, "else": true, "enum": true, "extern": true,
-		// Note: "false" and "true" are NOT escaped - they're boolean literals
-		"fn": true, "for": true, "if": true,
-		"impl": true, "in": true, "let": true, "loop": true,
-		"match": true, "mod": true, "move": true, "mut": true,
-		"pub": true, "ref": true, "return": true, "self": true,
-		"Self": true, "static": true, "struct": true, "super": true,
-		"trait": true, "type": true, "unsafe": true,
-		"use": true, "where": true, "while": true,
-		// Reserved for future use
-		"abstract": true, "async": true, "await": true, "become": true,
-		"box": true, "do": true, "final": true, "macro": true,
-		"override": true, "priv": true, "try": true, "typeof": true,
-		"unsized": true, "virtual": true, "yield": true,
-	}
-	if rustKeywords[name] {
-		return "r#" + name
-	}
-	return name
+// structHasInterfaceFields checks if a struct has interface{} fields
+func (e *RustEmitter) structHasInterfaceFields(structName string) bool {
+	return e.structHasInterfaceFieldsRecursive(structName, make(map[string]bool))
 }
 
-// getMapKeyTypeConst returns the integer constant for a map's key type
-func (re *RustEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
-	if ident, ok := mapType.Key.(*ast.Ident); ok {
-		switch ident.Name {
-		case "string":
-			return 1 // KeyTypeString
-		case "int":
-			return 2 // KeyTypeInt
-		case "bool":
-			return 3 // KeyTypeBool
-		case "int8":
-			return 4 // KeyTypeInt8
-		case "int16":
-			return 5 // KeyTypeInt16
-		case "int32":
-			return 6 // KeyTypeInt32
-		case "int64":
-			return 7 // KeyTypeInt64
-		case "uint8":
-			return 8 // KeyTypeUint8
-		case "uint16":
-			return 9 // KeyTypeUint16
-		case "uint32":
-			return 10 // KeyTypeUint32
-		case "uint64":
-			return 11 // KeyTypeUint64
-		case "float32":
-			return 12 // KeyTypeFloat32
-		case "float64":
-			return 13 // KeyTypeFloat64
-		default:
-			// Check if it's a struct type
-			if re.pkg != nil && re.pkg.TypesInfo != nil {
-				if tv, ok := re.pkg.TypesInfo.Types[ident]; ok {
-					if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
-						// Track this struct type as used for map keys
-						if re.structKeyTypes == nil {
-							re.structKeyTypes = make(map[string]string)
-						}
-						// Build the Rust path: from inside hmap module, we use super:: to get to root,
-						// then add the package name if it's not the main package
-						// Use the package where the struct is DEFINED, not the current package
-						rustPath := "super::" + ident.Name
-						if named, ok := tv.Type.(*types.Named); ok {
-							if structPkg := named.Obj().Pkg(); structPkg != nil {
-								pkgName := structPkg.Name()
-								if pkgName != "" && pkgName != "main" {
-									rustPath = "super::" + pkgName + "::" + ident.Name
+func (e *RustEmitter) structHasInterfaceFieldsRecursive(structName string, visited map[string]bool) bool {
+	if visited[structName] {
+		return false
+	}
+	visited[structName] = true
+	for _, file := range e.pkg.Syntax {
+		for _, decl := range file.Decls {
+			if genDecl, ok := decl.(*ast.GenDecl); ok {
+				for _, spec := range genDecl.Specs {
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						if typeSpec.Name.Name == structName {
+							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
+								if structType.Fields != nil {
+									for _, field := range structType.Fields.List {
+										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										typeStr := fieldType.String()
+										if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") {
+											return true
+										}
+										if strings.Contains(typeStr, "func(") {
+											return true
+										}
+										if named, ok2 := fieldType.(*types.Named); ok2 {
+											if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+												if e.structHasInterfaceFieldsRecursive(named.Obj().Name(), visited) {
+													return true
+												}
+											}
+										}
+										if slice, ok2 := fieldType.(*types.Slice); ok2 {
+											if named, ok3 := slice.Elem().(*types.Named); ok3 {
+												if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+													if e.structHasInterfaceFieldsRecursive(named.Obj().Name(), visited) {
+														return true
+													}
+												}
+											}
+										}
+									}
 								}
+								return false
 							}
 						}
-						re.structKeyTypes[ident.Name] = rustPath
-						return 100 // KeyTypeStruct
 					}
 				}
 			}
 		}
 	}
-	return 0
+	return false
 }
 
-// getRustValueTypeCast returns the Rust downcast expression for a map value type
-func getRustValueTypeCast(t types.Type) string {
-	if basicType, ok := t.(*types.Basic); ok {
-		switch basicType.Kind() {
-		case types.Int, types.Int32:
-			return "i32"
-		case types.Int8:
-			return "i8"
-		case types.Int16:
-			return "i16"
-		case types.Int64:
-			return "i64"
-		case types.Uint8:
-			return "u8"
-		case types.Uint16:
-			return "u16"
-		case types.Uint32:
-			return "u32"
-		case types.Uint64:
-			return "u64"
-		case types.String:
-			return "String"
-		case types.Bool:
-			return "bool"
-		case types.Float32:
-			return "f32"
-		case types.Float64:
-			return "f64"
+// structHasFunctionFields checks if a struct has function/closure fields
+func (e *RustEmitter) structHasFunctionFields(structName string) bool {
+	for _, file := range e.pkg.Syntax {
+		for _, decl := range file.Decls {
+			if genDecl, ok := decl.(*ast.GenDecl); ok {
+				for _, spec := range genDecl.Specs {
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						if typeSpec.Name.Name == structName {
+							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
+								if structType.Fields != nil {
+									for _, field := range structType.Fields.List {
+										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										typeStr := fieldType.String()
+										if strings.HasPrefix(typeStr, "func(") {
+											return true
+										}
+										if _, isSig := fieldType.Underlying().(*types.Signature); isSig {
+											return true
+										}
+									}
+								}
+								return false
+							}
+						}
+					}
+				}
+			}
 		}
 	}
-	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
-		return "Rc<dyn Any>"
+	return false
+}
+
+// structCanDeriveCopy checks if a struct only contains Copy fields
+func (e *RustEmitter) structCanDeriveCopy(structName string) bool {
+	for _, file := range e.pkg.Syntax {
+		for _, decl := range file.Decls {
+			if genDecl, ok := decl.(*ast.GenDecl); ok {
+				for _, spec := range genDecl.Specs {
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						if typeSpec.Name.Name == structName {
+							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
+								if structType.Fields != nil {
+									for _, field := range structType.Fields.List {
+										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										if !e.isCopyableType(fieldType, make(map[string]bool)) {
+											return false
+										}
+									}
+								}
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
 	}
-	// Handle slice types - recursively get element type
-	if slice, ok := t.(*types.Slice); ok {
-		elemType := getRustValueTypeCast(slice.Elem())
-		return "Vec<" + elemType + ">"
-	}
-	// Handle map types
-	if _, ok := t.Underlying().(*types.Map); ok {
-		return "hmap::HashMap"
-	}
+	return false
+}
+
+func (e *RustEmitter) isCopyableType(t types.Type, visited map[string]bool) bool {
 	if named, ok := t.(*types.Named); ok {
-		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-			return named.Obj().Name()
+		name := named.Obj().Name()
+		if named.Obj().Pkg() != nil {
+			name = named.Obj().Pkg().Path() + "." + name
 		}
-	}
-	return "Rc<dyn Any>"
-}
-
-// getRustKeyCast returns a suffix to cast a map key to the correct Rust type.
-// For types matching Rust defaults (i32, bool, f64), returns "".
-func getRustKeyCast(keyType types.Type) string {
-	if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic {
-		switch basic.Kind() {
-		case types.Int8:
-			return " as i8"
-		case types.Int16:
-			return " as i16"
-		case types.Int64:
-			return " as i64"
-		case types.Uint8:
-			return " as u8"
-		case types.Uint16:
-			return " as u16"
-		case types.Uint32:
-			return " as u32"
-		case types.Uint64:
-			return " as u64"
-		case types.Float32:
-			return " as f32"
-		}
-	}
-	return ""
-}
-
-// isRustStringKey returns true if the map key type is string.
-func isRustStringKey(keyType types.Type) bool {
-	if basic, isBasic := keyType.Underlying().(*types.Basic); isBasic {
-		return basic.Kind() == types.String
-	}
-	return false
-}
-
-// exprToRustString converts a simple expression (BasicLit, Ident, IndexExpr, SelectorExpr) to its Rust string representation
-func exprToRustString(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.BasicLit:
-		if e.Kind == token.STRING {
-			// Go string literal to Rust: "foo" -> "foo".to_string() wrapped in Rc
-			// But for map keys we just need the raw value for now
-			return e.Value
-		}
-		return e.Value
-	case *ast.Ident:
-		return e.Name
-	case *ast.IndexExpr:
-		// Handle slice/array access like sliceOfMaps[0]
-		xStr := exprToRustString(e.X)
-		indexStr := exprToRustString(e.Index)
-		if xStr != "" && indexStr != "" {
-			return xStr + "[" + indexStr + "]"
-		}
-		return ""
-	case *ast.SelectorExpr:
-		xStr := exprToRustString(e.X)
-		if xStr != "" {
-			return xStr + "." + e.Sel.Name
-		}
-		return ""
-	default:
-		return ""
-	}
-}
-
-// analyzeLhsIndexChainRust walks an IndexExpr chain and returns operations from root to outermost.
-// Returns true if this is a mixed access pattern (combining slice and map accesses).
-func (re *RustEmitter) analyzeLhsIndexChainRust(expr ast.Expr) (ops []rustMixedIndexOp, isMixed bool) {
-	// Collect the chain from outermost to root
-	var chain []ast.Expr
-	current := expr
-	for {
-		indexExpr, ok := current.(*ast.IndexExpr)
-		if !ok {
-			break
-		}
-		chain = append(chain, indexExpr)
-		current = indexExpr.X
-	}
-	// chain[0] is outermost, chain[len-1] is innermost (closest to root variable)
-	// Reverse to get root to outermost order
-	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
-		chain[i], chain[j] = chain[j], chain[i]
-	}
-	// Now chain[0] is innermost (root[k1]), chain[len-1] is outermost ([kN])
-	hasMap := false
-	hasSlice := false
-	hasIntermediateMap := false
-	for i, node := range chain {
-		ie := node.(*ast.IndexExpr)
-		tv := re.pkg.TypesInfo.Types[ie.X]
-		if tv.Type == nil {
-			continue
-		}
-		isLast := (i == len(chain)-1)
-		if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-			keyExpr := exprToRustString(ie.Index)
-			keyCastSuffix := getRustKeyCast(mapType.Key())
-			valueRustType := getRustValueTypeCast(mapType.Elem())
-			op := rustMixedIndexOp{
-				accessType:    "map",
-				keyExpr:       keyExpr,
-				keyCastSuffix: keyCastSuffix,
-				isStringKey:   isRustStringKey(mapType.Key()),
-				valueRustType: valueRustType,
-			}
-			hasMap = true
-			if !isLast {
-				hasIntermediateMap = true
-			}
-			ops = append(ops, op)
-		} else {
-			// Slice or array access
-			op := rustMixedIndexOp{
-				accessType: "slice",
-				keyExpr:    exprToRustString(ie.Index),
-			}
-			hasSlice = true
-			ops = append(ops, op)
-		}
-	}
-	// Mixed if we have both slice and map, OR if we have an intermediate map
-	isMixed = (hasMap && hasSlice) || hasIntermediateMap
-	return ops, isMixed
-}
-
-func (re *RustEmitter) emitAsString(s string, indent int) string {
-	return strings.Repeat(" ", indent) + s
-}
-
-// Helper function to determine token type for Rust specific content
-func (re *RustEmitter) getTokenType(content string) TokenType {
-	// Check for Rust keywords
-	switch content {
-	case "fn", "let", "mut", "impl", "trait", "mod", "use", "pub", "struct", "enum", "match", "if", "else", "loop", "while", "for", "in", "return", "break", "continue":
-		return RustKeyword
-	case "(":
-		return LeftParen
-	case ")":
-		return RightParen
-	case "{":
-		return LeftBrace
-	case "}":
-		return RightBrace
-	case "[":
-		return LeftBracket
-	case "]":
-		return RightBracket
-	case ";":
-		return Semicolon
-	case ",":
-		return Comma
-	case ".":
-		return Dot
-	case "=", "+=", "-=", "*=", "/=":
-		return Assignment
-	case "+", "-", "*", "/", "%":
-		return ArithmeticOperator
-	case "==", "!=", "<", ">", "<=", ">=":
-		return ComparisonOperator
-	case "&&", "||", "!":
-		return LogicalOperator
-	case "++":
-		return UnaryOperator
-	case " ", "\t":
-		return WhiteSpace
-	case "\n":
-		return NewLine
-	}
-
-	// Check if it's a number
-	if len(content) > 0 && (content[0] >= '0' && content[0] <= '9') {
-		return NumberLiteral
-	}
-
-	// Check if it's a string literal
-	if len(content) >= 2 && content[0] == '"' && content[len(content)-1] == '"' {
-		return StringLiteral
-	}
-
-	// Default to identifier
-	return Identifier
-}
-
-// Helper function to emit token
-func (re *RustEmitter) emitToken(content string, tokenType TokenType, indent int) {
-	if re.captureMapKey {
-		re.capturedMapKey += re.emitAsString(content, indent)
-		return
-	}
-	if re.suppressMapEmit {
-		return
-	}
-	token := CreateToken(tokenType, re.emitAsString(content, indent))
-	_ = re.gir.emitTokenToFileBuffer(token, EmptyVisitMethod)
-}
-
-// Helper function to convert []Token to []string for backward compatibility
-func tokensToStrings(tokens []Token) []string {
-	result := make([]string, len(tokens))
-	for i, token := range tokens {
-		result[i] = token.Content
-	}
-	return result
-}
-
-// collectIdentifiersInCallArgs collects all identifiers used as function call arguments in an expression
-func (re *RustEmitter) collectIdentifiersInCallArgs(expr ast.Expr, result map[string]bool) {
-	if expr == nil {
-		return
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		// Don't collect type names or package names
-		if obj := re.pkg.TypesInfo.ObjectOf(e); obj != nil {
-			if _, isTypeName := obj.(*types.TypeName); isTypeName {
-				return
-			}
-			if _, isPkgName := obj.(*types.PkgName); isPkgName {
-				return
-			}
-		}
-		result[e.Name] = true
-	case *ast.CallExpr:
-		// Collect identifiers in the arguments
-		for _, arg := range e.Args {
-			re.collectIdentifiersInCallArgs(arg, result)
-		}
-		// Also check the function being called (for method receivers)
-		re.collectIdentifiersInCallArgs(e.Fun, result)
-	case *ast.SelectorExpr:
-		// For selectors like x.Method(), collect the base (x)
-		re.collectIdentifiersInCallArgs(e.X, result)
-	case *ast.IndexExpr:
-		re.collectIdentifiersInCallArgs(e.X, result)
-		re.collectIdentifiersInCallArgs(e.Index, result)
-	case *ast.BinaryExpr:
-		re.collectIdentifiersInCallArgs(e.X, result)
-		re.collectIdentifiersInCallArgs(e.Y, result)
-	case *ast.UnaryExpr:
-		re.collectIdentifiersInCallArgs(e.X, result)
-	case *ast.ParenExpr:
-		re.collectIdentifiersInCallArgs(e.X, result)
-	case *ast.TypeAssertExpr:
-		re.collectIdentifiersInCallArgs(e.X, result)
-	case *ast.CompositeLit:
-		for _, elt := range e.Elts {
-			re.collectIdentifiersInCallArgs(elt, result)
-		}
-	case *ast.KeyValueExpr:
-		re.collectIdentifiersInCallArgs(e.Value, result)
-	}
-}
-
-// collectCallArgIdentCounts counts how many times each base identifier
-// appears across all arguments of a function call
-func (re *RustEmitter) collectCallArgIdentCounts(args []ast.Expr) map[string]int {
-	counts := make(map[string]int)
-	for _, arg := range args {
-		re.countIdentsInExpr(arg, counts)
-	}
-	return counts
-}
-
-// countIdentsInExpr recursively counts identifier occurrences in an expression
-func (re *RustEmitter) countIdentsInExpr(expr ast.Expr, counts map[string]int) {
-	if expr == nil {
-		return
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		if obj := re.pkg.TypesInfo.ObjectOf(e); obj != nil {
-			if _, isTypeName := obj.(*types.TypeName); isTypeName {
-				return
-			}
-			if _, isPkgName := obj.(*types.PkgName); isPkgName {
-				return
-			}
-		}
-		counts[e.Name]++
-	case *ast.SelectorExpr:
-		re.countIdentsInExpr(e.X, counts)
-	case *ast.CallExpr:
-		for _, arg := range e.Args {
-			re.countIdentsInExpr(arg, counts)
-		}
-		re.countIdentsInExpr(e.Fun, counts)
-	case *ast.IndexExpr:
-		re.countIdentsInExpr(e.X, counts)
-		re.countIdentsInExpr(e.Index, counts)
-	case *ast.BinaryExpr:
-		re.countIdentsInExpr(e.X, counts)
-		re.countIdentsInExpr(e.Y, counts)
-	case *ast.UnaryExpr:
-		re.countIdentsInExpr(e.X, counts)
-	case *ast.ParenExpr:
-		re.countIdentsInExpr(e.X, counts)
-	case *ast.TypeAssertExpr:
-		re.countIdentsInExpr(e.X, counts)
-	case *ast.CompositeLit:
-		for _, elt := range e.Elts {
-			re.countIdentsInExpr(elt, counts)
-		}
-	case *ast.KeyValueExpr:
-		re.countIdentsInExpr(e.Value, counts)
-	}
-}
-
-// exprContainsIdent checks if an expression references a given identifier
-func (re *RustEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
-	if expr == nil {
-		return false
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		return e.Name == name
-	case *ast.SelectorExpr:
-		return re.exprContainsIdent(e.X, name)
-	case *ast.CallExpr:
-		for _, arg := range e.Args {
-			if re.exprContainsIdent(arg, name) {
-				return true
-			}
-		}
-		return re.exprContainsIdent(e.Fun, name)
-	case *ast.IndexExpr:
-		return re.exprContainsIdent(e.X, name) || re.exprContainsIdent(e.Index, name)
-	case *ast.BinaryExpr:
-		return re.exprContainsIdent(e.X, name) || re.exprContainsIdent(e.Y, name)
-	case *ast.UnaryExpr:
-		return re.exprContainsIdent(e.X, name)
-	case *ast.ParenExpr:
-		return re.exprContainsIdent(e.X, name)
-	case *ast.TypeAssertExpr:
-		return re.exprContainsIdent(e.X, name)
-	case *ast.CompositeLit:
-		for _, elt := range e.Elts {
-			if re.exprContainsIdent(elt, name) {
-				return true
-			}
-		}
-	case *ast.KeyValueExpr:
-		return re.exprContainsIdent(e.Value, name)
-	}
-	return false
-}
-
-// canMoveArg checks if a call argument identifier can be moved instead of cloned.
-// Returns true when the variable is being reassigned from this call's return value
-// and is the only reference to itself across all args of the outermost call.
-func (re *RustEmitter) canMoveArg(varName string) bool {
-	if !re.OptimizeMoves {
-		return false
-	}
-	// Cannot move captured variables inside closures (FnMut)
-	if re.funcLitDepth > 0 {
-		return false
-	}
-	if re.currentAssignLhsNames == nil || !re.currentAssignLhsNames[varName] {
-		return false
-	}
-	// When temp extraction is active, use modified counts that exclude extracted fields
-	if re.moveOptActive && re.moveOptModifiedCounts != nil {
-		if re.moveOptModifiedCounts[varName] <= 1 {
-			re.MoveOptCount++
-			return true
-		}
-		return false
-	}
-	// Check the outermost call's arg ident counts (bottom of stack)
-	if len(re.currentCallArgIdentsStack) > 0 {
-		outermostCounts := re.currentCallArgIdentsStack[0]
-		if outermostCounts[varName] > 1 {
+		if visited[name] {
 			return false
 		}
+		visited[name] = true
 	}
-	re.MoveOptCount++
-	return true
-}
-
-// isCopyType checks if a Go type maps to a Rust Copy type (primitives)
-func isCopyType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	switch u := t.Underlying().(type) {
-	case *types.Basic:
-		switch u.Kind() {
-		case types.Bool, types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
-			types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64,
-			types.Float32, types.Float64:
-			return true
-		}
-	}
-	return false
-}
-
-// analyzeMoveOptExtraction scans an assignment's RHS call to find field accesses
-// on a struct being moved, and creates temp variable bindings to extract them.
-// Pattern: c = Func(c, c.Field) → let _v0 = c.Field; c = Func(c, _v0);
-func (re *RustEmitter) analyzeMoveOptExtraction(node *ast.AssignStmt, indent int) {
-	re.moveOptTempBindings = nil
-	re.moveOptArgReplacements = nil
-	re.moveOptModifiedCounts = nil
-	re.moveOptActive = false
-
-	if !re.OptimizeMoves {
-		return
-	}
-	if re.funcLitDepth > 0 {
-		return
-	}
-	if len(node.Rhs) != 1 {
-		return
-	}
-	callExpr, ok := node.Rhs[0].(*ast.CallExpr)
-	if !ok {
-		return
-	}
-	if len(callExpr.Args) < 2 {
-		return
-	}
-
-	// Find which arg is a struct ident matching an LHS name
-	structArgName := ""
-	structArgIdx := -1
-	for i, arg := range callExpr.Args {
-		ident, ok := arg.(*ast.Ident)
-		if !ok {
-			continue
-		}
-		if re.currentAssignLhsNames == nil || !re.currentAssignLhsNames[ident.Name] {
-			continue
-		}
-		// Check if it's a struct type
-		tv := re.pkg.TypesInfo.Types[arg]
-		if tv.Type == nil {
-			continue
-		}
-		if named, ok := tv.Type.(*types.Named); ok {
-			if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-				structArgName = ident.Name
-				structArgIdx = i
-				break
-			}
-		}
-	}
-	if structArgIdx < 0 {
-		return
-	}
-
-	// Check other args for field accesses on the same struct with Copy-type results
-	tempIdx := 0
-	replacements := make(map[int]string)
-	var bindings []string
-	var callExts []moveOptCallExt
-	modifiedCounts := re.collectCallArgIdentCounts(callExpr.Args)
-
-	for i, arg := range callExpr.Args {
-		if i == structArgIdx {
-			continue
-		}
-		// Check if this arg (or sub-expressions) references the struct
-		if !re.exprContainsIdent(arg, structArgName) {
-			continue
-		}
-		// Get the result type of this arg - must be Copy
-		tv := re.pkg.TypesInfo.Types[arg]
-		if tv.Type == nil || !isCopyType(tv.Type) {
-			continue
-		}
-		// This arg references the struct and produces a Copy value - extract it
-		tempName := fmt.Sprintf("__mv%d", tempIdx)
-		tempIdx++
-		basic, isBasic := tv.Type.Underlying().(*types.Basic)
-		if !isBasic {
-			continue
-		}
-		rustType := re.mapGoTypeToRust(basic.Name())
-		// Try string-based extraction first (for simple expressions like c.A)
-		exprStr := re.exprToString(arg)
-		if exprStr != "" {
-			binding := fmt.Sprintf("let %s: %s = ", tempName, rustType)
-			binding += exprStr + ";\n"
-			bindings = append(bindings, binding)
-			replacements[i] = tempName
-			re.subtractIdentsInExpr(arg, modifiedCounts)
-			continue
-		}
-		// For function call expressions that can't be stringified, use deferred
-		// token buffer capture. The arg will be emitted normally, then its tokens
-		// are captured and relocated before the assignment statement.
-		if _, isCall := arg.(*ast.CallExpr); isCall {
-			callExts = append(callExts, moveOptCallExt{
-				argIdx:   i,
-				tempName: tempName,
-				rustType: rustType,
-			})
-			re.subtractIdentsInExpr(arg, modifiedCounts)
-			continue
-		}
-	}
-
-	if len(replacements) > 0 || len(callExts) > 0 {
-		re.moveOptTempBindings = bindings
-		re.moveOptArgReplacements = replacements
-		re.moveOptModifiedCounts = modifiedCounts
-		re.moveOptActive = true
-		re.moveOptCallExts = callExts
-	}
-}
-
-// analyzeMemTakeOpt detects the pattern: state.Field = func(state.Field, ...)
-// and marks it for std::mem::take optimization to avoid cloning.
-func (re *RustEmitter) analyzeMemTakeOpt(node *ast.AssignStmt) {
-	re.memTakeActive = false
-	re.memTakeLhsExpr = ""
-	re.memTakeArgIdx = -1
-
-	if !re.OptimizeMoves {
-		return
-	}
-	if re.funcLitDepth > 0 {
-		return
-	}
-	if len(node.Lhs) != 1 || len(node.Rhs) != 1 {
-		return
-	}
-
-	// LHS must be a SelectorExpr (e.g., state.C)
-	lhsSel, ok := node.Lhs[0].(*ast.SelectorExpr)
-	if !ok {
-		return
-	}
-
-	// RHS must be a CallExpr
-	callExpr, ok := node.Rhs[0].(*ast.CallExpr)
-	if !ok {
-		return
-	}
-
-	// Get the LHS expression string
-	lhsStr := re.exprToString(lhsSel)
-	if lhsStr == "" {
-		return
-	}
-
-	// Check LHS type: must be a named struct type (not a Copy type)
-	lhsTV := re.pkg.TypesInfo.Types[lhsSel]
-	if lhsTV.Type == nil {
-		return
-	}
-	if isCopyType(lhsTV.Type) {
-		return
-	}
-	named, ok := lhsTV.Type.(*types.Named)
-	if !ok {
-		return
-	}
-	if _, isStruct := named.Underlying().(*types.Struct); !isStruct {
-		return
-	}
-
-	// Find which call arg matches the LHS SelectorExpr
-	targetArgIdx := -1
-	for i, arg := range callExpr.Args {
-		argStr := re.exprToString(arg)
-		if argStr == lhsStr {
-			targetArgIdx = i
-			break
-		}
-	}
-	if targetArgIdx < 0 {
-		return
-	}
-
-	// Safety: no other arg should reference the LHS field or its sub-fields
-	lhsPrefix := lhsStr + "."
-	for i, arg := range callExpr.Args {
-		if i == targetArgIdx {
-			continue
-		}
-		if re.exprContainsSelectorPath(arg, lhsStr, lhsPrefix) {
-			return
-		}
-	}
-
-	re.memTakeActive = true
-	re.memTakeLhsExpr = lhsStr
-	re.memTakeArgIdx = targetArgIdx
-}
-
-// exprContainsSelectorPath checks if an expression contains a selector path
-// that matches exactly or starts with the given prefix (for sub-field access).
-func (re *RustEmitter) exprContainsSelectorPath(expr ast.Expr, exact string, prefix string) bool {
-	if expr == nil {
-		return false
-	}
-	found := false
-	ast.Inspect(expr, func(n ast.Node) bool {
-		if found {
+	underlying := t.Underlying()
+	if basic, isBasic := underlying.(*types.Basic); isBasic {
+		if basic.Kind() == types.String {
 			return false
 		}
-		if sel, ok := n.(*ast.SelectorExpr); ok {
-			path := re.exprToString(sel)
-			if path == exact || strings.HasPrefix(path, prefix) {
-				found = true
+		return true
+	}
+	if structType, isStruct := underlying.(*types.Struct); isStruct {
+		for i := 0; i < structType.NumFields(); i++ {
+			if !e.isCopyableType(structType.Field(i).Type(), visited) {
 				return false
 			}
 		}
 		return true
-	})
-	return found
-}
-
-// exprToString converts a simple expression to its Rust string representation
-func (re *RustEmitter) exprToString(expr ast.Expr) string {
-	return re.exprToStringImpl(expr, "")
-}
-
-// exprToStringImpl converts an expression to Rust string with optional cast hint.
-// castHint is the Rust type name to cast untyped constants to (e.g. "u8" inside uint8(...)).
-func (re *RustEmitter) exprToStringImpl(expr ast.Expr, castHint string) string {
-	if expr == nil {
-		return ""
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		name := escapeRustKeyword(e.Name)
-		// If we have a cast hint and this ident is a constant, cast it
-		if castHint != "" && re.pkg != nil && re.pkg.TypesInfo != nil {
-			if obj := re.pkg.TypesInfo.ObjectOf(e); obj != nil {
-				if _, isConst := obj.(*types.Const); isConst {
-					// Check if the constant's Rust type differs from the cast hint
-					if named, ok := obj.Type().(*types.Basic); ok {
-						constRustType := re.mapGoTypeToRust(named.Name())
-						if constRustType != castHint {
-							return "(" + name + " as " + castHint + ")"
-						}
-					}
-				}
-			}
-		}
-		return name
-	case *ast.SelectorExpr:
-		base := re.exprToStringImpl(e.X, "")
-		if base == "" {
-			return ""
-		}
-		return base + "." + e.Sel.Name
-	case *ast.IndexExpr:
-		base := re.exprToStringImpl(e.X, "")
-		idx := re.exprToStringImpl(e.Index, "")
-		if base == "" || idx == "" {
-			return ""
-		}
-		return base + "[" + idx + " as usize]"
-	case *ast.BasicLit:
-		return e.Value
-	case *ast.BinaryExpr:
-		left := re.exprToStringImpl(e.X, castHint)
-		right := re.exprToStringImpl(e.Y, castHint)
-		if left == "" || right == "" {
-			return ""
-		}
-		return "(" + left + " " + e.Op.String() + " " + right + ")"
-	case *ast.ParenExpr:
-		inner := re.exprToStringImpl(e.X, castHint)
-		if inner == "" {
-			return ""
-		}
-		return "(" + inner + ")"
-	case *ast.CallExpr:
-		// Handle type conversions: int(x), uint8(x), etc.
-		if len(e.Args) == 1 {
-			if funIdent, ok := e.Fun.(*ast.Ident); ok {
-				if rustType, ok := rustTypesMap[funIdent.Name]; ok {
-					// Pass the target type as cast hint so inner constants get cast
-					inner := re.exprToStringImpl(e.Args[0], rustType)
-					if inner != "" {
-						return "(" + inner + " as " + rustType + ")"
-					}
-				}
-			}
-		}
-		// Don't handle actual function calls - bail out
-		return ""
-	}
-	return ""
-}
-
-// subtractIdentsInExpr removes identifier occurrences found in expr from counts
-func (re *RustEmitter) subtractIdentsInExpr(expr ast.Expr, counts map[string]int) {
-	if expr == nil {
-		return
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		if re.pkg != nil && re.pkg.TypesInfo != nil {
-			if obj := re.pkg.TypesInfo.ObjectOf(e); obj != nil {
-				if _, isTypeName := obj.(*types.TypeName); isTypeName {
-					return
-				}
-				if _, isPkgName := obj.(*types.PkgName); isPkgName {
-					return
-				}
-			}
-		}
-		counts[e.Name]--
-	case *ast.SelectorExpr:
-		re.subtractIdentsInExpr(e.X, counts)
-	case *ast.IndexExpr:
-		re.subtractIdentsInExpr(e.X, counts)
-		re.subtractIdentsInExpr(e.Index, counts)
-	case *ast.BinaryExpr:
-		re.subtractIdentsInExpr(e.X, counts)
-		re.subtractIdentsInExpr(e.Y, counts)
-	case *ast.UnaryExpr:
-		re.subtractIdentsInExpr(e.X, counts)
-	case *ast.ParenExpr:
-		re.subtractIdentsInExpr(e.X, counts)
-	case *ast.CallExpr:
-		for _, arg := range e.Args {
-			re.subtractIdentsInExpr(arg, counts)
-		}
-		re.subtractIdentsInExpr(e.Fun, counts)
-	}
-}
-
-// collectIdentifiersInStmt collects all identifiers used as function call arguments in a statement
-func (re *RustEmitter) collectIdentifiersInStmt(stmt ast.Stmt) map[string]bool {
-	result := make(map[string]bool)
-	if stmt == nil {
-		return result
-	}
-	switch s := stmt.(type) {
-	case *ast.ExprStmt:
-		re.collectIdentifiersInCallArgs(s.X, result)
-	case *ast.AssignStmt:
-		for _, rhs := range s.Rhs {
-			re.collectIdentifiersInCallArgs(rhs, result)
-		}
-	case *ast.DeclStmt:
-		if genDecl, ok := s.Decl.(*ast.GenDecl); ok {
-			for _, spec := range genDecl.Specs {
-				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
-					for _, value := range valueSpec.Values {
-						re.collectIdentifiersInCallArgs(value, result)
-					}
-				}
-			}
-		}
-	case *ast.ReturnStmt:
-		for _, r := range s.Results {
-			re.collectIdentifiersInCallArgs(r, result)
-		}
-	case *ast.IfStmt:
-		re.collectIdentifiersInCallArgs(s.Cond, result)
-		// Recursively process body
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				for k, v := range re.collectIdentifiersInStmt(bodyStmt) {
-					result[k] = v
-				}
-			}
-		}
-		if s.Else != nil {
-			for k, v := range re.collectIdentifiersInStmt(s.Else) {
-				result[k] = v
-			}
-		}
-	case *ast.ForStmt:
-		re.collectIdentifiersInCallArgs(s.Cond, result)
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				for k, v := range re.collectIdentifiersInStmt(bodyStmt) {
-					result[k] = v
-				}
-			}
-		}
-	case *ast.RangeStmt:
-		re.collectIdentifiersInCallArgs(s.X, result)
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				for k, v := range re.collectIdentifiersInStmt(bodyStmt) {
-					result[k] = v
-				}
-			}
-		}
-	case *ast.BlockStmt:
-		for _, bodyStmt := range s.List {
-			for k, v := range re.collectIdentifiersInStmt(bodyStmt) {
-				result[k] = v
-			}
-		}
-	case *ast.SwitchStmt:
-		re.collectIdentifiersInCallArgs(s.Tag, result)
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				for k, v := range re.collectIdentifiersInStmt(bodyStmt) {
-					result[k] = v
-				}
-			}
-		}
-	}
-	return result
-}
-
-// collectMutatedVarsInExpr recursively collects variables that are assigned to in an expression
-func (re *RustEmitter) collectMutatedVarsInExpr(expr ast.Expr, result map[string]bool) {
-	if expr == nil {
-		return
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		result[e.Name] = true
-	case *ast.IndexExpr:
-		// For index expressions like arr[i], check the base
-		re.collectMutatedVarsInExpr(e.X, result)
-	case *ast.SelectorExpr:
-		// For selector expressions like obj.field, check the base
-		re.collectMutatedVarsInExpr(e.X, result)
-	}
-}
-
-// collectMutatedVarsInStmt recursively collects variables that are assigned to (mutated) in a statement
-func (re *RustEmitter) collectMutatedVarsInStmt(stmt ast.Stmt, result map[string]bool) {
-	if stmt == nil {
-		return
-	}
-	switch s := stmt.(type) {
-	case *ast.AssignStmt:
-		// Only count assignments (=), not declarations (:=) which create new variables
-		if s.Tok == token.ASSIGN || s.Tok == token.ADD_ASSIGN || s.Tok == token.SUB_ASSIGN ||
-			s.Tok == token.MUL_ASSIGN || s.Tok == token.QUO_ASSIGN || s.Tok == token.REM_ASSIGN {
-			for _, lhs := range s.Lhs {
-				re.collectMutatedVarsInExpr(lhs, result)
-			}
-		}
-	case *ast.IncDecStmt:
-		re.collectMutatedVarsInExpr(s.X, result)
-	case *ast.IfStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectMutatedVarsInStmt(bodyStmt, result)
-			}
-		}
-		if s.Else != nil {
-			re.collectMutatedVarsInStmt(s.Else, result)
-		}
-	case *ast.ForStmt:
-		if s.Post != nil {
-			re.collectMutatedVarsInStmt(s.Post, result)
-		}
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectMutatedVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.RangeStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectMutatedVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.BlockStmt:
-		for _, bodyStmt := range s.List {
-			re.collectMutatedVarsInStmt(bodyStmt, result)
-		}
-	case *ast.SwitchStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectMutatedVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.CaseClause:
-		for _, bodyStmt := range s.Body {
-			re.collectMutatedVarsInStmt(bodyStmt, result)
-		}
-	}
-}
-
-// analyzeParamMutations analyzes a function body to find which parameters are mutated (assigned to)
-func (re *RustEmitter) analyzeParamMutations(params []*ast.Field, body *ast.BlockStmt) {
-	re.mutatedParams = make(map[string]bool)
-	if body == nil || params == nil {
-		return
-	}
-
-	// Collect all mutated variables in the function body
-	mutatedVars := make(map[string]bool)
-	for _, stmt := range body.List {
-		re.collectMutatedVarsInStmt(stmt, mutatedVars)
-	}
-
-	// Check which parameters are in the mutated set
-	for _, field := range params {
-		for _, name := range field.Names {
-			if mutatedVars[name.Name] {
-				re.mutatedParams[name.Name] = true
-			}
-		}
-	}
-}
-
-// collectReturnedVarsInStmt recursively finds variables directly returned from the function
-func (re *RustEmitter) collectReturnedVarsInStmt(stmt ast.Stmt, result map[string]bool) {
-	if stmt == nil {
-		return
-	}
-	switch s := stmt.(type) {
-	case *ast.ReturnStmt:
-		for _, expr := range s.Results {
-			if ident, ok := expr.(*ast.Ident); ok {
-				result[ident.Name] = true
-			}
-		}
-	case *ast.IfStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectReturnedVarsInStmt(bodyStmt, result)
-			}
-		}
-		if s.Else != nil {
-			re.collectReturnedVarsInStmt(s.Else, result)
-		}
-	case *ast.ForStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectReturnedVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.RangeStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectReturnedVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.BlockStmt:
-		for _, bodyStmt := range s.List {
-			re.collectReturnedVarsInStmt(bodyStmt, result)
-		}
-	case *ast.SwitchStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectReturnedVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.CaseClause:
-		for _, bodyStmt := range s.Body {
-			re.collectReturnedVarsInStmt(bodyStmt, result)
-		}
-	}
-}
-
-// collectUsedAsValueVarsInExpr finds the root variable of an expression used as a value
-// This detects params used in contexts that require ownership (assignments, struct literals, returns)
-func (re *RustEmitter) collectUsedAsValueVarsInExpr(expr ast.Expr, result map[string]bool) {
-	if expr == nil {
-		return
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		result[e.Name] = true
-	case *ast.SelectorExpr:
-		// param.Field — if param is &T, can't move Field out
-		re.collectUsedAsValueVarsInExpr(e.X, result)
-	}
-}
-
-// collectAssignedFromVarsInStmt recursively finds variables used as standalone values on the RHS of assignments,
-// struct literal field values, or other contexts requiring ownership.
-// This detects cases like `local := c`, `local := c.Field`, or `SomeStruct{Field: c}` which break with &T.
-func (re *RustEmitter) collectAssignedFromVarsInStmt(stmt ast.Stmt, result map[string]bool) {
-	if stmt == nil {
-		return
-	}
-	// Also check all expressions in the statement for composite literal field values
-	ast.Inspect(stmt, func(n ast.Node) bool {
-		if compLit, ok := n.(*ast.CompositeLit); ok {
-			for _, elt := range compLit.Elts {
-				if kv, ok := elt.(*ast.KeyValueExpr); ok {
-					// Struct field value: SomeStruct{Field: param}
-					re.collectUsedAsValueVarsInExpr(kv.Value, result)
-				} else {
-					// Positional struct field: SomeStruct{param, ...}
-					re.collectUsedAsValueVarsInExpr(elt, result)
-				}
-			}
-		}
-		return true
-	})
-	switch s := stmt.(type) {
-	case *ast.AssignStmt:
-		for _, rhs := range s.Rhs {
-			re.collectUsedAsValueVarsInExpr(rhs, result)
-		}
-	case *ast.IfStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectAssignedFromVarsInStmt(bodyStmt, result)
-			}
-		}
-		if s.Else != nil {
-			re.collectAssignedFromVarsInStmt(s.Else, result)
-		}
-	case *ast.ForStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectAssignedFromVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.RangeStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectAssignedFromVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.BlockStmt:
-		for _, bodyStmt := range s.List {
-			re.collectAssignedFromVarsInStmt(bodyStmt, result)
-		}
-	case *ast.SwitchStmt:
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				re.collectAssignedFromVarsInStmt(bodyStmt, result)
-			}
-		}
-	case *ast.CaseClause:
-		for _, bodyStmt := range s.Body {
-			re.collectAssignedFromVarsInStmt(bodyStmt, result)
-		}
-	}
-}
-
-// analyzeReadOnlyParamsForPackage walks all functions in a package and determines
-// which parameters are read-only (eligible for &T in Rust).
-// A parameter is read-only if: it's non-Copy, not mutated, not returned, and not
-// assigned as a whole value to another variable.
-// isRefOptEligibleType checks if a Go type is eligible for &T optimization in Rust.
-// Only struct types and slice types benefit from pass-by-reference.
-// String, basic types (int, bool, float), and function types are excluded.
-func isRefOptEligibleType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	// Check underlying type
-	switch t.Underlying().(type) {
-	case *types.Struct:
-		return true
-	case *types.Slice:
-		return true
-	case *types.Basic:
-		// All basic types (including string) are excluded
-		return false
 	}
 	return false
 }
 
-// collectFuncsUsedAsValues finds function names that are used as values (not calls)
-// in any expression in the package. Functions passed as callbacks cannot have their
-// signatures changed by the optimization.
-func (re *RustEmitter) collectFuncsUsedAsValues(pkg *packages.Package) map[string]bool {
-	result := make(map[string]bool)
-	for _, file := range pkg.Syntax {
-		ast.Inspect(file, func(n ast.Node) bool {
-			callExpr, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			// Check each argument of call expressions
-			for _, arg := range callExpr.Args {
-				if ident, ok := arg.(*ast.Ident); ok {
-					// Check if this identifier refers to a function
-					obj := pkg.TypesInfo.ObjectOf(ident)
-					if obj != nil {
-						if _, isFunc := obj.Type().(*types.Signature); isFunc {
-							result[ident.Name] = true
-						}
-					}
-				}
-			}
-			return true
-		})
-	}
-	return result
-}
-
-func (re *RustEmitter) analyzeReadOnlyParamsForPackage(pkg *packages.Package) {
-	if re.refOptReadOnly == nil {
-		re.refOptReadOnly = make(map[string][]bool)
-	}
-
-	// Find functions used as values (callbacks) - these cannot be optimized
-	funcsAsValues := re.collectFuncsUsedAsValues(pkg)
-
-	for _, file := range pkg.Syntax {
+// structCanDeriveHash checks if a struct can derive Hash/PartialEq/Eq
+func (e *RustEmitter) structCanDeriveHash(structName string) bool {
+	for _, file := range e.pkg.Syntax {
 		for _, decl := range file.Decls {
-			funcDecl, ok := decl.(*ast.FuncDecl)
-			if !ok || funcDecl.Type == nil || funcDecl.Type.Params == nil {
-				continue
-			}
-
-			key := pkg.Name + "." + funcDecl.Name.Name
-
-			// Skip functions used as callbacks (their signature must match the expected type)
-			if funcsAsValues[funcDecl.Name.Name] {
-				continue
-			}
-
-			params := funcDecl.Type.Params.List
-			body := funcDecl.Body
-
-			// Collect mutated variables
-			mutatedVars := make(map[string]bool)
-			if body != nil {
-				for _, stmt := range body.List {
-					re.collectMutatedVarsInStmt(stmt, mutatedVars)
+			if genDecl, ok := decl.(*ast.GenDecl); ok {
+				for _, spec := range genDecl.Specs {
+					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
+						if typeSpec.Name.Name == structName {
+							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
+								if structType.Fields != nil {
+									for _, field := range structType.Fields.List {
+										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										if !e.isHashableType(fieldType, make(map[string]bool)) {
+											return false
+										}
+									}
+								}
+								return true
+							}
+						}
+					}
 				}
 			}
-
-			// Collect returned variables
-			returnedVars := make(map[string]bool)
-			if body != nil {
-				for _, stmt := range body.List {
-					re.collectReturnedVarsInStmt(stmt, returnedVars)
-				}
-			}
-
-			// Collect variables assigned as whole values
-			assignedFromVars := make(map[string]bool)
-			if body != nil {
-				for _, stmt := range body.List {
-					re.collectAssignedFromVarsInStmt(stmt, assignedFromVars)
-				}
-			}
-
-			// Build read-only flags for each parameter
-			var readOnly []bool
-			for _, field := range params {
-				for _, name := range field.Names {
-					paramName := name.Name
-					// Check type: only struct/slice types benefit from &T
-					tv := pkg.TypesInfo.Types[field.Type]
-					isEligible := isRefOptEligibleType(tv.Type)
-					isReadOnly := isEligible &&
-						!mutatedVars[paramName] &&
-						!returnedVars[paramName] &&
-						!assignedFromVars[paramName]
-					readOnly = append(readOnly, isReadOnly)
-				}
-			}
-			re.refOptReadOnly[key] = readOnly
-		}
-	}
-}
-
-// isRefOptArg checks if the current call's argument at the given index corresponds
-// to a read-only parameter in the callee function
-func (re *RustEmitter) isRefOptArg(index int) bool {
-	if !re.OptimizeRefs || len(re.refOptCalleeReadOnly) == 0 {
-		return false
-	}
-	flags := re.refOptCalleeReadOnly[len(re.refOptCalleeReadOnly)-1]
-	if flags == nil || index >= len(flags) {
-		return false
-	}
-	return flags[index]
-}
-
-// refOptFuncKey converts a Rust-style function name (e.g., "cpu::GetMemory") to
-// the analysis key format (e.g., "cpu.GetMemory")
-func (re *RustEmitter) refOptFuncKey(rustFuncName string) string {
-	// Convert Rust module separator :: to .
-	key := strings.ReplaceAll(rustFuncName, "::", ".")
-	// If no module prefix, prepend current package
-	if !strings.Contains(key, ".") {
-		key = re.currentPackage + "." + key
-	}
-	return key
-}
-
-// analyzeVariableLiveness performs liveness analysis for a function body
-// It builds stmtVarUsages which maps each statement index to the set of variables used in that statement
-func (re *RustEmitter) analyzeVariableLiveness(body *ast.BlockStmt) {
-	if body == nil {
-		re.stmtVarUsages = nil
-		re.currentFuncBody = nil
-		return
-	}
-	re.currentFuncBody = body
-	re.stmtVarUsages = make([]map[string]bool, len(body.List))
-	for i, stmt := range body.List {
-		re.stmtVarUsages[i] = re.collectIdentifiersInStmt(stmt)
-	}
-	re.currentStmtIndex = 0
-}
-
-// isVariableUsedInLaterStatements checks if a variable will be used in any statement after the current one
-func (re *RustEmitter) isVariableUsedInLaterStatements(varName string) bool {
-	if re.stmtVarUsages == nil || re.currentFuncBody == nil {
-		return false
-	}
-	// Check all statements after the current one
-	for i := re.currentStmtIndex + 1; i < len(re.stmtVarUsages); i++ {
-		if re.stmtVarUsages[i][varName] {
-			return true
 		}
 	}
 	return false
 }
 
-func (re *RustEmitter) SetFile(file *os.File) {
-	re.file = file
+func (e *RustEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
+	if named, ok := t.(*types.Named); ok {
+		name := named.Obj().Name()
+		if named.Obj().Pkg() != nil {
+			name = named.Obj().Pkg().Path() + "." + name
+		}
+		if visited[name] {
+			return false
+		}
+		visited[name] = true
+	}
+	underlying := t.Underlying()
+	if basic, isBasic := underlying.(*types.Basic); isBasic {
+		if basic.Kind() == types.Float32 || basic.Kind() == types.Float64 {
+			return false
+		}
+		return true
+	}
+	if structType, isStruct := underlying.(*types.Struct); isStruct {
+		for i := 0; i < structType.NumFields(); i++ {
+			if !e.isHashableType(structType.Field(i).Type(), visited) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
-func (re *RustEmitter) GetFile() *os.File {
-	return re.file
-}
+// ============================================================
+// Program / Package
+// ============================================================
 
-func (re *RustEmitter) PreVisitProgram(indent int) {
-	re.aliases = make(map[string]Alias)
-	outputFile := re.Output
+func (e *RustEmitter) PreVisitProgram(indent int) {
+	e.aliases = make(map[string]Alias)
+	e.typeAliasMap = make(map[string]string)
+	outputFile := e.Output
 
-	// For Cargo projects, write to src/main.rs instead
-	if re.LinkRuntime != "" {
-		srcDir := filepath.Join(re.OutputDir, "src")
+	if e.LinkRuntime != "" {
+		srcDir := filepath.Join(e.OutputDir, "src")
 		if err := os.MkdirAll(srcDir, 0755); err != nil {
 			fmt.Println("Error creating src directory:", err)
 			return
@@ -1671,12 +882,15 @@ func (re *RustEmitter) PreVisitProgram(indent int) {
 	}
 
 	var err error
-	re.file, err = os.Create(outputFile)
-	re.SetFile(re.file)
+	e.file, err = os.Create(outputFile)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
 		return
 	}
+
+	e.fs = NewFragmentStack(e.GetGoFIR())
+
+	// Write Rust preamble
 	builtin := `use std::fmt;
 use std::any::Any;
 use std::rc::Rc;
@@ -1691,7 +905,7 @@ type Uint16 = u16;
 type Uint32 = u32;
 type Uint64 = u64;
 
-// println equivalents - multiple versions for different arg counts
+// println equivalents
 pub fn println<T: fmt::Display>(val: T) {
     std::println!("{}", val);
 }
@@ -1700,13 +914,12 @@ pub fn println0() {
     std::println!();
 }
 
-// printf - multiple versions for different arg counts
+// printf variants
 pub fn printf<T: fmt::Display>(val: T) {
     print!("{}", val);
 }
 
 pub fn printf2<T: fmt::Display>(fmt_str: String, val: T) {
-    // Convert C-style format to Rust format
     let rust_fmt = fmt_str.replace("%d", "{}").replace("%s", "{}").replace("%v", "{}");
     let result = rust_fmt.replace("{}", &format!("{}", val));
     print!("{}", result);
@@ -1730,17 +943,14 @@ pub fn printf5<T1: fmt::Display, T2: fmt::Display, T3: fmt::Display, T4: fmt::Di
     print!("{}", result);
 }
 
-// Print byte as character (for %c format)
 pub fn printc(b: i8) {
     print!("{}", b as u8 as char);
 }
 
-// Convert byte to character string (for Sprintf %c format)
 pub fn byte_to_char(b: i8) -> String {
     (b as u8 as char).to_string()
 }
 
-// Go-style append - takes ownership to avoid cloning
 pub fn append<T>(mut vec: Vec<T>, value: T) -> Vec<T> {
     vec.push(value);
     vec
@@ -1751,8 +961,7 @@ pub fn append_many<T: Clone>(mut vec: Vec<T>, values: &[T]) -> Vec<T> {
     vec
 }
 
-// Simple string_format using format!
-pub fn string_format(fmt_str: &str, args: &[&dyn fmt::Display]) -> String {
+pub fn string_format(fmt_str: String, args: &[&dyn fmt::Display]) -> String {
     let mut result = String::new();
     let mut split = fmt_str.split("{}");
     for (i, segment) in split.enumerate() {
@@ -1764,8 +973,7 @@ pub fn string_format(fmt_str: &str, args: &[&dyn fmt::Display]) -> String {
     result
 }
 
-// string_format for 2 args (format string + 1 value)
-pub fn string_format2<T: fmt::Display>(fmt_str: &str, val: T) -> String {
+pub fn string_format2<T: fmt::Display>(fmt_str: String, val: T) -> String {
     let rust_fmt = fmt_str.replace("%d", "{}").replace("%s", "{}").replace("%v", "{}");
     rust_fmt.replace("{}", &format!("{}", val))
 }
@@ -1774,63 +982,449 @@ pub fn len<T>(slice: &[T]) -> i32 {
     slice.len() as i32
 }
 `
-	str := re.emitAsString(builtin, indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
+	e.file.WriteString(builtin)
 
-	// Include panic runtime
-	panicStr := re.emitAsString("\n// GoAny panic runtime\n"+goanyrt.PanicRustSource+"\n", indent)
-	re.gir.emitToFileBuffer(panicStr, EmptyVisitMethod)
+	// Panic runtime
+	e.file.WriteString("\n// GoAny panic runtime\n")
+	e.file.WriteString(goanyrt.PanicRustSource)
+	e.file.WriteString("\n")
 
-	// Include runtime package modules (convention: mod X; use X::*;)
-	if re.LinkRuntime != "" {
-		for name, variant := range re.RuntimePackages {
+	// Runtime module imports
+	if e.LinkRuntime != "" {
+		for name, variant := range e.RuntimePackages {
 			if variant == "none" {
 				continue
 			}
-			modInclude := fmt.Sprintf("\n// %s runtime\nmod %s;\nuse %s::*;\n", name, name, name)
-			re.gir.emitToFileBuffer(modInclude, EmptyVisitMethod)
+			e.file.WriteString(fmt.Sprintf("\n// %s runtime\nmod %s;\nuse %s::*;\n", name, name, name))
 		}
-	}
-
-	re.insideForPostCond = false
-}
-
-func (re *RustEmitter) PostVisitProgram(indent int) {
-	emitTokensToFile(re.file, re.gir.tokenSlice)
-	re.file.Close()
-
-	// Replace struct key placeholder functions if any struct types are used as map keys
-	if len(re.structKeyTypes) > 0 {
-		re.replaceStructKeyFunctions()
-	}
-
-	// Generate Cargo project files if link-runtime is enabled
-	if re.LinkRuntime != "" {
-		if err := re.GenerateCargoToml(); err != nil {
-			log.Printf("Warning: %v", err)
-		}
-		if err := re.GenerateBuildRs(); err != nil {
-			log.Printf("Warning: %v", err)
-		}
-		if err := re.CopyRuntimeMods(); err != nil {
-			log.Printf("Warning: %v", err)
-		}
-	}
-
-	if re.OptimizeMoves && re.MoveOptCount > 0 {
-		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", re.MoveOptCount)
-	}
-	if re.OptimizeRefs && re.RefOptCount > 0 {
-		fmt.Printf("  Rust: %d clone(s) removed by reference optimization\n", re.RefOptCount)
 	}
 }
 
-// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
-func (re *RustEmitter) replaceStructKeyFunctions() {
-	outputPath := re.Output
-	// For Cargo projects, the actual file is in src/main.rs
-	if re.LinkRuntime != "" {
-		outputPath = filepath.Join(re.OutputDir, "src", "main.rs")
+func (e *RustEmitter) PostVisitProgram(indent int) {
+	tokens := e.fs.Reduce(string(PreVisitProgram))
+	for _, t := range tokens {
+		e.file.WriteString(t.Content)
+	}
+	e.file.Close()
+
+	if len(e.structKeyTypes) > 0 {
+		e.replaceStructKeyFunctions()
+	}
+
+	if e.LinkRuntime != "" {
+		if err := e.GenerateCargoToml(); err != nil {
+			log.Printf("Warning: %v", err)
+		}
+		if err := e.GenerateBuildRs(); err != nil {
+			log.Printf("Warning: %v", err)
+		}
+		if err := e.CopyRuntimeMods(); err != nil {
+			log.Printf("Warning: %v", err)
+		}
+	}
+
+	if e.Opt.OptimizeMoves && e.Opt.MoveOptCount > 0 {
+		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", e.Opt.MoveOptCount)
+	}
+	if e.Opt.OptimizeRefs && e.Opt.RefOptCount > 0 {
+		fmt.Printf("  Rust: %d clone(s) removed by reference optimization\n", e.Opt.RefOptCount)
+	}
+}
+
+func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
+	e.pkg = pkg
+	e.currentPackage = pkg.Name
+	e.Opt.refOptCurrentPkg = pkg.Name
+	e.Opt.SetPkg(pkg)
+	e.Opt.goTypeToRust = e.mapGoTypeToRust
+
+	if e.Opt.OptimizeRefs {
+		e.Opt.AccumulateReadOnlyAnalysis(pkg)
+	}
+
+	if pkg.Name != "main" {
+		e.fs.PushCode(fmt.Sprintf("pub mod %s {\nuse crate::*;\n\n", pkg.Name))
+	}
+}
+
+func (e *RustEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
+	if pkg.Name != "main" {
+		e.fs.PushCode(fmt.Sprintf("} // pub mod %s\n\n", pkg.Name))
+	}
+}
+
+// ============================================================
+// Forward Declaration Signatures (suppressed)
+// ============================================================
+
+func (e *RustEmitter) PreVisitFuncDeclSignatures(indent int) {
+	e.forwardDecl = true
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignatures(indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclSignatures))
+	e.forwardDecl = false
+}
+
+// ============================================================
+// Function Declarations
+// ============================================================
+
+func (e *RustEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	e.numFuncResults = 0
+	e.funcReturnType = nil
+	if node.Type.Results != nil {
+		e.numFuncResults = node.Type.Results.NumFields()
+		if e.numFuncResults == 1 && e.pkg != nil && e.pkg.TypesInfo != nil {
+			field := node.Type.Results.List[0]
+			if tv, ok := e.pkg.TypesInfo.Types[field.Type]; ok && tv.Type != nil {
+				e.funcReturnType = tv.Type
+			}
+		}
+	}
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeResultsList))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResults))
+	var resultTypes []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			resultTypes = append(resultTypes, t.Content)
+		}
+	}
+	if len(resultTypes) == 0 {
+		e.fs.Push("", TagType, nil)
+	} else if len(resultTypes) == 1 {
+		e.fs.Push(resultTypes[0], TagType, nil)
+	} else {
+		e.fs.Push("("+strings.Join(resultTypes, ", ")+")", TagType, nil)
+	}
+}
+
+func (e *RustEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclName))
+	e.fs.Push(node.Name, TagIdent, nil)
+	// Track current function key for optimization
+	e.Opt.refOptCurrentFunc = e.Opt.refOptCurrentPkg + "." + node.Name
+	e.Opt.currentParamIndex = 0
+	e.Opt.refOptCurrentRefParams = make(map[string]bool)
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeParamsListType))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsArgName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsList))
+	// tokens: type (TagExpr), then names (TagIdent)
+	typeStr := ""
+	var names []string
+	for _, t := range tokens {
+		if t.Tag == TagExpr && typeStr == "" {
+			typeStr = t.Content
+		} else if t.Tag == TagIdent {
+			names = append(names, t.Content)
+		}
+	}
+	// Rust params: name: mut Type (or name: &Type for ref-opt)
+	paramIdx := e.Opt.currentParamIndex
+	for _, name := range names {
+		escapedName := escapeRustKeyword(name)
+		isRefOpt := false
+		if e.Opt.OptimizeRefs && e.Opt.refOptReadOnly != nil {
+			if readOnlyFlags, ok := e.Opt.refOptReadOnly.ReadOnly[e.Opt.refOptCurrentFunc]; ok {
+				if paramIdx >= 0 && paramIdx < len(readOnlyFlags) && readOnlyFlags[paramIdx] {
+					isRefOpt = true
+				}
+			}
+		}
+		if isRefOpt {
+			e.fs.Push(fmt.Sprintf("%s: &%s", escapedName, typeStr), TagIdent, nil)
+			if e.Opt.refOptCurrentRefParams == nil {
+				e.Opt.refOptCurrentRefParams = make(map[string]bool)
+			}
+			e.Opt.refOptCurrentRefParams[escapedName] = true
+		} else {
+			e.fs.Push(fmt.Sprintf("mut %s: %s", escapedName, typeStr), TagIdent, nil)
+		}
+		paramIdx++
+	}
+	e.Opt.currentParamIndex = paramIdx
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
+	var paramDecls []string
+	for _, t := range tokens {
+		if t.Tag == TagIdent {
+			paramDecls = append(paramDecls, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(paramDecls, ", "))
+}
+
+func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
+	returnType := ""
+	funcName := ""
+	paramsStr := ""
+	for _, t := range tokens {
+		if t.Tag == TagType && returnType == "" {
+			returnType = t.Content
+		} else if t.Tag == TagIdent && funcName == "" {
+			funcName = t.Content
+		} else if t.Tag == TagExpr {
+			paramsStr = t.Content
+		}
+	}
+
+	var sig string
+	if returnType != "" {
+		sig = fmt.Sprintf("\npub fn %s(%s) -> %s", funcName, paramsStr, returnType)
+	} else {
+		sig = fmt.Sprintf("\npub fn %s(%s)", funcName, paramsStr)
+	}
+	e.fs.PushCode(sig)
+}
+
+func (e *RustEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncDeclBody))
+	e.fs.PushCode(bodyCode)
+}
+
+func (e *RustEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
+	sigCode := ""
+	bodyCode := ""
+	if len(tokens) >= 1 {
+		sigCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		bodyCode = tokens[1].Content
+	}
+	e.fs.PushCode(sigCode + " " + bodyCode + "\n\n")
+}
+
+// ============================================================
+// Block Statements
+// ============================================================
+
+func (e *RustEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *RustEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
+	itemCode := e.fs.ReduceToCode(string(PreVisitBlockStmtList))
+	e.fs.PushCode(itemCode)
+}
+
+func (e *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
+	var sb strings.Builder
+	sb.WriteString("{\n")
+	for _, t := range tokens {
+		if t.Content != "" {
+			sb.WriteString(t.Content)
+		}
+	}
+	sb.WriteString(rustIndent(indent/2) + "}")
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Struct Declarations (GenStructInfo)
+// ============================================================
+
+func (e *RustEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitGenStructFieldType))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *RustEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitGenStructFieldName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitGenStructInfo))
+
+	if node.Struct == nil {
+		return
+	}
+
+	type fieldInfo struct {
+		typeName string
+		name     string
+	}
+	var fields []fieldInfo
+	i := 0
+	for i < len(tokens) {
+		if tokens[i].Tag == TagExpr {
+			fi := fieldInfo{typeName: tokens[i].Content}
+			i++
+			if i < len(tokens) && tokens[i].Tag == TagIdent {
+				fi.name = tokens[i].Content
+				i++
+			}
+			fields = append(fields, fi)
+		} else if tokens[i].Tag == TagIdent {
+			fields = append(fields, fieldInfo{typeName: "Rc<dyn Any>", name: tokens[i].Content})
+			i++
+		} else {
+			i++
+		}
+	}
+
+	// Determine derives
+	hasInterfaceFields := e.structHasInterfaceFields(node.Name)
+	hasFunctionFields := e.structHasFunctionFields(node.Name)
+
+	var sb strings.Builder
+	if hasFunctionFields {
+		sb.WriteString("#[derive(Clone)]\n")
+	} else if hasInterfaceFields {
+		sb.WriteString("#[derive(Clone, Debug)]\n")
+	} else {
+		canCopy := e.structCanDeriveCopy(node.Name)
+		canHash := e.structCanDeriveHash(node.Name)
+		if canCopy && canHash {
+			sb.WriteString("#[derive(Default, Clone, Copy, Debug, Hash, PartialEq, Eq)]\n")
+		} else if canCopy {
+			sb.WriteString("#[derive(Default, Clone, Copy, Debug)]\n")
+		} else if canHash {
+			sb.WriteString("#[derive(Default, Clone, Debug, Hash, PartialEq, Eq)]\n")
+		} else {
+			sb.WriteString("#[derive(Default, Clone, Debug)]\n")
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("pub struct %s {\n", node.Name))
+	for _, f := range fields {
+		sb.WriteString(fmt.Sprintf("    pub %s: %s,\n", f.name, f.typeName))
+	}
+	sb.WriteString("}\n")
+
+	// Manual impl Default for structs with interface{} fields
+	if hasInterfaceFields && !hasFunctionFields && node.Struct != nil && node.Struct.Fields != nil {
+		sb.WriteString(fmt.Sprintf("\nimpl Default for %s {\n", node.Name))
+		sb.WriteString("    fn default() -> Self {\n")
+		sb.WriteString(fmt.Sprintf("        %s {\n", node.Name))
+		for _, field := range node.Struct.Fields.List {
+			if len(field.Names) == 0 {
+				continue
+			}
+			fieldName := field.Names[0].Name
+			fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+			defaultVal := e.rustDefaultForGoType(fieldType)
+			sb.WriteString(fmt.Sprintf("            %s: %s,\n", fieldName, defaultVal))
+		}
+		sb.WriteString("        }\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("}\n")
+	}
+
+	sb.WriteString("\n")
+	e.fs.PushCode(sb.String())
+}
+
+func (e *RustEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
+	// Structs already pushed to stack
+}
+
+// ============================================================
+// Constants (GenDeclConst)
+// ============================================================
+
+func (e *RustEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
+	valTokens := e.fs.Reduce(string(PreVisitGenDeclConstName))
+	valCode := ""
+	for _, t := range valTokens {
+		valCode += t.Content
+	}
+	if valCode == "" {
+		valCode = "0"
+	}
+
+	constType := "i32"
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		if obj := e.pkg.TypesInfo.Defs[node]; obj != nil {
+			ut := obj.Type().Underlying()
+			resolved := getRustValueTypeCast(ut)
+			if resolved == "Rc<dyn Any>" {
+				if basic, ok := ut.(*types.Basic); ok {
+					if basic.Info()&types.IsInteger != 0 {
+						resolved = "i32"
+					} else if basic.Info()&types.IsFloat != 0 {
+						resolved = "f64"
+					} else if basic.Info()&types.IsString != 0 {
+						resolved = "&str"
+					} else if basic.Info()&types.IsBoolean != 0 {
+						resolved = "bool"
+					}
+				}
+			}
+			constType = resolved
+		}
+	}
+
+	name := node.Name
+	// String constants use &str
+	if constType == "String" {
+		constType = "&str"
+	}
+	e.fs.PushCode(fmt.Sprintf("pub const %s: %s = %s;\n", name, constType, valCode))
+}
+
+func (e *RustEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
+	// Constants flow through
+}
+
+// ============================================================
+// Type Aliases
+// ============================================================
+
+func (e *RustEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
+	e.currentAliasName = node.Name
+}
+
+func (e *RustEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitTypeAliasName))
+
+	if e.currentAliasName != "" {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if tv, ok := e.pkg.TypesInfo.Types[node]; ok && tv.Type != nil {
+				rustType := e.qualifiedRustTypeName(tv.Type)
+				if e.typeAliasMap == nil {
+					e.typeAliasMap = make(map[string]string)
+				}
+				e.typeAliasMap[e.currentAliasName] = rustType
+				// Emit Rust type alias
+				e.fs.PushCode(fmt.Sprintf("pub type %s = %s;\n", e.currentAliasName, rustType))
+			}
+		}
+	}
+	e.currentAliasName = ""
+}
+
+// ============================================================
+// replaceStructKeyFunctions replaces placeholder hash/equality functions
+// ============================================================
+
+func (e *RustEmitter) replaceStructKeyFunctions() {
+	outputPath := e.Output
+	if e.LinkRuntime != "" {
+		outputPath = filepath.Join(e.OutputDir, "src", "main.rs")
 	}
 	content, err := os.ReadFile(outputPath)
 	if err != nil {
@@ -1840,10 +1434,8 @@ func (re *RustEmitter) replaceStructKeyFunctions() {
 
 	newContent := string(content)
 
-	// Generate hashStructKey function body with downcasts for each struct type
-	// The stored paths already include the correct module prefix (e.g., "super::Point" or "super::types::MyStruct")
 	var hashCases strings.Builder
-	for _, rustPath := range re.structKeyTypes {
+	for _, rustPath := range e.structKeyTypes {
 		hashCases.WriteString(fmt.Sprintf(`
         if let Some(s) = key.downcast_ref::<%s>() {
             use std::hash::{Hash, Hasher};
@@ -1859,14 +1451,11 @@ func (re *RustEmitter) replaceStructKeyFunctions() {
         return 0;
     }`, hashCases.String())
 
-	// Replace hashStructKey function using regex
 	hashPattern := regexp.MustCompile(`(?s)pub fn hashStructKey\s*\([^)]*\)\s*->\s*i32\s*\{\s*return 0;\s*\}`)
 	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
 
-	// Generate structKeysEqual function body with downcasts for each struct type
-	// The stored paths already include the correct module prefix
 	var equalCases strings.Builder
-	for _, rustPath := range re.structKeyTypes {
+	for _, rustPath := range e.structKeyTypes {
 		equalCases.WriteString(fmt.Sprintf(`
         if let (Some(sa), Some(sb)) = (a.downcast_ref::<%s>(), b.downcast_ref::<%s>()) {
             return sa == sb;
@@ -1877,5018 +1466,36 @@ func (re *RustEmitter) replaceStructKeyFunctions() {
         return false;
     }`, equalCases.String())
 
-	// Replace structKeysEqual function using regex
 	equalPattern := regexp.MustCompile(`(?s)pub fn structKeysEqual\s*\([^)]*\)\s*->\s*bool\s*\{\s*return false;\s*\}`)
 	newContent = equalPattern.ReplaceAllString(newContent, newEqualBody)
 
-	// Write back the modified content
-	err = os.WriteFile(outputPath, []byte(newContent), 0644)
-	if err != nil {
-		log.Printf("Warning: could not write file after struct key replacement: %v", err)
+	if err := os.WriteFile(outputPath, []byte(newContent), 0644); err != nil {
+		log.Printf("Warning: could not write struct key replacements: %v", err)
 	}
 }
 
-func (re *RustEmitter) PreVisitFuncDeclSignatures(indent int) {
-	re.forwardDecls = true
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignatures(indent int) {
-	re.forwardDecls = false
-}
-
-func (re *RustEmitter) PreVisitFuncDeclName(node *ast.Ident, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Track current function name for reference optimization
-	if re.OptimizeRefs {
-		re.refOptCurrentFunc = re.currentPackage + "." + node.Name
-		re.refOptCurrentRefParams = make(map[string]bool)
-	}
-	var str string
-	str = re.emitAsString(fmt.Sprintf("pub fn %s", node.Name), 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	// Perform liveness analysis before emitting the function body
-	re.analyzeVariableLiveness(node)
-}
-
-func (re *RustEmitter) PreVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	// Update current statement index if this statement is in the function body
-	if re.currentFuncBody != nil {
-		for i, stmt := range re.currentFuncBody.List {
-			if stmt == node {
-				re.currentStmtIndex = i
-				break
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Track block depth when inside a for loop body that needs increment
-	if re.inForLoopBody {
-		re.forLoopBodyDepth++
-	} else if re.pendingLoopIncrement {
-		// This is the for loop body block
-		re.inForLoopBody = true
-		re.forLoopBodyDepth = 1
-	}
-	re.emitToken("{", LeftBrace, 1)
-	str := re.emitAsString("\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Track block depth and add loop increment only when exiting the loop body block itself
-	if re.inForLoopBody {
-		re.forLoopBodyDepth--
-		if re.forLoopBodyDepth == 0 && re.pendingLoopIncrement && re.loopIncrementVar != "" {
-			// Emit the increment statement at end of loop body
-			incStr := re.emitAsString(re.loopIncrementVar+" "+re.loopIncrementOp+" "+re.loopIncrementVal+";\n", indent)
-			re.gir.emitToFileBuffer(incStr, EmptyVisitMethod)
-			// Clear the flags
-			re.inForLoopBody = false
-			re.pendingLoopIncrement = false
-		}
-	}
-	re.emitToken("}", RightBrace, 1)
-	// Note: removed isArray = false as it interfered with composite literal stack management
-}
-
-func (re *RustEmitter) PreVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Analyze which parameters are mutated in the function body
-	if node.Type != nil && node.Type.Params != nil {
-		re.analyzeParamMutations(node.Type.Params.List, node.Body)
-	} else {
-		re.mutatedParams = make(map[string]bool)
-	}
-	re.shouldGenerate = true
-	re.inFuncParam = true // Track that we're in function parameters
-	re.emitToken("(", LeftParen, 0)
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.shouldGenerate = false
-	re.inFuncParam = false // Done with function parameters
-	re.emitToken(")", RightParen, 0)
-
-	p1 := SearchPointerIndexReverse("@PreVisitFuncDeclSignatureTypeResults", re.gir.pointerAndIndexVec)
-	p2 := SearchPointerIndexReverse("@PostVisitFuncDeclSignatureTypeResults", re.gir.pointerAndIndexVec)
-	if p1 != nil && p2 != nil {
-		results, err := ExtractTokensBetween(p1.Index, p2.Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting results:", err)
-			return
-		}
-
-		re.gir.tokenSlice, err = RewriteTokensBetween(re.gir.tokenSlice, p1.Index, p2.Index, []string{""})
-		if err != nil {
-			fmt.Println("Error rewriting file buffer:", err)
-			return
-		}
-		if strings.TrimSpace(strings.Join(tokensToStrings(results), "")) != "" {
-			re.gir.tokenSlice = append(re.gir.tokenSlice, CreateToken(RustKeyword, " -> "))
-			re.gir.tokenSlice = append(re.gir.tokenSlice, CreateToken(Identifier, strings.Join(tokensToStrings(results), "")))
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitIdent(e *ast.Ident, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if !re.shouldGenerate {
-		return
-	}
-	// Skip emission during key-value range key/value visits
-	if re.suppressRangeEmit {
-		return
-	}
-	// Capture to buffer during map key capture (check before suppress)
-	if re.captureMapKey {
-		re.capturedMapKey += e.Name
-		return
-	}
-	// Skip emission during map assignment LHS suppression
-	if re.suppressMapEmit {
-		return
-	}
-	// Capture to buffer during range collection expression visit
-	if re.captureRangeExpr {
-		re.rangeCollectionExpr += e.Name
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitIdent")
-
-	var str string
-	name := e.Name
-
-	// Map-specific identifier rewriting
-	if re.isMapMakeCall && name == "make" {
-		name = "hmap::newHashMap"
-	} else if re.isSliceMakeCall && name == "make" {
-		// make([]T, n) is handled via token rewriting in PostVisitCallExprArgs
-		name = "vec_make_placeholder"
-	} else if re.isDeleteCall && name == "delete" {
-		name = re.deleteMapVarName + " = hmap::hashMapDelete"
-	} else if re.isMapLenCall && name == "len" {
-		name = "hmap::hashMapLen"
-	} else {
-		name = re.lowerToBuiltins(name)
-	}
-
-	if name == "nil" {
-		if re.currentFuncReturnsAny || re.inReturnStmt {
-			// Check if current function returns interface{}/any - use Rc default
-			// For return statements in interface{}-returning functions
-			str = re.emitAsString("Rc::new(0_i32) as Rc<dyn Any>", indent)
-		} else {
-			// In Go, nil for slices means empty slice - use Vec::new() in Rust
-			str = re.emitAsString("Vec::new()", indent)
-		}
-	} else {
-		if n, ok := rustTypesMap[name]; ok {
-			str = re.emitAsString(n, indent)
-		} else {
-			// Escape Rust keywords
-			name = escapeRustKeyword(name)
-			str = re.emitAsString(name, indent)
-		}
-	}
-
-	re.emitToken(str, Identifier, 0)
-
-}
-func (re *RustEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Push the args start position to the stack for nested call handling
-	re.callExprArgsMarkerStack = append(re.callExprArgsMarkerStack, len(re.gir.tokenSlice))
-	re.gir.emitToFileBuffer("", "@PreVisitCallExprArgs")
-
-	// For make(map[K]V), emit open paren and key type constant
-	if re.isMapMakeCall {
-		re.emitToken("(", LeftParen, 0)
-		re.gir.emitToFileBuffer(fmt.Sprintf("%d", re.mapMakeKeyType), EmptyVisitMethod)
-		// Push stacks but skip normal function name logic
-		re.currentCallArgIdentsStack = append(re.currentCallArgIdentsStack, re.collectCallArgIdentCounts(node))
-		re.currentCallIsAppend = false
-		re.currentCallIsLen = false
-		if re.OptimizeRefs {
-			re.refOptCalleeReadOnly = append(re.refOptCalleeReadOnly, nil)
-		}
-		return
-	}
-
-	re.emitToken("(", LeftParen, 0)
-	// Push call arg identifier counts for move optimization
-	re.currentCallArgIdentsStack = append(re.currentCallArgIdentsStack, re.collectCallArgIdentCounts(node))
-	// Use stack indices for function name extraction (top of stacks = current call)
-	re.currentCallIsAppend = false // Reset for each call
-	re.currentCallIsLen = false
-	// Push nil for ref opt callee stack (will be set below if applicable)
-	if re.OptimizeRefs {
-		re.refOptCalleeReadOnly = append(re.refOptCalleeReadOnly, nil)
-	}
-	if len(re.callExprFunMarkerStack) > 0 && len(re.callExprFunEndMarkerStack) > 0 {
-		p1Index := re.callExprFunMarkerStack[len(re.callExprFunMarkerStack)-1]
-		p2Index := re.callExprFunEndMarkerStack[len(re.callExprFunEndMarkerStack)-1]
-		// Extract the substring between the positions of the pointers
-		funName, err := ExtractTokensBetween(p1Index, p2Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting function name:", err)
-			return
-		}
-		funNameStr := strings.Join(tokensToStrings(funName), "")
-		// Track if this is an append call (takes ownership, not reference)
-		if strings.Contains(funNameStr, "append") {
-			re.currentCallIsAppend = true
-		}
-		if strings.Contains(funNameStr, "len") {
-			re.currentCallIsLen = true
-		}
-		// Look up callee's read-only param flags for reference optimization
-		if re.OptimizeRefs && len(re.refOptCalleeReadOnly) > 0 {
-			key := re.refOptFuncKey(strings.TrimSpace(funNameStr))
-			if flags, ok := re.refOptReadOnly[key]; ok {
-				re.refOptCalleeReadOnly[len(re.refOptCalleeReadOnly)-1] = flags
-			}
-		}
-		// Skip adding & for type conversions and map-related calls
-		if isConversion, _ := re.isTypeConversion(funNameStr); !isConversion {
-			if strings.Contains(funNameStr, "len") && (!re.isMapLenCall || re.OptimizeRefs) {
-				// add & before the first argument for len (but not append - it takes ownership)
-				// Skip & for map len calls unless ref-opt is enabled (hashMapLen takes &HashMap with ref-opt)
-				str := re.emitAsString("&", 0)
-				re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-// isTypeConversion checks if a function name represents a type conversion
-func (re *RustEmitter) isTypeConversion(funName string) (bool, string) {
-	// Map Go type names and Rust type names to Rust cast targets
-	typeConversions := map[string]string{
-		// Go type names
-		"int8":    "i8",
-		"int16":   "i16",
-		"int32":   "i32",
-		"int64":   "i64",
-		"int":     "i32",
-		"uint8":   "u8",
-		"uint16":  "u16",
-		"uint32":  "u32",
-		"uint64":  "u64",
-		"uint":    "u32",
-		"float32": "f32",
-		"float64": "f64",
-		"byte":    "u8",
-		"rune":    "i32",
-		// Rust type names (in case they're already converted)
-		"i8":  "i8",
-		"i16": "i16",
-		"i32": "i32",
-		"i64": "i64",
-		"u8":  "u8",
-		"u16": "u16",
-		"u32": "u32",
-		"u64": "u64",
-		"f32": "f32",
-		"f64": "f64",
-	}
-	if rustType, ok := typeConversions[funName]; ok {
-		return true, rustType
-	}
-	return false, ""
-}
-
-func (re *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
-	if re.forwardDecls {
-		return
-	}
-
-	// Pop from stacks at the end (defer to ensure it happens even on early returns)
-	defer func() {
-		if len(re.callExprFunMarkerStack) > 0 {
-			re.callExprFunMarkerStack = re.callExprFunMarkerStack[:len(re.callExprFunMarkerStack)-1]
-		}
-		if len(re.callExprFunEndMarkerStack) > 0 {
-			re.callExprFunEndMarkerStack = re.callExprFunEndMarkerStack[:len(re.callExprFunEndMarkerStack)-1]
-		}
-		if len(re.callExprArgsMarkerStack) > 0 {
-			re.callExprArgsMarkerStack = re.callExprArgsMarkerStack[:len(re.callExprArgsMarkerStack)-1]
-		}
-		if len(re.currentCallArgIdentsStack) > 0 {
-			re.currentCallArgIdentsStack = re.currentCallArgIdentsStack[:len(re.currentCallArgIdentsStack)-1]
-		}
-		if re.OptimizeRefs && len(re.refOptCalleeReadOnly) > 0 {
-			re.refOptCalleeReadOnly = re.refOptCalleeReadOnly[:len(re.refOptCalleeReadOnly)-1]
-		}
-	}()
-
-	// Handle make(map[K]V) - all args were suppressed, just close the paren
-	if re.isMapMakeCall {
-		re.emitToken(")", RightParen, 0)
-		re.isMapMakeCall = false
-		return
-	}
-	// Handle make([]T, n) for transpiled runtime - rewrite to vec![default; n as usize]
-	if re.isSliceMakeCall {
-		pArgsIndex := re.callExprArgsMarkerStack[len(re.callExprArgsMarkerStack)-1]
-		// Extract all args tokens (arg 0 was suppressed, so we have just "(size")
-		argTokens, err := ExtractTokensBetween(pArgsIndex, len(re.gir.tokenSlice), re.gir.tokenSlice)
-		if err == nil {
-			argStr := strings.TrimSpace(strings.Join(tokensToStrings(argTokens), ""))
-			// Strip opening paren and any trailing content
-			argStr = strings.TrimLeft(argStr, "(")
-			argStr = strings.TrimRight(argStr, ")")
-			// If there's a comma (from normal arg separation), take just the last part
-			if commaIdx := strings.LastIndex(argStr, ","); commaIdx >= 0 {
-				argStr = strings.TrimSpace(argStr[commaIdx+1:])
-			}
-			sizeArg := strings.TrimSpace(argStr)
-			if sizeArg == "" {
-				sizeArg = "0"
-			}
-			p1Index := re.callExprFunMarkerStack[len(re.callExprFunMarkerStack)-1]
-			// Determine default value based on element type.
-			// Use typed defaults to ensure type inference works even inside Rc::new().
-			var defaultVal string
-			switch re.sliceMakeElemType {
-			case "bool":
-				defaultVal = "false"
-			case "Rc<dyn Any>":
-				defaultVal = "Rc::new(0_i32) as Rc<dyn Any>"
-			case "i32":
-				defaultVal = "0_i32"
-			case "i8":
-				defaultVal = "0_i8"
-			case "i16":
-				defaultVal = "0_i16"
-			case "i64":
-				defaultVal = "0_i64"
-			case "u8":
-				defaultVal = "0_u8"
-			case "u16":
-				defaultVal = "0_u16"
-			case "u32":
-				defaultVal = "0_u32"
-			case "u64":
-				defaultVal = "0_u64"
-			case "f32":
-				defaultVal = "0.0_f32"
-			case "f64":
-				defaultVal = "0.0_f64"
-			case "String":
-				defaultVal = "String::new()"
-			case "hmap::HashMap":
-				defaultVal = "hmap::newHashMap(1)"
-			default:
-				if strings.HasPrefix(re.sliceMakeElemType, "Vec<") {
-					// Extract inner type: Vec<i32> -> i32
-					inner := re.sliceMakeElemType[4 : len(re.sliceMakeElemType)-1]
-					defaultVal = fmt.Sprintf("Vec::<%s>::new()", inner)
-				} else {
-					defaultVal = "Default::default()"
-				}
-			}
-			newTokens := []string{fmt.Sprintf("vec![%s; %s as usize]", defaultVal, sizeArg)}
-			re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
-		}
-		re.isSliceMakeCall = false
-		re.sliceMakeElemType = ""
-		return
-	}
-	// Reset map call flags
-	if re.isDeleteCall {
-		// Close Rc::new() for key (with cast if needed), then close hashMapDelete()
-		re.gir.emitToFileBuffer(re.mapKeyCastSuffix+"))", EmptyVisitMethod)
-		re.isDeleteCall = false
-		re.deleteMapVarName = ""
-		re.mapKeyCastSuffix = ""
-		re.mapKeyIsString = false
-		return
-	}
-	if re.isMapLenCall {
-		re.emitToken(")", RightParen, 0)
-		re.isMapLenCall = false
-		return
-	}
-
-	// Use stack indices for the current call (top of stacks)
-	if len(re.callExprFunMarkerStack) == 0 || len(re.callExprFunEndMarkerStack) == 0 || len(re.callExprArgsMarkerStack) == 0 {
-		re.emitToken(")", RightParen, 0)
-		return
-	}
-
-	p1Index := re.callExprFunMarkerStack[len(re.callExprFunMarkerStack)-1]
-	p2Index := re.callExprFunEndMarkerStack[len(re.callExprFunEndMarkerStack)-1]
-	pArgsIndex := re.callExprArgsMarkerStack[len(re.callExprArgsMarkerStack)-1]
-
-	funName, err := ExtractTokensBetween(p1Index, p2Index, re.gir.tokenSlice)
-	if err == nil {
-		funNameStr := strings.Join(tokensToStrings(funName), "")
-
-		// Handle local closure inlining: addToken() -> { body }
-		funNameTrimmedForClosure := strings.TrimSpace(funNameStr)
-		if bodyTokens, ok := re.localClosureBodyTokens[funNameTrimmedForClosure]; ok && len(node) == 0 {
-			// Replace the entire call with the inlined body wrapped in a block
-			newTokens := []string{"{"}
-			for _, tok := range bodyTokens {
-				newTokens = append(newTokens, tok.Content)
-			}
-			newTokens = append(newTokens, "}")
-			re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
-			return // Skip emitting closing paren since we replaced everything
-		}
-
-		// Handle type conversions: i8(x) -> (x as i8)
-		funNameTrimmed := strings.TrimSpace(funNameStr)
-		if isConv, rustType := re.isTypeConversion(funNameTrimmed); isConv && len(node) == 1 {
-			// Extract the argument tokens (between @PreVisitCallExprArgs and current position)
-			argTokens, err := ExtractTokensBetween(pArgsIndex, len(re.gir.tokenSlice), re.gir.tokenSlice)
-			if err == nil && len(argTokens) > 0 {
-				// Remove the opening paren from call args (added by PreVisitCallExprArgs)
-				// but keep any inner parens (e.g., from binary expressions)
-				argStr := strings.TrimSpace(strings.Join(tokensToStrings(argTokens), ""))
-				if len(argStr) > 0 && argStr[0] == '(' {
-					argStr = argStr[1:]
-				}
-				argStr = strings.TrimSpace(argStr)
-				// Generate: (arg as type)
-				newTokens := []string{"(", argStr, " as ", rustType, ")"}
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
-				return // Skip emitting closing paren since we replaced everything
-			}
-		}
-
-		// Handle println with 0 args
-		if funNameStr == "println" && len(node) == 0 {
-			re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, p2Index, []string{"println0"})
-		}
-		// Handle printf with different arg counts (count includes format string)
-		if funNameStr == "printf" {
-			switch len(node) {
-			case 2:
-				// Special case: printf("%c", byte) -> printc(byte)
-				if basicLit, ok := node[0].(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
-					fmtStr := strings.Trim(basicLit.Value, "\"")
-					if fmtStr == "%c" {
-						// Rewrite to printc and remove the format string argument
-						// Find the argument tokens
-						argTokens, err := ExtractTokensBetween(pArgsIndex, len(re.gir.tokenSlice), re.gir.tokenSlice)
-						if err == nil && len(argTokens) > 0 {
-							// Find the comma that separates the format string from the actual argument
-							argStr := strings.Join(tokensToStrings(argTokens), "")
-							// Skip the opening paren
-							if len(argStr) > 0 && argStr[0] == '(' {
-								argStr = argStr[1:]
-							}
-							// Find comma and extract just the second argument
-							commaIdx := strings.Index(argStr, ",")
-							if commaIdx >= 0 {
-								secondArg := strings.TrimSpace(argStr[commaIdx+1:])
-								// Rewrite: printf("%c", b) -> printc(b)
-								newTokens := []string{"printc", "(", secondArg}
-								re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
-								// Don't return here - let the closing paren be added normally
-								break
-							}
-						}
-					}
-				}
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, p2Index, []string{"printf2"})
-			case 3:
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, p2Index, []string{"printf3"})
-			case 4:
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, p2Index, []string{"printf4"})
-			case 5:
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, p2Index, []string{"printf5"})
-			}
-		}
-		// Handle string_format with different arg counts
-		if funNameStr == "string_format" {
-			switch len(node) {
-			case 2:
-				// Special case: Sprintf("%c", byte) -> byte_to_char(byte)
-				if basicLit, ok := node[0].(*ast.BasicLit); ok && basicLit.Kind == token.STRING {
-					fmtStr := strings.Trim(basicLit.Value, "\"")
-					if fmtStr == "%c" {
-						// Rewrite to byte_to_char and remove the format string argument
-						argTokens, err := ExtractTokensBetween(pArgsIndex, len(re.gir.tokenSlice), re.gir.tokenSlice)
-						if err == nil && len(argTokens) > 0 {
-							argStr := strings.Join(tokensToStrings(argTokens), "")
-							if len(argStr) > 0 && argStr[0] == '(' {
-								argStr = argStr[1:]
-							}
-							commaIdx := strings.Index(argStr, ",")
-							if commaIdx >= 0 {
-								secondArg := strings.TrimSpace(argStr[commaIdx+1:])
-								newTokens := []string{"byte_to_char", "(", secondArg}
-								re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
-								break
-							}
-						}
-					}
-				}
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, p2Index, []string{"string_format2"})
-			}
-		}
-
-		// Handle len() on String - convert to method syntax: len(str) -> str.len() as i32
-		if funNameStr == "len" && len(node) == 1 {
-			argType := re.pkg.TypesInfo.Types[node[0]]
-			if argType.Type != nil && argType.Type.String() == "string" {
-				// Extract the argument tokens
-				argTokens, err := ExtractTokensBetween(pArgsIndex, len(re.gir.tokenSlice), re.gir.tokenSlice)
-				if err == nil && len(argTokens) > 0 {
-					argStr := strings.TrimSpace(strings.Join(tokensToStrings(argTokens), ""))
-					// Remove ( from start and & if present
-					if len(argStr) > 0 && argStr[0] == '(' {
-						argStr = argStr[1:]
-					}
-					argStr = strings.TrimPrefix(argStr, "&")
-					argStr = strings.TrimSpace(argStr)
-					// Generate: str.len() as i32
-					newTokens := []string{argStr, ".len() as i32"}
-					re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1Index, len(re.gir.tokenSlice), newTokens)
-					return // Skip emitting closing paren
-				}
-			}
-		}
-	}
-	re.emitToken(")", RightParen, 0)
-}
-
-func (re *RustEmitter) PreVisitBasicLit(e *ast.BasicLit, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	var str string
-	if e.Kind == token.STRING {
-		// Use a local copy to avoid mutating the AST (which affects other emitters)
-		value := e.Value
-		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-			// Remove only the outer quotes, keep escaped content intact
-			value = value[1 : len(value)-1]
-			str = (re.emitAsString(fmt.Sprintf("\"%s\"", value), 0))
-		} else if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
-			// Raw string literal - use Rust raw string
-			value = value[1 : len(value)-1]
-			str = (re.emitAsString(fmt.Sprintf("r#\"%s\"#", value), 0))
-		} else {
-			str = (re.emitAsString(fmt.Sprintf("\"%s\"", value), 0))
-		}
-		re.emitToken(str, StringLiteral, 0)
-	} else if e.Kind == token.CHAR {
-		// Character literals in Go are runes - convert to numeric i8 for Rust
-		// This allows use in match patterns (which don't allow `as` casts)
-		charVal := e.Value
-		if len(charVal) >= 3 && charVal[0] == '\'' && charVal[len(charVal)-1] == '\'' {
-			inner := charVal[1 : len(charVal)-1]
-			var numVal int
-			// Handle escape sequences
-			if len(inner) >= 2 && inner[0] == '\\' {
-				switch inner[1] {
-				case 'n':
-					numVal = 10 // newline
-				case 't':
-					numVal = 9 // tab
-				case 'r':
-					numVal = 13 // carriage return
-				case '\\':
-					numVal = 92 // backslash
-				case '\'':
-					numVal = 39 // single quote
-				case '0':
-					numVal = 0 // null
-				default:
-					numVal = int(inner[1])
-				}
-			} else if len(inner) == 1 {
-				// Single character - use ASCII value
-				numVal = int(inner[0])
-			} else {
-				// Fallback - just emit as is
-				str = re.emitAsString(charVal, 0)
-				re.emitToken(str, CharLiteral, 0)
-				return
-			}
-			// Don't add i8 suffix - let Rust infer the type from context
-			// This allows character literals to work in match expressions cast to i32
-			str = re.emitAsString(fmt.Sprintf("%d", numVal), 0)
-		} else {
-			str = re.emitAsString(charVal, 0)
-		}
-		re.emitToken(str, CharLiteral, 0)
-	} else if e.Kind == token.INT {
-		// Check if the integer literal should be emitted as a float
-		// This happens when:
-		// 1. The expected type from context is float64 or float32
-		// 2. We're in a binary expression where one operand is float
-		tv := re.pkg.TypesInfo.Types[e]
-		value := e.Value
-		needsFloatSuffix := false
-		if tv.Type != nil {
-			typeStr := tv.Type.String()
-			if typeStr == "float64" || typeStr == "float32" || typeStr == "untyped float" {
-				needsFloatSuffix = true
-			}
-		}
-		// Also check if we're in a float binary expression
-		if re.inFloatBinaryExpr {
-			needsFloatSuffix = true
-		}
-		if needsFloatSuffix && !strings.Contains(value, ".") {
-			value = value + ".0"
-		}
-		str = (re.emitAsString(value, 0))
-		re.emitToken(str, NumberLiteral, 0)
-	} else {
-		str = (re.emitAsString(e.Value, 0))
-		re.emitToken(str, NumberLiteral, 0)
-	}
-}
-
-func (re *RustEmitter) PostVisitBasicLit(e *ast.BasicLit, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// For string literals, add .to_string() to convert &str to String
-	// But skip if we're in a += context (Rust's += for String expects &str)
-	if e.Kind == token.STRING {
-		if re.inAssignRhs && re.assignmentToken == "+=" {
-			// Don't add .to_string() for += operations
-			return
-		}
-		if re.captureMapKey {
-			re.capturedMapKey += ".to_string()"
-			return
-		}
-		if re.suppressMapEmit {
-			return
-		}
-		re.gir.emitToFileBuffer(".to_string()", EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Track if this declaration has an explicit initialization value
-	re.hasDeclValue = index < len(node.Values)
-	// Detect var m map[K]V declarations (no initialization value)
-	if len(node.Values) == 0 && node.Type != nil {
-		if re.pkg != nil && re.pkg.TypesInfo != nil {
-			if typeAndValue, ok := re.pkg.TypesInfo.Types[node.Type]; ok {
-				if _, isMap := typeAndValue.Type.Underlying().(*types.Map); isMap {
-					if mapType, ok := node.Type.(*ast.MapType); ok {
-						re.pendingMapInit = true
-						re.pendingMapKeyType = re.getMapKeyTypeConst(mapType)
-					}
-				}
-			}
-		}
-	}
-	// For second and subsequent names, start a new let statement
-	if index > 0 {
-		re.emitToken(";", Semicolon, 0)
-		re.emitToken("\n", NewLine, 0)
-		re.emitToken("let", RustKeyword, indent)
-		re.emitToken(" ", WhiteSpace, 0)
-		re.emitToken("mut", RustKeyword, 0)
-		re.emitToken(" ", WhiteSpace, 0)
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitDeclStmtValueSpecType")
-}
-
-func (re *RustEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	pointerAndPosition := SearchPointerIndexReverse("@PreVisitDeclStmtValueSpecType", re.gir.pointerAndIndexVec)
-	if pointerAndPosition != nil {
-		typeInfo := re.pkg.TypesInfo.Types[node.Type]
-		// Only do alias replacement if the type is NOT already a named type (alias)
-		// If it's a named type like types.ExprKind, don't replace it with another alias
-		if typeInfo.Type != nil {
-			if _, isNamed := typeInfo.Type.(*types.Named); !isNamed {
-				// Type is a basic/primitive type - check for alias replacement
-				for aliasName, alias := range re.aliases {
-					if alias.UnderlyingType == typeInfo.Type.Underlying().String() {
-						re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), []string{aliasName})
-						break
-					}
-				}
-			}
-		}
-	}
-	str := re.emitAsString(" ", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.gir.emitToFileBuffer("", "@PostVisitDeclStmtValueSpecType")
-}
-
-func (re *RustEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.declNameIndex = index
-	re.gir.emitToFileBuffer("", "@PreVisitDeclStmtValueSpecNames")
-}
-
-func (re *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Reorder tokens: swap type and name to get "name: type" format
-	// This needs to be done for each name-type pair
-	p1 := SearchPointerIndexReverse("@PreVisitDeclStmtValueSpecType", re.gir.pointerAndIndexVec)
-	p2 := SearchPointerIndexReverse("@PostVisitDeclStmtValueSpecType", re.gir.pointerAndIndexVec)
-	p3 := SearchPointerIndexReverse("@PreVisitDeclStmtValueSpecNames", re.gir.pointerAndIndexVec)
-
-	// Save the type name BEFORE reordering for default initialization
-	var typeName string
-	if p1 != nil && p2 != nil {
-		fieldType, err := ExtractTokensBetween(p1.Index, p2.Index, re.gir.tokenSlice)
-		if err == nil && len(fieldType) > 0 {
-			typeName = strings.TrimSpace(strings.Join(tokensToStrings(fieldType), ""))
-		}
-	}
-
-	if p1 != nil && p2 != nil && p3 != nil {
-		// Extract the type tokens
-		fieldType, err := ExtractTokensBetween(p1.Index, p2.Index, re.gir.tokenSlice)
-		if err == nil && len(fieldType) > 0 {
-			// Extract the name tokens (from p3 to end)
-			fieldName, err := ExtractTokensBetween(p3.Index, len(re.gir.tokenSlice), re.gir.tokenSlice)
-			if err == nil && len(fieldName) > 0 {
-				// Build new tokens: name: type
-				newTokens := []string{}
-				newTokens = append(newTokens, tokensToStrings(fieldName)...)
-				newTokens = append(newTokens, ":")
-				newTokens = append(newTokens, tokensToStrings(fieldType)...)
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p1.Index, len(re.gir.tokenSlice), newTokens)
-			}
-		}
-	}
-	re.gir.emitToFileBuffer("", "@PostVisitDeclStmtValueSpecNames")
-	// Skip default initialization if we have an explicit value coming
-	if re.hasDeclValue {
-		return
-	}
-	var str string
-	if re.pendingMapInit {
-		str += fmt.Sprintf(" = hmap::newHashMap(%d)", re.pendingMapKeyType)
-		re.pendingMapInit = false
-		re.pendingMapKeyType = 0
-	} else if re.isArray {
-		str += " = Vec::new()"
-		re.isArray = false
-	} else {
-		// Add default initialization based on type
-		// Primitive numeric types get zero initialization
-		primitiveDefaults := map[string]string{
-			"i8": "0", "i16": "0", "i32": "0", "i64": "0",
-			"u8": "0", "u16": "0", "u32": "0", "u64": "0",
-			"f32": "0.0", "f64": "0.0",
-			"bool": "false",
-		}
-		if defaultVal, isPrimitive := primitiveDefaults[typeName]; isPrimitive {
-			str += " = " + defaultVal
-		} else if typeName == "String" {
-			str += " = String::new()"
-		} else if len(typeName) > 0 && !strings.Contains(typeName, "Rc<dyn") {
-			// For struct types declared without value (var x StructType), initialize with default
-			// Skip Rc<dyn Any> - can't call default() on trait objects
-			// Handle module-qualified types like types::Plan by checking the type name part
-			typeNamePart := typeName
-			if idx := strings.LastIndex(typeName, "::"); idx >= 0 {
-				typeNamePart = typeName[idx+2:]
-			}
-			// Check if type name starts with uppercase (struct type)
-			if len(typeNamePart) > 0 && typeNamePart[0] >= 'A' && typeNamePart[0] <= 'Z' {
-				str += " = " + typeName + "::default()"
-			}
-		}
-	}
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer(" = ", EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.hasDeclValue = false
-}
-
-func (re *RustEmitter) PreVisitGenStructFieldType(node ast.Expr, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	str := re.emitAsString("pub ", indent+2)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.gir.emitToFileBuffer("", "@PreVisitGenStructFieldType")
-}
-
-func (re *RustEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PostVisitGenStructFieldType")
-	re.gir.emitToFileBuffer(" ", EmptyVisitMethod)
-	// clean array marker as we should generate
-	// initializer only for expression statements
-	// not for struct fields
-	re.isArray = false
-
-}
-
-func (re *RustEmitter) PreVisitGenStructFieldName(node *ast.Ident, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitGenStructFieldName")
-
-}
-func (re *RustEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PostVisitGenStructFieldName")
-	p1 := SearchPointerIndexReverse("@PreVisitGenStructFieldType", re.gir.pointerAndIndexVec)
-	p2 := SearchPointerIndexReverse("@PostVisitGenStructFieldType", re.gir.pointerAndIndexVec)
-	p3 := SearchPointerIndexReverse("@PreVisitGenStructFieldName", re.gir.pointerAndIndexVec)
-	p4 := SearchPointerIndexReverse("@PostVisitGenStructFieldName", re.gir.pointerAndIndexVec)
-
-	if p1 != nil && p2 != nil && p3 != nil && p4 != nil {
-		fieldType, err := ExtractTokensBetween(p1.Index, p2.Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting field type:", err)
-			return
-		}
-		fieldName, err := ExtractTokensBetween(p3.Index, p4.Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting field name:", err)
-			return
-		}
-		newTokens := []string{}
-		newTokens = append(newTokens, tokensToStrings(fieldName)...)
-		newTokens = append(newTokens, ":")
-		newTokens = append(newTokens, tokensToStrings(fieldType)...)
-		re.gir.tokenSlice, err = RewriteTokensBetween(re.gir.tokenSlice, p1.Index, p4.Index, newTokens)
-		if err != nil {
-			fmt.Println("Error rewriting file buffer:", err)
-			return
-		}
-	}
-
-	re.gir.emitToFileBuffer(",\n", EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.pkg = pkg
-	re.currentPackage = pkg.Name
-	// Initialize the caches if not already done
-	if re.processedPkgsInterfaceTypes == nil {
-		re.processedPkgsInterfaceTypes = make(map[string]bool)
-	}
-	if re.localClosures == nil {
-		re.localClosures = make(map[string]*ast.FuncLit)
-	}
-	if re.localClosureBodyTokens == nil {
-		re.localClosureBodyTokens = make(map[string][]Token)
-	}
-	// Check if package has any interface{} types
-	re.pkgHasInterfaceTypes = re.packageHasInterfaceTypes(pkg)
-	// Cache this package's result
-	re.processedPkgsInterfaceTypes[pkg.PkgPath] = re.pkgHasInterfaceTypes
-
-	// Analyze read-only parameters for reference optimization
-	if re.OptimizeRefs {
-		re.analyzeReadOnlyParamsForPackage(pkg)
-	}
-
-	// Generate module declaration for non-main packages
-	if pkg.Name != "main" {
-		str := re.emitAsString(fmt.Sprintf("pub mod %s {\n", pkg.Name), indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		// Import crate-root items (helper functions like append, len, println, etc.)
-		str = re.emitAsString("use crate::*;\n\n", indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-// packageHasInterfaceTypes scans all structs in the package for interface{} fields
-func (re *RustEmitter) packageHasInterfaceTypes(pkg *packages.Package) bool {
-	for _, file := range pkg.Syntax {
-		for _, decl := range file.Decls {
-			if genDecl, ok := decl.(*ast.GenDecl); ok {
-				for _, spec := range genDecl.Specs {
-					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-						if structType, ok := typeSpec.Type.(*ast.StructType); ok {
-							if structType.Fields != nil {
-								for _, field := range structType.Fields.List {
-									if field.Type != nil {
-										typeStr := pkg.TypesInfo.Types[field.Type].Type.String()
-										if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") {
-											return true
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
-}
-
-// typeHasInterfaceFields checks if a type contains interface{} fields (directly or transitively)
-func (re *RustEmitter) typeHasInterfaceFields(t types.Type) bool {
-	// Get the underlying type
-	underlying := t.Underlying()
-	if structType, ok := underlying.(*types.Struct); ok {
-		for i := 0; i < structType.NumFields(); i++ {
-			field := structType.Field(i)
-			fieldTypeStr := field.Type().String()
-			// Check for interface{} fields
-			if strings.Contains(fieldTypeStr, "interface{}") || strings.Contains(fieldTypeStr, "interface {") {
-				return true
-			}
-			// Check for function fields (Box<dyn Fn> in Rust doesn't implement Default)
-			if strings.Contains(fieldTypeStr, "func(") {
-				return true
-			}
-			// Check nested structs recursively
-			if re.typeHasInterfaceFields(field.Type()) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (re *RustEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Close the module declaration for non-main packages
-	if pkg.Name != "main" {
-		str := re.emitAsString(fmt.Sprintf("} // pub mod %s\n\n", pkg.Name), indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.isArray = false
-}
-
-func (re *RustEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	str := re.emitAsString("\n", indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	str := re.emitAsString("\n\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Check if this specific struct has interface{} fields or function fields
-	// (can't derive Clone/Default/Debug for these)
-	var str string
-	hasInterfaceFields := re.structHasInterfaceFields(node.Name)
-	hasFunctionFields := re.structHasFunctionFields(node.Name)
-	if hasFunctionFields {
-		// Structs with function fields can derive Clone (Rc implements Clone)
-		// but not Default or Debug (dyn Fn doesn't implement these)
-		str = re.emitAsString("#[derive(Clone)]\n", indent+2)
-	} else if hasInterfaceFields {
-		// Derive Clone and Debug for structs with Rc<dyn Any>/interface{} fields
-		// Rc<dyn Any> implements Clone (cheap ref count bump), so struct can derive Clone
-		str = re.emitAsString("#[derive(Clone, Debug)]\n", indent+2)
-	} else {
-		// Check if struct can derive Copy and/or Hash independently
-		canCopy := re.structCanDeriveCopy(node.Name)
-		canHash := re.structCanDeriveHash(node.Name)
-		if canCopy && canHash {
-			str = re.emitAsString("#[derive(Default, Clone, Copy, Debug, Hash, PartialEq, Eq)]\n", indent+2)
-		} else if canCopy {
-			// Copy but not Hash (e.g. struct with float fields)
-			str = re.emitAsString("#[derive(Default, Clone, Copy, Debug)]\n", indent+2)
-		} else if canHash {
-			// Hash but not Copy (e.g. struct with string fields)
-			str = re.emitAsString("#[derive(Default, Clone, Debug, Hash, PartialEq, Eq)]\n", indent+2)
-		} else {
-			// Add derive macros for Default (needed for ..Default::default() in struct init)
-			str = re.emitAsString("#[derive(Default, Clone, Debug)]\n", indent+2)
-		}
-	}
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	str = re.emitAsString(fmt.Sprintf("pub struct %s\n", node.Name), indent+2)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.emitToken("{", LeftBrace, indent+2)
-	str = re.emitAsString("\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.shouldGenerate = true
-}
-
-// structHasInterfaceFields checks if a struct has interface{} fields (directly or in nested structs)
-func (re *RustEmitter) structHasInterfaceFields(structName string) bool {
-	return re.structHasInterfaceFieldsRecursive(structName, make(map[string]bool))
-}
-
-// structHasInterfaceFieldsRecursive checks recursively if a struct has interface{} fields
-func (re *RustEmitter) structHasInterfaceFieldsRecursive(structName string, visited map[string]bool) bool {
-	// Prevent infinite recursion
-	if visited[structName] {
-		return false
-	}
-	visited[structName] = true
-
-	for _, file := range re.pkg.Syntax {
-		for _, decl := range file.Decls {
-			if genDecl, ok := decl.(*ast.GenDecl); ok {
-				for _, spec := range genDecl.Specs {
-					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-						if typeSpec.Name.Name == structName {
-							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
-								if structType.Fields != nil {
-									for _, field := range structType.Fields.List {
-										fieldType := re.pkg.TypesInfo.Types[field.Type].Type
-										typeStr := fieldType.String()
-										// Direct interface{} check
-										if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") {
-											return true
-										}
-										// Check for function fields (Box<dyn Fn> in Rust doesn't implement Clone)
-										if strings.Contains(typeStr, "func(") {
-											return true
-										}
-										// Check nested struct fields recursively
-										if named, ok := fieldType.(*types.Named); ok {
-											if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-												nestedName := named.Obj().Name()
-												if re.structHasInterfaceFieldsRecursive(nestedName, visited) {
-													return true
-												}
-											}
-										}
-										// Check slice element type
-										if slice, ok := fieldType.(*types.Slice); ok {
-											elemType := slice.Elem()
-											if named, ok := elemType.(*types.Named); ok {
-												if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-													nestedName := named.Obj().Name()
-													if re.structHasInterfaceFieldsRecursive(nestedName, visited) {
-														return true
-													}
-												}
-											}
-										}
-									}
-								}
-								return false
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
-}
-
-// structCanDeriveHash checks if a struct can derive Hash/PartialEq/Eq (all fields are recursively hashable)
-func (re *RustEmitter) structCanDeriveHash(structName string) bool {
-	for _, file := range re.pkg.Syntax {
-		for _, decl := range file.Decls {
-			if genDecl, ok := decl.(*ast.GenDecl); ok {
-				for _, spec := range genDecl.Specs {
-					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-						if typeSpec.Name.Name == structName {
-							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
-								if structType.Fields != nil {
-									for _, field := range structType.Fields.List {
-										fieldType := re.pkg.TypesInfo.Types[field.Type].Type
-										if !re.isHashableType(fieldType, make(map[string]bool)) {
-											return false
-										}
-									}
-								}
-								return true
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
-}
-
-// isHashableType checks if a type can derive Hash/PartialEq/Eq in Rust (recursively)
-func (re *RustEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
-	if named, ok := t.(*types.Named); ok {
-		name := named.Obj().Name()
-		if named.Obj().Pkg() != nil {
-			name = named.Obj().Pkg().Path() + "." + name
-		}
-		if visited[name] {
-			return false
-		}
-		visited[name] = true
-	}
-	underlying := t.Underlying()
-	if basic, isBasic := underlying.(*types.Basic); isBasic {
-		// f32/f64 don't implement Hash or Eq in Rust (due to NaN)
-		if basic.Kind() == types.Float32 || basic.Kind() == types.Float64 {
-			return false
-		}
-		return true
-	}
-	if structType, isStruct := underlying.(*types.Struct); isStruct {
-		for i := 0; i < structType.NumFields(); i++ {
-			if !re.isHashableType(structType.Field(i).Type(), visited) {
-				return false
-			}
-		}
-		return true
-	}
-	return false
-}
-
-// structCanDeriveCopy checks if a struct only contains primitive/Copy fields (recursively)
-func (re *RustEmitter) structCanDeriveCopy(structName string) bool {
-	for _, file := range re.pkg.Syntax {
-		for _, decl := range file.Decls {
-			if genDecl, ok := decl.(*ast.GenDecl); ok {
-				for _, spec := range genDecl.Specs {
-					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-						if typeSpec.Name.Name == structName {
-							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
-								if structType.Fields != nil {
-									for _, field := range structType.Fields.List {
-										fieldType := re.pkg.TypesInfo.Types[field.Type].Type
-										if !re.isCopyableType(fieldType, make(map[string]bool)) {
-											return false
-										}
-									}
-								}
-								return true
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
-}
-
-// isCopyableType checks if a type can derive Copy in Rust (recursively)
-func (re *RustEmitter) isCopyableType(t types.Type, visited map[string]bool) bool {
-	if named, ok := t.(*types.Named); ok {
-		name := named.Obj().Name()
-		if named.Obj().Pkg() != nil {
-			name = named.Obj().Pkg().Path() + "." + name
-		}
-		if visited[name] {
-			return false
-		}
-		visited[name] = true
-	}
-	underlying := t.Underlying()
-	// Basic types (int, bool, float, etc.) are Copy
-	if basic, isBasic := underlying.(*types.Basic); isBasic {
-		// string is not Copy in Rust (becomes String)
-		if basic.Kind() == types.String {
-			return false
-		}
-		return true
-	}
-	// Structs: recursively check all fields
-	if structType, isStruct := underlying.(*types.Struct); isStruct {
-		for i := 0; i < structType.NumFields(); i++ {
-			if !re.isCopyableType(structType.Field(i).Type(), visited) {
-				return false
-			}
-		}
-		return true
-	}
-	// Slices, maps, interfaces, functions, channels are not Copy
-	return false
-}
-
-// structHasFunctionFields checks if a struct has function/closure fields
-func (re *RustEmitter) structHasFunctionFields(structName string) bool {
-	for _, file := range re.pkg.Syntax {
-		for _, decl := range file.Decls {
-			if genDecl, ok := decl.(*ast.GenDecl); ok {
-				for _, spec := range genDecl.Specs {
-					if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-						if typeSpec.Name.Name == structName {
-							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
-								if structType.Fields != nil {
-									for _, field := range structType.Fields.List {
-										fieldType := re.pkg.TypesInfo.Types[field.Type].Type
-										typeStr := fieldType.String()
-										// Check for function types (will become Box<dyn Fn...>)
-										if strings.HasPrefix(typeStr, "func(") {
-											return true
-										}
-										// Check underlying type for function signatures
-										if _, isSig := fieldType.Underlying().(*types.Signature); isSig {
-											return true
-										}
-									}
-								}
-								return false
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	return false
-}
-
-func (re *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.emitToken("}", RightBrace, indent+2)
-	str := re.emitAsString("\n\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-
-	// Generate manual impl Default for structs with interface{} fields
-	// (Rc<dyn Any> doesn't implement Default, so we can't derive it)
-	// Skip structs with function fields - they have complex closure types that can't easily get defaults
-	if re.structHasInterfaceFields(node.Name) && !re.structHasFunctionFields(node.Name) && node.Struct != nil && node.Struct.Fields != nil {
-		defaultStr := fmt.Sprintf("impl Default for %s {\n", node.Name)
-		defaultStr += "    fn default() -> Self {\n"
-		defaultStr += fmt.Sprintf("        %s {\n", node.Name)
-		for _, field := range node.Struct.Fields.List {
-			if len(field.Names) == 0 {
-				continue
-			}
-			fieldName := field.Names[0].Name
-			fieldType := re.pkg.TypesInfo.Types[field.Type].Type
-			defaultVal := re.rustDefaultValueForType(fieldType)
-			defaultStr += fmt.Sprintf("            %s: %s,\n", fieldName, defaultVal)
-		}
-		defaultStr += "        }\n"
-		defaultStr += "    }\n"
-		defaultStr += "}\n\n"
-		re.gir.emitToFileBuffer(defaultStr, EmptyVisitMethod)
-	}
-
-	re.shouldGenerate = false
-}
-
-// rustDefaultValueForType returns the Rust default value for a Go type
-func (re *RustEmitter) rustDefaultValueForType(t types.Type) string {
-	if t == nil {
-		return "Default::default()"
-	}
-	typeStr := t.String()
-
-	// Check for slice types BEFORE interface{} (since []interface{} contains "interface{}")
-	if strings.HasPrefix(typeStr, "[]") {
-		return "Vec::new()"
-	}
-
-	// Check for interface{} / any
-	if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") || typeStr == "any" {
-		return "Rc::new(0_i32)"
-	}
-
-	// Check for function types
-	if strings.HasPrefix(typeStr, "func(") {
-		return "Rc::new(|_| {})"
-	}
-
-	// Check basic types
-	switch typeStr {
-	case "int", "int8", "int16", "int32", "int64":
-		return "0"
-	case "uint8", "uint16", "uint32", "uint64":
-		return "0"
-	case "float32":
-		return "0.0_f32"
-	case "float64":
-		return "0.0"
-	case "bool":
-		return "false"
-	case "string":
-		return "String::new()"
-	}
-
-	// For named struct types, use their default
-	if named, ok := t.(*types.Named); ok {
-		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-			return named.Obj().Name() + "::default()"
-		}
-		// For named slice types
-		if _, isSlice := named.Underlying().(*types.Slice); isSlice {
-			return "Vec::new()"
-		}
-	}
-
-	return "Default::default()"
-}
-
-func (re *RustEmitter) PreVisitMapType(node *ast.MapType, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Save current suppress state so PostVisitMapType can restore it.
-	// This prevents nested map types (e.g. map[int][]map[string]int)
-	// from prematurely clearing suppressMapEmit.
-	re.suppressMapEmitStack = append(re.suppressMapEmitStack, re.suppressMapEmit)
-	if re.suppressMapEmit {
-		return
-	}
-	// Emit hmap::HashMap as the type, suppress the map type tokens
-	re.emitToken("hmap::HashMap", Identifier, 0)
-	re.suppressMapEmit = true
-}
-
-func (re *RustEmitter) PostVisitMapType(node *ast.MapType, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Restore previous suppress state from stack
-	if len(re.suppressMapEmitStack) > 0 {
-		re.suppressMapEmit = re.suppressMapEmitStack[len(re.suppressMapEmitStack)-1]
-		re.suppressMapEmitStack = re.suppressMapEmitStack[:len(re.suppressMapEmitStack)-1]
-	} else {
-		re.suppressMapEmit = false
-	}
-}
-
-func (re *RustEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
-	re.suppressMapEmitStack = append(re.suppressMapEmitStack, re.suppressMapEmit)
-	re.suppressMapEmit = true
-}
-
-func (re *RustEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
-	if len(re.suppressMapEmitStack) > 0 {
-		re.suppressMapEmit = re.suppressMapEmitStack[len(re.suppressMapEmitStack)-1]
-		re.suppressMapEmitStack = re.suppressMapEmitStack[:len(re.suppressMapEmitStack)-1]
-	} else {
-		re.suppressMapEmit = false
-	}
-}
-
-func (re *RustEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
-	re.suppressMapEmitStack = append(re.suppressMapEmitStack, re.suppressMapEmit)
-	re.suppressMapEmit = true
-}
-
-func (re *RustEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
-	if len(re.suppressMapEmitStack) > 0 {
-		re.suppressMapEmit = re.suppressMapEmitStack[len(re.suppressMapEmitStack)-1]
-		re.suppressMapEmitStack = re.suppressMapEmitStack[:len(re.suppressMapEmitStack)-1]
-	} else {
-		re.suppressMapEmit = false
-	}
-}
-
-func (re *RustEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if re.suppressMapEmit {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@@PreVisitArrayType")
-	re.emitToken("<", LeftAngle, 0)
-}
-func (re *RustEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if re.suppressMapEmit {
-		return
-	}
-	// Skip Vec rewriting for make([]T, n) - the whole call will be rewritten
-	if re.isSliceMakeCall {
-		return
-	}
-
-	re.emitToken(">", RightAngle, 0)
-
-	pointerAndPosition := SearchPointerIndexReverse("@@PreVisitArrayType", re.gir.pointerAndIndexVec)
-	if pointerAndPosition != nil {
-		tokens, _ := ExtractTokens(pointerAndPosition.Index, re.gir.tokenSlice)
-		re.isArray = true
-		re.arrayType = strings.Join(tokens, "")
-		// Prepend "Vec" before the array type tokens
-		re.gir.tokenSlice, _ = RewriteTokens(re.gir.tokenSlice, pointerAndPosition.Index, []string{}, []string{"Vec"})
-		// Remove the processed marker so nested arrays work correctly
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverseString(re.gir.pointerAndIndexVec, "@@PreVisitArrayType")
-	}
-}
-
-func (re *RustEmitter) PreVisitFuncType(node *ast.FuncType, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@@PreVisitFuncType")
-	// Use Rc<dyn Fn> for function types - Rc implements Clone so structs with function fields can be cloned
-	str := re.emitAsString("Rc<dyn Fn(", indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-func (re *RustEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
-	if re.forwardDecls {
-		return
-	}
-
-	pointerAndPosition := SearchPointerIndexReverse("@@PreVisitFuncType", re.gir.pointerAndIndexVec)
-	if pointerAndPosition != nil && re.numFuncResults > 0 {
-		// For function types with return values, we need to reorder tokens
-		// to move return type to the end (Rust syntax requirement)
-		tokens, _ := ExtractTokens(pointerAndPosition.Index, re.gir.tokenSlice)
-		if len(tokens) > 2 {
-			// Find and move return type to end with arrow separator
-			var reorderedTokens []string
-			reorderedTokens = append(reorderedTokens, tokens[0]) // "Rc<dyn Fn("
-			if len(tokens) > 3 {
-				// Skip return type (index 1) and add parameters first
-				reorderedTokens = append(reorderedTokens, tokens[2:]...)
-				reorderedTokens = append(reorderedTokens, ") -> ")
-				reorderedTokens = append(reorderedTokens, tokens[1]) // Add return type at end
-				reorderedTokens = append(reorderedTokens, ">")
-			} else {
-				reorderedTokens = append(reorderedTokens, tokens[1:]...)
-				reorderedTokens = append(reorderedTokens, ")>")
-			}
-			re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), reorderedTokens)
-			return
-		}
-	}
-
-	re.emitToken(")", RightParen, 0)
-	re.emitToken(">", RightAngle, 0)
-}
-
-func (re *RustEmitter) PreVisitFuncTypeParam(node *ast.Field, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if index > 0 {
-		str := re.emitAsString(", ", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitSelectorExprX(node ast.Expr, indent int) {
-	// For builtin package names (like fmt), suppress generation
-	// For user-defined module names (like types, ast), generate them
-	if ident, ok := node.(*ast.Ident); ok {
-		obj := re.pkg.TypesInfo.Uses[ident]
-		if obj != nil {
-			if _, ok := obj.(*types.PkgName); ok {
-				// Check if this is a builtin package that gets lowered
-				if re.lowerToBuiltins(ident.Name) == "" {
-					// Builtin package (fmt) - suppress generation
-					re.shouldGenerate = false
-					return
-				}
-				// User-defined module - let it be generated
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Skip emitting the dot when map operations suppress emission
-	if re.suppressMapEmit {
-		return
-	}
-	var str string
-	scopeOperator := "." // Default to dot for field access
-	isBuiltinPackage := false
-	if ident, ok := node.(*ast.Ident); ok {
-		// Check if this is a builtin package (like fmt) that we lower to crate-level functions
-		if re.lowerToBuiltins(ident.Name) == "" {
-			// This is a builtin package like "fmt"
-			isBuiltinPackage = true
-		}
-
-		// Check if this is a package name - use :: for module-qualified access
-		obj := re.pkg.TypesInfo.Uses[ident]
-		if obj != nil {
-			if _, ok := obj.(*types.PkgName); ok {
-				// For builtin packages (fmt), don't emit any operator
-				// The selector will be lowered to a crate-level function
-				if isBuiltinPackage {
-					re.shouldGenerate = true
-					return
-				}
-				// Use :: for module-qualified access in Rust
-				scopeOperator = "::"
-			}
-		}
-		// Also check if the identifier is a known namespace/module
-		if _, found := namespaces[ident.Name]; found {
-			scopeOperator = "::"
-		}
-	}
-
-	str = re.emitAsString(scopeOperator, 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitFuncTypeResults(node *ast.FieldList, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if node != nil {
-		re.numFuncResults = len(node.List)
-	}
-}
-
-func (re *RustEmitter) PreVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if index > 0 {
-		str := re.emitAsString(", ", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer(" ", EmptyVisitMethod)
-	re.gir.emitToFileBuffer("", "@PreVisitFuncDeclSignatureTypeParamsArgName")
-}
-
-func (re *RustEmitter) PreVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if index > 0 {
-		str := re.emitAsString(",", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitFuncDeclSignatureTypeResultsList")
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	pointerAndPosition := SearchPointerIndexReverse("@PreVisitFuncDeclSignatureTypeResultsList", re.gir.pointerAndIndexVec)
-	if pointerAndPosition != nil {
-		typeInfo := re.pkg.TypesInfo.Types[node.Type]
-		// Only do alias replacement if the AST node references a type alias by name.
-		// Check the AST (not just the type system) to distinguish between:
-		//   func f() ExprKind  → should emit ExprKind (alias)
-		//   func f() int       → should emit i32 (raw type, NOT alias)
-		if typeInfo.Type != nil {
-			if _, isNamed := typeInfo.Type.(*types.Named); !isNamed {
-				// Check if the AST node references an alias name (Ident or SelectorExpr)
-				isAliasRef := false
-				if ident, ok := node.Type.(*ast.Ident); ok {
-					if _, found := re.aliases[ident.Name]; found {
-						isAliasRef = true
-					}
-				} else if sel, ok := node.Type.(*ast.SelectorExpr); ok {
-					if xIdent, ok := sel.X.(*ast.Ident); ok {
-						qualName := xIdent.Name + "." + sel.Sel.Name
-						if _, found := re.aliases[qualName]; found {
-							isAliasRef = true
-						}
-					}
-				}
-				if isAliasRef {
-					for aliasName, alias := range re.aliases {
-						if alias.UnderlyingType == typeInfo.Type.Underlying().String() {
-							re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), []string{aliasName})
-							break
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitFuncDeclSignatureTypeResults")
-	re.shouldGenerate = true // Enable generating result types
-
-	if node.Type.Results != nil {
-		if len(node.Type.Results.List) > 1 {
-			re.emitToken("(", LeftParen, 0)
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	if re.forwardDecls {
-		return
-	}
-
-	if node.Type.Results != nil {
-		if len(node.Type.Results.List) > 1 {
-			re.emitToken(")", RightParen, 0)
-		}
-	}
-
-	str := re.emitAsString("", 1)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.gir.emitToFileBuffer("", "@PostVisitFuncDeclSignatureTypeResults")
-}
-
-func (re *RustEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@@PreVisitTypeAliasName")
-	str := re.emitAsString("pub type ", indent+2)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.shouldGenerate = true
-}
-
-func (re *RustEmitter) PostVisitTypeAliasName(node *ast.Ident, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.gir.emitToFileBuffer(" = ", EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitTypeAliasType(node ast.Expr, indent int) {
-	if re.forwardDecls {
-		return
-	}
-}
-
-func (re *RustEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	str := re.emitAsString(";\n\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-
-	// Extract tokens for alias processing
-	pointerAndPosition := SearchPointerIndexReverse("@@PreVisitTypeAliasName", re.gir.pointerAndIndexVec)
-	if pointerAndPosition != nil {
-		tokens, _ := ExtractTokens(pointerAndPosition.Index, re.gir.tokenSlice)
-		if len(tokens) >= 3 {
-			// tokens[0] = "type ", tokens[1] = alias name, tokens[2] = " = ", tokens[3+] = type
-			aliasName := tokens[1]
-			typeTokens := tokens[3 : len(tokens)-1] // exclude the ";\n\n" at the end
-			typeStr := strings.Join(typeTokens, "")
-			re.aliases[aliasName] = Alias{
-				PackageName:    re.pkg.Name + ".Api",
-				representation: ConvertToAliasRepr(ParseNestedTypes(typeStr), []string{"", re.pkg.Name + ".Api"}),
-				UnderlyingType: re.pkg.TypesInfo.Types[node].Type.String(),
-			}
-		}
-	}
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	re.shouldGenerate = true
-	re.inReturnStmt = true
-	re.currentReturnNode = node
-	re.returnTempReplacements = nil
-	re.returnTempReplacing = false
-
-	// Return temp extraction: when the first return result is an identifier and
-	// later results reference it, extract those later results into temp variables
-	// so the first result can be moved instead of cloned.
-	if re.OptimizeMoves && len(node.Results) > 1 {
-		if ident, ok := node.Results[0].(*ast.Ident); ok {
-			replacements := make(map[int]string)
-			tempIdx := 0
-			for i := 1; i < len(node.Results); i++ {
-				if !re.exprContainsIdent(node.Results[i], ident.Name) {
-					continue
-				}
-				// Check if the result type is Copy
-				tv := re.pkg.TypesInfo.Types[node.Results[i]]
-				if tv.Type == nil || !isCopyType(tv.Type) {
-					continue
-				}
-				basic, isBasic := tv.Type.Underlying().(*types.Basic)
-				if !isBasic {
-					continue
-				}
-				exprStr := re.exprToString(node.Results[i])
-				if exprStr == "" {
-					continue
-				}
-				tempName := fmt.Sprintf("__mv%d", tempIdx)
-				tempIdx++
-				rustType := re.mapGoTypeToRust(basic.Name())
-				binding := fmt.Sprintf("let %s: %s = %s;\n", tempName, rustType, exprStr)
-				bindStr := re.emitAsString(binding, indent)
-				re.gir.emitToFileBuffer(bindStr, EmptyVisitMethod)
-				replacements[i] = tempName
-			}
-			if len(replacements) > 0 {
-				re.returnTempReplacements = replacements
-			}
-		}
-	}
-
-	str := re.emitAsString("return ", indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-
-	if len(node.Results) > 1 {
-		re.inMultiValueReturn = true
-		re.multiValueReturnResultIndex = 0
-		re.emitToken("(", LeftParen, 0)
-	}
-}
-
-func (re *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if len(node.Results) > 1 {
-		re.emitToken(")", RightParen, 0)
-	}
-	re.inMultiValueReturn = false
-	re.inReturnStmt = false
-	re.currentReturnNode = nil
-	re.returnTempReplacements = nil
-	re.returnTempReplacing = false
-	str := re.emitAsString(";", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	if index > 0 {
-		str := re.emitAsString(", ", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-	re.multiValueReturnResultIndex = index
-
-	// Mark token position for return results that will be replaced by temp variables
-	if re.returnTempReplacements != nil {
-		if _, ok := re.returnTempReplacements[index]; ok {
-			re.returnTempResultMarker = len(re.gir.tokenSlice)
-			re.returnTempReplacing = true
-		}
-	}
-
-	// If returning from a function that returns any (Rc<dyn Any>),
-	// and the return value is a concrete type, wrap in Rc::new()
-	if re.currentFuncReturnsAny && node != nil {
-		nodeType := re.pkg.TypesInfo.Types[node]
-		if nodeType.Type != nil {
-			typeStr := nodeType.Type.String()
-			// Don't wrap if already Rc<dyn Any> or interface{}
-			if typeStr != "interface{}" && typeStr != "any" && !strings.Contains(typeStr, "Rc<dyn Any>") {
-				re.gir.emitToFileBuffer("Rc::new(", EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	// Replace later return results with temp variable names when extraction is active
-	if re.returnTempReplacing && re.returnTempReplacements != nil {
-		if tempName, ok := re.returnTempReplacements[index]; ok {
-			// Truncate tokens emitted for this result and replace with temp name
-			re.gir.tokenSlice = re.gir.tokenSlice[:re.returnTempResultMarker]
-			re.emitToken(tempName, Identifier, 0)
-			re.returnTempReplacing = false
-		}
-	}
-
-	// Add .clone() to the first result in a multi-value return if it's an identifier.
-	// With OptimizeMoves: only clone when a later result references the same identifier.
-	// Without OptimizeMoves: always clone (baseline behavior).
-	if re.inMultiValueReturn && index == 0 {
-		if _, ok := node.(*ast.Ident); ok {
-			if !re.OptimizeMoves {
-				// Baseline: unconditional clone
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-			} else {
-				// Optimized: only clone when a later result references the same identifier
-				needsClone := false
-				if ident, ok2 := node.(*ast.Ident); ok2 && re.currentReturnNode != nil {
-					for i := 1; i < len(re.currentReturnNode.Results); i++ {
-						if re.exprContainsIdent(re.currentReturnNode.Results[i], ident.Name) {
-							needsClone = true
-							break
-						}
-					}
-				}
-				if needsClone {
-					// Check if all conflicting results have been extracted to temps
-					if re.returnTempReplacements != nil {
-						allExtracted := true
-						if ident, ok3 := node.(*ast.Ident); ok3 {
-							for i := 1; i < len(re.currentReturnNode.Results); i++ {
-								if re.exprContainsIdent(re.currentReturnNode.Results[i], ident.Name) {
-									if _, replaced := re.returnTempReplacements[i]; !replaced {
-										allExtracted = false
-										break
-									}
-								}
-							}
-						}
-						if allExtracted {
-							// All conflicting results extracted - no clone needed
-							re.MoveOptCount++
-						} else {
-							re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-						}
-					} else {
-						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					}
-				} else {
-					re.MoveOptCount++
-				}
-			}
-		}
-	}
-
-	// Close Rc::new() if we opened it in Pre
-	if re.currentFuncReturnsAny && node != nil {
-		nodeType := re.pkg.TypesInfo.Types[node]
-		if nodeType.Type != nil {
-			typeStr := nodeType.Type.String()
-			if typeStr != "interface{}" && typeStr != "any" && !strings.Contains(typeStr, "Rc<dyn Any>") {
-				re.gir.emitToFileBuffer(")", EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
-	re.shouldGenerate = true
-	// In += context, string functions return String but += expects &str
-	// Add & before calls to string_format (Sprintf)
-	if re.inAssignRhs && re.assignmentToken == "+=" {
-		if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
-			if sel.Sel.Name == "Sprintf" {
-				re.gir.emitToFileBuffer("&", EmptyVisitMethod)
-			}
-		}
-	}
-	// Detect make(map[K]V) and make([]T, n) calls
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "make" {
-		if len(node.Args) >= 1 {
-			if mapType, ok := node.Args[0].(*ast.MapType); ok {
-				re.isMapMakeCall = true
-				re.mapMakeKeyType = re.getMapKeyTypeConst(mapType)
-			} else if arrayType, ok := node.Args[0].(*ast.ArrayType); ok {
-				// make([]T, n) — used in transpiled runtime
-				re.isSliceMakeCall = true
-				re.sliceMakeElemType = "Rc<dyn Any>" // default for interface{}
-				if re.pkg != nil && re.pkg.TypesInfo != nil {
-					if tv, ok := re.pkg.TypesInfo.Types[arrayType.Elt]; ok && tv.Type != nil {
-						re.sliceMakeElemType = getRustValueTypeCast(tv.Type)
-					}
-				}
-			}
-		}
-	}
-	// Detect delete(m, k) calls
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "delete" {
-		if len(node.Args) >= 2 {
-			re.isDeleteCall = true
-			re.deleteMapVarName = exprToString(node.Args[0])
-			re.mapKeyCastSuffix = ""
-			re.mapKeyIsString = false
-			if re.pkg != nil && re.pkg.TypesInfo != nil {
-				tv := re.pkg.TypesInfo.Types[node.Args[0]]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
-						re.mapKeyIsString = isRustStringKey(mapType.Key())
-					}
-				}
-			}
-		}
-	}
-	// Detect len(m) calls on maps
-	if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "len" {
-		if len(node.Args) >= 1 && re.pkg != nil && re.pkg.TypesInfo != nil {
-			tv := re.pkg.TypesInfo.Types[node.Args[0]]
-			if tv.Type != nil {
-				if _, ok := tv.Type.Underlying().(*types.Map); ok {
-					re.isMapLenCall = true
-				}
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
-	// Note: Do NOT set shouldGenerate = false here!
-	// This would prevent subsequent operands in expressions from being generated.
-	// For example, in (a + b) + c where b is a call, setting false would suppress 'c'.
-}
-
-func (re *RustEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
-	re.shouldGenerate = true
-	// Get info about this declaration for multi-name handling
-	if genDecl, ok := node.Decl.(*ast.GenDecl); ok {
-		for _, spec := range genDecl.Specs {
-			if valueSpec, ok := spec.(*ast.ValueSpec); ok {
-				re.declNameCount = len(valueSpec.Names)
-				// Store type info for multi-name declarations
-				if valueSpec.Type != nil {
-					re.declType = re.pkg.TypesInfo.Types[valueSpec.Type].Type.String()
-				}
-			}
-		}
-	}
-	re.declNameIndex = 0
-	// Use "let mut" for var declarations since they may be reassigned
-	re.emitToken("let", RustKeyword, indent)
-	re.emitToken(" ", WhiteSpace, 0)
-	re.emitToken("mut", RustKeyword, 0)
-	re.emitToken(" ", WhiteSpace, 0)
-}
-
-func (re *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
-	// Reordering is now done per-name in PostVisitDeclStmtValueSpecNames
-	re.emitToken(";", Semicolon, 0)
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	// Check if all LHS are blank identifiers - if so, suppress the statement
-	allBlank := true
-	for _, lhs := range node.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			if ident.Name != "_" {
-				allBlank = false
-				break
-			}
-		} else {
-			allBlank = false
-			break
-		}
-	}
-	if allBlank {
-		re.suppressRangeEmit = true
-		return
-	}
-	// Detect comma-ok: val, ok := m[key]
-	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
-			if re.pkg != nil && re.pkg.TypesInfo != nil {
-				tv := re.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						re.isMapCommaOk = true
-						re.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-						re.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						re.mapCommaOkMapName = exprToString(indexExpr.X)
-						re.mapCommaOkValType = getRustValueTypeCast(mapType.Elem())
-						re.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
-						re.mapCommaOkIndent = indent
-						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
-						re.mapKeyIsString = isRustStringKey(mapType.Key())
-						re.suppressMapEmit = true
-						re.shouldGenerate = true
-						return
-					}
-				}
-			}
-		}
-	}
-	// Detect type assertion comma-ok: val, ok := x.(Type)
-	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
-			if re.pkg != nil && re.pkg.TypesInfo != nil {
-				tv := re.pkg.TypesInfo.Types[typeAssert.Type]
-				if tv.Type != nil {
-					re.isTypeAssertCommaOk = true
-					re.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-					re.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-					re.typeAssertCommaOkType = getRustValueTypeCast(tv.Type)
-					re.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
-					re.typeAssertCommaOkIndent = indent
-					re.suppressMapEmit = true
-					re.shouldGenerate = true
-					return
-				}
-			}
-		}
-	}
-	// Detect mixed index assignment: any combination of map[k] and slice[i] on LHS
-	// This handles patterns like: slice[i][j]["key"] = v or map["k"][i]["k2"] = v
-	// IMPORTANT: This must run BEFORE simple map assignment detection
-	if len(node.Lhs) == 1 {
-		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
-			ops, isMixed := re.analyzeLhsIndexChainRust(node.Lhs[0])
-			if isMixed && len(ops) > 0 {
-				// Mixed index assignment detected
-				re.isMixedIndexAssign = true
-				re.mixedAssignIndent = indent
-				re.suppressMapEmit = true
-
-				// Build map var expressions and temp var names for each map access
-				tempCounter := 0
-				var currentExpr string
-				for i := 0; i < len(ops); i++ {
-					op := &ops[i]
-					if i == 0 {
-						// First operation: get the root variable name
-						if ident, ok := indexExpr.X.(*ast.Ident); ok {
-							currentExpr = ident.Name
-						} else {
-							// Walk down to find the root
-							tmpExpr := indexExpr.X
-							for {
-								if ie, ok := tmpExpr.(*ast.IndexExpr); ok {
-									tmpExpr = ie.X
-								} else if ident, ok := tmpExpr.(*ast.Ident); ok {
-									currentExpr = ident.Name
-									break
-								} else {
-									break
-								}
-							}
-						}
-					}
-
-					isLast := (i == len(ops)-1)
-					if op.accessType == "map" {
-						op.mapVarExpr = currentExpr
-						if !isLast {
-							// Only create temp variables for intermediate map accesses
-							op.tempVarName = fmt.Sprintf("__temp_%d", tempCounter)
-							tempCounter++
-							currentExpr = op.tempVarName
-						}
-					} else {
-						// For slice access, append the index to current expression
-						currentExpr = currentExpr + "[" + op.keyExpr + " as usize]"
-					}
-				}
-
-				// The final target is the final map var expression (for map) or the final slice expression
-				if ops[len(ops)-1].accessType == "map" {
-					re.mixedAssignFinalTarget = ops[len(ops)-1].mapVarExpr
-				} else {
-					re.mixedAssignFinalTarget = currentExpr
-				}
-
-				re.mixedIndexAssignOps = ops
-				re.shouldGenerate = true
-				return
-			}
-		}
-	}
-	// Detect map assignment: m[k] = v → m = hmap::hashMapSet(m, k, v)
-	// Also handles nested: m[k1][k2] = v (map-then-map only, since mixed is handled above)
-	if len(node.Lhs) == 1 {
-		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
-			if re.pkg != nil && re.pkg.TypesInfo != nil {
-				tv := re.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if mapType, isMap := tv.Type.Underlying().(*types.Map); isMap {
-						re.isMapAssign = true
-						re.mapAssignIndent = indent
-						re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
-						re.mapKeyIsString = isRustStringKey(mapType.Key())
-
-						// Check for nested map assignment: m[k1][k2] = v (map-then-map only)
-						if outerIndexExpr, isNested := indexExpr.X.(*ast.IndexExpr); isNested {
-							// Check if outer is a map
-							tvOuter := re.pkg.TypesInfo.Types[outerIndexExpr.X]
-							if tvOuter.Type != nil {
-								if outerMapType, ok := tvOuter.Type.Underlying().(*types.Map); ok {
-									// Map-then-map: m["outer"]["inner"] = v
-									re.isNestedMapAssign = true
-									re.nestedMapOuterVarName = exprToString(outerIndexExpr.X)
-									re.nestedMapOuterKey = exprToRustString(outerIndexExpr.Index)
-									re.nestedMapVarName = fmt.Sprintf("__nested_inner_%d", re.nestedMapCounter)
-									re.nestedMapCounter++
-									re.mapAssignVarName = re.nestedMapVarName
-									re.nestedMapOuterKeyCastSuffix = getRustKeyCast(outerMapType.Key())
-									re.nestedMapOuterKeyIsString = isRustStringKey(outerMapType.Key())
-									re.nestedMapValueRustType = getRustValueTypeCast(outerMapType.Elem())
-								}
-							}
-						} else {
-							re.isNestedMapAssign = false
-							re.mapAssignVarName = exprToString(indexExpr.X)
-						}
-						// Suppress normal LHS emission
-						re.suppressMapEmit = true
-						re.shouldGenerate = true
-						return
-					}
-				}
-			}
-		}
-	}
-	re.shouldGenerate = true
-	// Capture LHS variable names for move optimization
-	re.currentAssignLhsNames = make(map[string]bool)
-	for _, lhs := range node.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			re.currentAssignLhsNames[ident.Name] = true
-		}
-	}
-	// Analyze for temp extraction (pre-extract field accesses so struct can be moved)
-	re.analyzeMoveOptExtraction(node, indent)
-	// Analyze for std::mem::take optimization (struct field reassignment)
-	re.analyzeMemTakeOpt(node)
-	// Emit temp variable bindings before the assignment
-	if len(re.moveOptTempBindings) > 0 {
-		for _, binding := range re.moveOptTempBindings {
-			bindStr := re.emitAsString(binding, indent)
-			re.gir.emitToFileBuffer(bindStr, EmptyVisitMethod)
-		}
-	}
-	// Save marker for call extraction rearrangement (before assignment indent)
-	if len(re.moveOptCallExts) > 0 {
-		re.moveOptAssignStartMarker = len(re.gir.tokenSlice)
-	}
-	str := re.emitAsString("", indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-func (re *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	// Handle type assertion comma-ok: val, ok := x.(Type)
-	if re.isTypeAssertCommaOk {
-		expr := re.capturedMapKey
-		typeName := re.typeAssertCommaOkType
-		// Handle blank identifier (_) - use temp variable since _ can't be used as a value
-		okName := re.typeAssertCommaOkOkName
-		valName := re.typeAssertCommaOkValName
-		okNameForCondition := okName
-		if okName == "_" {
-			okNameForCondition = "__ulang_ok"
-			okName = "__ulang_ok" // Use temp name for declaration too
-		}
-		// Determine declaration prefix for each variable
-		// Use "let " for blank identifier (_), "let mut " for named variables
-		declOk := ""
-		declVal := ""
-		if re.typeAssertCommaOkIsDecl {
-			declOk = "let "
-			if valName == "_" {
-				declVal = "let "
-			} else {
-				declVal = "let mut "
-			}
-		}
-		indentStr := re.emitAsString("", re.typeAssertCommaOkIndent)
-		re.suppressMapEmit = false
-		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_expr = %s.clone();", indentStr, expr), EmptyVisitMethod)
-		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: bool = __ulang_expr.downcast_ref::<%s>().is_some();",
-			indentStr, declOk, okName, typeName), EmptyVisitMethod)
-		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: %s = if %s { __ulang_expr.downcast_ref::<%s>().unwrap().clone() } else { Default::default() };",
-			indentStr, declVal, valName, typeName, okNameForCondition,
-			typeName), EmptyVisitMethod)
-		re.isTypeAssertCommaOk = false
-		re.capturedMapKey = ""
-		re.captureMapKey = false
-		re.suppressMapEmit = false
-		re.inAssignRhs = false
-		re.shouldGenerate = false
-		return
-	}
-	// Handle comma-ok: val, ok := m[key]
-	if re.isMapCommaOk {
-		key := re.capturedMapKey
-		// Handle blank identifier (_) - use temp variable since _ can't be used as a value
-		okName := re.mapCommaOkOkName
-		valName := re.mapCommaOkValName
-		okNameForCondition := okName
-		if okName == "_" {
-			okNameForCondition = "__ulang_ok"
-			okName = "__ulang_ok" // Use temp name for declaration too
-		}
-		// Determine declaration prefix for each variable
-		// Use "let " for blank identifier (_), "let mut " for named variables
-		declOk := ""
-		declVal := ""
-		if re.mapCommaOkIsDecl {
-			declOk = "let "
-			if valName == "_" {
-				declVal = "let "
-			} else {
-				declVal = "let mut "
-			}
-		}
-		indentStr := re.emitAsString("", re.mapCommaOkIndent)
-		re.suppressMapEmit = false
-		mapRef := re.mapCommaOkMapName
-		if re.OptimizeRefs {
-			mapRef = "&" + mapRef
-		} else {
-			mapRef = mapRef + ".clone()"
-		}
-		valType := re.mapCommaOkValType
-		// Use temp variable to avoid double evaluation/move of key (with cast if needed)
-		re.gir.emitToFileBuffer(fmt.Sprintf("%slet __ulang_key = %s%s;", indentStr, key, re.mapKeyCastSuffix), EmptyVisitMethod)
-		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: bool = hmap::hashMapContains(%s, Rc::new(__ulang_key.clone()));",
-			indentStr, declOk, okName, mapRef), EmptyVisitMethod)
-		re.gir.emitToFileBuffer(fmt.Sprintf("\n%s%s%s: %s = if %s { hmap::hashMapGet(%s, Rc::new(__ulang_key)).downcast_ref::<%s>().unwrap().clone() } else { Default::default() };",
-			indentStr, declVal, valName, valType, okNameForCondition,
-			mapRef, valType), EmptyVisitMethod)
-		re.isMapCommaOk = false
-		re.capturedMapKey = ""
-		re.captureMapKey = false
-		re.suppressMapEmit = false
-		re.mapKeyCastSuffix = ""
-		re.mapKeyIsString = false
-		re.inAssignRhs = false
-		re.shouldGenerate = false
-		return
-	}
-	// Handle mixed index assignment: emit epilogue to set-back chain in reverse order
-	if re.isMixedIndexAssign {
-		lastOp := re.mixedIndexAssignOps[len(re.mixedIndexAssignOps)-1]
-		if lastOp.accessType == "map" {
-			// Close the Rc::new( and hashMapSet( for the final map assignment
-			re.gir.emitToFileBuffer("));\n", EmptyVisitMethod)
-		} else {
-			// Close the simple assignment for the final slice assignment
-			re.gir.emitToFileBuffer(";\n", EmptyVisitMethod)
-		}
-
-		// Emit epilogue: set-back chain in reverse order for INTERMEDIATE map accesses
-		indentStr := strings.Repeat(" ", re.mixedAssignIndent)
-		for i := len(re.mixedIndexAssignOps) - 1; i >= 0; i-- {
-			op := re.mixedIndexAssignOps[i]
-			// Only emit set-back for intermediate map accesses (those with tempVarName)
-			if op.accessType == "map" && op.tempVarName != "" {
-				// For string keys, add .to_string()
-				wrappedKey := ""
-				if op.isStringKey {
-					// String key
-					wrappedKey = "Rc::new(" + op.keyExpr + ".to_string())"
-				} else {
-					// Non-string key with cast
-					wrappedKey = "Rc::new(" + op.keyExpr + op.keyCastSuffix + ")"
-				}
-
-				// Set-back the updated map
-				var epilogue string
-				if re.OptimizeRefs {
-					epilogue = indentStr + op.mapVarExpr + " = hmap::hashMapSet(" +
-						op.mapVarExpr + ".clone(), " + wrappedKey + ", Rc::new(" + op.tempVarName + "));\n"
-				} else {
-					epilogue = indentStr + op.mapVarExpr + " = hmap::hashMapSet(" +
-						op.mapVarExpr + ".clone(), " + wrappedKey + ", Rc::new(" + op.tempVarName + "));\n"
-				}
-				re.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
-			}
-		}
-
-		// Reset state
-		re.isMixedIndexAssign = false
-		re.mixedIndexAssignOps = nil
-		re.mixedAssignFinalTarget = ""
-		re.suppressMapEmit = false
-		re.inAssignRhs = false
-		re.shouldGenerate = false
-		return
-	}
-
-	// Handle map assignment: close the hashMapSet call with ));
-	if re.isMapAssign {
-		re.gir.emitToFileBuffer("));\n", EmptyVisitMethod)
-
-		// For nested map assignment, emit epilogue to set updated inner map back to outer
-		if re.isNestedMapAssign {
-			outerKey := re.nestedMapOuterKey
-			// Wrap outer key with .to_string() if it's a string key
-			wrappedOuterKey := ""
-			if re.nestedMapOuterKeyIsString {
-				wrappedOuterKey = "Rc::new(" + outerKey + ".to_string())"
-			} else {
-				wrappedOuterKey = "Rc::new(" + outerKey + re.nestedMapOuterKeyCastSuffix + ")"
-			}
-
-			var epilogue string
-			if re.OptimizeRefs {
-				epilogue = re.emitAsString(re.nestedMapOuterVarName+" = hmap::hashMapSet("+
-					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+", Rc::new("+re.nestedMapVarName+"));", re.mapAssignIndent)
-			} else {
-				epilogue = re.emitAsString(re.nestedMapOuterVarName+" = hmap::hashMapSet("+
-					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+", Rc::new("+re.nestedMapVarName+"));", re.mapAssignIndent)
-			}
-			re.gir.emitToFileBuffer(epilogue, EmptyVisitMethod)
-			re.isNestedMapAssign = false
-			re.nestedMapOuterVarName = ""
-			re.nestedMapOuterKey = ""
-			re.nestedMapOuterKeyCastSuffix = ""
-			re.nestedMapOuterKeyIsString = false
-			re.nestedMapValueRustType = ""
-		}
-
-		re.isMapAssign = false
-		re.mapAssignVarName = ""
-		re.capturedMapKey = ""
-		re.captureMapKey = false
-		re.suppressMapEmit = false
-		re.mapKeyCastSuffix = ""
-		re.mapKeyIsString = false
-		re.inAssignRhs = false
-		re.shouldGenerate = false
-		return
-	}
-
-	// Save call extractions before cleanup resets them
-	callExts := re.moveOptCallExts
-	assignMarker := re.moveOptAssignStartMarker
-
-	re.currentAssignLhsNames = nil
-	re.moveOptActive = false
-	re.moveOptTempBindings = nil
-	re.moveOptArgReplacements = nil
-	re.moveOptModifiedCounts = nil
-	re.moveOptCallExts = nil
-	re.memTakeActive = false
-	re.memTakeLhsExpr = ""
-	re.memTakeArgIdx = -1
-	// Reset blank identifier suppression if it was set
-	if re.suppressRangeEmit {
-		re.suppressRangeEmit = false
-		return
-	}
-	// Insert call extraction bindings before the assignment
-	if len(callExts) > 0 {
-		// Emit the semicolon for the assignment first
-		if !re.insideForPostCond {
-			re.emitToken(";", Semicolon, 0)
-		}
-		// Save assignment tokens (from marker to current position)
-		assignTokens := make([]Token, len(re.gir.tokenSlice)-assignMarker)
-		copy(assignTokens, re.gir.tokenSlice[assignMarker:])
-		// Truncate back to before the assignment
-		re.gir.tokenSlice = re.gir.tokenSlice[:assignMarker]
-		// Emit extraction bindings (one per extracted function call arg)
-		indentStr := strings.Repeat(" ", indent)
-		for _, ext := range callExts {
-			bindingPrefix := CreateToken(Identifier, indentStr+"let "+ext.tempName+": "+ext.rustType+" = ")
-			re.gir.tokenSlice = append(re.gir.tokenSlice, bindingPrefix)
-			re.gir.tokenSlice = append(re.gir.tokenSlice, ext.tokens...)
-			bindingSuffix := CreateToken(Semicolon, ";\n")
-			re.gir.tokenSlice = append(re.gir.tokenSlice, bindingSuffix)
-		}
-		// Re-append the assignment tokens
-		re.gir.tokenSlice = append(re.gir.tokenSlice, assignTokens...)
-		re.shouldGenerate = false
-		return
-	}
-	// Don't emit semicolon inside for loop post statement
-	if !re.insideForPostCond {
-		re.emitToken(";", Semicolon, 0)
-	}
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	// Skip if all LHS are blank identifiers
-	if re.suppressRangeEmit {
-		return
-	}
-	re.shouldGenerate = true
-	re.inAssignRhs = true
-
-	// For mixed index assignment, emit preamble: extract temp variables for each INTERMEDIATE map access
-	if re.isMixedIndexAssign {
-		re.suppressMapEmit = false
-		indentStr := strings.Repeat(" ", re.mixedAssignIndent)
-
-		// Emit preamble: extract temp variables for each intermediate map access
-		for i, op := range re.mixedIndexAssignOps {
-			if op.accessType == "map" && i < len(re.mixedIndexAssignOps)-1 {
-				// Intermediate map access: extract to temp variable
-				// For string keys, add .to_string()
-				wrappedKey := ""
-				if op.isStringKey {
-					// String key
-					wrappedKey = "Rc::new(" + op.keyExpr + ".to_string())"
-				} else {
-					// Non-string key with cast
-					wrappedKey = "Rc::new(" + op.keyExpr + op.keyCastSuffix + ")"
-				}
-
-				var preamble string
-				if re.OptimizeRefs {
-					preamble = indentStr + "let mut " + op.tempVarName + " = hmap::hashMapGet(&" +
-						op.mapVarExpr + ".clone(), " + wrappedKey +
-						").downcast_ref::<" + op.valueRustType + ">().unwrap().clone();\n"
-				} else {
-					preamble = indentStr + "let mut " + op.tempVarName + " = hmap::hashMapGet(" +
-						op.mapVarExpr + ".clone(), " + wrappedKey +
-						").downcast_ref::<" + op.valueRustType + ">().unwrap().clone();\n"
-				}
-				re.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
-			}
-		}
-
-		// Emit assignment start based on last operation type
-		lastOp := re.mixedIndexAssignOps[len(re.mixedIndexAssignOps)-1]
-		if lastOp.accessType == "map" {
-			// Final operation is map assignment: emit hashMapSet
-			// For string keys, add .to_string()
-			wrappedKey := ""
-			if lastOp.isStringKey {
-				// String key
-				wrappedKey = "Rc::new(" + lastOp.keyExpr + ".to_string())"
-			} else {
-				// Non-string key with cast
-				wrappedKey = "Rc::new(" + lastOp.keyExpr + lastOp.keyCastSuffix + ")"
-			}
-			assignStart := indentStr + lastOp.mapVarExpr + " = hmap::hashMapSet(" +
-				lastOp.mapVarExpr + ".clone(), " + wrappedKey + ", Rc::new("
-			re.gir.emitToFileBuffer(assignStart, EmptyVisitMethod)
-		} else {
-			// Final operation is slice assignment: emit simple assignment
-			assignStart := indentStr + re.mixedAssignFinalTarget + " = "
-			re.gir.emitToFileBuffer(assignStart, EmptyVisitMethod)
-		}
-		return
-	}
-
-	// For map assignment, emit: varName = hmap::hashMapSet(varName, capturedKey, Rc::new(
-	if re.isMapAssign {
-		re.suppressMapEmit = false
-		varName := re.mapAssignVarName
-		capturedKey := re.capturedMapKey
-		// Wrap keys in Rc::new(key) with cast if needed
-		// For string keys, add .to_string()
-		wrappedKey := ""
-		if re.mapKeyIsString {
-			// String key
-			wrappedKey = "Rc::new(" + capturedKey + ".to_string())"
-		} else {
-			// Non-string key with cast
-			wrappedKey = "Rc::new(" + capturedKey + re.mapKeyCastSuffix + ")"
-		}
-
-		if re.isNestedMapAssign {
-			// For nested map: m["outer"]["inner"] = v
-			// Generate:
-			//   let mut __nested_inner_N = hmap::hashMapGet(m.clone(), Rc::new(outerKey)).downcast_ref::<hmap::HashMap>().unwrap().clone();
-			//   __nested_inner_N = hmap::hashMapSet(__nested_inner_N.clone(), Rc::new(innerKey), Rc::new(value));
-			outerKey := re.nestedMapOuterKey
-			// Wrap outer key with .to_string() if it's a string key
-			wrappedOuterKey := ""
-			if re.nestedMapOuterKeyIsString {
-				wrappedOuterKey = "Rc::new(" + outerKey + ".to_string())"
-			} else {
-				wrappedOuterKey = "Rc::new(" + outerKey + re.nestedMapOuterKeyCastSuffix + ")"
-			}
-
-			var preamble string
-			if re.OptimizeRefs {
-				preamble = re.emitAsString("let mut "+re.nestedMapVarName+" = hmap::hashMapGet(&"+
-					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+
-					").downcast_ref::<"+re.nestedMapValueRustType+">().unwrap().clone();\n", re.mapAssignIndent)
-			} else {
-				preamble = re.emitAsString("let mut "+re.nestedMapVarName+" = hmap::hashMapGet("+
-					re.nestedMapOuterVarName+".clone(), "+wrappedOuterKey+
-					").downcast_ref::<"+re.nestedMapValueRustType+">().unwrap().clone();\n", re.mapAssignIndent)
-			}
-			re.gir.emitToFileBuffer(preamble, EmptyVisitMethod)
-		}
-
-		str := re.emitAsString(varName+" = hmap::hashMapSet("+varName+".clone(), "+wrappedKey+", Rc::new(", re.mapAssignIndent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		return
-	}
-
-	opTokenType := re.getTokenType(re.assignmentToken)
-	re.emitToken(re.assignmentToken, opTokenType, indent+1)
-	re.emitToken(" ", WhiteSpace, 0)
-
-	// For += with String, Rust expects &str on RHS
-	// Add & before RHS if it's a String variable (not a string literal)
-	if re.assignmentToken == "+=" && len(node.Rhs) == 1 {
-		rhsType := re.pkg.TypesInfo.Types[node.Rhs[0]]
-		if rhsType.Type != nil && rhsType.Type.String() == "string" {
-			// Check if RHS is not a string literal (literals are handled separately)
-			if _, isBasicLit := node.Rhs[0].(*ast.BasicLit); !isBasicLit {
-				re.gir.emitToFileBuffer("&", EmptyVisitMethod)
-			}
-		}
-	}
-
-	// If assigning to a variable of type any (interface{}), wrap RHS in Rc::new()
-	if len(node.Lhs) == 1 && len(node.Rhs) == 1 && re.assignmentToken == "=" {
-		lhsType := re.pkg.TypesInfo.Types[node.Lhs[0]]
-		rhsType := re.pkg.TypesInfo.Types[node.Rhs[0]]
-		if lhsType.Type != nil && rhsType.Type != nil {
-			lhsTypeStr := lhsType.Type.String()
-			rhsTypeStr := rhsType.Type.String()
-			// If LHS is any/interface{} and RHS is a concrete type, wrap in Rc::new()
-			if (lhsTypeStr == "interface{}" || lhsTypeStr == "any") &&
-				rhsTypeStr != "interface{}" && rhsTypeStr != "any" {
-				re.gir.emitToFileBuffer("Rc::new(", EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	// Skip if all LHS are blank identifiers
-	if re.suppressRangeEmit {
-		return
-	}
-	// Check if we need to add a type cast for constant assignments
-	// This handles untyped int constants assigned to i8 variables
-	if len(node.Lhs) == 1 && len(node.Rhs) == 1 {
-		// Get the LHS type
-		lhsType := re.pkg.TypesInfo.Types[node.Lhs[0]]
-		rhsType := re.pkg.TypesInfo.Types[node.Rhs[0]]
-		if lhsType.Type != nil {
-			lhsTypeStr := lhsType.Type.String()
-
-			// Close Rc::new() if we opened it for any/interface{} assignment
-			if rhsType.Type != nil {
-				rhsTypeStr := rhsType.Type.String()
-				if (lhsTypeStr == "interface{}" || lhsTypeStr == "any") &&
-					rhsTypeStr != "interface{}" && rhsTypeStr != "any" &&
-					re.assignmentToken == "=" {
-					re.gir.emitToFileBuffer(")", EmptyVisitMethod)
-				}
-			}
-
-			// Check if RHS is a constant identifier
-			if rhsIdent, ok := node.Rhs[0].(*ast.Ident); ok {
-				if obj := re.pkg.TypesInfo.Uses[rhsIdent]; obj != nil {
-					if _, isConst := obj.(*types.Const); isConst {
-						// Get the constant type
-						constType := obj.Type().String()
-						// If assigning int constant to int8 field/variable, add cast
-						if (constType == "int" || constType == "untyped int") && lhsTypeStr == "int8" {
-							re.gir.emitToFileBuffer(" as i8", EmptyVisitMethod)
-						}
-					}
-				}
-			}
-		}
-
-		// Add .clone() for simple identifier RHS of non-Copy types
-		// This handles cases like: x = y where y is a struct/string/slice variable
-		// Skip if RHS is an index expression (already clones) or call expression
-		if rhsIdent, ok := node.Rhs[0].(*ast.Ident); ok {
-			// Skip constants - they don't need cloning
-			if obj := re.pkg.TypesInfo.Uses[rhsIdent]; obj != nil {
-				if _, isConst := obj.(*types.Const); isConst {
-					// Constants don't need clone
-				} else if rhsType.Type != nil {
-					// Check if it's a non-Copy type that needs cloning
-					needsClone := false
-					typeStr := rhsType.Type.String()
-
-					// String type
-					if typeStr == "string" {
-						needsClone = true
-					}
-
-					// Slice type
-					if strings.HasPrefix(typeStr, "[]") {
-						needsClone = true
-					}
-
-					// Struct type (named or anonymous)
-					if named, ok := rhsType.Type.(*types.Named); ok {
-						if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-							needsClone = true
-						}
-					}
-					if _, isStruct := rhsType.Type.(*types.Struct); isStruct {
-						needsClone = true
-					}
-
-					if needsClone {
-						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					}
-				}
-			}
-		}
-	}
-
-	// For local closure assignments, remove the entire statement from token stream
-	// The body tokens have already been stored in PostVisitFuncLit
-	// Only truncate for the outer closure assignment, not inner assignments
-	// inLocalClosureBody is false after PostVisitFuncLit, true while inside closure body
-	if re.localClosureAssign && re.currentClosureName != "" && !re.inLocalClosureBody {
-		// Remove all tokens from the assignment start to current position
-		if re.localClosureAssignStartIndex < len(re.gir.tokenSlice) {
-			re.gir.tokenSlice = re.gir.tokenSlice[:re.localClosureAssignStartIndex]
-		}
-		// Reset flags
-		re.localClosureAssign = false
-		re.currentClosureName = ""
-	}
-
-	re.shouldGenerate = false
-	re.isTuple = false
-	re.inAssignRhs = false
-}
-
-func (re *RustEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	if re.isMapCommaOk || re.isTypeAssertCommaOk {
-		return
-	}
-	if index > 0 {
-		str := re.emitAsString(", ", indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		// For multi-value declarations, add mut before each subsequent variable
-		if re.inMultiValueDecl {
-			re.emitToken("mut", RustKeyword, 0)
-			re.emitToken(" ", WhiteSpace, 0)
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	// For map assignment or comma-ok, LHS is suppressed
-	if re.isMapAssign || re.isMapCommaOk || re.isTypeAssertCommaOk {
-		re.shouldGenerate = true
-		re.inAssignLhs = true
-		return
-	}
-	re.shouldGenerate = true
-	re.inAssignLhs = true // Track that we're in LHS
-	assignmentToken := node.Tok.String()
-
-	// Track += and -= in for loop post statement for step detection
-	if re.insideForPostCond {
-		if assignmentToken == "+=" {
-			// Check if RHS is a numeric literal for step value
-			if len(node.Rhs) == 1 {
-				if lit, ok := node.Rhs[0].(*ast.BasicLit); ok && lit.Kind == token.INT {
-					step := 1 // default
-					fmt.Sscanf(lit.Value, "%d", &step)
-					re.forLoopStep = step
-					re.sawIncrement = true
-				}
-			}
-		} else if assignmentToken == "-=" {
-			// Decrement step
-			if len(node.Rhs) == 1 {
-				if lit, ok := node.Rhs[0].(*ast.BasicLit); ok && lit.Kind == token.INT {
-					step := 1 // default
-					fmt.Sscanf(lit.Value, "%d", &step)
-					re.forLoopStep = step
-					re.sawDecrement = true
-					re.forLoopReverse = true
-				}
-			}
-		}
-	}
-	// Check if LHS is a field access (SelectorExpr)
-	re.inFieldAssign = false
-	if len(node.Lhs) == 1 {
-		if _, ok := node.Lhs[0].(*ast.SelectorExpr); ok {
-			re.inFieldAssign = true
-		}
-	}
-	// Check if RHS is a function literal (for local closure inlining)
-	// Don't reset if we're inside a local closure body being processed
-	if !re.inLocalClosureBody {
-		re.localClosureAssign = false
-		re.currentClosureName = ""
-	}
-	if assignmentToken == ":=" && len(node.Rhs) == 1 {
-		if funcLit, ok := node.Rhs[0].(*ast.FuncLit); ok {
-			if ident, ok := node.Lhs[0].(*ast.Ident); ok {
-				re.localClosureAssign = true
-				re.currentClosureName = ident.Name
-				re.localClosures[ident.Name] = funcLit
-				// Record assignment start index for later removal
-				re.localClosureAssignStartIndex = len(re.gir.tokenSlice)
-				// Skip emitting the assignment - we'll inline the closure body at call sites
-				re.shouldGenerate = false
-				return
-			}
-		}
-	}
-	re.inMultiValueDecl = false
-	if assignmentToken == ":=" && len(node.Lhs) == 1 {
-		re.emitToken("let", RustKeyword, indent)
-		re.emitToken(" ", WhiteSpace, 0)
-		re.emitToken("mut", RustKeyword, 0)
-		re.emitToken(" ", WhiteSpace, 0)
-	} else if assignmentToken == ":=" && len(node.Lhs) > 1 {
-		// Multi-value declaration: let (mut a, mut b) = ...
-		re.inMultiValueDecl = true
-		re.emitToken("let", RustKeyword, indent)
-		re.emitToken(" ", WhiteSpace, 0)
-		re.emitToken("(", LeftParen, 0)
-		re.emitToken("mut", RustKeyword, 0)
-		re.emitToken(" ", WhiteSpace, 0)
-	} else if assignmentToken == "=" && len(node.Lhs) > 1 {
-		re.emitToken("(", LeftParen, indent)
-		re.isTuple = true
-	}
-	// Preserve compound assignment operators, convert := to =
-	if assignmentToken != "+=" && assignmentToken != "-=" && assignmentToken != "*=" && assignmentToken != "/=" {
-		assignmentToken = "="
-	}
-	re.assignmentToken = assignmentToken
-}
-
-func (re *RustEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	// For comma-ok, LHS is fully suppressed
-	if re.isMapCommaOk || re.isTypeAssertCommaOk {
-		re.inAssignLhs = false
-		return
-	}
-	// For map assignment, stop suppression (key was captured by index expr)
-	if re.isMapAssign {
-		re.suppressMapEmit = false
-		re.inAssignLhs = false
-		re.shouldGenerate = false
-		return
-	}
-	// For local closure inlining, skip all emission - the assignment will be removed
-	if re.localClosureAssign && re.currentClosureName != "" {
-		re.shouldGenerate = false
-		return
-	}
-	if node.Tok.String() == ":=" && len(node.Lhs) > 1 {
-		re.emitToken(")", RightParen, indent)
-	} else if node.Tok.String() == "=" && len(node.Lhs) > 1 {
-		re.emitToken(")", RightParen, indent)
-	}
-	re.inAssignLhs = false // Done with LHS
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	// Check if this is a map index operation
-	if re.pkg != nil && re.pkg.TypesInfo != nil {
-		tv := re.pkg.TypesInfo.Types[node.X]
-		if tv.Type != nil {
-			if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-				// Push "map" onto access type stack
-				re.indexAccessTypeStack = append(re.indexAccessTypeStack, "map")
-
-				// If already in a map index (nested read), save current state
-				if re.isMapIndex {
-					re.mapKeyCastStack = append(re.mapKeyCastStack, rustKeyCastState{
-						keyCastSuffix: re.mapKeyCastSuffix,
-						valueType:     re.mapIndexValueType,
-					})
-				}
-				re.isMapIndex = true
-				re.mapKeyCastSuffix = getRustKeyCast(mapType.Key())
-						re.mapKeyIsString = isRustStringKey(mapType.Key())
-
-				// Check if the value type is also a map (nested map read)
-				// If so, cast to hmap::HashMap instead of the map type
-				if _, isNestedMap := mapType.Elem().Underlying().(*types.Map); isNestedMap {
-					re.mapIndexValueType = "hmap::HashMap"
-				} else {
-					re.mapIndexValueType = getRustValueTypeCast(mapType.Elem())
-				}
-
-				// For map assignment or comma-ok or mixed index assign, don't emit hashMapGet — we're capturing the key
-				if !re.isMapAssign && !re.isMapCommaOk && !re.isMixedIndexAssign {
-					re.gir.emitToFileBuffer("hmap::hashMapGet(", EmptyVisitMethod)
-					// With ref-opt, hashMapGet takes &HashMap, so add & before the map variable
-					if re.OptimizeRefs {
-						re.gir.emitToFileBuffer("&", EmptyVisitMethod)
-					}
-				}
-				return
-			}
-			// Check if it's a slice/array type
-			if _, ok := tv.Type.Underlying().(*types.Slice); ok {
-				// Push "slice" onto access type stack
-				re.indexAccessTypeStack = append(re.indexAccessTypeStack, "slice")
-			} else if _, ok := tv.Type.Underlying().(*types.Array); ok {
-				// Push "slice" onto access type stack (arrays behave like slices)
-				re.indexAccessTypeStack = append(re.indexAccessTypeStack, "slice")
-			}
-		}
-	}
-	// For assignment RHS, check if the element type is a function (needs borrowing in Rust)
-	if re.inAssignRhs {
-		tv := re.pkg.TypesInfo.Types[node.X]
-		if tv.Type != nil {
-			// Check if it's a slice/array of functions
-			typeStr := tv.Type.String()
-			if strings.Contains(typeStr, "func(") {
-				// Add borrow operator for function types
-				re.gir.emitToFileBuffer("&", EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	// For mixed index assignment, suppress all index emission
-	if re.isMixedIndexAssign {
-		return
-	}
-
-	// Check the stack to determine the access type
-	if len(re.indexAccessTypeStack) > 0 {
-		accessType := re.indexAccessTypeStack[len(re.indexAccessTypeStack)-1]
-		if accessType == "map" && !re.isMapAssign && !re.isMapCommaOk {
-			if re.OptimizeRefs {
-				// With ref-opt, hashMapGet takes &HashMap (already prepended &), no clone needed
-				re.gir.emitToFileBuffer(", Rc::new(", EmptyVisitMethod)
-			} else {
-				// Emit .clone() for map variable (HashMap doesn't implement Copy), then comma and Rc::new( to wrap the key
-				re.gir.emitToFileBuffer(".clone(), Rc::new(", EmptyVisitMethod)
-			}
-		}
-		// For slice access, nothing to emit here
-	} else {
-		// Fallback: use isMapIndex when stack is empty (for assign/comma-ok modes)
-		if re.isMapIndex && !re.isMapAssign && !re.isMapCommaOk {
-			if re.OptimizeRefs {
-				re.gir.emitToFileBuffer(", Rc::new(", EmptyVisitMethod)
-			} else {
-				re.gir.emitToFileBuffer(".clone(), Rc::new(", EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	re.shouldGenerate = true
-
-	// For mixed index assignment, suppress all index emission
-	if re.isMixedIndexAssign {
-		return
-	}
-
-	// Check the stack to determine the access type
-	if len(re.indexAccessTypeStack) > 0 {
-		accessType := re.indexAccessTypeStack[len(re.indexAccessTypeStack)-1]
-		if accessType == "map" {
-			// For map index, don't emit [ - instead start capturing key if in map assign or comma-ok
-			if re.isMapAssign || re.isMapCommaOk {
-				// For nested map assignment, only capture the inner key (the second/root index)
-				// Skip capture if this is the nested map's index (outer key) - we already have it from AST
-				if re.isNestedMapAssign {
-					// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
-					// node.X IS an IndexExpr means this is the root index (for inner key m["outer"]["inner"])
-					if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
-						// This is the nested index (outer key) - don't capture, we have it already
-						return
-					}
-				}
-				re.captureMapKey = true
-				re.capturedMapKey = ""
-			}
-			return
-		} else if accessType == "slice" {
-			// For slice access, emit [
-			// If the base expression is a string, we need .as_bytes() for indexing
-			if node.X != nil {
-				tv := re.pkg.TypesInfo.Types[node.X]
-				if tv.Type != nil && tv.Type.String() == "string" {
-					re.gir.emitToFileBuffer(".as_bytes()", EmptyVisitMethod)
-				}
-			}
-			re.emitToken("[", LeftBracket, 0)
-			return
-		}
-	}
-
-	// Fallback for when stack is empty (use isMapIndex)
-	if re.isMapIndex {
-		if re.isMapAssign || re.isMapCommaOk {
-			// For nested map assignment, only capture the inner key (the second/root index)
-			// Skip capture if this is the nested map's index (outer key) - we already have it from AST
-			if re.isNestedMapAssign {
-				// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
-				// node.X IS an IndexExpr means this is the root index (for inner key m["outer"]["inner"])
-				if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
-					// This is the nested index (outer key) - don't capture, we have it already
-					return
-				}
-			}
-			re.captureMapKey = true
-			re.capturedMapKey = ""
-		}
-		return
-	}
-	// If the base expression is a string, we need .as_bytes() for indexing
-	if node.X != nil {
-		tv := re.pkg.TypesInfo.Types[node.X]
-		if tv.Type != nil && tv.Type.String() == "string" {
-			re.gir.emitToFileBuffer(".as_bytes()", EmptyVisitMethod)
-		}
-	}
-	re.emitToken("[", LeftBracket, 0)
-
-}
-func (re *RustEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	// For mixed index assignment, suppress all index emission and pop stack
-	if re.isMixedIndexAssign {
-		// Still need to pop the stack
-		if len(re.indexAccessTypeStack) > 0 {
-			re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
-		}
-		return
-	}
-
-	// Check the stack to determine the access type
-	if len(re.indexAccessTypeStack) > 0 {
-		accessType := re.indexAccessTypeStack[len(re.indexAccessTypeStack)-1]
-		if accessType == "map" {
-			if re.isMapAssign || re.isMapCommaOk {
-				// Stop capturing key - cast suffix will be used in PreVisitAssignStmtRhs or PostVisitAssignStmt
-				// For nested map assignment, don't stop things for the nested index - we need to process root index next
-				if re.isNestedMapAssign {
-					// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
-					if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
-						// This is the nested index - keep isMapIndex true so root index can capture
-						// Don't reset isMapIndex or captureMapKey - let root index use them
-						// Pop the stack
-						re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
-						return
-					}
-				}
-				re.captureMapKey = false
-			} else {
-				// For map read: close Rc::new() for key (with cast if needed), then close hashMapGet, add type assertion
-				re.gir.emitToFileBuffer(re.mapKeyCastSuffix+"))", EmptyVisitMethod)
-				// Add type assertion (downcast)
-				valType := re.mapIndexValueType
-				if valType == "String" {
-					re.gir.emitToFileBuffer(".downcast_ref::<String>().unwrap().clone()", EmptyVisitMethod)
-				} else if valType == "bool" {
-					re.gir.emitToFileBuffer(".downcast_ref::<bool>().unwrap().clone()", EmptyVisitMethod)
-				} else {
-					re.gir.emitToFileBuffer(fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType), EmptyVisitMethod)
-				}
-				// Restore previous key cast state if we have saved state (nested reads)
-				if len(re.mapKeyCastStack) > 0 {
-					state := re.mapKeyCastStack[len(re.mapKeyCastStack)-1]
-					re.mapKeyCastStack = re.mapKeyCastStack[:len(re.mapKeyCastStack)-1]
-					re.mapKeyCastSuffix = state.keyCastSuffix
-					re.mapIndexValueType = state.valueType
-					// Pop the stack and keep isMapIndex true for the outer map read
-					re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
-					return
-				}
-				re.mapKeyCastSuffix = ""
-				re.mapKeyIsString = false
-			}
-			re.isMapIndex = false
-			re.mapIndexValueType = ""
-			// Pop the stack
-			re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
-			return
-		} else if accessType == "slice" {
-			// For slice access, check if the index type is an integer (not usize) - need to add "as usize"
-			if node.Index != nil {
-				tv := re.pkg.TypesInfo.Types[node.Index]
-				if tv.Type != nil {
-					typeStr := tv.Type.String()
-					// Go int types need to be cast to usize for Rust indexing
-					if typeStr == "int" || typeStr == "int32" || typeStr == "int64" ||
-						typeStr == "int8" || typeStr == "int16" {
-						re.gir.emitToFileBuffer(" as usize", EmptyVisitMethod)
-					}
-				}
-			}
-			re.emitToken("]", RightBracket, 0)
-			// Add .clone() for Vec element access when element type doesn't implement Copy
-			if node.X != nil && !re.inAssignLhs {
-				tv := re.pkg.TypesInfo.Types[node.X]
-				if tv.Type != nil {
-					if sliceType, ok := tv.Type.Underlying().(*types.Slice); ok {
-						elemType := sliceType.Elem()
-						if _, isStruct := elemType.Underlying().(*types.Struct); isStruct {
-							re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-							if re.inCallExprArg {
-								re.argAlreadyCloned = true
-							}
-						}
-						if basic, isBasic := elemType.Underlying().(*types.Basic); isBasic {
-							if basic.Kind() == types.String {
-								re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-								if re.inCallExprArg {
-									re.argAlreadyCloned = true
-								}
-							}
-						}
-						if _, isInterface := elemType.Underlying().(*types.Interface); isInterface {
-							re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-							if re.inCallExprArg {
-								re.argAlreadyCloned = true
-							}
-						}
-					}
-				}
-			}
-			// Pop the stack
-			re.indexAccessTypeStack = re.indexAccessTypeStack[:len(re.indexAccessTypeStack)-1]
-			return
-		}
-	}
-
-	// Fallback for when stack is empty (use isMapIndex)
-	if re.isMapIndex {
-		if re.isMapAssign || re.isMapCommaOk {
-			// Stop capturing key - cast suffix will be used in PreVisitAssignStmtRhs or PostVisitAssignStmt
-			// For nested map assignment, don't stop things for the nested index - we need to process root index next
-			if re.isNestedMapAssign {
-				// node.X is NOT an IndexExpr means this is the nested index (for outer key m["outer"])
-				if _, isRootIndex := node.X.(*ast.IndexExpr); !isRootIndex {
-					// This is the nested index - keep isMapIndex true so root index can capture
-					// Don't reset isMapIndex or captureMapKey - let root index use them
-					return
-				}
-			}
-			re.captureMapKey = false
-		} else {
-			// For map read: close Rc::new() for key (with cast if needed), then close hashMapGet, add type assertion
-			re.gir.emitToFileBuffer(re.mapKeyCastSuffix+"))", EmptyVisitMethod)
-			// Add type assertion (downcast)
-			valType := re.mapIndexValueType
-			if valType == "String" {
-				re.gir.emitToFileBuffer(".downcast_ref::<String>().unwrap().clone()", EmptyVisitMethod)
-			} else if valType == "bool" {
-				re.gir.emitToFileBuffer(".downcast_ref::<bool>().unwrap().clone()", EmptyVisitMethod)
-			} else {
-				re.gir.emitToFileBuffer(fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType), EmptyVisitMethod)
-			}
-			// Restore previous key cast state if we have saved state (nested reads)
-			if len(re.mapKeyCastStack) > 0 {
-				state := re.mapKeyCastStack[len(re.mapKeyCastStack)-1]
-				re.mapKeyCastStack = re.mapKeyCastStack[:len(re.mapKeyCastStack)-1]
-				re.mapKeyCastSuffix = state.keyCastSuffix
-				re.mapIndexValueType = state.valueType
-				// Keep isMapIndex true for the outer map read
-				return
-			}
-			re.mapKeyCastSuffix = ""
-			re.mapKeyIsString = false
-		}
-		re.isMapIndex = false
-		re.mapIndexValueType = ""
-		return
-	}
-	// Check if the index type is an integer (not usize) - need to add "as usize"
-	if node.Index != nil {
-		tv := re.pkg.TypesInfo.Types[node.Index]
-		if tv.Type != nil {
-			typeStr := tv.Type.String()
-			// Go int types need to be cast to usize for Rust indexing
-			if typeStr == "int" || typeStr == "int32" || typeStr == "int64" ||
-				typeStr == "int8" || typeStr == "int16" {
-				re.gir.emitToFileBuffer(" as usize", EmptyVisitMethod)
-			}
-		}
-	}
-	re.emitToken("]", RightBracket, 0)
-
-	// Add .clone() for Vec element access when the element type doesn't implement Copy
-	// This is needed because Rust doesn't allow moving out of indexed collections
-	// BUT: Don't add .clone() when we're in the LHS of an assignment (we're assigning TO it)
-	if node.X != nil && !re.inAssignLhs {
-		tv := re.pkg.TypesInfo.Types[node.X]
-		if tv.Type != nil {
-			// Check if it's a slice/array type
-			underlying := tv.Type.Underlying()
-			if sliceType, ok := underlying.(*types.Slice); ok {
-				elemType := sliceType.Elem()
-				// Check if element type is a struct (non-Copy type)
-				if _, isStruct := elemType.Underlying().(*types.Struct); isStruct {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					if re.inCallExprArg {
-						re.argAlreadyCloned = true
-					}
-				}
-				// Check if element type is a string (also non-Copy in Rust)
-				if basic, isBasic := elemType.Underlying().(*types.Basic); isBasic {
-					if basic.Kind() == types.String {
-						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-						if re.inCallExprArg {
-							re.argAlreadyCloned = true
-						}
-					}
-				}
-				// Check if element type is interface{} (Rc<dyn Any> in Rust - not Copy)
-				if _, isInterface := elemType.Underlying().(*types.Interface); isInterface {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					if re.inCallExprArg {
-						re.argAlreadyCloned = true
-					}
-				}
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	re.shouldGenerate = true
-	re.emitToken("(", LeftParen, 1)
-
-	// Save current state for nested expressions
-	re.binaryNeedsLeftCastStack = append(re.binaryNeedsLeftCastStack, re.binaryNeedsLeftCast)
-	re.binaryNeedsRightCastStack = append(re.binaryNeedsRightCastStack, re.binaryNeedsRightCast)
-	re.inFloatBinaryExprStack = append(re.inFloatBinaryExprStack, re.inFloatBinaryExpr)
-	re.binaryNeedsLeftCast = false
-	re.binaryNeedsRightCast = ""
-	re.inFloatBinaryExpr = false
-
-	// Check if either operand is float64 - integer literals need .0 suffix
-	leftType := re.pkg.TypesInfo.Types[node.X]
-	rightType := re.pkg.TypesInfo.Types[node.Y]
-	if leftType.Type != nil && (leftType.Type.String() == "float64" || leftType.Type.String() == "float32") {
-		re.inFloatBinaryExpr = true
-	}
-	if rightType.Type != nil && (rightType.Type.String() == "float64" || rightType.Type.String() == "float32") {
-		re.inFloatBinaryExpr = true
-	}
-
-	// Check for string concatenation - in Rust, String + &str is needed
-	if node.Op == token.ADD {
-		if leftType.Type != nil && leftType.Type.String() == "string" {
-			// Check if right side is a function call or identifier returning string
-			if rightType.Type != nil && rightType.Type.String() == "string" {
-				// Mark that we need to add & before right operand
-				re.binaryNeedsRightCast = "&"
-			}
-		}
-	}
-
-	// Check if left operand is u8/i8/u16/i16 and right is a constant
-	// Go's type checker sees both as same type after implicit conversion, but
-	// we generate constants as i32, so we need to handle type mismatches
-	isComparisonOp := node.Op == token.EQL || node.Op == token.NEQ ||
-		node.Op == token.LSS || node.Op == token.GTR ||
-		node.Op == token.LEQ || node.Op == token.GEQ
-	isBitwiseOp := node.Op == token.AND || node.Op == token.OR || node.Op == token.XOR
-
-	if leftType.Type != nil {
-		leftStr := leftType.Type.String()
-		// Check if left is a small integer type
-		if leftStr == "uint8" || leftStr == "int8" || leftStr == "uint16" || leftStr == "int16" {
-			// Helper function to check if right side is a constant
-			rightIsConst := false
-			if ident, ok := node.Y.(*ast.Ident); ok {
-				if obj := re.pkg.TypesInfo.Uses[ident]; obj != nil {
-					if _, isConst := obj.(*types.Const); isConst {
-						rightIsConst = true
-					}
-				}
-			}
-			if sel, ok := node.Y.(*ast.SelectorExpr); ok {
-				if obj := re.pkg.TypesInfo.Uses[sel.Sel]; obj != nil {
-					if _, isConst := obj.(*types.Const); isConst {
-						rightIsConst = true
-					}
-				}
-			}
-
-			if rightIsConst {
-				if isComparisonOp {
-					// For comparisons, cast left to i32 (result is bool)
-					re.binaryNeedsLeftCast = true
-				} else if isBitwiseOp {
-					// For bitwise ops, cast right constant to match left type
-					// so the result has the correct type
-					rustType := re.mapGoTypeToRust(leftStr)
-					re.binaryNeedsRightCast = rustType
-				}
-			}
-
-			// Also check if right side is a binary expression or paren expr containing one
-			// (e.g., 0xFF - FlagZ or (0xFF - FlagZ)) that will evaluate to i32 in Rust
-			if isBitwiseOp {
-				// Get the actual expression, unwrapping ParenExpr if needed
-				rightExpr := node.Y
-				if parenExpr, ok := rightExpr.(*ast.ParenExpr); ok {
-					rightExpr = parenExpr.X
-				}
-
-				if _, ok := rightExpr.(*ast.BinaryExpr); ok {
-					// Check if the expression contains constants or literals
-					// that will result in i32
-					hasIntLiteral := false
-					ast.Inspect(rightExpr, func(n ast.Node) bool {
-						if lit, ok := n.(*ast.BasicLit); ok {
-							if lit.Kind == token.INT {
-								hasIntLiteral = true
-							}
-						}
-						if ident, ok := n.(*ast.Ident); ok {
-							if obj := re.pkg.TypesInfo.Uses[ident]; obj != nil {
-								if _, isConst := obj.(*types.Const); isConst {
-									hasIntLiteral = true
-								}
-							}
-						}
-						return true
-					})
-					if hasIntLiteral {
-						rustType := re.mapGoTypeToRust(leftStr)
-						re.binaryNeedsRightCast = rustType
-					}
-				}
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitBinaryExprLeft(node ast.Expr, indent int) {
-	// Add cast to i32 if needed for type compatibility with constants
-	if re.binaryNeedsLeftCast {
-		re.gir.emitToFileBuffer(" as i32", EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitBinaryExprRight(node ast.Expr, indent int) {
-	// Add & before right operand for string concatenation (Rust requires String + &str)
-	if re.binaryNeedsRightCast == "&" && !re.forwardDecls {
-		re.gir.emitToFileBuffer("&", EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
-	// Add cast for right operand (constant) if needed for bitwise operations
-	// Skip if it was the & for string concatenation (that's a prefix, not a suffix)
-	if re.binaryNeedsRightCast != "" && re.binaryNeedsRightCast != "&" && !re.forwardDecls {
-		re.gir.emitToFileBuffer(fmt.Sprintf(" as %s", re.binaryNeedsRightCast), EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	re.emitToken(")", RightParen, 1)
-	// Restore previous state for nested expressions
-	if len(re.binaryNeedsLeftCastStack) > 0 {
-		re.binaryNeedsLeftCast = re.binaryNeedsLeftCastStack[len(re.binaryNeedsLeftCastStack)-1]
-		re.binaryNeedsLeftCastStack = re.binaryNeedsLeftCastStack[:len(re.binaryNeedsLeftCastStack)-1]
-	}
-	if len(re.binaryNeedsRightCastStack) > 0 {
-		re.binaryNeedsRightCast = re.binaryNeedsRightCastStack[len(re.binaryNeedsRightCastStack)-1]
-		re.binaryNeedsRightCastStack = re.binaryNeedsRightCastStack[:len(re.binaryNeedsRightCastStack)-1]
-	}
-	if len(re.inFloatBinaryExprStack) > 0 {
-		re.inFloatBinaryExpr = re.inFloatBinaryExprStack[len(re.inFloatBinaryExprStack)-1]
-		re.inFloatBinaryExprStack = re.inFloatBinaryExprStack[:len(re.inFloatBinaryExprStack)-1]
-	}
-	// Note: Do NOT set shouldGenerate = false here!
-	// This would prevent the right operand of nested binary expressions from being generated.
-	// For example, in (a + b) + c, setting false after (a + b) would suppress 'c'.
-}
-
-func (re *RustEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
-	content := op.String()
-	opTokenType := re.getTokenType(content)
-	re.emitToken(content, opTokenType, 0)
-	re.emitToken(" ", WhiteSpace, 0)
-}
-
-func (re *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
-	// For make(map[K]V), suppress all arguments (key type constant already emitted)
-	if re.isMapMakeCall {
-		re.suppressMapEmit = true
-		return
-	}
-	// For make([]T, n), suppress arg 0 (the array type) and emit size for arg 1
-	if re.isSliceMakeCall {
-		if index == 0 {
-			// Suppress the ArrayType argument
-			re.suppressMapEmit = true
-			return
-		} else if index == 1 {
-			// Allow the size argument to be emitted normally
-			re.suppressMapEmit = false
-			// Don't emit comma - the size will be picked up by PostVisitCallExprArgs
-		}
-		return
-	}
-	// For delete(m, k), suppress arg 0 emission but still pass map var and key to hashMapDelete
-	if re.isDeleteCall {
-		if index == 0 {
-			re.suppressMapEmit = true
-			return
-		} else if index == 1 {
-			re.suppressMapEmit = false
-			// Emit the map variable as first arg, then comma for the key
-			re.gir.emitToFileBuffer(re.deleteMapVarName+".clone(), Rc::new(", EmptyVisitMethod)
-		}
-		return
-	}
-	if index > 0 {
-		str := re.emitAsString(", ", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-	// Track that we're inside a call argument (for closure wrapping decisions)
-	re.inCallExprArg = true
-	re.argAlreadyCloned = false
-	// Reference optimization: emit & before argument if callee param is read-only (&T)
-	if re.isRefOptArg(index) {
-		// If the argument is already a reference param in the current function, pass as-is
-		// (it's already &T, so we don't need another &)
-		isAlreadyRef := false
-		if ident, ok := node.(*ast.Ident); ok {
-			isAlreadyRef = re.refOptCurrentRefParams[ident.Name]
-		}
-		if !isAlreadyRef {
-			str := re.emitAsString("&", 0)
-			re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		}
-	}
-	// Record marker if this arg will be replaced by a temp variable.
-	// Only apply at outermost call depth (stack depth == 1) to avoid
-	// nested CallExpr (like type conversions int(x)) resetting the flag.
-	if re.moveOptActive && re.moveOptArgReplacements != nil && len(re.currentCallArgIdentsStack) == 1 {
-		if _, ok := re.moveOptArgReplacements[index]; ok {
-			re.moveOptArgStartMarker = len(re.gir.tokenSlice)
-			re.moveOptReplacingArg = true
-		}
-	}
-	// Record marker for std::mem::take replacement
-	if re.memTakeActive && index == re.memTakeArgIdx && len(re.currentCallArgIdentsStack) == 1 {
-		re.memTakeArgMarker = len(re.gir.tokenSlice)
-	}
-	// Record marker for call expression extraction
-	if len(re.moveOptCallExts) > 0 && len(re.currentCallArgIdentsStack) == 1 {
-		for i := range re.moveOptCallExts {
-			if re.moveOptCallExts[i].argIdx == index {
-				re.moveOptCallExts[i].argMarker = len(re.gir.tokenSlice)
-				break
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	// Handle map/slice make call arg suppression
-	if re.isMapMakeCall || re.isSliceMakeCall || re.isDeleteCall {
-		re.suppressMapEmit = false
-		return
-	}
-	// Replace arg tokens with temp var name if this arg was pre-extracted.
-	// Only at outermost call depth (stack depth == 1).
-	defer func() {
-		if re.moveOptReplacingArg && len(re.currentCallArgIdentsStack) == 1 {
-			re.gir.tokenSlice = re.gir.tokenSlice[:re.moveOptArgStartMarker]
-			re.emitToken(re.moveOptArgReplacements[index], Identifier, 0)
-			re.moveOptReplacingArg = false
-		}
-	}()
-	if re.forwardDecls {
-		re.inCallExprArg = false
-		return
-	}
-	// Call expression extraction: capture emitted tokens and replace with temp name
-	if len(re.moveOptCallExts) > 0 && len(re.currentCallArgIdentsStack) == 1 {
-		for i := range re.moveOptCallExts {
-			if re.moveOptCallExts[i].argIdx == index {
-				ext := &re.moveOptCallExts[i]
-				// Capture the emitted tokens for this function call arg
-				ext.tokens = make([]Token, len(re.gir.tokenSlice)-ext.argMarker)
-				copy(ext.tokens, re.gir.tokenSlice[ext.argMarker:])
-				// Replace with temp variable name
-				re.gir.tokenSlice = re.gir.tokenSlice[:ext.argMarker]
-				re.emitToken(ext.tempName, Identifier, 0)
-				re.MoveOptCount++
-				re.inCallExprArg = false
-				return
-			}
-		}
-	}
-	// Reference optimization: if callee param is read-only, skip .clone() entirely
-	// (& was already prepended in PreVisitCallExprArg)
-	if re.isRefOptArg(index) {
-		re.RefOptCount++
-		re.inCallExprArg = false
-		return
-	}
-	// std::mem::take optimization: replace state.Field.clone() with std::mem::take(&mut state.Field)
-	if re.memTakeActive && index == re.memTakeArgIdx && len(re.currentCallArgIdentsStack) == 1 {
-		re.gir.tokenSlice = re.gir.tokenSlice[:re.memTakeArgMarker]
-		re.emitToken("std::mem::take(&mut "+re.memTakeLhsExpr+")", Identifier, 0)
-		re.MoveOptCount++
-		re.inCallExprArg = false
-		return
-	}
-	// len() is read-only (& already prepended) — skip all cloning for its arguments
-	if re.currentCallIsLen && re.OptimizeMoves {
-		re.inCallExprArg = false
-		return
-	}
-	// Skip redundant .clone() when vec element access already produced an owned value
-	if re.argAlreadyCloned && re.OptimizeMoves {
-		re.argAlreadyCloned = false
-		re.MoveOptCount++
-		re.inCallExprArg = false
-		return
-	}
-	// Check if the argument type needs .clone()
-	tv := re.pkg.TypesInfo.Types[node]
-	if tv.Type != nil {
-		typeStr := tv.Type.String()
-
-		// Clone Vec/slice types (but not for append which takes ownership,
-		// and not when the slice can be moved via canMoveArg)
-		if strings.HasPrefix(typeStr, "[]") {
-			if !re.currentCallIsAppend {
-				if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-				}
-			}
-			re.inCallExprArg = false
-			return
-		}
-
-		// Clone String types (but not string literals - those get .to_string() anyway)
-		if typeStr == "string" {
-			if _, isBasicLit := node.(*ast.BasicLit); !isBasicLit {
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-				re.inCallExprArg = false
-				return
-			}
-		}
-
-		// Check if it's a named type (potential struct or slice alias)
-		if named, ok := tv.Type.(*types.Named); ok {
-			// Check if underlying type is a slice (e.g., type AST []Statement)
-			if _, isSlice := named.Underlying().(*types.Slice); isSlice {
-				if !re.currentCallIsAppend {
-					if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
-						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					}
-				}
-				re.inCallExprArg = false
-				return
-			}
-			// Check if underlying type is a struct
-			if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-				// Clone structs unless the argument can be moved (consumed and reassigned)
-				// Note: structs with Rc<dyn Any> fields (interface{}) are now cloneable
-				if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-				}
-				re.inCallExprArg = false
-				return
-			}
-		}
-		// Also handle non-named struct types (rare but possible)
-		if _, isStruct := tv.Type.(*types.Struct); isStruct {
-			if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-			}
-			re.inCallExprArg = false
-			return
-		}
-		// Handle interface{} type (Rc<dyn Any> in Rust - not Copy)
-		if _, isInterface := tv.Type.Underlying().(*types.Interface); isInterface {
-			if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-			}
-			re.inCallExprArg = false
-			return
-		}
-		// Handle map type (HashMap in Rust - not Copy, used for hashMapLen/hashMapGet)
-		if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
-			// With ref-opt, hashMapLen takes &HashMap (& already prepended), no clone needed
-			if re.isMapLenCall && re.OptimizeRefs {
-				re.inCallExprArg = false
-				return
-			}
-			if identNode, isIdent := node.(*ast.Ident); !isIdent || !re.canMoveArg(identNode.Name) {
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-			}
-			re.inCallExprArg = false
-			return
-		}
-	}
-
-	// Liveness-based clone: if this identifier will be used in a later statement,
-	// we need to clone it now to avoid Rust move errors
-	if ident, isIdent := node.(*ast.Ident); isIdent {
-		if re.isVariableUsedInLaterStatements(ident.Name) {
-			// Skip clone if variable is being reassigned from this call's return value
-			// Later uses will see the new value, so no clone needed
-			if re.canMoveArg(ident.Name) {
-				re.inCallExprArg = false
-				return
-			}
-			// Check if the type requires cloning (non-Copy types)
-			if tv.Type != nil {
-				typeStr := tv.Type.String()
-				// Clone for slice/Vec types
-				if strings.Contains(typeStr, "[]") {
-					if !re.currentCallIsAppend {
-						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					}
-					re.inCallExprArg = false
-					return
-				}
-				// Clone for string types
-				if typeStr == "string" {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					re.inCallExprArg = false
-					return
-				}
-				// Clone for named types (structs or slices)
-				if named, ok := tv.Type.(*types.Named); ok {
-					// Check if underlying type is a slice (e.g., type AST []Statement)
-					if _, isSlice := named.Underlying().(*types.Slice); isSlice {
-						if !re.currentCallIsAppend {
-							re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-						}
-						re.inCallExprArg = false
-						return
-					}
-					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-						re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-						re.inCallExprArg = false
-						return
-					}
-				}
-				// Clone for interface{} types (Rc<dyn Any> in Rust)
-				if _, isInterface := tv.Type.Underlying().(*types.Interface); isInterface {
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					re.inCallExprArg = false
-					return
-				}
-				// Clone for map types (HashMap in Rust)
-				if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
-					// With ref-opt, hashMapLen takes &HashMap (& already prepended), no clone needed
-					if re.isMapLenCall && re.OptimizeRefs {
-						re.inCallExprArg = false
-						return
-					}
-					re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-					re.inCallExprArg = false
-					return
-				}
-			}
-		}
-	}
-	// Clear the call argument flag
-	re.inCallExprArg = false
-}
-
-func (re *RustEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
-	str := re.emitAsString(";", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
-	re.shouldGenerate = true
-	if node.Init != nil {
-		str := re.emitAsString("{\n", indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-func (re *RustEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	if node.Init != nil {
-		str := re.emitAsString("}\n", indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	re.shouldGenerate = true
-	str := re.emitAsString("if ", 1)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.emitToken("(", LeftParen, 0)
-}
-
-func (re *RustEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	re.emitToken(")", RightParen, 0)
-	str := re.emitAsString("\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
-	re.insideForPostCond = true
-	// Save current for loop state before resetting (for nested loop support)
-	re.forLoopStateStack = append(re.forLoopStateStack, forLoopState{
-		sawIncrement:         re.sawIncrement,
-		sawDecrement:         re.sawDecrement,
-		forLoopStep:          re.forLoopStep,
-		forLoopInclusive:     re.forLoopInclusive,
-		forLoopReverse:       re.forLoopReverse,
-		isInfiniteLoop:       re.isInfiniteLoop,
-		pendingLoopIncrement: re.pendingLoopIncrement,
-		inForLoopBody:        re.inForLoopBody,
-		loopIncrementVar:     re.loopIncrementVar,
-		loopIncrementOp:      re.loopIncrementOp,
-		loopIncrementVal:     re.loopIncrementVal,
-	})
-	// Reset all for loop tracking flags
-	re.sawIncrement = false
-	re.sawDecrement = false
-	re.forLoopStep = 0
-	re.forLoopInclusive = false
-	re.forLoopReverse = false
-	re.pendingLoopIncrement = false
-	re.inForLoopBody = false
-
-	// Check for compound condition (contains && or ||)
-	hasCompoundCond := re.hasCompoundCondition(node.Cond)
-	if hasCompoundCond && node.Init != nil && node.Post != nil {
-		// This is a for loop with compound condition - will be converted to while loop
-		// Extract the loop variable and increment info from Init and Post
-		if assign, ok := node.Init.(*ast.AssignStmt); ok && len(assign.Lhs) > 0 {
-			if ident, ok := assign.Lhs[0].(*ast.Ident); ok {
-				re.loopIncrementVar = ident.Name
-			}
-		}
-		// Check Post for increment/decrement
-		if inc, ok := node.Post.(*ast.IncDecStmt); ok {
-			if inc.Tok.String() == "++" {
-				re.loopIncrementOp = "+="
-			} else {
-				re.loopIncrementOp = "-="
-			}
-			re.loopIncrementVal = "1"
-		} else if assign, ok := node.Post.(*ast.AssignStmt); ok {
-			// Handle i += n or i -= n
-			if assign.Tok.String() == "+=" {
-				re.loopIncrementOp = "+="
-			} else if assign.Tok.String() == "-=" {
-				re.loopIncrementOp = "-="
-			}
-			if len(assign.Rhs) > 0 {
-				if lit, ok := assign.Rhs[0].(*ast.BasicLit); ok {
-					re.loopIncrementVal = lit.Value
-				}
-			}
-		}
-		re.pendingLoopIncrement = true
-	}
-
-	// Detect loop type upfront to emit correct Rust keyword
-	isCondOnly := node.Init == nil && node.Cond != nil && node.Post == nil
-	re.isCondOnlyLoopStack = append(re.isCondOnlyLoopStack, isCondOnly)
-
-	var str string
-	if node.Init == nil && node.Cond == nil && node.Post == nil {
-		// Infinite loop: for { } -> loop { }
-		str = re.emitAsString("loop", indent)
-		re.isInfiniteLoop = true
-	} else if isCondOnly {
-		// Condition-only loop: for cond { } -> while cond { }
-		// Emit "while " directly to avoid token rewriting issues with nested loops
-		str = re.emitAsString("while ", indent)
-		re.isInfiniteLoop = false
-	} else {
-		str = re.emitAsString("for ", indent)
-		re.isInfiniteLoop = false
-	}
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.shouldGenerate = true
-}
-
-// hasCompoundCondition checks if the expression contains && or ||
-func (re *RustEmitter) hasCompoundCondition(expr ast.Expr) bool {
-	if expr == nil {
-		return false
-	}
-	if binExpr, ok := expr.(*ast.BinaryExpr); ok {
-		if binExpr.Op.String() == "&&" || binExpr.Op.String() == "||" {
-			return true
-		}
-		// Check nested expressions
-		return re.hasCompoundCondition(binExpr.X) || re.hasCompoundCondition(binExpr.Y)
-	}
-	return false
-}
-
-func (re *RustEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
-	// Don't emit semicolon for infinite loops (they use `loop` keyword)
-	if re.isInfiniteLoop {
-		return
-	}
-	// Don't emit semicolon for condition-only loops (they use `while` keyword)
-	if len(re.isCondOnlyLoopStack) > 0 && re.isCondOnlyLoopStack[len(re.isCondOnlyLoopStack)-1] {
-		return
-	}
-	if node == nil {
-		str := re.emitAsString(";", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
-	re.insideForPostCond = false
-	str := re.emitAsString("\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	str := re.emitAsString("else", 1)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
-	// Don't emit semicolon for infinite loops (they use `loop` keyword)
-	// Don't emit semicolon for condition-only loops (they use `while` keyword)
-	isCondOnly := len(re.isCondOnlyLoopStack) > 0 && re.isCondOnlyLoopStack[len(re.isCondOnlyLoopStack)-1]
-	if !re.isInfiniteLoop && !isCondOnly {
-		str := re.emitAsString(";", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
-	re.shouldGenerate = false
-	re.insideForPostCond = false
-
-	// Pop the condition-only loop stack
-	isCondOnly := false
-	if len(re.isCondOnlyLoopStack) > 0 {
-		isCondOnly = re.isCondOnlyLoopStack[len(re.isCondOnlyLoopStack)-1]
-		re.isCondOnlyLoopStack = re.isCondOnlyLoopStack[:len(re.isCondOnlyLoopStack)-1]
-	}
-
-	// For condition-only loops, the token stream is already correct (while cond \n)
-	// No rewriting needed — just clean up pointers and restore parent state
-	if isCondOnly {
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmt)
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtInit)
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtInit)
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtCond)
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtCond)
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtPost)
-		re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtPost)
-		// Restore parent for-loop state
-		if len(re.forLoopStateStack) > 0 {
-			prev := re.forLoopStateStack[len(re.forLoopStateStack)-1]
-			re.forLoopStateStack = re.forLoopStateStack[:len(re.forLoopStateStack)-1]
-			re.sawIncrement = prev.sawIncrement
-			re.sawDecrement = prev.sawDecrement
-			re.forLoopStep = prev.forLoopStep
-			re.forLoopInclusive = prev.forLoopInclusive
-			re.forLoopReverse = prev.forLoopReverse
-			re.isInfiniteLoop = prev.isInfiniteLoop
-			re.pendingLoopIncrement = prev.pendingLoopIncrement
-			re.inForLoopBody = prev.inForLoopBody
-			re.loopIncrementVar = prev.loopIncrementVar
-			re.loopIncrementOp = prev.loopIncrementOp
-			re.loopIncrementVal = prev.loopIncrementVal
-		}
-		return
-	}
-
-	p1 := SearchPointerIndexReverse(PreVisitForStmtInit, re.gir.pointerAndIndexVec)
-	p2 := SearchPointerIndexReverse(PostVisitForStmtInit, re.gir.pointerAndIndexVec)
-	var forVars []Token
-	var rangeTokens []Token
-	hasInit := false
-	if p1 != nil && p2 != nil {
-		// Extract the substring between the positions of the pointers
-		initTokens, err := ExtractTokensBetween(p1.Index, p2.Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting init statement:", err)
-			return
-		}
-		for i := 0; i < len(initTokens); i++ {
-			tok := initTokens[i]
-			if tok.Type == WhiteSpace {
-				initTokens, _ = RemoveTokenAt(initTokens, i)
-				i = i - 1
-			}
-		}
-		// Check if there's actual init content (not just empty)
-		hasInit = len(initTokens) > 0 && !(len(initTokens) == 1 && initTokens[0].Content == ";")
-		for i, tok := range initTokens {
-			if tok.Type == Assignment {
-				forVars = append(forVars, initTokens[i-1])
-				// Extract ALL tokens after the assignment as the start value
-				startTokens := initTokens[i+1:]
-				// Combine all start tokens into a single string
-				startStr := ""
-				for _, t := range startTokens {
-					if t.Content != ";" {
-						startStr += t.Content
-					}
-				}
-				startStr = strings.TrimSpace(startStr)
-				if startStr != "" {
-					rangeTokens = append(rangeTokens, CreateToken(Identifier, startStr))
-				}
-				break // Only process first assignment
-			}
-		}
-	}
-
-	p3 := SearchPointerIndexReverse(PreVisitForStmtCond, re.gir.pointerAndIndexVec)
-	p4 := SearchPointerIndexReverse(PostVisitForStmtCond, re.gir.pointerAndIndexVec)
-	var condTokens []Token
-	hasCond := false
-	if p3 != nil && p4 != nil {
-		// Extract the substring between the positions of the pointers
-		var err error
-		condTokens, err = ExtractTokensBetween(p3.Index, p4.Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting condition statement:", err)
-			return
-		}
-		for i := 0; i < len(condTokens); i++ {
-			tok := condTokens[i]
-			if tok.Type == WhiteSpace {
-				condTokens, _ = RemoveTokenAt(condTokens, i)
-				i = i - 1
-			}
-		}
-		// Check if there's actual condition content
-		hasCond = len(condTokens) > 0 && !(len(condTokens) == 1 && condTokens[0].Content == ";")
-
-		// Look for comparison operators: <, <=, >, >=
-		for i, tok := range condTokens {
-			if tok.Type == ComparisonOperator {
-				var boundTokens []Token
-				isLessThan := tok.Content == "<" || tok.Content == "<="
-
-				if isLessThan {
-					// i < n or i <= n: extract tokens after operator
-					boundTokens = condTokens[i+1:]
-					if tok.Content == "<=" {
-						re.forLoopInclusive = true
-					}
-				} else if tok.Content == ">" || tok.Content == ">=" {
-					// i > n or i >= n: reversed loop, extract tokens after operator
-					boundTokens = condTokens[i+1:]
-					re.forLoopReverse = true
-					if tok.Content == ">=" {
-						re.forLoopInclusive = true
-					}
-				} else {
-					continue // Not a comparison we handle
-				}
-
-				// Remove trailing semicolons and whitespace
-				for len(boundTokens) > 0 {
-					lastTok := boundTokens[len(boundTokens)-1]
-					trimmed := strings.TrimSpace(lastTok.Content)
-					if trimmed == ";" || trimmed == "" {
-						boundTokens = boundTokens[:len(boundTokens)-1]
-					} else {
-						break
-					}
-				}
-				// Combine all bound tokens into a single token for simplicity
-				boundStr := ""
-				for _, t := range boundTokens {
-					boundStr += t.Content
-				}
-				boundStr = strings.TrimSpace(boundStr)
-				// Count parens and strip only UNMATCHED trailing )
-				for strings.HasSuffix(boundStr, ")") {
-					openCount := strings.Count(boundStr, "(")
-					closeCount := strings.Count(boundStr, ")")
-					if closeCount > openCount {
-						boundStr = strings.TrimSuffix(boundStr, ")")
-						boundStr = strings.TrimSpace(boundStr)
-					} else {
-						break
-					}
-				}
-				if boundStr != "" {
-					rangeTokens = append(rangeTokens, CreateToken(Identifier, boundStr))
-				}
-				break // Only process first comparison operator
-			}
-		}
-	}
-
-	p6 := SearchPointerIndexReverse(PostVisitForStmtPost, re.gir.pointerAndIndexVec)
-	pFor := SearchPointerIndexReverse(PreVisitForStmt, re.gir.pointerAndIndexVec)
-
-	// Case 0: Infinite loop (no init, no cond, no post) → loop
-	// Go: for { } → Rust: loop { }
-	if pFor != nil && p6 != nil && !hasInit && !hasCond && node.Post == nil {
-		// Build new tokens for Rust loop: "loop\n"
-		newTokens := []string{"loop\n"}
-		re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pFor.Index, p6.Index, newTokens)
-		return
-	}
-
-	// Case 1: Condition-only for loop (no init, no post) → while loop
-	// Go: for cond { } → Rust: while cond { }
-	if pFor != nil && p6 != nil && !hasInit && hasCond && node.Post == nil {
-		// Build new tokens for Rust while loop: "while cond\n"
-		newTokens := []string{}
-		newTokens = append(newTokens, "while ")
-		// Remove trailing semicolon from condition tokens
-		for _, tok := range condTokens {
-			if tok.Content != ";" {
-				newTokens = append(newTokens, tok.Content)
-			}
-		}
-		newTokens = append(newTokens, "\n")
-
-		// Rewrite the tokens from PreVisitForStmt to PostVisitForStmtPost
-		re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pFor.Index, p6.Index, newTokens)
-		return
-	}
-
-	// Case 1.5: For loop with compound condition (contains && or ||) → while loop
-	// Go: for i := 0; i < n && someOtherCond; i++ { } → Rust: let mut i = 0; while i < n && someOtherCond { ... i += 1; }
-	hasCompoundCond := false
-	for _, tok := range condTokens {
-		// Check if token contains && or || (may be combined with other chars in some token formats)
-		if tok.Content == "&&" || tok.Content == "||" ||
-			strings.Contains(tok.Content, "&&") || strings.Contains(tok.Content, "||") {
-			hasCompoundCond = true
-			break
-		}
-	}
-	if pFor != nil && p6 != nil && hasInit && hasCond && hasCompoundCond && len(forVars) > 0 {
-		// Build new tokens: init statement + while loop
-		newTokens := []string{}
-
-		// Add init statement: let mut var = value;
-		newTokens = append(newTokens, "let mut ")
-		newTokens = append(newTokens, forVars[0].Content)
-		newTokens = append(newTokens, " = ")
-		if len(rangeTokens) > 0 {
-			newTokens = append(newTokens, rangeTokens[0].Content)
-		} else {
-			newTokens = append(newTokens, "0")
-		}
-		newTokens = append(newTokens, ";\n")
-
-		// Add while loop with condition
-		newTokens = append(newTokens, "while ")
-		for _, tok := range condTokens {
-			if tok.Content != ";" {
-				newTokens = append(newTokens, tok.Content)
-			}
-		}
-		newTokens = append(newTokens, " ")
-
-		// Rewrite the tokens from PreVisitForStmt to PostVisitForStmtPost
-		re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pFor.Index, p6.Index, newTokens)
-		// Note: The increment is already added by PostVisitBlockStmt using flags set in PreVisitForStmt
-		// Fall through to cleanup at the end, but skip Case 2 by clearing rangeTokens
-		rangeTokens = nil
-	}
-
-	// Case 2: Traditional for loop with init, cond, post and increment/decrement → for in range
-	if pFor != nil && p6 != nil && len(forVars) > 0 && len(rangeTokens) >= 2 && (re.sawIncrement || re.sawDecrement) {
-		// Build new tokens for Rust for loop
-		newTokens := []string{}
-		newTokens = append(newTokens, "for ")
-		newTokens = append(newTokens, forVars[0].Content)
-		newTokens = append(newTokens, " in ")
-
-		// Determine range operator: .. or ..=
-		rangeOp := ".."
-		if re.forLoopInclusive {
-			rangeOp = "..="
-		}
-
-		// Build the range expression
-		startVal := rangeTokens[0].Content
-		endVal := rangeTokens[1].Content
-
-		// Check if we need modifiers (.rev(), .step_by())
-		needsRev := re.forLoopReverse
-		needsStep := re.forLoopStep > 1
-
-		if needsRev || needsStep {
-			// Complex range: need parentheses
-			newTokens = append(newTokens, "(")
-			if needsRev {
-				// For reverse: swap start and end, and adjust for inclusive
-				// i > 0 means: (0..start+1).rev() or for i >= 0: (0..=start).rev()
-				// Actually for i := n; i > 0; i-- we want (1..=n).rev() to get n, n-1, ..., 1
-				// For i := n; i >= 0; i-- we want (0..=n).rev() to get n, n-1, ..., 0
-				if re.forLoopInclusive {
-					// i >= end: range is (end..=start).rev()
-					newTokens = append(newTokens, endVal)
-					newTokens = append(newTokens, rangeOp)
-					newTokens = append(newTokens, startVal)
-				} else {
-					// i > end: range is (end+1..=start).rev()
-					// We need to add 1 to end for exclusive lower bound
-					newTokens = append(newTokens, "(")
-					newTokens = append(newTokens, endVal)
-					newTokens = append(newTokens, "+1)")
-					newTokens = append(newTokens, "..=")
-					newTokens = append(newTokens, startVal)
-				}
-			} else {
-				// Forward range
-				newTokens = append(newTokens, startVal)
-				newTokens = append(newTokens, rangeOp)
-				newTokens = append(newTokens, endVal)
-			}
-			newTokens = append(newTokens, ")")
-
-			// Add modifiers
-			if needsRev {
-				newTokens = append(newTokens, ".rev()")
-			}
-			if needsStep {
-				newTokens = append(newTokens, fmt.Sprintf(".step_by(%d)", re.forLoopStep))
-			}
-		} else {
-			// Simple range: start..end or start..=end
-			newTokens = append(newTokens, startVal)
-			newTokens = append(newTokens, rangeOp)
-			newTokens = append(newTokens, endVal)
-		}
-
-		newTokens = append(newTokens, "\n")
-
-		// Rewrite the tokens from PreVisitForStmt to PostVisitForStmtPost
-		re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pFor.Index, p6.Index, newTokens)
-	}
-
-	// Remove used pointer entries to handle nested loops correctly
-	// After processing this for loop, its markers should not be found by parent loops
-	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmt)
-	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtInit)
-	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtInit)
-	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtCond)
-	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtCond)
-	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PreVisitForStmtPost)
-	re.gir.pointerAndIndexVec = RemovePointerEntryReverse(re.gir.pointerAndIndexVec, PostVisitForStmtPost)
-
-	// Restore parent for-loop state
-	if len(re.forLoopStateStack) > 0 {
-		prev := re.forLoopStateStack[len(re.forLoopStateStack)-1]
-		re.forLoopStateStack = re.forLoopStateStack[:len(re.forLoopStateStack)-1]
-		re.sawIncrement = prev.sawIncrement
-		re.sawDecrement = prev.sawDecrement
-		re.forLoopStep = prev.forLoopStep
-		re.forLoopInclusive = prev.forLoopInclusive
-		re.forLoopReverse = prev.forLoopReverse
-		re.isInfiniteLoop = prev.isInfiniteLoop
-		re.pendingLoopIncrement = prev.pendingLoopIncrement
-		re.inForLoopBody = prev.inForLoopBody
-		re.loopIncrementVar = prev.loopIncrementVar
-		re.loopIncrementOp = prev.loopIncrementOp
-		re.loopIncrementVal = prev.loopIncrementVal
-	}
-}
-
-func (re *RustEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	re.shouldGenerate = true
-	// Check if this is a key-value range (both Key and Value present)
-	if node.Key != nil && node.Value != nil {
-		re.isKeyValueRange = true
-		re.rangeKeyName = node.Key.(*ast.Ident).Name
-		re.rangeValueName = node.Value.(*ast.Ident).Name
-		re.rangeCollectionExpr = ""
-		re.suppressRangeEmit = true
-		re.rangeStmtIndent = indent
-		// Don't emit anything yet - we'll emit in PostVisitRangeStmtX
-	} else {
-		re.isKeyValueRange = false
-		str := re.emitAsString("for ", indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitRangeStmtKey(node ast.Expr, indent int) {
-	// For key-value range, we've already captured the key name
-}
-
-func (re *RustEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
-	// Nothing special needed here
-}
-
-func (re *RustEmitter) PreVisitRangeStmtValue(node ast.Expr, indent int) {
-	// For key-value range, we've already captured the value name
-}
-
-func (re *RustEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
-	if re.isKeyValueRange {
-		// Stop suppressing, start capturing collection expression
-		re.suppressRangeEmit = false
-		re.captureRangeExpr = true
-	} else {
-		str := re.emitAsString(" in ", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitRangeStmtX(node ast.Expr, indent int) {
-	// For key-value range, we're already in capture mode
-}
-
-func (re *RustEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
-	if re.isKeyValueRange {
-		// Stop capturing and emit the complete for loop
-		re.captureRangeExpr = false
-		collection := re.rangeCollectionExpr
-		key := re.rangeKeyName
-		value := re.rangeValueName
-		indent := re.rangeStmtIndent
-
-		// Check if collection is a string
-		tv := re.pkg.TypesInfo.Types[node]
-		iterMethod := ".clone().iter().enumerate()"
-		if tv.Type != nil && tv.Type.String() == "string" {
-			iterMethod = ".bytes().enumerate()"
-		}
-
-		// Emit: for (key, value) in collection.clone().iter().enumerate()
-		str := re.emitAsString(fmt.Sprintf("for (%s, %s) in %s%s\n", key, value, collection, iterMethod), indent)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-
-		// Reset range state
-		re.isKeyValueRange = false
-		re.rangeKeyName = ""
-		re.rangeValueName = ""
-		re.rangeCollectionExpr = ""
-		re.shouldGenerate = false
-	} else {
-		// Check the type of the expression being ranged over
-		tv := re.pkg.TypesInfo.Types[node]
-		if tv.Type != nil {
-			typeStr := tv.Type.String()
-			if typeStr == "string" {
-				// String needs .bytes() to iterate and get i8 values
-				re.gir.emitToFileBuffer(".bytes()", EmptyVisitMethod)
-			} else {
-				// Add .clone() to the collection to avoid ownership transfer
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-			}
-		} else {
-			re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-		}
-		str := re.emitAsString("\n", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		re.shouldGenerate = false
-	}
-}
-
-func (re *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	// Reset any range-related state
-}
-
-func (re *RustEmitter) PreVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	re.shouldGenerate = true
-	// Track if we see ++ or -- for for loop rewriting
-	if node.Tok.String() == "++" {
-		re.sawIncrement = true
-		re.forLoopStep = 1
-	} else if node.Tok.String() == "--" {
-		re.sawDecrement = true
-		re.forLoopReverse = true
-		re.forLoopStep = 1
-	}
-}
-
-func (re *RustEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	content := node.Tok.String()
-	// Rust doesn't support ++ or --, convert to += 1 or -= 1
-	if content == "++" {
-		re.gir.emitToFileBuffer(" += 1", EmptyVisitMethod)
-	} else if content == "--" {
-		re.gir.emitToFileBuffer(" -= 1", EmptyVisitMethod)
-	}
-	if !re.insideForPostCond {
-		re.emitToken(";", Semicolon, 0)
-	}
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	// Save current isArray state for nested composite literals
-	re.isArrayStack = append(re.isArrayStack, re.isArray)
-	// Reset for this composite literal
-	re.isArray = false
-	re.currentCompLitIsSlice = false
-
-	// Push the type to the stack so we can check it in PostVisitCompositeLitElts
-	var compLitType types.Type
-	if node.Type != nil {
-		typeInfo := re.pkg.TypesInfo.Types[node.Type]
-		if typeInfo.Type != nil {
-			compLitType = typeInfo.Type
-			// Check if the underlying type is a slice (for type aliases like AST = []Statement)
-			if underlying := compLitType.Underlying(); underlying != nil {
-				if _, ok := underlying.(*types.Slice); ok {
-					// Only use Vec::new() for empty slice literals
-					// For non-empty, set isArray so vec![] syntax is used
-					if len(node.Elts) == 0 {
-						re.currentCompLitIsSlice = true
-					} else {
-						re.isArray = true
-					}
-				}
-			}
-		}
-	}
-	re.compLitTypeStack = append(re.compLitTypeStack, compLitType)
-}
-
-// packageScopeHasInterfaceTypes checks if any struct in the package has interface{} fields
-func (re *RustEmitter) packageScopeHasInterfaceTypes(pkg *types.Package) bool {
-	scope := pkg.Scope()
-	for _, name := range scope.Names() {
-		obj := scope.Lookup(name)
-		if typeName, ok := obj.(*types.TypeName); ok {
-			if re.typeHasInterfaceFields(typeName.Type()) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (re *RustEmitter) PreVisitCompositeLitType(node ast.Expr, indent int) {
-	re.gir.emitToFileBuffer("", "@PreVisitCompositeLitType")
-}
-
-func (re *RustEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
-	pointerAndPosition := SearchPointerIndexReverse("@PreVisitCompositeLitType", re.gir.pointerAndIndexVec)
-	if pointerAndPosition != nil {
-		// For slice type aliases (like AST = []Statement), replace with Vec::new()
-		// The braces will be suppressed in PreVisitCompositeLitElts/PostVisitCompositeLitElts
-		if re.currentCompLitIsSlice {
-			if re.inKeyValueExpr || re.inFieldAssign || re.inReturnStmt || re.inCallExprArg {
-				// Inside struct field initialization, field assignment, or return statement
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), []string{"Vec::new()"})
-			} else {
-				// Variable declaration: let x = []Type{} -> let x: Vec<type> = Vec::new()
-				// Extract the type tokens for the type annotation
-				vecTypeStrRepr, _ := ExtractTokensBetween(pointerAndPosition.Index, len(re.gir.tokenSlice), re.gir.tokenSlice)
-				newTokens := []string{}
-				newTokens = append(newTokens, ":")
-				newTokens = append(newTokens, tokensToStrings(vecTypeStrRepr)...)
-				newTokens = append(newTokens, " = Vec::new()")
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index-len("=")-len(" "), len(re.gir.tokenSlice), newTokens)
-			}
-			return
-		}
-		// TODO not very effective
-		// go through all aliases and check if the underlying type matches
-		// Only do alias replacement if the type is NOT already a named type (alias)
-		typeInfo := re.pkg.TypesInfo.Types[node]
-		if typeInfo.Type != nil {
-			if _, isNamed := typeInfo.Type.(*types.Named); !isNamed {
-				// Type is a basic/primitive type - check for alias replacement
-				for aliasName, alias := range re.aliases {
-					if alias.UnderlyingType == typeInfo.Type.Underlying().String() {
-						re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), []string{aliasName})
-						break
-					}
-				}
-			}
-		}
-		if re.isArray {
-			// TODO that's still hack
-			// we operate on string representation of the type
-			// has to be rewritten to use some kind of IR
-			if re.inKeyValueExpr || re.inFieldAssign || re.inReturnStmt || re.inCallExprArg {
-				// Inside struct field initialization, field assignment, or return statement: []Type{} -> vec![]
-				// Just replace the type with vec!, keeping context intact
-				newTokens := []string{"vec!"}
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index, len(re.gir.tokenSlice), newTokens)
-			} else {
-				// Variable declaration: let x = []Type{} -> let x: Vec<type> = vec![]
-				vecTypeStrRepr, _ := ExtractTokensBetween(pointerAndPosition.Index, len(re.gir.tokenSlice), re.gir.tokenSlice)
-				newTokens := []string{}
-				newTokens = append(newTokens, ":")
-				newTokens = append(newTokens, tokensToStrings(vecTypeStrRepr)...)
-				newTokens = append(newTokens, " = vec!")
-				re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, pointerAndPosition.Index-len("=")-len(" "), len(re.gir.tokenSlice), newTokens)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitCompositeLitElts(node []ast.Expr, indent int) {
-	// Skip braces for slice type aliases - Vec::new() is already emitted
-	if re.currentCompLitIsSlice {
-		return
-	}
-	re.emitToken("{", LeftBrace, 0)
-}
-
-func (re *RustEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
-	// For struct initialization in Rust, add ..Default::default() to handle missing fields
-	// But NOT for arrays/vectors - those just use {}
-	// Don't use Default::default() if the type doesn't derive Default (due to interface{}/func fields)
-
-	// Get the current composite literal's type from the stack
-	var currentType types.Type
-	if len(re.compLitTypeStack) > 0 {
-		currentType = re.compLitTypeStack[len(re.compLitTypeStack)-1]
-	}
-
-	// Check if this specific type has interface/function fields that prevent Default
-	typeHasNoDefault := currentType != nil && re.typeHasInterfaceFields(currentType)
-
-	// Check if the underlying type is a slice (for type aliases like AST = []Statement)
-	isSliceType := false
-	if currentType != nil {
-		underlying := currentType.Underlying()
-		if _, ok := underlying.(*types.Slice); ok {
-			isSliceType = true
-		}
-	}
-
-	// Skip braces and default for slice type aliases - Vec::new() is already emitted
-	if re.currentCompLitIsSlice {
-		re.currentCompLitIsSlice = false
-	} else {
-		if !re.isArray && !isSliceType && !typeHasNoDefault {
-			if len(node) > 0 {
-				// Partial struct init - add comma before Default
-				re.gir.emitToFileBuffer(", ..Default::default()", EmptyVisitMethod)
-			} else {
-				// Empty struct init
-				re.gir.emitToFileBuffer("..Default::default()", EmptyVisitMethod)
-			}
-		}
-		re.emitToken("}", RightBrace, 0)
-	}
-
-	// Restore isArray from stack for nested composite literals
-	if len(re.isArrayStack) > 0 {
-		re.isArray = re.isArrayStack[len(re.isArrayStack)-1]
-		re.isArrayStack = re.isArrayStack[:len(re.isArrayStack)-1]
-	}
-	// Pop from compLitTypeStack
-	if len(re.compLitTypeStack) > 0 {
-		re.compLitTypeStack = re.compLitTypeStack[:len(re.compLitTypeStack)-1]
-	}
-}
-
-func (re *RustEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	if index > 0 {
-		str := re.emitAsString(", ", 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	// Don't add & - we'll add .to_vec() at the end to get Vec back
-}
-
-func (re *RustEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
-	re.emitToken("[", LeftBracket, 0)
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	re.emitToken("]", RightBracket, 0)
-	// Convert slice to Vec to match Go semantics
-	re.gir.emitToFileBuffer(".to_vec()", EmptyVisitMethod)
-	re.shouldGenerate = true
-}
-
-func (re *RustEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
-	// Re-enable generation for the low index expression
-	re.shouldGenerate = true
-}
-
-func (re *RustEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
-	// Cast to usize for slice indexing (Rust requires usize for slice indices)
-	if node != nil {
-		re.gir.emitToFileBuffer(" as usize", EmptyVisitMethod)
-	}
-	re.gir.emitToFileBuffer("..", EmptyVisitMethod)
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
-	// Re-enable generation for the high index expression
-	re.shouldGenerate = true
-}
-
-func (re *RustEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
-	// Cast to usize for slice indexing (Rust requires usize for slice indices)
-	if node != nil {
-		re.gir.emitToFileBuffer(" as usize", EmptyVisitMethod)
-	}
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
-	re.funcLitDepth++
-	// For local closure inlining, skip wrapper emission
-	if re.localClosureAssign && re.currentClosureName != "" {
-		return
-	}
-	// Check if this closure returns any (interface{})
-	re.currentFuncReturnsAny = false
-	if node.Type != nil && node.Type.Results != nil {
-		for _, result := range node.Type.Results.List {
-			if result.Type != nil {
-				resultType := re.pkg.TypesInfo.Types[result.Type]
-				if resultType.Type != nil {
-					typeStr := resultType.Type.String()
-					if typeStr == "interface{}" || typeStr == "any" {
-						re.currentFuncReturnsAny = true
-						break
-					}
-				}
-			}
-		}
-	}
-	// Only wrap closure with Rc::new() when NOT passed as a direct call argument
-	// Functions that take closure arguments expect FnMut, not Rc<dyn Fn>
-	if !re.inCallExprArg {
-		wrapperStr := "Rc::new("
-		str := re.emitAsString(wrapperStr, 0)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		re.closureWrappedInRc = true
-	} else {
-		re.closureWrappedInRc = false
-	}
-	re.emitToken("|", Identifier, indent)
-}
-func (re *RustEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
-	re.funcLitDepth--
-	// For local closures being inlined, extract and store body tokens, skip wrapper
-	if re.inLocalClosureBody && re.currentClosureName != "" {
-		// Extract body tokens (from after { to current position)
-		bodyEndIndex := len(re.gir.tokenSlice)
-		if re.localClosureBodyStartIndex < bodyEndIndex {
-			bodyTokens := make([]Token, bodyEndIndex-re.localClosureBodyStartIndex)
-			copy(bodyTokens, re.gir.tokenSlice[re.localClosureBodyStartIndex:bodyEndIndex])
-			re.localClosureBodyTokens[re.currentClosureName] = bodyTokens
-		}
-		// Clear the flag
-		re.inLocalClosureBody = false
-		// Don't emit the closing braces - the entire assignment will be truncated
-		return
-	}
-	re.emitToken("}", RightBrace, 0)
-	// Close the Rc::new() wrapper only if it was opened
-	if re.closureWrappedInRc {
-		re.emitToken(")", RightParen, 0)
-	}
-	re.currentFuncReturnsAny = false
-	re.closureWrappedInRc = false
-}
-
-func (re *RustEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
-	// For local closure inlining, skip wrapper emission
-	if re.localClosureAssign && re.currentClosureName != "" {
-		return
-	}
-	re.emitToken("|", Identifier, 0)
-}
-
-func (re *RustEmitter) PreVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	str := ""
-	if index > 0 {
-		str += re.emitAsString(", ", 0)
-	}
-	// Emit name first, then colon, then type will follow
-	if len(node.Names) > 0 {
-		// Escape Rust keywords in parameter names
-		paramName := escapeRustKeyword(node.Names[0].Name)
-		str += re.emitAsString(paramName+": ", 0)
-	}
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	// Type has already been emitted, nothing to do
-}
-
-func (re *RustEmitter) PreVisitFuncLitBody(node *ast.BlockStmt, indent int) {
-	// For local closures being inlined, skip wrapper emission but record body start
-	if re.localClosureAssign && re.currentClosureName != "" {
-		re.localClosureBodyStartIndex = len(re.gir.tokenSlice)
-		re.inLocalClosureBody = true // Track that we're inside the closure body
-		return
-	}
-	re.emitToken("{", LeftBrace, 0)
-	str := re.emitAsString("\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
-	re.shouldGenerate = false
-}
-
-func (re *RustEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {
-	if re.forwardDecls {
-		return
-	}
-	if re.captureMapKey {
-		re.capturedMapKey += re.emitAsString("Rc<dyn Any>", indent)
-		return
-	}
-	if re.suppressMapEmit {
-		return
-	}
-	str := re.emitAsString("Rc<dyn Any>", indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitInterfaceType(node *ast.InterfaceType, indent int) {
-}
-
-func (re *RustEmitter) PreVisitKeyValueExprValue(node ast.Expr, indent int) {
-	// In Rust struct initialization, use `:` not `=`
-	str := re.emitAsString(": ", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
-	// Add .clone() for non-Copy types in struct field assignments
-	// This is needed because Rust closures that move values become FnOnce, not Fn
-	// For slices (Vec in Rust) and strings, we need to clone to avoid moving the captured variable
-	if node != nil {
-		tv := re.pkg.TypesInfo.Types[node]
-		if tv.Type != nil {
-			typeStr := tv.Type.String()
-			// Check if it's a slice type (will become Vec in Rust) or string type
-			if strings.HasPrefix(typeStr, "[]") || typeStr == "string" {
-				re.gir.emitToFileBuffer(".clone()", EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	re.emitToken("(", LeftParen, 0)
-	str := re.emitAsString(node.Op.String(), 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-func (re *RustEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	re.emitToken(")", RightParen, 0)
-}
-
-func (re *RustEmitter) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
-	// TODO dummy implementation
-	// not very well performed
-	for constIdent, obj := range re.pkg.TypesInfo.Defs {
-		if obj == nil {
-			continue
-		}
-		if con, ok := obj.(*types.Const); ok {
-			if constIdent.Name != node.Name {
-				continue
-			}
-			constType := con.Type().String()
-			constType = strings.TrimPrefix(constType, "untyped ")
-			if constType == re.pkg.TypesInfo.Defs[node].Type().String() {
-				constType = trimBeforeChar(constType, '.')
-			}
-
-			// Map Go types to Rust types for constants
-			// Keep untyped int as i32 since Go's implicit type conversion at usage
-			// sites will be handled by explicit casts in binary expressions
-			rustType := re.mapGoTypeToRust(constType)
-			str := re.emitAsString(fmt.Sprintf("pub const %s: %s = ", node.Name, rustType), 0)
-
-			re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-		}
-	}
-}
-func (re *RustEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
-	str := re.emitAsString(";\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-func (re *RustEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
-	str := re.emitAsString("\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	re.shouldGenerate = true
-	str := re.emitAsString("match ", indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-func (re *RustEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	// Check if the switch has a default case
-	hasDefault := false
-	if node.Body != nil {
-		for _, stmt := range node.Body.List {
-			if caseClause, ok := stmt.(*ast.CaseClause); ok {
-				if len(caseClause.List) == 0 {
-					hasDefault = true
-					break
-				}
-			}
-		}
-	}
-	// If no default case, add one for Rust match exhaustiveness
-	if !hasDefault {
-		str := re.emitAsString("_ => {}\n", indent+2)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-	re.emitToken("}", RightBrace, indent)
-}
-
-func (re *RustEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
-	// Check if we need to cast to i32 to match constants (which are i32 by default)
-	if node != nil {
-		tv := re.pkg.TypesInfo.Types[node]
-		if tv.Type != nil {
-			typeStr := tv.Type.String()
-			// Cast smaller integer types to i32 so they match constant types
-			if typeStr == "int8" || typeStr == "uint8" ||
-				typeStr == "int16" || typeStr == "uint16" {
-				str := re.emitAsString(" as i32", 0)
-				re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-			}
-		}
-	}
-	// Rust match doesn't use parentheses around the tag
-	str := re.emitAsString(" ", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.emitToken("{", LeftBrace, 0)
-	str = re.emitAsString("\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
-	// In Rust match, close the block for this arm
-	str := re.emitAsString("}\n", indent+2)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
-	if len(node) == 0 {
-		// Rust match uses _ for default case
-		str := re.emitAsString("_ => {\n", indent+2)
-		re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	}
-}
-
-func (re *RustEmitter) PreVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	// Rust match arms don't need "case" keyword - just the pattern
-	str := re.emitAsString("", indent+2)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-	re.shouldGenerate = true
-}
-
-func (re *RustEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	// Rust match uses => and block
-	str := re.emitAsString(" => {\n", 0)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
-	if re.isTypeAssertCommaOk {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitTypeAssertExpr")
-}
-
-func (re *RustEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
-	if re.isTypeAssertCommaOk {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitTypeAssertExprType")
-}
-
-func (re *RustEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
-	if re.isTypeAssertCommaOk {
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PostVisitTypeAssertExprType")
-}
-
-func (re *RustEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
-	if re.isTypeAssertCommaOk {
-		re.captureMapKey = true
-		re.capturedMapKey = ""
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PreVisitTypeAssertExprX")
-}
-
-func (re *RustEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
-	if re.isTypeAssertCommaOk {
-		re.captureMapKey = false
-		return
-	}
-	re.gir.emitToFileBuffer("", "@PostVisitTypeAssertExprX")
-}
-
-func (re *RustEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
-	if re.isTypeAssertCommaOk {
-		return
-	}
-	// Reorder type assertion from (Type)X to X.downcast_ref::<Type>().unwrap().clone()
-	p1 := SearchPointerIndexReverseString("@PreVisitTypeAssertExprType", re.gir.pointerAndIndexVec)
-	p2 := SearchPointerIndexReverseString("@PostVisitTypeAssertExprType", re.gir.pointerAndIndexVec)
-	p3 := SearchPointerIndexReverseString("@PreVisitTypeAssertExprX", re.gir.pointerAndIndexVec)
-	p4 := SearchPointerIndexReverseString("@PostVisitTypeAssertExprX", re.gir.pointerAndIndexVec)
-	p0 := SearchPointerIndexReverseString("@PreVisitTypeAssertExpr", re.gir.pointerAndIndexVec)
-
-	if p0 != nil && p1 != nil && p2 != nil && p3 != nil && p4 != nil {
-		typeTokens, err := ExtractTokensBetween(p1.Index, p2.Index, re.gir.tokenSlice)
-		if err != nil {
-			return
-		}
-		exprTokens, err := ExtractTokensBetween(p3.Index, p4.Index, re.gir.tokenSlice)
-		if err != nil {
-			return
-		}
-		typeStr := strings.TrimSpace(strings.Join(tokensToStrings(typeTokens), ""))
-		exprStr := strings.TrimSpace(strings.Join(tokensToStrings(exprTokens), ""))
-
-		// Generate Rust downcast syntax: X.downcast_ref::<Type>().unwrap().clone()
-		newTokens := []string{exprStr, ".downcast_ref::<", typeStr, ">().unwrap().clone()"}
-		re.gir.tokenSlice, _ = RewriteTokensBetween(re.gir.tokenSlice, p0.Index, p4.Index, newTokens)
-	}
-}
-
-func (re *RustEmitter) PreVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	re.shouldGenerate = true
-	re.inKeyValueExpr = true
-}
-
-func (re *RustEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	re.inKeyValueExpr = false
-	// Add type cast if needed for struct field initialization
-	// This handles untyped int constants assigned to int8 fields
-	if node.Value == nil {
-		return
-	}
-
-	// Get the key (field name)
-	keyIdent, ok := node.Key.(*ast.Ident)
-	if !ok {
-		return
-	}
-	fieldName := keyIdent.Name
-
-	// Get the expected field type from the struct
-	// We need to find the struct type and look up the field
-	fieldType := re.getFieldTypeForKeyValue(node, fieldName)
-	if fieldType == "" {
-		return
-	}
-
-	// Determine if we need to cast based on field type and value type
-	var valueType string
-	if valueIdent, ok := node.Value.(*ast.Ident); ok {
-		obj := re.pkg.TypesInfo.Uses[valueIdent]
-		if obj != nil {
-			valueType = obj.Type().String()
-		} else if len(valueIdent.Name) > 0 && valueIdent.Name[0] >= 'A' && valueIdent.Name[0] <= 'Z' {
-			// Assume uppercase identifiers are constants (untyped int)
-			valueType = "untyped int"
-		}
-	} else if selExpr, ok := node.Value.(*ast.SelectorExpr); ok {
-		obj := re.pkg.TypesInfo.Uses[selExpr.Sel]
-		if obj != nil {
-			if _, isConst := obj.(*types.Const); isConst {
-				valueType = obj.Type().String()
-			}
-		}
-	}
-
-	// Add cast if assigning int to a smaller integer type
-	if valueType == "int" || valueType == "untyped int" || strings.HasSuffix(valueType, ".int") {
-		switch fieldType {
-		case "int8":
-			re.gir.emitToFileBuffer(" as i8", EmptyVisitMethod)
-		case "int16":
-			re.gir.emitToFileBuffer(" as i16", EmptyVisitMethod)
-		case "uint8":
-			re.gir.emitToFileBuffer(" as u8", EmptyVisitMethod)
-		case "uint16":
-			re.gir.emitToFileBuffer(" as u16", EmptyVisitMethod)
-		}
-	}
-}
-
-// getFieldTypeForKeyValue looks up the struct field type for a KeyValueExpr
-func (re *RustEmitter) getFieldTypeForKeyValue(node *ast.KeyValueExpr, fieldName string) string {
-	// Try to get the type from TypesInfo
-	if re.pkg.TypesInfo == nil {
-		return ""
-	}
-
-	// Find the parent composite literal to get the struct type
-	// We use the current composite literal type from the stack if available
-	if len(re.compLitTypeStack) > 0 {
-		compLitType := re.compLitTypeStack[len(re.compLitTypeStack)-1]
-		if compLitType != nil {
-			// Get the underlying type (in case it's a named type)
-			underlying := compLitType.Underlying()
-			if structType, ok := underlying.(*types.Struct); ok {
-				// Look up the field by name
-				for i := 0; i < structType.NumFields(); i++ {
-					field := structType.Field(i)
-					if field.Name() == fieldName {
-						return field.Type().String()
-					}
-				}
-			}
-		}
-	}
-	return ""
-}
-
-func (re *RustEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
-	str := re.emitAsString(node.Tok.String()+";", indent)
-	re.gir.emitToFileBuffer(str, EmptyVisitMethod)
-}
-
-func (re *RustEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
-	// Check if this is a selector expression (obj.field) where the field is a function type
-	// In Rust, calling a function stored in a struct field requires: (obj.field)(args)
-	if sel, ok := node.(*ast.SelectorExpr); ok {
-		// Get the type of the selector (the field)
-		if tv := re.pkg.TypesInfo.Selections[sel]; tv != nil {
-			// Check if the field type is a function type (Signature)
-			if _, isSig := tv.Type().Underlying().(*types.Signature); isSig {
-				re.gir.emitToFileBuffer("(", EmptyVisitMethod)
-			}
-		}
-	}
-	// Push the current position to the stack for nested call handling
-	re.callExprFunMarkerStack = append(re.callExprFunMarkerStack, len(re.gir.tokenSlice))
-	re.gir.emitToFileBuffer("", "@PreVisitCallExprFun")
-}
-
-func (re *RustEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
-	// Push the current position to the stack for nested call handling (end of function name)
-	re.callExprFunEndMarkerStack = append(re.callExprFunEndMarkerStack, len(re.gir.tokenSlice))
-	re.gir.emitToFileBuffer("", "@PostVisitCallExprFun")
-	// Close the paren if we opened one for function field call
-	if sel, ok := node.(*ast.SelectorExpr); ok {
-		if tv := re.pkg.TypesInfo.Selections[sel]; tv != nil {
-			if _, isSig := tv.Type().Underlying().(*types.Signature); isSig {
-				re.gir.emitToFileBuffer(")", EmptyVisitMethod)
-			}
-		}
-	}
-}
-
-func (re *RustEmitter) PreVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
-	re.gir.emitToFileBuffer("", "@PreVisitFuncDeclSignatureTypeParamsListType")
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
-	re.gir.emitToFileBuffer("", "@PostVisitFuncDeclSignatureTypeParamsListType")
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	re.gir.emitToFileBuffer("", "@PostVisitFuncDeclSignatureTypeParamsArgName")
-}
-
-func (re *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	p1 := SearchPointerIndexReverse("@PreVisitFuncDeclSignatureTypeParamsListType", re.gir.pointerAndIndexVec)
-	p2 := SearchPointerIndexReverse("@PostVisitFuncDeclSignatureTypeParamsListType", re.gir.pointerAndIndexVec)
-	p3 := SearchPointerIndexReverse("@PreVisitFuncDeclSignatureTypeParamsArgName", re.gir.pointerAndIndexVec)
-	p4 := SearchPointerIndexReverse("@PostVisitFuncDeclSignatureTypeParamsArgName", re.gir.pointerAndIndexVec)
-
-	if p1 != nil && p2 != nil && p3 != nil && p4 != nil {
-		typeStrRepr, err := ExtractTokensBetween(p1.Index, p2.Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting type representation:", err)
-			return
-		}
-		nameStrRepr, err := ExtractTokensBetween(p3.Index, p4.Index, re.gir.tokenSlice)
-		if err != nil {
-			fmt.Println("Error extracting name representation:", err)
-			return
-		}
-		// Only check name for whitespace - types can have spaces (e.g., Rc<dyn Any>)
-		nameStr := strings.TrimSpace(strings.Join(tokensToStrings(nameStrRepr), ""))
-		if nameStr == "" || containsWhitespace(nameStr) {
-			// If name is empty or has whitespace, skip reordering
-			return
-		}
-		newTokens := []string{}
-		// Add mut for non-primitive types (struct parameters are often modified in Go)
-		// OR if the parameter is reassigned in the function body
-		typeStr := strings.TrimSpace(strings.Join(tokensToStrings(typeStrRepr), ""))
-		isPrimitive := typeStr == "i8" || typeStr == "i16" || typeStr == "i32" || typeStr == "i64" ||
-			typeStr == "u8" || typeStr == "u16" || typeStr == "u32" || typeStr == "u64" ||
-			typeStr == "bool" || typeStr == "f32" || typeStr == "f64" || typeStr == "String" ||
-			typeStr == "&str" || typeStr == "usize" || typeStr == "isize"
-		isMutated := re.mutatedParams != nil && re.mutatedParams[nameStr]
-
-		// Check if this parameter is read-only and should be passed by reference
-		isRefOpt := false
-		if re.OptimizeRefs && !isPrimitive && !isMutated {
-			if flags, ok := re.refOptReadOnly[re.refOptCurrentFunc]; ok && index < len(flags) {
-				isRefOpt = flags[index]
-			}
-		}
-
-		if isRefOpt {
-			// Read-only param: pass by reference (no mut, & prefix on type)
-			newTokens = append(newTokens, nameStr)
-			newTokens = append(newTokens, ": ")
-			newTokens = append(newTokens, "&"+typeStr)
-			// Track this param as a reference for call site handling
-			re.refOptCurrentRefParams[nameStr] = true
-		} else {
-			if !isPrimitive || isMutated {
-				newTokens = append(newTokens, "mut ")
-			}
-			newTokens = append(newTokens, nameStr)
-			newTokens = append(newTokens, ": ")
-			newTokens = append(newTokens, typeStr)
-		}
-		re.gir.tokenSlice, err = RewriteTokensBetween(re.gir.tokenSlice, p1.Index, p4.Index, newTokens)
-		if err != nil {
-			fmt.Println("Error rewriting file buffer:", err)
-			return
-		}
-	}
-}
+// ============================================================
+// Cargo project generation
+// ============================================================
 
-// GenerateCargoToml creates a Cargo.toml for building the Rust project
-func (re *RustEmitter) GenerateCargoToml() error {
-	if re.LinkRuntime == "" {
+func (e *RustEmitter) GenerateCargoToml() error {
+	if e.LinkRuntime == "" {
 		return nil
 	}
-
-	cargoPath := filepath.Join(re.OutputDir, "Cargo.toml")
+	cargoPath := filepath.Join(e.OutputDir, "Cargo.toml")
 	file, err := os.Create(cargoPath)
 	if err != nil {
 		return fmt.Errorf("failed to create Cargo.toml: %w", err)
 	}
 	defer file.Close()
 
-	// Determine graphics backend from RuntimePackages
-	graphicsBackend := re.RuntimePackages["graphics"]
+	graphicsBackend := e.RuntimePackages["graphics"]
 	if graphicsBackend == "" {
-		graphicsBackend = "none" // no graphics import detected
+		graphicsBackend = "none"
 	}
 
 	var cargoToml string
-	switch graphicsBackend {
-	case "none":
-		// No graphics dependencies
-		cargoToml = fmt.Sprintf(`[package]
-name = "%s"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-`, re.OutputName)
-	case "tigr":
-		// tigr graphics - uses cc build dependency to compile tigr.c
+	if graphicsBackend == "tigr" {
 		cargoToml = fmt.Sprintf(`[package]
 name = "%s"
 version = "0.1.0"
@@ -6898,9 +1505,8 @@ edition = "2021"
 
 [build-dependencies]
 cc = "1.0"
-`, re.OutputName)
-	default:
-		// SDL2 graphics
+`, e.OutputName)
+	} else if graphicsBackend == "sdl2" {
 		cargoToml = fmt.Sprintf(`[package]
 name = "%s"
 version = "0.1.0"
@@ -6908,142 +1514,76 @@ edition = "2021"
 
 [dependencies]
 sdl2 = "0.36"
-`, re.OutputName)
+`, e.OutputName)
+	} else {
+		cargoToml = fmt.Sprintf(`[package]
+name = "%s"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+`, e.OutputName)
 	}
 
-	// Add HTTP runtime dependencies (ureq for client, tiny_http for server, lazy_static for handler storage)
-	if _, hasHTTP := re.RuntimePackages["http"]; hasHTTP {
-		// Insert dependencies after [dependencies]
+	// Add HTTP runtime dependencies
+	if _, hasHTTP := e.RuntimePackages["http"]; hasHTTP {
 		cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nureq = \"2\"\ntiny_http = \"0.12\"\nlazy_static = \"1.4\"", 1)
 	}
 
 	// Add FS runtime dependencies (lazy_static for file handle storage)
-	// Only add if http didn't already add it
-	if _, hasFS := re.RuntimePackages["fs"]; hasFS {
-		if _, hasHTTP := re.RuntimePackages["http"]; !hasHTTP {
+	if _, hasFS := e.RuntimePackages["fs"]; hasFS {
+		if _, hasHTTP := e.RuntimePackages["http"]; !hasHTTP {
 			cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nlazy_static = \"1.4\"", 1)
 		}
 	}
 
-	// Add NET runtime dependencies (lazy_static for connection handle storage)
-	// Only add if http and fs didn't already add it
-	if _, hasNet := re.RuntimePackages["net"]; hasNet {
-		_, hasHTTP := re.RuntimePackages["http"]
-		_, hasFS := re.RuntimePackages["fs"]
+	// Add NET runtime dependencies
+	if _, hasNet := e.RuntimePackages["net"]; hasNet {
+		_, hasHTTP := e.RuntimePackages["http"]
+		_, hasFS := e.RuntimePackages["fs"]
 		if !hasHTTP && !hasFS {
 			cargoToml = strings.Replace(cargoToml, "[dependencies]", "[dependencies]\nlazy_static = \"1.4\"", 1)
 		}
 	}
 
 	_, err = file.WriteString(cargoToml)
-	if err != nil {
-		return fmt.Errorf("failed to write Cargo.toml: %w", err)
-	}
-
-	DebugLogPrintf("Generated Cargo.toml at %s (graphics: %s)", cargoPath, graphicsBackend)
-	return nil
+	return err
 }
 
-// CopyRuntimeMods copies runtime .rs module files for all detected runtime packages.
-// Convention: runtime/X/rust/X_runtime.rs (no variant) or X_runtime_<variant>.rs (with variant) -> src/X.rs
-func (re *RustEmitter) CopyRuntimeMods() error {
-	if re.LinkRuntime == "" {
+func (e *RustEmitter) GenerateBuildRs() error {
+	if e.LinkRuntime == "" {
 		return nil
 	}
-	srcDir := filepath.Join(re.OutputDir, "src")
-	if err := os.MkdirAll(srcDir, 0755); err != nil {
-		return fmt.Errorf("failed to create src directory: %w", err)
-	}
-	for name, variant := range re.RuntimePackages {
-		if variant == "none" {
-			continue
-		}
-
-		// Build source file name with variant awareness
-		srcFileName := name + "_runtime"
-		if variant != "" {
-			srcFileName += "_" + variant
-		}
-		srcFileName += ".rs"
-
-		runtimeSrcPath := filepath.Join(re.LinkRuntime, name, "rust", srcFileName)
-		content, err := os.ReadFile(runtimeSrcPath)
-		if err != nil {
-			DebugLogPrintf("Skipping Rust runtime for %s: %v", name, err)
-			continue
-		}
-		dstPath := filepath.Join(srcDir, name+".rs")
-		if err := os.WriteFile(dstPath, content, 0644); err != nil {
-			return fmt.Errorf("failed to write %s.rs: %w", name, err)
-		}
-		DebugLogPrintf("Copied %s.rs from %s to %s", name, runtimeSrcPath, dstPath)
-
-		// For tigr graphics variant, also copy native C files
-		if name == "graphics" && variant == "tigr" {
-			for _, extraFile := range []string{"tigr.c", "tigr.h", "screen_helper.c"} {
-				src := filepath.Join(re.LinkRuntime, "graphics", "cpp", extraFile)
-				dst := filepath.Join(srcDir, extraFile)
-				data, err := os.ReadFile(src)
-				if err != nil {
-					return fmt.Errorf("failed to read %s from %s: %w", extraFile, src, err)
-				}
-				if err := os.WriteFile(dst, data, 0644); err != nil {
-					return fmt.Errorf("failed to write %s: %w", extraFile, err)
-				}
-				DebugLogPrintf("Copied %s to %s", extraFile, dst)
-			}
-		}
-	}
-	return nil
-}
-
-// GenerateBuildRs creates a build.rs file for compiling native code
-func (re *RustEmitter) GenerateBuildRs() error {
-	if re.LinkRuntime == "" {
+	graphicsBackend := e.RuntimePackages["graphics"]
+	if graphicsBackend != "tigr" && graphicsBackend != "sdl2" {
 		return nil
 	}
 
-	buildRsPath := filepath.Join(re.OutputDir, "build.rs")
+	buildRsPath := filepath.Join(e.OutputDir, "build.rs")
 	file, err := os.Create(buildRsPath)
 	if err != nil {
 		return fmt.Errorf("failed to create build.rs: %w", err)
 	}
 	defer file.Close()
 
-	// Determine graphics backend from RuntimePackages
-	graphicsBackend := re.RuntimePackages["graphics"]
-	if graphicsBackend == "" {
-		graphicsBackend = "none" // no graphics import detected
-	}
-
-	var buildRs string
 	if graphicsBackend == "tigr" {
-		// tigr: compile tigr.c and screen_helper.c, link platform libraries
-		buildRs = `fn main() {
-    // Compile tigr.c
+		content := `fn main() {
     cc::Build::new()
         .file("src/tigr.c")
+        .file("src/screen_helper.c")
         .compile("tigr");
 
-    // Compile screen_helper.c (platform-specific screen size detection)
-    cc::Build::new()
-        .file("src/screen_helper.c")
-        .compile("screen_helper");
-
-    // Link platform-specific libraries
     #[cfg(target_os = "macos")]
     {
         println!("cargo:rustc-link-lib=framework=OpenGL");
         println!("cargo:rustc-link-lib=framework=Cocoa");
         println!("cargo:rustc-link-lib=framework=CoreGraphics");
     }
-
     #[cfg(target_os = "linux")]
     {
         println!("cargo:rustc-link-lib=GL");
         println!("cargo:rustc-link-lib=X11");
     }
-
     #[cfg(target_os = "windows")]
     {
         println!("cargo:rustc-link-lib=opengl32");
@@ -7051,38 +1591,60 @@ func (re *RustEmitter) GenerateBuildRs() error {
         println!("cargo:rustc-link-lib=user32");
         println!("cargo:rustc-link-lib=shell32");
         println!("cargo:rustc-link-lib=advapi32");
-        // MSVC CRT: resolve legacy _vsnprintf/vsnprintf symbols used by tigr.c
         println!("cargo:rustc-link-lib=legacy_stdio_definitions");
     }
 }
 `
-	} else {
-		// SDL2: just add library search paths
-		buildRs = `fn main() {
-    // Add Homebrew library path for macOS
-    #[cfg(target_os = "macos")]
-    {
-        // Apple Silicon Macs
-        println!("cargo:rustc-link-search=/opt/homebrew/lib");
-        // Intel Macs
-        println!("cargo:rustc-link-search=/usr/local/lib");
-    }
-
-    // Add common Linux library paths
-    #[cfg(target_os = "linux")]
-    {
-        println!("cargo:rustc-link-search=/usr/lib");
-        println!("cargo:rustc-link-search=/usr/local/lib");
-    }
+		_, err = file.WriteString(content)
+	}
+	return err
 }
-`
-	}
 
-	_, err = file.WriteString(buildRs)
-	if err != nil {
-		return fmt.Errorf("failed to write build.rs: %w", err)
+func (e *RustEmitter) CopyRuntimeMods() error {
+	if e.LinkRuntime == "" {
+		return nil
 	}
+	srcDir := filepath.Join(e.OutputDir, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		return fmt.Errorf("failed to create src directory: %w", err)
+	}
+	for name, variant := range e.RuntimePackages {
+		if variant == "none" {
+			continue
+		}
+		srcFileName := name + "_runtime"
+		if variant != "" {
+			srcFileName += "_" + variant
+		}
+		srcFileName += ".rs"
 
-	DebugLogPrintf("Generated build.rs at %s (graphics: %s)", buildRsPath, graphicsBackend)
+		runtimeSrcPath := filepath.Join(e.LinkRuntime, name, "rust", srcFileName)
+		content, err := os.ReadFile(runtimeSrcPath)
+		if err != nil {
+			DebugLogPrintf("Skipping Rust runtime for %s: %v", name, err)
+			continue
+		}
+
+		dstFileName := name + ".rs"
+		dstPath := filepath.Join(srcDir, dstFileName)
+		if err := os.WriteFile(dstPath, content, 0644); err != nil {
+			return fmt.Errorf("failed to write %s: %w", dstFileName, err)
+		}
+
+		// Copy extra files for tigr graphics
+		if name == "graphics" && variant == "tigr" {
+			for _, extraFile := range []string{"tigr.c", "tigr.h", "screen_helper.c"} {
+				src := filepath.Join(e.LinkRuntime, "graphics", "cpp", extraFile)
+				dst := filepath.Join(srcDir, extraFile)
+				data, err := os.ReadFile(src)
+				if err != nil {
+					return fmt.Errorf("failed to read %s: %w", extraFile, err)
+				}
+				if err := os.WriteFile(dst, data, 0644); err != nil {
+					return fmt.Errorf("failed to write %s: %w", extraFile, err)
+				}
+			}
+		}
+	}
 	return nil
 }
