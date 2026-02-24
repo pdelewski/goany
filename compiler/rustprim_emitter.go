@@ -1591,6 +1591,7 @@ func (e *RustPrimEmitter) GenerateBuildRs() error {
         println!("cargo:rustc-link-lib=user32");
         println!("cargo:rustc-link-lib=shell32");
         println!("cargo:rustc-link-lib=advapi32");
+        println!("cargo:rustc-link-lib=legacy_stdio_definitions");
     }
 }
 `
