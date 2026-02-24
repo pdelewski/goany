@@ -9,11 +9,11 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// rpMoveOptCallExt tracks a function call arg that needs to be extracted
+// moveOptCallExt tracks a function call arg that needs to be extracted
 // into a temp variable before the assignment to avoid borrow conflicts.
 // Pattern: c = doADC(c, ReadIndirectX(c, zp))
 // Becomes: let __mv0: u8 = ReadIndirectX(&c, zp); c = doADC(c, __mv0);
-type rpMoveOptCallExt struct {
+type moveOptCallExt struct {
 	argIdx   int    // which argument index in the outer call
 	tempName string // temp variable name (e.g., "__mv0")
 	rustType string // Rust type of the result (e.g., "u8")
@@ -60,7 +60,7 @@ type RustOptState struct {
 
 	// Call expression extraction: capture function call args that reference a moved struct
 	// Pattern: c = func(c, ReadIndirectX(c, zp)) → let __mv0 = ReadIndirectX(&c, zp); c = func(c, __mv0);
-	moveOptCallExts []rpMoveOptCallExt
+	moveOptCallExts []moveOptCallExt
 
 	// Return temp extraction: extract later return results into temps so first result can be moved
 	// Pattern: return c, c.Memory[addr] → let __mv0: u8 = c.Memory[addr]; return (c, __mv0);
@@ -214,7 +214,7 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 	var bindings []string
 	modifiedCounts := CollectCallArgIdentCounts(callExpr.Args, o.pkg)
 
-	var callExts []rpMoveOptCallExt
+	var callExts []moveOptCallExt
 
 	for i, arg := range callExpr.Args {
 		if i == structArgIdx {
@@ -247,7 +247,7 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 		// code capture. The arg will be emitted normally, then its code is
 		// captured in PostVisitCallExprArg and relocated before the assignment.
 		if _, isCall := arg.(*ast.CallExpr); isCall {
-			callExts = append(callExts, rpMoveOptCallExt{
+			callExts = append(callExts, moveOptCallExt{
 				argIdx:   i,
 				tempName: tempName,
 				rustType: rustType,

@@ -12,22 +12,22 @@ import (
 // Expression Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {
+func (e *RustEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {
 	e.indent = indent
 }
 
-func (e *RustPrimEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
+func (e *RustEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitExprStmtX))
 	e.fs.PushCode(xCode)
 }
 
-func (e *RustPrimEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
+func (e *RustEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitExprStmt))
 	code := ""
 	if len(tokens) >= 1 {
 		code = tokens[0].Content
 	}
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 	e.fs.PushCode(ind + code + ";\n")
 }
 
@@ -35,7 +35,7 @@ func (e *RustPrimEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
 // Assignment Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
+func (e *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	e.indent = indent
 	e.mapAssignVar = ""
 	e.mapAssignKey = ""
@@ -59,11 +59,11 @@ func (e *RustPrimEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 }
 
-func (e *RustPrimEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
+func (e *RustEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
 	e.inAssignLhs = true
 }
 
-func (e *RustPrimEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
+func (e *RustEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
 	e.inAssignLhs = false
 	lhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtLhsExpr))
 
@@ -78,7 +78,7 @@ func (e *RustPrimEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, i
 	e.fs.PushCode(lhsCode)
 }
 
-func (e *RustPrimEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+func (e *RustEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitAssignStmtLhs))
 	var lhsExprs []string
 	for _, t := range tokens {
@@ -89,12 +89,12 @@ func (e *RustPrimEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent in
 	e.fs.PushCode(strings.Join(lhsExprs, ", "))
 }
 
-func (e *RustPrimEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
+func (e *RustEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
 	rhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtRhsExpr))
 	e.fs.PushCode(rhsCode)
 }
 
-func (e *RustPrimEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+func (e *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitAssignStmtRhs))
 	var rhsExprs []string
 	for _, t := range tokens {
@@ -105,7 +105,7 @@ func (e *RustPrimEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent in
 	e.fs.PushCode(strings.Join(rhsExprs, ", "))
 }
 
-func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Save call extractions before cleanup resets them
 	callExts := e.Opt.moveOptCallExts
 
@@ -135,7 +135,7 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 		rhsStr = tokens[1].Content
 	}
 
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 	tokStr := node.Tok.String()
 
 	// Local closure inlining: save closure body for later call-site inlining
@@ -396,11 +396,11 @@ func (e *RustPrimEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) 
 // Declaration Statements (var x int, var y = 5)
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
+func (e *RustEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
 	e.indent = indent
 }
 
-func (e *RustPrimEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
+func (e *RustEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitDeclStmtValueSpecType))
 	typeStr := ""
 	for _, t := range tokens {
@@ -415,19 +415,19 @@ func (e *RustPrimEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, in
 	e.fs.Push(typeStr, TagType, goType)
 }
 
-func (e *RustPrimEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
+func (e *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
 	e.fs.Reduce(string(PreVisitDeclStmtValueSpecNames))
 	e.fs.Push(node.Name, TagIdent, nil)
 }
 
-func (e *RustPrimEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+func (e *RustEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
 	valCode := e.fs.ReduceToCode(string(PreVisitDeclStmtValueSpecValue))
 	e.fs.Push(valCode, TagExpr, nil)
 }
 
-func (e *RustPrimEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
+func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 
 	var sb strings.Builder
 	i := 0
@@ -493,7 +493,7 @@ func (e *RustPrimEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 // Return Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+func (e *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	e.indent = indent
 	e.Opt.returnTempReplacements = nil
 
@@ -502,7 +502,7 @@ func (e *RustPrimEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	// so the first result can be moved instead of cloned.
 	if e.Opt.OptimizeMoves && len(node.Results) > 1 {
 		if ident, ok := node.Results[0].(*ast.Ident); ok {
-			ind := rustpIndent(indent / 2)
+			ind := rustIndent(indent / 2)
 			replacements := make(map[int]string)
 			tempIdx := 0
 			for i := 1; i < len(node.Results); i++ {
@@ -535,7 +535,7 @@ func (e *RustPrimEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	}
 }
 
-func (e *RustPrimEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
+func (e *RustEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
 	resultCode := e.fs.ReduceToCode(string(PreVisitReturnStmtResult))
 
 	// If returning from a function that returns interface{}/any, wrap concrete types in Rc::new()
@@ -555,9 +555,9 @@ func (e *RustPrimEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, in
 	e.fs.PushCode(resultCode)
 }
 
-func (e *RustPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitReturnStmt))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 
 	if len(tokens) == 0 {
 		e.fs.PushCode(ind + "return;\n")
@@ -649,7 +649,7 @@ func (e *RustPrimEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) 
 // If Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
+func (e *RustEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.indent = indent
 	e.ifInitStack = append(e.ifInitStack, "")
 	e.ifCondStack = append(e.ifCondStack, "")
@@ -657,25 +657,25 @@ func (e *RustPrimEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.ifElseStack = append(e.ifElseStack, "")
 }
 
-func (e *RustPrimEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
+func (e *RustEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
 	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtInit))
 }
 
-func (e *RustPrimEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
+func (e *RustEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
 	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtCond))
 }
 
-func (e *RustPrimEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
+func (e *RustEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
 	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtBody))
 }
 
-func (e *RustPrimEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
+func (e *RustEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
 	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtElse))
 }
 
-func (e *RustPrimEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+func (e *RustEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.fs.Reduce(string(PreVisitIfStmt))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 
 	n := len(e.ifInitStack)
 	initCode := e.ifInitStack[n-1]
@@ -714,34 +714,34 @@ func (e *RustPrimEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 // For Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
+func (e *RustEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
 	e.indent = indent
 	e.forInitStack = append(e.forInitStack, "")
 	e.forCondStack = append(e.forCondStack, "")
 	e.forPostStack = append(e.forPostStack, "")
 }
 
-func (e *RustPrimEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
+func (e *RustEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
 	initCode := e.fs.ReduceToCode(string(PreVisitForStmtInit))
 	initCode = strings.TrimRight(initCode, ";\n \t")
 	initCode = strings.TrimLeft(initCode, " \t")
 	e.forInitStack[len(e.forInitStack)-1] = initCode
 }
 
-func (e *RustPrimEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
+func (e *RustEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
 	e.forCondStack[len(e.forCondStack)-1] = e.fs.ReduceToCode(string(PreVisitForStmtCond))
 }
 
-func (e *RustPrimEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
+func (e *RustEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
 	postCode := e.fs.ReduceToCode(string(PreVisitForStmtPost))
 	postCode = strings.TrimRight(postCode, ";\n \t")
 	postCode = strings.TrimLeft(postCode, " \t")
 	e.forPostStack[len(e.forPostStack)-1] = postCode
 }
 
-func (e *RustPrimEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
+func (e *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	bodyCode := e.fs.ReduceToCode(string(PreVisitForStmt))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 
 	n := len(e.forInitStack)
 	initCode := e.forInitStack[n-1]
@@ -801,7 +801,7 @@ func (e *RustPrimEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 
 // tryEmitForRange detects simple integer range patterns and emits Rust for..in syntax.
 // Returns the generated code string, or "" if the pattern doesn't match.
-func (e *RustPrimEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode string, initCode string) string {
+func (e *RustEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode string, initCode string) string {
 	// Must have init, cond, and post
 	if node.Init == nil || node.Cond == nil || node.Post == nil {
 		return ""
@@ -922,7 +922,7 @@ func (e *RustPrimEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCod
 }
 
 // exprToRustCode converts a simple AST expression to a Rust code string.
-func (e *RustPrimEmitter) exprToRustCode(expr ast.Expr) string {
+func (e *RustEmitter) exprToRustCode(expr ast.Expr) string {
 	if lit, ok := expr.(*ast.BasicLit); ok {
 		return lit.Value
 	}
@@ -989,28 +989,28 @@ func extractBlockBody(bodyCode string) string {
 // Range Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
+func (e *RustEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	e.indent = indent
 }
 
-func (e *RustPrimEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
+func (e *RustEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
 	keyCode := e.fs.ReduceToCode(string(PreVisitRangeStmtKey))
 	e.fs.Push(keyCode, TagIdent, nil)
 }
 
-func (e *RustPrimEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
+func (e *RustEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
 	valCode := e.fs.ReduceToCode(string(PreVisitRangeStmtValue))
 	e.fs.Push(valCode, TagIdent, nil)
 }
 
-func (e *RustPrimEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
+func (e *RustEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitRangeStmtX))
 	e.fs.PushCode(xCode)
 }
 
-func (e *RustPrimEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
+func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitRangeStmt))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 
 	keyCode := ""
 	valCode := ""
@@ -1140,18 +1140,18 @@ func (e *RustPrimEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 // Switch / Case Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+func (e *RustEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 	e.indent = indent
 }
 
-func (e *RustPrimEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
+func (e *RustEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
 	tagCode := e.fs.ReduceToCode(string(PreVisitSwitchStmtTag))
 	e.fs.PushCode(tagCode)
 }
 
-func (e *RustPrimEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+func (e *RustEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitSwitchStmt))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 
 	tagCode := ""
 	idx := 0
@@ -1199,16 +1199,16 @@ func (e *RustPrimEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) 
 	e.fs.PushCode(sb.String())
 }
 
-func (e *RustPrimEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
+func (e *RustEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
 	e.indent = indent
 }
 
-func (e *RustPrimEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
+func (e *RustEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
 	exprCode := e.fs.ReduceToCode(string(PreVisitCaseClauseListExpr))
 	e.fs.PushCode(exprCode)
 }
 
-func (e *RustPrimEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
+func (e *RustEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitCaseClauseList))
 	var exprs []string
 	for _, t := range tokens {
@@ -1219,9 +1219,9 @@ func (e *RustPrimEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
 	e.fs.PushCode(strings.Join(exprs, " | "))
 }
 
-func (e *RustPrimEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
+func (e *RustEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitCaseClause))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 
 	var sb strings.Builder
 	idx := 0
@@ -1246,9 +1246,9 @@ func (e *RustPrimEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) 
 // Inc/Dec Statements
 // ============================================================
 
-func (e *RustPrimEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
+func (e *RustEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
-	ind := rustpIndent(indent / 2)
+	ind := rustIndent(indent / 2)
 	if node.Tok == token.INC {
 		e.fs.PushCode(fmt.Sprintf("%s%s += 1;\n", ind, xCode))
 	} else {
@@ -1260,8 +1260,8 @@ func (e *RustPrimEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) 
 // Branch Statements (break, continue)
 // ============================================================
 
-func (e *RustPrimEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
-	ind := rustpIndent(indent / 2)
+func (e *RustEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
+	ind := rustIndent(indent / 2)
 	switch node.Tok {
 	case token.BREAK:
 		e.fs.PushCode(ind + "break;\n")
