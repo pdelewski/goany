@@ -1118,6 +1118,11 @@ func (e *CSharpEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int
 		selCode = tokens[1].Content
 	}
 
+	if xCode == "os" && selCode == "Args" {
+		e.fs.PushCode("goany_os_args")
+		return
+	}
+
 	// Check if selector is a type alias
 	if _, isAlias := e.typeAliasMap[selCode]; isAlias {
 		e.fs.PushCode(e.typeAliasMap[selCode])
@@ -1768,8 +1773,13 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent in
 		}
 	}
 
-	sig := fmt.Sprintf("\npublic static %s %s(%s)", returnType, funcName, paramsStr)
-	e.fs.PushCode(sig)
+	if funcName == "Main" {
+		sig := fmt.Sprintf("\npublic static %s %s(string[] args)", returnType, funcName)
+		e.fs.PushCode(sig)
+	} else {
+		sig := fmt.Sprintf("\npublic static %s %s(%s)", returnType, funcName, paramsStr)
+		e.fs.PushCode(sig)
+	}
 }
 
 func (e *CSharpEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
@@ -1786,6 +1796,9 @@ func (e *CSharpEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	}
 	if len(tokens) >= 2 {
 		bodyCode = tokens[1].Content
+	}
+	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
+		bodyCode = "{\n" + csIndent(2) + "List<string> goany_os_args = new List<string>(args);\n" + bodyCode[2:]
 	}
 	e.fs.PushCode(sigCode + " " + bodyCode + "\n")
 }

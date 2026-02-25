@@ -757,6 +757,11 @@ func (e *CppEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
 		selCode = tokens[1].Content
 	}
 
+	if xCode == "os" && selCode == "Args" {
+		e.fs.PushCode("goany_os_args")
+		return
+	}
+
 	loweredX := cppLowerBuiltin(xCode)
 	loweredSel := cppLowerBuiltin(selCode)
 
@@ -1385,9 +1390,17 @@ func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) 
 	}
 
 	if e.forwardDecl {
-		e.fs.PushCode(fmt.Sprintf("%s %s(%s);\n", resultType, funcName, paramsStr))
+		if funcName == "main" {
+			e.fs.PushCode(fmt.Sprintf("%s %s(int argc, char* argv[]);\n", resultType, funcName))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%s %s(%s);\n", resultType, funcName, paramsStr))
+		}
 	} else {
-		e.fs.PushCode(fmt.Sprintf("\n%s %s(%s)", resultType, funcName, paramsStr))
+		if funcName == "main" {
+			e.fs.PushCode(fmt.Sprintf("\n%s %s(int argc, char* argv[])", resultType, funcName))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("\n%s %s(%s)", resultType, funcName, paramsStr))
+		}
 	}
 }
 
@@ -1405,6 +1418,9 @@ func (e *CppEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	}
 	if len(tokens) >= 2 {
 		bodyCode = tokens[1].Content
+	}
+	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
+		bodyCode = "{\n" + cppIndent(1) + "std::vector<std::string> goany_os_args(argv, argv + argc);\n" + bodyCode[2:]
 	}
 	e.fs.PushCode(sigCode + "\n" + bodyCode + "\n\n")
 }

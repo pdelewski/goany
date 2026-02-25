@@ -609,6 +609,11 @@ func (e *RustEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 		selCode = tokens[1].Content
 	}
 
+	if xCode == "os" && selCode == "Args" {
+		e.fs.PushCode("std::env::args().collect::<Vec<String>>()")
+		return
+	}
+
 	// Lower builtins: fmt.Println -> println, etc.
 	loweredX := e.lowerToBuiltins(xCode)
 	loweredSel := e.lowerToBuiltins(selCode)
