@@ -14,43 +14,46 @@ func joinStrings(strs []string, sep string) string {
 }
 
 type TestCase struct {
-	Name           string
-	SourceDir      string
-	CppEnabled     bool
-	DotnetEnabled  bool
-	DotnetRunnable bool // Can run with dotnet run (false for graphics apps)
-	RustEnabled    bool
-	JsEnabled      bool
-	JsRunnable     bool // Can run with Node.js (false for graphics apps that need browser)
-	JavaEnabled    bool
-	JavaRunnable   bool // Can run standalone (false for apps that need special setup)
+	Name             string
+	SourceDir        string
+	CppEnabled       bool
+	DotnetEnabled    bool
+	DotnetRunnable   bool // Can run with dotnet run (false for graphics apps)
+	RustEnabled      bool
+	JsEnabled        bool
+	JsRunnable       bool // Can run with Node.js (false for graphics apps that need browser)
+	JavaEnabled      bool
+	JavaRunnable     bool // Can run standalone (false for apps that need special setup)
+	JavaPrimEnabled  bool
+	JavaPrimRunnable bool // Can run standalone (false for apps that need special setup)
 }
 
 const runtimePath = "../runtime"
 
 var e2eTestCases = []TestCase{
-	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true},
-	{"containers", "../examples/containers", true, true, true, true, true, true, true, false},
-	{"uql", "../examples/uql", true, true, true, true, true, true, true, false},
-	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false},
-	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true},
-	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true},
-	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false},
-	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false},
-	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false},
-	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false},
-	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false},
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false},
-	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false},
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false},
-	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false},
-	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false},
-	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true},
-	{"gguf-demo", "../examples/gguf-demo", true, true, false, true, true, false, true, false},
-	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false},
-	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false},
-	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false},
-	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true},
+	//                                                       Cpp  Dot  DotR Rust Js   JsR  Java JavaR JPrm JPrmR
+	{"lang-constructs", "../tests/lang-constructs",          true,true,true,true,true,true,true,true,true,true},
+	{"containers", "../examples/containers",                 true,true,true,true,true,true,true,false,true,false},
+	{"uql", "../examples/uql",                               true,true,true,true,true,true,true,false,true,false},
+	{"ast-demo", "../examples/ast-demo",                     true,true,true,true,true,true,true,false,true,false},
+	{"python-parser-demo", "../examples/python-parser-demo", true,true,true,true,true,true,true,true,true,true},
+	{"go-parser-demo", "../examples/go-parser-demo",         true,true,true,true,true,true,true,true,true,true},
+	{"graphics-minimal", "../examples/graphics-minimal",     true,true,false,true,true,false,true,false,true,false},
+	{"graphics-demo", "../examples/graphics-demo",           true,true,false,true,true,false,true,false,true,false},
+	{"gui-demo", "../examples/gui-demo",                     true,true,false,true,true,false,true,false,true,false},
+	{"mos6502-graphic", "../examples/mos6502/cmd/graphic",   true,true,false,true,true,false,true,false,true,false},
+	{"mos6502-text", "../examples/mos6502/cmd/text",         true,true,false,true,true,false,true,false,true,false},
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true,true,false,true,true,false,true,false,true,false},
+	{"mos6502-c64", "../examples/mos6502/cmd/c64",           true,true,false,true,true,false,true,false,true,false},
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2",    true,true,false,true,true,false,true,false,true,false},
+	{"http-client", "../examples/http/client",               true,true,false,true,true,false,true,false,true,false},
+	{"http-server", "../examples/http/server",               true,true,false,true,true,false,true,false,true,false},
+	{"fs-demo", "../examples/fs-demo",                       true,true,true,true,true,true,true,true,true,true},
+	{"gguf-demo", "../examples/gguf-demo",                   true,true,false,true,true,false,true,false,true,false},
+	{"net-demo", "../examples/net/demo",                     true,true,false,true,true,false,true,false,true,false},
+	{"net-echo-server", "../examples/net/echo-server",       true,true,false,true,true,false,true,false,true,false},
+	{"net-echo-client", "../examples/net/echo-client",       true,true,false,true,true,false,true,false,true,false},
+	{"python-interp-demo", "../examples/python-interp-demo", true,true,true,true,true,true,true,true,true,true},
 }
 
 func TestE2E(t *testing.T) {
@@ -227,6 +230,60 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 				t.Fatalf("Java execution failed: %v\nOutput: %s", err, output)
 			}
 			t.Logf("Java execution output: %s", output)
+		}
+	}
+
+	// Step 7: Generate, compile, and run JavaPrim (separate output dir since it shares .java filename with Java)
+	if tc.JavaPrimEnabled {
+		javaPrimDir := filepath.Join(buildDir, tc.Name+"-javaprim")
+		if err := os.MkdirAll(javaPrimDir, 0755); err != nil {
+			t.Fatalf("Failed to create javaprim output directory: %v", err)
+		}
+		t.Cleanup(func() {
+			os.RemoveAll(javaPrimDir)
+		})
+
+		// Generate code with javaprim backend only
+		jpOutputPath := filepath.Join(javaPrimDir, tc.Name)
+		jpArgs := []string{
+			"run", ".",
+			fmt.Sprintf("--source=%s", tc.SourceDir),
+			fmt.Sprintf("--output=%s", jpOutputPath),
+			fmt.Sprintf("--link-runtime=%s", runtimePath),
+			"--optimize-moves",
+			"--optimize-refs",
+			"--backend=javaprim",
+		}
+		t.Logf("Generating JavaPrim code for %s", tc.Name)
+		cmd = exec.Command("go", jpArgs...)
+		cmd.Dir = wd
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("JavaPrim code generation failed: %v\nOutput: %s", err, output)
+		}
+		t.Logf("JavaPrim code generation output: %s", output)
+
+		// Compile all Java files in the javaprim output directory
+		javaName := strings.ReplaceAll(tc.Name, "-", "_")
+		javaFiles, _ := filepath.Glob(filepath.Join(javaPrimDir, "*.java"))
+		t.Logf("Compiling JavaPrim for %s (files: %v)", tc.Name, javaFiles)
+		cmd = exec.Command("javac", javaFiles...)
+		cmd.Dir = javaPrimDir
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("JavaPrim compilation failed: %v\nOutput: %s", err, output)
+		}
+		t.Logf("JavaPrim compilation output: %s", output)
+
+		if tc.JavaPrimRunnable {
+			t.Logf("Running JavaPrim for %s", tc.Name)
+			cmd = exec.Command("java", javaName)
+			cmd.Dir = javaPrimDir
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("JavaPrim execution failed: %v\nOutput: %s", err, output)
+			}
+			t.Logf("JavaPrim execution output: %s", output)
 		}
 	}
 
