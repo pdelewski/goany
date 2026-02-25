@@ -3760,9 +3760,8 @@ func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 							if isJavaOuterClassPackage(xIdent.Name) {
 								// Runtime or outer class package - keep the package prefix (e.g., fs.ReadFile, types.AddLiteralToPlan)
 								funcName = xIdent.Name + "." + sel.Sel.Name
-								// Check if this runtime package returns Object[] (fs, http, net)
-								// Graphics package uses proper result classes (like GetMouseResult), not Object[]
-								if xIdent.Name == "fs" || xIdent.Name == "http" || xIdent.Name == "net" {
+								// Check if this runtime package returns Object[]
+								if xIdent.Name == "fs" || xIdent.Name == "http" || xIdent.Name == "net" || xIdent.Name == "graphics" {
 									isRuntimeCall = true
 								}
 							} else {
