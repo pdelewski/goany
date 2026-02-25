@@ -129,7 +129,7 @@ func main() {
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
 	useJs := backendSet["js"]             // JS is opt-in, not included in "all"
-	useJava := backendSet["java"]         // Java is opt-in, not included in "all"
+	useJava := backendSet["java"] // Java is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -219,7 +219,7 @@ func main() {
 	}
 	if useJava {
 		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
-			BaseEmitter:     compiler.BaseEmitter{},
+			Emitter:         &compiler.BaseEmitter{},
 			Output:          output + ".java",
 			LinkRuntime:     linkRuntime,
 			RuntimePackages: runtimePackages,

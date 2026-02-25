@@ -199,43 +199,21 @@ class graphics {
         return w.running;
     }
 
-    public static class PollEventsResult {
-        public Window _0;
-        public boolean _1;
-
-        public PollEventsResult(Window w, boolean running) {
-            this._0 = w;
-            this._1 = running;
-        }
-    }
-
-    public static PollEventsResult PollEvents(Window w) {
+    public static Object[] PollEvents(Window w) {
         if (nativePollEvents(w.handle)) {
             w.running = false;
-            return new PollEventsResult(w, false);
+            return new Object[]{w, false};
         }
-        return new PollEventsResult(w, true);
+        return new Object[]{w, true};
     }
 
     public static int GetLastKey() {
         return nativeGetLastKey();
     }
 
-    public static class GetMouseResult {
-        public int _0; // x
-        public int _1; // y
-        public int _2; // buttons
-
-        public GetMouseResult(int x, int y, int buttons) {
-            this._0 = x;
-            this._1 = y;
-            this._2 = buttons;
-        }
-    }
-
-    public static GetMouseResult GetMouse(Window w) {
+    public static Object[] GetMouse(Window w) {
         int[] result = nativeGetMouse(w.handle);
-        return new GetMouseResult(result[0], result[1], result[2]);
+        return new Object[]{result[0], result[1], result[2]};
     }
 
     public static int GetWidth(Window w) {
@@ -246,19 +224,9 @@ class graphics {
         return w.height;
     }
 
-    public static class GetScreenSizeResult {
-        public int _0; // width
-        public int _1; // height
-
-        public GetScreenSizeResult(int width, int height) {
-            this._0 = width;
-            this._1 = height;
-        }
-    }
-
-    public static GetScreenSizeResult GetScreenSize() {
+    public static Object[] GetScreenSize() {
         int[] result = nativeGetScreenSize();
-        return new GetScreenSizeResult(result[0], result[1]);
+        return new Object[]{result[0], result[1]};
     }
 
     // --- Rendering ---
@@ -301,9 +269,9 @@ class graphics {
 
     public static void RunLoop(Window w, Function<Window, Boolean> frameFunc) {
         while (true) {
-            PollEventsResult result = PollEvents(w);
-            w = result._0;
-            if (!result._1) {
+            Object[] result = PollEvents(w);
+            w = (Window) result[0];
+            if (!(boolean) result[1]) {
                 break;
             }
             if (!frameFunc.apply(w)) {
@@ -314,9 +282,9 @@ class graphics {
 
     public static <S> void RunLoopWithState(Window w, S state, BiFunction<Window, S, Object[]> frameFunc) {
         while (true) {
-            PollEventsResult result = PollEvents(w);
-            w = result._0;
-            if (!result._1) {
+            Object[] result = PollEvents(w);
+            w = (Window) result[0];
+            if (!(boolean) result[1]) {
                 break;
             }
             Object[] funcResult = frameFunc.apply(w, state);

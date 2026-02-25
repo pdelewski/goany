@@ -17,16 +17,68 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+// JavaEmitter implements the Emitter interface using a shift/reduce FragmentStack
+// architecture for Java code generation. This follows the same pattern as CSharpEmitter.
+type JavaEmitter struct {
+	// --- Core infrastructure ---
+	fs              *FragmentStack
+	Output          string
+	OutputDir       string
+	OutputName      string
+	LinkRuntime     string
+	RuntimePackages map[string]string
+	file            *os.File
+	Emitter // interface embedding (provides GetGoFIR via BaseEmitter)
+	pkg            *packages.Package
+	currentPackage string
+	indent         int
+	numFuncResults int
+
+	// --- Index/Map assignment tracking ---
+	lastIndexXCode   string
+	lastIndexKeyCode string
+	lhsIndexXCode    string // saved from LHS before RHS overwrites lastIndexXCode
+	lhsIndexKeyCode  string // saved from LHS before RHS overwrites lastIndexKeyCode
+	mapAssignVar     string
+	mapAssignKey     string
+	structKeyTypes   map[string]string
+
+	// --- Control flow stacks (for nesting support) ---
+	forInitStack []string
+	forCondStack []string
+	forPostStack []string
+	ifInitStack  []string
+	ifCondStack  []string
+	ifBodyStack  []string
+	ifElseStack  []string
+
+	// --- Java-specific state ---
+	forwardDecl      bool
+	nestedMapCounter int
+	typeAliasMap     map[string]string
+	aliases          map[string]Alias
+	currentAliasName string
+	rangeVarCounter  int
+	funcReturnType   types.Type
+
+	// --- Lambda/closure state ---
+	funcParamNames         []string          // enclosing function param names for shadowing detection
+	declaredVarNames       map[string]bool   // locally declared variables for shadowing detection
+	closureCapturedMutVars map[string]bool   // mutable variables needing Object[] wrapping
+	closureCapturedVarType map[string]string // captured variable types
+	lambdaParamRenames     map[string]string // current FuncLit param renames (original → renamed)
+}
+
 // Java type mapping - note Java has no unsigned types
 var javaTypesMap = map[string]string{
 	"int8":    "byte",
 	"int16":   "short",
 	"int32":   "int",
 	"int64":   "long",
-	"uint8":   "byte",   // Map to byte, handle unsigned math with & 0xFF when needed
-	"uint16":  "int",    // No unsigned in Java
-	"uint32":  "long",   // No unsigned in Java
-	"uint64":  "long",   // No unsigned in Java (would need BigInteger for full range)
+	"uint8":   "byte",
+	"uint16":  "int",
+	"uint32":  "long",
+	"uint64":  "long",
 	"int":     "int",
 	"byte":    "byte",
 	"rune":    "int",
@@ -37,7 +89,7 @@ var javaTypesMap = map[string]string{
 	"bool":    "boolean",
 }
 
-// javaBoxedTypes maps primitive types to their boxed versions for generics
+// javaBoxedTypes maps primitive types to their boxed versions for generics.
 var javaBoxedTypes = map[string]string{
 	"byte":    "Byte",
 	"short":   "Short",
@@ -49,1035 +101,15 @@ var javaBoxedTypes = map[string]string{
 	"char":    "Character",
 }
 
-// javaKeyCastState holds key cast values for nested map reads
-type javaKeyCastState struct {
-	prefix    string
-	suffix    string
-	valueType string
-}
-
-// mapIndexStackEntry holds state for nested map index expressions
-type mapIndexStackEntry struct {
-	isMapIndex        bool
-	mapIndexValueType string
-	mapReadVarName    string
-	mapKeyCastPrefix  string
-	mapKeyCastSuffix  string
-}
-
-type javaMixedIndexOp struct {
-	accessType   string
-	keyExpr      string
-	keyCastPfx   string
-	keyCastSfx   string
-	valueJavaType string
-	tempVarName  string
-	mapVarExpr   string
-}
-
-// structLitState holds state for partial struct literal initialization
-type structLitState struct {
-	isStructLit       bool               // True when in a struct literal with key-value pairs
-	structLitType     types.Type         // The struct type being constructed
-	fieldOrder        []string           // Field names in order
-	fieldTypes        map[string]string  // Field name -> Java type
-	currentKey        string             // Current key being processed
-	capturing         bool               // True when capturing elements to buffer
-	buffer            *strings.Builder   // Buffer for current element (pointer to avoid copy issues)
-	fieldBuffers      map[string]string  // Field name -> captured value string
-}
-
-type JavaEmitter struct {
-	Output          string
-	OutputDir       string
-	OutputName      string
-	LinkRuntime     string
-	RuntimePackages map[string]string
-	file            *os.File
-	BaseEmitter
-	pkg                        *packages.Package
-	// Track files per package for separate file generation
-	mainFile                   *os.File           // The main output file
-	packageFiles               map[string]*os.File // Package name -> file
-	currentPkgName             string             // Current package being processed
-	insideForPostCond          bool
-	assignmentToken            string
-	forwardDecls               bool
-	shouldGenerate             bool
-	numFuncResults             int
-	currentPackage             string
-	isArray                    bool
-	arrayType                  string
-	isTuple                    bool
-	isInfiniteLoop             bool
-	isKeyValueRange            bool
-	rangeKeyName               string
-	rangeValueName             string
-	rangeCollectionExpr        string
-	captureRangeExpr           bool
-	suppressRangeEmit          bool
-	rangeStmtIndent            int
-	pendingRangeValueDecl      bool
-	pendingValueName           string
-	pendingCollectionExpr      string
-	pendingKeyName             string
-	inTypeContext              bool
-	inArrayTypeContext         bool  // Track when we're inside ArrayList<...> to use boxed types
-	inCompositeLitType         bool  // Track when we're inside a composite literal type (new Type(...))
-	inPackageQualifiedExpr     bool  // Track when we're in a package-qualified expression (pkg.Type)
-	// Struct literal handling for partial initialization (stack-based for nesting)
-	structLitStack []structLitState // Stack for nested struct literals
-	apiClassOpened             bool
-	suppressTypeAliasEmit      bool
-	currentAliasName           string
-	typeAliasMap               map[string]string
-	suppressTypeAliasSelectorX bool
-	// Map support
-	isMapMakeCall     bool
-	mapMakeKeyType    int
-	isMapIndex        bool
-	mapIndexValueType string
-	mapIndexStack     []mapIndexStackEntry // Stack for nested map index expressions
-	isMapAssign       bool
-	mapAssignVarName  string
-	mapAssignIndent   int
-	isNestedMapAssign      bool
-	nestedMapRootVar       string             // Root variable for nested map (e.g., "m" for m["a"]["b"])
-	nestedMapLevels        []nestedMapLevel   // All levels from root to the assignment level
-	nestedMapAssignKey     string             // The final key being assigned to
-	nestedMapAssignIndent  int
-	// Slice-of-map assignment: sliceOfMaps[i][j]...["key"] = v (supports any depth)
-	isSliceOfMapAssign    bool
-	sliceOfMapSliceVar    string   // The root slice variable name
-	sliceOfMapSliceIndices []string // All slice indices from root to map
-	sliceOfMapMapKey      string   // The map key expression
-	sliceOfMapIndent      int
-	captureMapKey         bool
-	capturedMapKey        string
-	suppressMapEmit       bool
-	isDeleteCall          bool
-	deleteMapVarName      string
-	mapKeyCastPrefix      string
-	mapKeyCastSuffix      string
-	mapKeyCastStack       []javaKeyCastState
-	isMapLenCall          bool
-	pendingMapInit        bool
-	pendingMapKeyType     int
-	pendingStructInit     bool   // Whether to add = new Type() for struct variable
-	pendingStructTypeName string // Name of the struct type to initialize
-	pendingSliceInit      bool   // Whether to add = new ArrayList<>() for slice variable
-	pendingSliceElemType  string // Element type for the slice initialization
-	pendingPrimitiveInit    bool   // Whether to add = default for primitive variable
-	pendingPrimitiveDefault string // Default value for primitive ("0", "false", etc.)
-	isMapCommaOk          bool
-	mapCommaOkValName     string
-	mapCommaOkOkName      string
-	mapCommaOkMapName     string
-	mapCommaOkValType     string
-	mapCommaOkIsDecl      bool
-	mapCommaOkIndent      int
-	isTypeAssertCommaOk        bool
-	typeAssertCommaOkValName   string
-	typeAssertCommaOkOkName    string
-	typeAssertCommaOkXName     string
-	typeAssertCommaOkType      string
-	typeAssertCommaOkBoxedType string
-	typeAssertCommaOkIsDecl    bool
-	typeAssertCommaOkIndent    int
-	isSliceMakeCall     bool
-	sliceMakeElemType   string
-	isAppendCall        bool     // Track when we're in an append call
-	appendStructType    string   // Type name for struct copy constructor
-	indexAccessTypeStack    []string
-	suppressMapEmitStack    []bool
-	isMixedIndexAssign      bool
-	mixedIndexOps           []javaMixedIndexOp
-	mixedBaseVarName        string
-	mixedAssignIndent       int
-	// fmt package suppression
-	suppressFmtPackage bool
-	// struct field key suppression in composite literals
-	suppressKeyValueKey bool
-	// multiple return type suppression
-	suppressMultiReturnTypes bool
-	// flag to track if we're inside for loop init (to suppress semicolon)
-	insideForInit bool
-	// flag to suppress lambda parameter types (Java uses type inference)
-	inLambdaParams bool
-	// flag to suppress LHS emission during map assignment
-	suppressMapAssignLhs bool
-	// flag to suppress map index X emission (for map reads)
-	suppressMapIndexX bool
-	// stored map variable name for read
-	mapReadVarName string
-	// Multi-return function support
-	currentFuncName       string              // Name of current function being processed
-	currentFuncReturnType string              // Single return type of current function (for byte/short casting)
-	needsReturnCast       bool                // Whether return value needs byte/short cast
-	returnCastType        string              // Type to cast return value to
-	multiReturnFuncs      map[string][]string // Map of func name to return type names
-	isMultiReturnAssign   bool                // Flag for multi-return assignment
-	multiReturnLhsNames   []string            // LHS variable names for unpacking
-	multiReturnLhsTypes   []string            // LHS variable Java types for casting (runtime calls)
-	multiReturnIsDecl     bool                // Whether it's a := declaration
-	multiReturnIndent     int                 // Indent for the assignment
-	resultClassDefs       []string            // Collected result class definitions
-	multiReturnCounter    int                 // Counter for unique result variable names
-	// If-init handling (Java doesn't support if init; cond)
-	hasIfInit     bool // Flag for current if statement having an init
-	ifInitIndent  int  // Stored indent for if statement with init
-	// Unsupported indexed function call (x[0](args))
-	isUnsupportedIndexedCall bool
-	unsupportedCallIndent    int
-	// Track when we're inside call expression arguments (for method reference detection)
-	inCallExprArgs bool
-	// Track when we're visiting the Fun part of a CallExpr (being called, not passed as value)
-	inCallExprFunDepth int
-	// Call expression parameter types for byte/short casting
-	callExprParamTypes []string
-	// Byte-to-int type conversion (need & 0xFF to convert signed to unsigned)
-	// Use a stack to handle nested call expressions
-	byteToIntConversionStack []bool
-	// Byte comparison masking (need & 0xFF for unsigned comparison semantics)
-	// Use a stack to handle nested binary expressions
-	byteComparisonStack []struct {
-		maskLhs bool
-		maskRhs bool
-	}
-	// Declaration statement value tracking
-	hasDeclValue bool // True if current declaration has an explicit initialization value
-	// Slice index assignment (x[i] = value -> x.set(i, value))
-	isSliceIndexAssign   bool
-	sliceIndexVarName    string
-	sliceIndexIndent     int
-	sliceIndexLhsExpr    *ast.IndexExpr // Track the actual LHS index expression
-	sliceIndexElemType   string         // Element type of the slice (for byte/short casting)
-	// Multi-return type reuse - map signature to class name
-	resultClassRegistry map[string]string
-	// String comparison handling
-	isStringComparison     bool   // Flag for string == or != comparison
-	stringComparisonOp     string // "==" or "!="
-	stringComparisonLhsExpr string // LHS expression as string for .equals() call
-	// HashMap value type tracking - map variable name to value type
-	mapVarValueTypes map[string]string
-	// Variable shadowing - track declared variables per scope
-	declaredVarsStack []map[string]bool
-	// Track current function parameters (for lambda shadowing detection)
-	funcParamsStack []map[string]bool
-	// Track map value type for current map get operation
-	currentMapGetValueType string
-	// Slice expression handling
-	sliceExprXName string // Store the X expression for a[low:high] to use in size() call
-	// Byte/short casting for slice literals
-	sliceLitElemCast string // Cast prefix for slice literal elements (e.g., "(byte)" or "(short)")
-	// Byte/short arithmetic casting
-	needsSmallIntCast bool   // Whether assignment RHS needs byte/short cast
-	smallIntCastType  string // The type to cast to ("byte" or "short")
-	// Functional interface call tracking
-	isFuncVarCall        bool   // Whether current call is a function variable (needs .accept() etc.)
-	funcFieldCallMethod  string // Method to call on function field (e.g., "apply" for BiFunction)
-	// Closure-captured mutable variable tracking (for Java's "effectively final" requirement)
-	closureCapturedMutVars  map[string]bool   // Variables that are captured by closures and mutated
-	closureCapturedVarType  map[string]string // Captured variable name -> Java array element type
-	inClosureLit            bool              // Track if we're inside a FuncLit body
-	closureLitDepth         int               // Depth of nested closures (for scoping)
-	isClosureCapturedDecl   bool              // True if current declaration is for a closure-captured variable
-	closureCapturedDeclName string            // Name of current closure-captured variable being declared
-	inDeclName              bool              // True when emitting a declaration variable name
-	suppressClosureTypeEmit bool              // Suppress type emission for closure-captured variables (we emit Object[] instead)
-	inAssignLhs             bool              // True when processing LHS of assignment (skip cast for captured vars)
-	inSelectorX             bool              // True when processing X part of a SelectorExpr (need cast for field access)
-	// Struct map key support
-	structKeyTypes          map[string]bool   // Struct types used as map keys
-}
-
-// Helper functions
-
-func (je *JavaEmitter) convertGoTypeToJava(goType string) string {
-	if javaType, ok := javaTypesMap[goType]; ok {
-		return javaType
-	}
-	return goType
-}
-
-func (je *JavaEmitter) getBoxedType(primitiveType string) string {
-	if boxed, ok := javaBoxedTypes[primitiveType]; ok {
+// toBoxedType returns the boxed Java type for a primitive, or the type itself.
+func toBoxedType(t string) string {
+	if boxed, ok := javaBoxedTypes[t]; ok {
 		return boxed
 	}
-	return primitiveType
+	return t
 }
 
-// isVarDeclared checks if a variable is already declared in any active scope
-func (je *JavaEmitter) isVarDeclared(name string) bool {
-	for _, scope := range je.declaredVarsStack {
-		if scope[name] {
-			return true
-		}
-	}
-	return false
-}
-
-// isFuncParam checks if a name is a function parameter in any active scope
-func (je *JavaEmitter) isFuncParam(name string) bool {
-	for _, scope := range je.funcParamsStack {
-		if scope[name] {
-			return true
-		}
-	}
-	return false
-}
-
-// addFuncParam adds a parameter name to the current function parameter scope
-func (je *JavaEmitter) addFuncParam(name string) {
-	if len(je.funcParamsStack) > 0 {
-		je.funcParamsStack[len(je.funcParamsStack)-1][name] = true
-	}
-}
-
-// analyzeClosureCapturedMutVars analyzes a function body to find variables that are:
-// 1. Declared in the outer scope (not inside a closure)
-// 2. Captured by a closure (referenced inside a FuncLit)
-// 3. Assigned somewhere (either in the outer scope or inside the closure)
-// These variables need to be wrapped in single-element arrays for Java's "effectively final" requirement.
-func (je *JavaEmitter) analyzeClosureCapturedMutVars(body *ast.BlockStmt) {
-	if body == nil {
-		return
-	}
-
-	je.closureCapturedMutVars = make(map[string]bool)
-	je.closureCapturedVarType = make(map[string]string)
-
-	// Step 1: Find all variable declarations at the outer level (not inside closures)
-	outerVars := make(map[string]bool)
-	outerVarTypes := make(map[string]types.Type)
-
-	// Step 2: Find all assignments (to identify mutated variables)
-	assignedVars := make(map[string]bool)
-
-	// Step 3: Find all identifiers inside closures (captured variables)
-	capturedVars := make(map[string]bool)
-
-	// Helper to collect identifiers from an expression
-	var collectIdents func(expr ast.Expr, inClosure bool)
-	collectIdents = func(expr ast.Expr, inClosure bool) {
-		if expr == nil {
-			return
-		}
-		switch e := expr.(type) {
-		case *ast.Ident:
-			if inClosure {
-				capturedVars[e.Name] = true
-			}
-		case *ast.BinaryExpr:
-			collectIdents(e.X, inClosure)
-			collectIdents(e.Y, inClosure)
-		case *ast.UnaryExpr:
-			collectIdents(e.X, inClosure)
-		case *ast.CallExpr:
-			collectIdents(e.Fun, inClosure)
-			for _, arg := range e.Args {
-				collectIdents(arg, inClosure)
-			}
-		case *ast.IndexExpr:
-			collectIdents(e.X, inClosure)
-			collectIdents(e.Index, inClosure)
-		case *ast.SelectorExpr:
-			collectIdents(e.X, inClosure)
-		case *ast.ParenExpr:
-			collectIdents(e.X, inClosure)
-		case *ast.SliceExpr:
-			collectIdents(e.X, inClosure)
-			collectIdents(e.Low, inClosure)
-			collectIdents(e.High, inClosure)
-			collectIdents(e.Max, inClosure)
-		case *ast.CompositeLit:
-			for _, elt := range e.Elts {
-				collectIdents(elt, inClosure)
-			}
-		case *ast.KeyValueExpr:
-			collectIdents(e.Value, inClosure)
-		case *ast.FuncLit:
-			// Nested closure - recurse with inClosure=true
-			// But first, collect parameter names to exclude them from captured variables
-			lambdaParams := make(map[string]bool)
-			if e.Type != nil && e.Type.Params != nil {
-				for _, field := range e.Type.Params.List {
-					for _, name := range field.Names {
-						lambdaParams[name.Name] = true
-					}
-				}
-			}
-			if e.Body != nil {
-				// Create a new collectIdents that excludes lambda parameters
-				closureCollectIdents := func(expr ast.Expr, inClosure bool) {
-					collectIdentsExcluding(expr, inClosure, lambdaParams, capturedVars, collectIdents)
-				}
-				analyzeClosureBodyWithCollector(e.Body, true, &assignedVars, capturedVars, closureCollectIdents)
-			}
-		}
-	}
-
-	// Walk the body
-	for _, stmt := range body.List {
-		walkStmtForClosureAnalysis(stmt, false, outerVars, outerVarTypes, &assignedVars, &capturedVars, collectIdents, je.pkg)
-	}
-
-	// Find variables that are: (1) outer vars, (2) captured, (3) assigned
-	for varName := range outerVars {
-		if capturedVars[varName] && assignedVars[varName] {
-			je.closureCapturedMutVars[varName] = true
-			// Get the Java type for the array wrapper
-			if varType, ok := outerVarTypes[varName]; ok && varType != nil {
-				je.closureCapturedVarType[varName] = getJavaTypeName(varType)
-			}
-		}
-	}
-}
-
-// collectIdentsExcluding collects identifiers but excludes lambda parameters
-func collectIdentsExcluding(expr ast.Expr, inClosure bool, excludeVars map[string]bool, capturedVars map[string]bool, baseCollect func(ast.Expr, bool)) {
-	if expr == nil {
-		return
-	}
-	switch e := expr.(type) {
-	case *ast.Ident:
-		// Only mark as captured if NOT in the exclude list (lambda parameters)
-		if inClosure && !excludeVars[e.Name] {
-			capturedVars[e.Name] = true
-		}
-	case *ast.BinaryExpr:
-		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
-		collectIdentsExcluding(e.Y, inClosure, excludeVars, capturedVars, baseCollect)
-	case *ast.UnaryExpr:
-		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
-	case *ast.CallExpr:
-		collectIdentsExcluding(e.Fun, inClosure, excludeVars, capturedVars, baseCollect)
-		for _, arg := range e.Args {
-			collectIdentsExcluding(arg, inClosure, excludeVars, capturedVars, baseCollect)
-		}
-	case *ast.IndexExpr:
-		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
-		collectIdentsExcluding(e.Index, inClosure, excludeVars, capturedVars, baseCollect)
-	case *ast.SelectorExpr:
-		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
-	case *ast.ParenExpr:
-		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
-	case *ast.SliceExpr:
-		collectIdentsExcluding(e.X, inClosure, excludeVars, capturedVars, baseCollect)
-		collectIdentsExcluding(e.Low, inClosure, excludeVars, capturedVars, baseCollect)
-		collectIdentsExcluding(e.High, inClosure, excludeVars, capturedVars, baseCollect)
-		collectIdentsExcluding(e.Max, inClosure, excludeVars, capturedVars, baseCollect)
-	case *ast.CompositeLit:
-		for _, elt := range e.Elts {
-			collectIdentsExcluding(elt, inClosure, excludeVars, capturedVars, baseCollect)
-		}
-	case *ast.KeyValueExpr:
-		collectIdentsExcluding(e.Value, inClosure, excludeVars, capturedVars, baseCollect)
-	case *ast.FuncLit:
-		// Nested closure inside - need to add its parameters to exclude list too
-		nestedExclude := make(map[string]bool)
-		for k, v := range excludeVars {
-			nestedExclude[k] = v
-		}
-		if e.Type != nil && e.Type.Params != nil {
-			for _, field := range e.Type.Params.List {
-				for _, name := range field.Names {
-					nestedExclude[name.Name] = true
-				}
-			}
-		}
-		if e.Body != nil {
-			nestedCollect := func(expr ast.Expr, inClosure bool) {
-				collectIdentsExcluding(expr, inClosure, nestedExclude, capturedVars, baseCollect)
-			}
-			analyzeClosureBodyWithCollector(e.Body, true, nil, capturedVars, nestedCollect)
-		}
-	}
-}
-
-// analyzeClosureBodyWithCollector analyzes statements inside a closure body with a custom collector
-func analyzeClosureBodyWithCollector(body *ast.BlockStmt, inClosure bool, assignedVars *map[string]bool, capturedVars map[string]bool, collectIdents func(ast.Expr, bool)) {
-	if body == nil {
-		return
-	}
-	for _, stmt := range body.List {
-		walkStmtInClosureWithCollector(stmt, inClosure, assignedVars, capturedVars, collectIdents)
-	}
-}
-
-// walkStmtInClosureWithCollector walks a statement inside a closure with a custom collector
-func walkStmtInClosureWithCollector(stmt ast.Stmt, inClosure bool, assignedVars *map[string]bool, capturedVars map[string]bool, collectIdents func(ast.Expr, bool)) {
-	if stmt == nil {
-		return
-	}
-	switch s := stmt.(type) {
-	case *ast.AssignStmt:
-		// Track assigned variables (only if assignedVars is provided)
-		for _, lhs := range s.Lhs {
-			if assignedVars != nil {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					(*assignedVars)[ident.Name] = true
-				}
-			}
-			collectIdents(lhs, inClosure)
-		}
-		for _, rhs := range s.Rhs {
-			collectIdents(rhs, inClosure)
-		}
-	case *ast.ExprStmt:
-		collectIdents(s.X, inClosure)
-	case *ast.ReturnStmt:
-		for _, result := range s.Results {
-			collectIdents(result, inClosure)
-		}
-	case *ast.IfStmt:
-		collectIdents(s.Cond, inClosure)
-		if s.Body != nil {
-			analyzeClosureBodyWithCollector(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-		if s.Else != nil {
-			walkStmtInClosureWithCollector(s.Else, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-	case *ast.ForStmt:
-		walkStmtInClosureWithCollector(s.Init, inClosure, assignedVars, capturedVars, collectIdents)
-		collectIdents(s.Cond, inClosure)
-		walkStmtInClosureWithCollector(s.Post, inClosure, assignedVars, capturedVars, collectIdents)
-		if s.Body != nil {
-			analyzeClosureBodyWithCollector(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-	case *ast.RangeStmt:
-		collectIdents(s.X, inClosure)
-		if s.Body != nil {
-			analyzeClosureBodyWithCollector(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-	case *ast.BlockStmt:
-		analyzeClosureBodyWithCollector(s, inClosure, assignedVars, capturedVars, collectIdents)
-	case *ast.IncDecStmt:
-		if assignedVars != nil {
-			if ident, ok := s.X.(*ast.Ident); ok {
-				(*assignedVars)[ident.Name] = true
-			}
-		}
-		collectIdents(s.X, inClosure)
-	}
-}
-
-// analyzeClosureBody analyzes statements inside a closure body
-func analyzeClosureBody(body *ast.BlockStmt, inClosure bool, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool)) {
-	if body == nil {
-		return
-	}
-	for _, stmt := range body.List {
-		walkStmtInClosure(stmt, inClosure, assignedVars, capturedVars, collectIdents)
-	}
-}
-
-// walkStmtInClosure walks a statement inside a closure to find captured and assigned variables
-func walkStmtInClosure(stmt ast.Stmt, inClosure bool, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool)) {
-	if stmt == nil {
-		return
-	}
-	switch s := stmt.(type) {
-	case *ast.AssignStmt:
-		// Track assigned variables
-		for _, lhs := range s.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok {
-				(*assignedVars)[ident.Name] = true
-			}
-			collectIdents(lhs, inClosure)
-		}
-		for _, rhs := range s.Rhs {
-			collectIdents(rhs, inClosure)
-		}
-	case *ast.ExprStmt:
-		collectIdents(s.X, inClosure)
-	case *ast.ReturnStmt:
-		for _, result := range s.Results {
-			collectIdents(result, inClosure)
-		}
-	case *ast.IfStmt:
-		collectIdents(s.Cond, inClosure)
-		if s.Body != nil {
-			analyzeClosureBody(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-		if s.Else != nil {
-			walkStmtInClosure(s.Else, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-	case *ast.ForStmt:
-		walkStmtInClosure(s.Init, inClosure, assignedVars, capturedVars, collectIdents)
-		collectIdents(s.Cond, inClosure)
-		walkStmtInClosure(s.Post, inClosure, assignedVars, capturedVars, collectIdents)
-		if s.Body != nil {
-			analyzeClosureBody(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-	case *ast.RangeStmt:
-		collectIdents(s.X, inClosure)
-		if s.Body != nil {
-			analyzeClosureBody(s.Body, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-	case *ast.BlockStmt:
-		analyzeClosureBody(s, inClosure, assignedVars, capturedVars, collectIdents)
-	case *ast.IncDecStmt:
-		if ident, ok := s.X.(*ast.Ident); ok {
-			(*assignedVars)[ident.Name] = true
-		}
-		collectIdents(s.X, inClosure)
-	}
-}
-
-// walkStmtForClosureAnalysis walks a statement at the outer level to find declarations and closures
-func walkStmtForClosureAnalysis(stmt ast.Stmt, inClosure bool, outerVars map[string]bool, outerVarTypes map[string]types.Type, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool), pkg *packages.Package) {
-	if stmt == nil {
-		return
-	}
-	switch s := stmt.(type) {
-	case *ast.DeclStmt:
-		// Variable declarations
-		if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
-			for _, spec := range genDecl.Specs {
-				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
-					for _, name := range valueSpec.Names {
-						if !inClosure {
-							outerVars[name.Name] = true
-							// Get type info
-							if pkg != nil && pkg.TypesInfo != nil {
-								if obj := pkg.TypesInfo.Defs[name]; obj != nil {
-									outerVarTypes[name.Name] = obj.Type()
-								}
-							}
-						}
-					}
-					// Check RHS for closures
-					for _, value := range valueSpec.Values {
-						collectIdents(value, inClosure)
-					}
-				}
-			}
-		}
-	case *ast.AssignStmt:
-		// Track declared variables (short declarations)
-		if s.Tok == token.DEFINE {
-			for _, lhs := range s.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					if !inClosure {
-						outerVars[ident.Name] = true
-						// Get type info from RHS
-						if pkg != nil && pkg.TypesInfo != nil {
-							if obj := pkg.TypesInfo.Defs[ident]; obj != nil {
-								outerVarTypes[ident.Name] = obj.Type()
-							}
-						}
-					}
-				}
-			}
-		}
-		// Track assigned variables
-		for _, lhs := range s.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok {
-				(*assignedVars)[ident.Name] = true
-			}
-		}
-		// Check RHS for closures
-		for _, rhs := range s.Rhs {
-			collectIdents(rhs, inClosure)
-		}
-	case *ast.ExprStmt:
-		collectIdents(s.X, inClosure)
-	case *ast.ReturnStmt:
-		for _, result := range s.Results {
-			collectIdents(result, inClosure)
-		}
-	case *ast.IfStmt:
-		if s.Init != nil {
-			walkStmtForClosureAnalysis(s.Init, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
-		}
-		collectIdents(s.Cond, inClosure)
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
-			}
-		}
-		if s.Else != nil {
-			walkStmtForClosureAnalysis(s.Else, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
-		}
-	case *ast.ForStmt:
-		// For loop init variables are scoped to the for loop, NOT outer vars
-		// So we only collect assignments and identifiers, but don't add to outerVars
-		if s.Init != nil {
-			walkForLoopInitForClosureAnalysis(s.Init, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-		collectIdents(s.Cond, inClosure)
-		if s.Post != nil {
-			walkForLoopInitForClosureAnalysis(s.Post, inClosure, assignedVars, capturedVars, collectIdents)
-		}
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
-			}
-		}
-	case *ast.RangeStmt:
-		// Range loop variables (Key, Value) are scoped to the range loop, NOT outer vars
-		collectIdents(s.X, inClosure)
-		if s.Body != nil {
-			for _, bodyStmt := range s.Body.List {
-				walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
-			}
-		}
-	case *ast.BlockStmt:
-		for _, bodyStmt := range s.List {
-			walkStmtForClosureAnalysis(bodyStmt, inClosure, outerVars, outerVarTypes, assignedVars, capturedVars, collectIdents, pkg)
-		}
-	case *ast.IncDecStmt:
-		if ident, ok := s.X.(*ast.Ident); ok {
-			(*assignedVars)[ident.Name] = true
-		}
-		collectIdents(s.X, inClosure)
-	}
-}
-
-// walkForLoopInitForClosureAnalysis walks a for loop init/post statement
-// to find assignments and closures, but does NOT add to outerVars
-// because for loop init variables are scoped to the for loop
-func walkForLoopInitForClosureAnalysis(stmt ast.Stmt, inClosure bool, assignedVars *map[string]bool, capturedVars *map[string]bool, collectIdents func(ast.Expr, bool)) {
-	if stmt == nil {
-		return
-	}
-	switch s := stmt.(type) {
-	case *ast.AssignStmt:
-		// Track assigned variables (for both := and =)
-		for _, lhs := range s.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok {
-				(*assignedVars)[ident.Name] = true
-			}
-		}
-		// Check RHS for closures
-		for _, rhs := range s.Rhs {
-			collectIdents(rhs, inClosure)
-		}
-	case *ast.IncDecStmt:
-		if ident, ok := s.X.(*ast.Ident); ok {
-			(*assignedVars)[ident.Name] = true
-		}
-		collectIdents(s.X, inClosure)
-	case *ast.ExprStmt:
-		collectIdents(s.X, inClosure)
-	}
-}
-
-// javaExprToString converts an ast.Expr to its Java string representation.
-// This handles Java-specific transformations like slice expressions -> subList.
-func javaExprToString(expr ast.Expr) string {
-	return javaExprToStringWithClosures(expr, nil, nil)
-}
-
-// javaExprToStringWithClosures converts an ast.Expr to its Java string representation
-// with support for closure-captured mutable variables.
-func javaExprToStringWithClosures(expr ast.Expr, closureCapturedMutVars map[string]bool, closureCapturedVarType map[string]string) string {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		name := e.Name
-		// Handle closure-captured variables - add cast and [0] suffix
-		if closureCapturedMutVars != nil && closureCapturedMutVars[name] {
-			capturedType := closureCapturedVarType[name]
-			if capturedType != "" {
-				return fmt.Sprintf("((%s)%s[0])", capturedType, name)
-			}
-			return fmt.Sprintf("%s[0]", name)
-		}
-		return name
-	case *ast.SelectorExpr:
-		// For selector expressions on closure-captured vars, we need to cast first
-		// e.g., menuState.MenuBarH -> ((gui.MenuState)menuState[0]).MenuBarH
-		return javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + "." + e.Sel.Name
-	case *ast.BasicLit:
-		value := e.Value
-		// Handle raw strings (backticks) for Java
-		if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
-			inner := value[1 : len(value)-1]
-			inner = strings.ReplaceAll(inner, "\\", "\\\\")
-			inner = strings.ReplaceAll(inner, "\"", "\\\"")
-			inner = strings.ReplaceAll(inner, "\n", "\\n")
-			inner = strings.ReplaceAll(inner, "\r", "\\r")
-			inner = strings.ReplaceAll(inner, "\t", "\\t")
-			return "\"" + inner + "\""
-		}
-		return value
-	case *ast.IndexExpr:
-		// Array/slice index: x[i] -> x.get(i)
-		return javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + ".get(" + javaExprToStringWithClosures(e.Index, closureCapturedMutVars, closureCapturedVarType) + ")"
-	case *ast.SliceExpr:
-		// Slice expression: x[low:high] -> new ArrayList<>(x.subList(low, high))
-		xStr := javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType)
-		lowStr := "0"
-		if e.Low != nil {
-			lowStr = javaExprToStringWithClosures(e.Low, closureCapturedMutVars, closureCapturedVarType)
-		}
-		highStr := xStr + ".size()"
-		if e.High != nil {
-			highStr = javaExprToStringWithClosures(e.High, closureCapturedMutVars, closureCapturedVarType)
-		}
-		return fmt.Sprintf("new ArrayList<>(%s.subList(%s, %s))", xStr, lowStr, highStr)
-	case *ast.CallExpr:
-		// Check for type conversion: float64(x) -> (double)(x)
-		if ident, ok := e.Fun.(*ast.Ident); ok {
-			if javaType, isType := javaTypesMap[ident.Name]; isType {
-				// This is a type conversion, not a function call
-				if len(e.Args) == 1 {
-					return "(" + javaType + ")(" + javaExprToStringWithClosures(e.Args[0], closureCapturedMutVars, closureCapturedVarType) + ")"
-				}
-			}
-		}
-		// Regular function call: f(args) -> f(args)
-		var args []string
-		for _, arg := range e.Args {
-			args = append(args, javaExprToStringWithClosures(arg, closureCapturedMutVars, closureCapturedVarType))
-		}
-		return javaExprToStringWithClosures(e.Fun, closureCapturedMutVars, closureCapturedVarType) + "(" + strings.Join(args, ", ") + ")"
-	case *ast.UnaryExpr:
-		return e.Op.String() + javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType)
-	case *ast.BinaryExpr:
-		return javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + " " + e.Op.String() + " " + javaExprToStringWithClosures(e.Y, closureCapturedMutVars, closureCapturedVarType)
-	case *ast.ParenExpr:
-		return "(" + javaExprToStringWithClosures(e.X, closureCapturedMutVars, closureCapturedVarType) + ")"
-	case *ast.CompositeLit:
-		// Composite literal: Type{elts} -> new Type(elts)
-		typeStr := javaExprToStringWithClosures(e.Type, closureCapturedMutVars, closureCapturedVarType)
-		var elts []string
-		for _, elt := range e.Elts {
-			elts = append(elts, javaExprToStringWithClosures(elt, closureCapturedMutVars, closureCapturedVarType))
-		}
-		return "new " + typeStr + "(" + strings.Join(elts, ", ") + ")"
-	case *ast.KeyValueExpr:
-		// Key-value in composite literal - just return value for Java constructor args
-		return javaExprToStringWithClosures(e.Value, closureCapturedMutVars, closureCapturedVarType)
-	case *ast.ArrayType:
-		// []Type -> ArrayList<Type>
-		return "ArrayList<" + javaExprToStringWithClosures(e.Elt, closureCapturedMutVars, closureCapturedVarType) + ">"
-	default:
-		return ""
-	}
-}
-
-// declareVar marks a variable as declared in the current scope
-func (je *JavaEmitter) declareVar(name string) {
-	if len(je.declaredVarsStack) > 0 {
-		je.declaredVarsStack[len(je.declaredVarsStack)-1][name] = true
-	}
-}
-
-// nestedMapLevel represents one level of a nested map access
-type nestedMapLevel struct {
-	keyExpr   string
-	valueType string // Java type name of the map's value
-}
-
-// collectNestedMapLevels walks a nested IndexExpr and returns:
-// - rootVar: the root variable name (e.g., "m" for m["a"]["b"])
-// - levels: list of key expressions from outermost to innermost
-// This function is used for handling nested map assignments like m["a"]["b"] = v
-func (je *JavaEmitter) collectNestedMapLevels(expr ast.Expr) (rootVar string, levels []nestedMapLevel) {
-	for {
-		indexExpr, ok := expr.(*ast.IndexExpr)
-		if !ok {
-			rootVar = exprToString(expr)
-			return
-		}
-		// Get the value type of this map access
-		var valueType string
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			tv := je.pkg.TypesInfo.Types[indexExpr.X]
-			if tv.Type != nil {
-				if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-					valueType = getJavaTypeName(mapType.Elem())
-				}
-			}
-		}
-		levels = append([]nestedMapLevel{{
-			keyExpr:   exprToString(indexExpr.Index),
-			valueType: valueType,
-		}}, levels...)
-		expr = indexExpr.X
-	}
-}
-
-// generateNestedMapGetExpr generates a Java expression for reading a nested map
-// e.g., m["a"]["b"] -> ((Integer)hashMapGet(((HashMap)hashMapGet(m, "a")), "b"))
-func (je *JavaEmitter) generateNestedMapGetExpr(rootVar string, levels []nestedMapLevel) string {
-	result := rootVar
-	for _, level := range levels {
-		boxedType := toBoxedType(level.valueType)
-		result = fmt.Sprintf("((%s)hashMapGet(%s, %s))", boxedType, result, level.keyExpr)
-	}
-	return result
-}
-
-// sliceIndexLevel represents one level of slice indexing
-type sliceIndexLevel struct {
-	indexExpr string // The index expression (e.g., "0", "i")
-}
-
-// collectSliceIndices walks a chain of IndexExprs and collects all slice indices
-// For expr = slice[0][1], returns rootExpr="slice", indices=["0", "1"]
-// It stops when it finds a non-IndexExpr or when the type is not a slice
-// If the root is a map access, rootExpr will be the Java expression for the map get
-func (je *JavaEmitter) collectSliceIndices(expr ast.Expr) (rootExpr string, indices []string) {
-	for {
-		indexExpr, ok := expr.(*ast.IndexExpr)
-		if !ok {
-			rootExpr = exprToString(expr)
-			return
-		}
-		// Check if X is a slice type
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			tv := je.pkg.TypesInfo.Types[indexExpr.X]
-			if tv.Type != nil {
-				if _, isSlice := tv.Type.Underlying().(*types.Slice); !isSlice {
-					// Not a slice - check if it's a map access
-					if mapType, isMap := tv.Type.Underlying().(*types.Map); isMap {
-						// The root is a map access, generate proper Java expression
-						// e.g., m[1] -> ((ArrayList<HashMap>)hashMapGet(m, 1))
-						mapVar := exprToString(indexExpr.X)
-						keyExpr := exprToString(indexExpr.Index)
-						elemType := getJavaTypeName(mapType.Elem())
-						boxedElemType := toBoxedType(elemType)
-						rootExpr = fmt.Sprintf("((%s)hashMapGet(%s, %s))", boxedElemType, mapVar, keyExpr)
-						return
-					}
-					// Not a slice or map, stop here
-					rootExpr = exprToString(expr)
-					return
-				}
-			}
-		}
-		// Prepend the index (we're walking from outer to inner, but we want inner to outer)
-		indices = append([]string{exprToString(indexExpr.Index)}, indices...)
-		expr = indexExpr.X
-	}
-}
-
-// generateSliceGetChain generates the Java expression for getting through multiple slice levels
-// e.g., slice, ["0", "1"] -> slice.get(0).get(1)
-func (je *JavaEmitter) generateSliceGetChain(rootVar string, indices []string) string {
-	result := rootVar
-	for _, idx := range indices {
-		result = fmt.Sprintf("%s.get(%s)", result, idx)
-	}
-	return result
-}
-
-func (je *JavaEmitter) emitAsString(s string, indent int) string {
-	if indent > 0 {
-		return strings.Repeat("    ", indent) + s
-	}
-	return s
-}
-
-func (je *JavaEmitter) getTokenType(content string) TokenType {
-	switch content {
-	case "{":
-		return LeftBrace
-	case "}":
-		return RightBrace
-	case "(":
-		return LeftParen
-	case ")":
-		return RightParen
-	case "[":
-		return LeftBracket
-	case "]":
-		return RightBracket
-	case ";":
-		return Semicolon
-	case ",":
-		return Comma
-	case "+", "-", "*", "/", "%", "=", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "!":
-		return BinaryOperator
-	default:
-		return Identifier
-	}
-}
-
-func (je *JavaEmitter) emitToken(content string, tokenType TokenType, indent int) {
-	je.emitToPackage(content)
-}
-
-// emitToPackage writes output to the appropriate destination:
-// - When capturing struct literal elements: writes to the capture buffer of nearest capturing state
-// - For non-main packages: writes directly to the package's separate file
-// - For main package: writes to the main buffer via gir.emitToFileBuffer
-func (je *JavaEmitter) emitToPackage(content string) {
-	// If capturing struct literal elements, find nearest capturing state and redirect to its buffer
-	// We search from the top of the stack downward to find the innermost capturing state
-	for i := len(je.structLitStack) - 1; i >= 0; i-- {
-		if je.structLitStack[i].capturing {
-			je.structLitStack[i].buffer.WriteString(content)
-			return
-		}
-	}
-	if je.currentPkgName != "main" && je.currentPkgName != "" {
-		if pkgFile, exists := je.packageFiles[je.currentPkgName]; exists {
-			pkgFile.WriteString(content)
-			return
-		}
-	}
-	je.gir.emitToFileBuffer(content, EmptyVisitMethod)
-}
-
-func (je *JavaEmitter) getMapKeyTypeConst(mapType *ast.MapType) int {
-	if je.pkg == nil || je.pkg.TypesInfo == nil {
-		return 1 // Default to string
-	}
-	tv := je.pkg.TypesInfo.Types[mapType.Key]
-	if tv.Type == nil {
-		return 1 // Default to string
-	}
-	switch tv.Type.Underlying().String() {
-	case "string":
-		return 1 // KeyTypeString
-	case "int":
-		return 2 // KeyTypeInt
-	case "bool":
-		return 3 // KeyTypeBool
-	case "int8":
-		return 4 // KeyTypeInt8
-	case "int16":
-		return 5 // KeyTypeInt16
-	case "int32":
-		return 6 // KeyTypeInt32
-	case "int64":
-		return 7 // KeyTypeInt64
-	case "uint8":
-		return 8 // KeyTypeUint8
-	case "uint16":
-		return 9 // KeyTypeUint16
-	case "uint32":
-		return 10 // KeyTypeUint32
-	case "uint64":
-		return 11 // KeyTypeUint64
-	case "float32":
-		return 12 // KeyTypeFloat32
-	case "float64":
-		return 13 // KeyTypeFloat64
-	default:
-		// Check for struct types
-		if named, ok := tv.Type.(*types.Named); ok {
-			if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-				// Track this struct type as being used as a map key
-				if je.structKeyTypes == nil {
-					je.structKeyTypes = make(map[string]bool)
-				}
-				je.structKeyTypes[named.Obj().Name()] = true
-				return 100 // KeyTypeStruct
-			}
-		}
-		return 1 // Default to string
-	}
-}
-
-
-// isJavaOuterClassPackage checks if a package name is an outer class that needs prefixing.
-// Uses the global namespaces map from base_pass.go, excluding "main" and "hmap".
-// "hmap" is a utility package that's inlined in the main file, not a separate outer class.
+// isJavaOuterClassPackage returns true if the package should be emitted as an outer class.
 func isJavaOuterClassPackage(pkgName string) bool {
 	if pkgName == "main" || pkgName == "hmap" {
 		return false
@@ -1086,213 +118,29 @@ func isJavaOuterClassPackage(pkgName string) bool {
 	return exists
 }
 
-func getJavaTypeName(t types.Type) string {
-	// First, check if this is a named type
-	if named, ok := t.(*types.Named); ok {
-		// Check if the underlying type is a basic type (type alias like `type ExprKind int`)
-		// In that case, use the underlying type since Java doesn't have type aliases
-		if basic, ok := named.Underlying().(*types.Basic); ok {
-			// Use the underlying basic type
-			switch basic.Kind() {
-			case types.Int, types.Int32:
-				return "int"
-			case types.Int8:
-				return "byte"
-			case types.Int16:
-				return "short"
-			case types.Int64:
-				return "long"
-			case types.Uint8:
-				return "byte"
-			case types.Uint, types.Uint16, types.Uint32:
-				return "int"
-			case types.Uint64:
-				return "long"
-			case types.Float32:
-				return "float"
-			case types.Float64:
-				return "double"
-			case types.Bool:
-				return "boolean"
-			case types.String:
-				return "String"
-			}
-		}
-		// Check if the underlying type is a slice (type alias like `type AST []Statement`)
-		// In that case, resolve to ArrayList<elemType>
-		if sliceType, ok := named.Underlying().(*types.Slice); ok {
-			elemType := getJavaTypeName(sliceType.Elem())
-			return fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType))
-		}
-		// Check if the underlying type is a map (type alias like `type Table map[K]V`)
-		if mapType, ok := named.Underlying().(*types.Map); ok {
-			keyType := getJavaTypeName(mapType.Key())
-			valType := getJavaTypeName(mapType.Elem())
-			return fmt.Sprintf("HashMap<%s, %s>", toBoxedType(keyType), toBoxedType(valType))
-		}
-		// Otherwise, it's a struct or other named type - use the name
-		// If the type's package is an outer class package, prefix with package name
-		typeName := named.Obj().Name()
-		if pkg := named.Obj().Pkg(); pkg != nil {
-			pkgName := pkg.Name()
-			if isJavaOuterClassPackage(pkgName) {
-				return pkgName + "." + typeName
-			}
-		}
-		return typeName
-	}
-
-	switch ut := t.Underlying().(type) {
-	case *types.Basic:
-		switch ut.Kind() {
-		case types.Int, types.Int32, types.UntypedInt, types.UntypedRune:
-			return "int"
-		case types.Int8:
-			return "byte"
-		case types.Int16:
-			return "short"
-		case types.Int64:
-			return "long"
-		case types.Uint8:
-			return "byte"
-		case types.Uint, types.Uint16, types.Uint32:
-			return "int"
-		case types.Uint64:
-			return "long"
-		case types.Float32:
-			return "float"
-		case types.Float64, types.UntypedFloat:
-			return "double"
-		case types.Bool, types.UntypedBool:
-			return "boolean"
-		case types.String, types.UntypedString:
-			return "String"
-		default:
-			return "Object"
-		}
-	case *types.Slice:
-		elemType := getJavaTypeName(ut.Elem())
-		return fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType))
-	case *types.Map:
-		return "HashMap"
-	case *types.Pointer:
-		return getJavaTypeName(ut.Elem())
-	case *types.Signature:
-		// Function types -> BiFunction, Function, etc.
-		numParams := ut.Params().Len()
-		hasReturn := ut.Results().Len() > 0
-
-		if !hasReturn {
-			switch numParams {
-			case 0:
-				return "Runnable"
-			case 1:
-				p1 := getJavaTypeName(ut.Params().At(0).Type())
-				return fmt.Sprintf("Consumer<%s>", toBoxedType(p1))
-			case 2:
-				p1 := getJavaTypeName(ut.Params().At(0).Type())
-				p2 := getJavaTypeName(ut.Params().At(1).Type())
-				return fmt.Sprintf("BiConsumer<%s, %s>", toBoxedType(p1), toBoxedType(p2))
-			}
-		} else {
-			returnType := getJavaTypeName(ut.Results().At(0).Type())
-			switch numParams {
-			case 0:
-				return fmt.Sprintf("Supplier<%s>", toBoxedType(returnType))
-			case 1:
-				p1 := getJavaTypeName(ut.Params().At(0).Type())
-				return fmt.Sprintf("Function<%s, %s>", toBoxedType(p1), toBoxedType(returnType))
-			case 2:
-				p1 := getJavaTypeName(ut.Params().At(0).Type())
-				p2 := getJavaTypeName(ut.Params().At(1).Type())
-				return fmt.Sprintf("BiFunction<%s, %s, %s>", toBoxedType(p1), toBoxedType(p2), toBoxedType(returnType))
-			}
-		}
-		return "Object"
-	default:
-		return "Object"
-	}
-}
-
-func toBoxedType(t string) string {
-	if boxed, ok := javaBoxedTypes[t]; ok {
-		return boxed
-	}
-	return t
-}
-
 // sanitizeJavaIdentifier converts a string to a valid Java identifier
 // by replacing invalid characters (like hyphens) with underscores
-// and removing the .java extension if present
+// and removing the .java extension if present.
 func sanitizeJavaIdentifier(name string) string {
-	// Remove .java extension if present
 	if strings.HasSuffix(name, ".java") {
 		name = strings.TrimSuffix(name, ".java")
 	}
 	return strings.ReplaceAll(name, "-", "_")
 }
 
-func getJavaDefaultValue(javaType string) string {
-	switch javaType {
-	case "int":
-		return "0"
-	case "long":
-		return "0L"
-	case "double":
-		return "0.0"
-	case "float":
-		return "0.0f"
-	case "boolean":
-		return "false"
-	case "char":
-		return "'\\0'"
-	case "byte":
-		return "(byte)0"
-	case "short":
-		return "(short)0"
-	case "String":
-		return "\"\""
+// getJavaKeyCast returns cast prefix/suffix for map key types that need explicit casting.
+func getJavaKeyCast(keyType types.Type) (string, string) {
+	switch keyType.Underlying().String() {
+	case "int64":
+		return "(long)(", ")"
+	case "uint64":
+		return "(long)(", ")"
 	default:
-		return "null"
+		return "", ""
 	}
 }
 
-// getJavaDefaultValueForStruct returns the default value for a field type,
-// initializing struct types with new instances (to match Go value semantics)
-func getJavaDefaultValueForStruct(javaType string) string {
-	// Primitives and String
-	switch javaType {
-	case "int":
-		return "0"
-	case "long":
-		return "0L"
-	case "double":
-		return "0.0"
-	case "float":
-		return "0.0f"
-	case "boolean":
-		return "false"
-	case "char":
-		return "'\\0'"
-	case "byte":
-		return "(byte)0"
-	case "short":
-		return "(short)0"
-	case "String":
-		return "\"\""
-	}
-	// Collections, functional interfaces, and built-in reference types should be null
-	if strings.HasPrefix(javaType, "ArrayList<") ||
-		strings.HasPrefix(javaType, "HashMap<") ||
-		isJavaFunctionalInterface(javaType) ||
-		isJavaBuiltinReferenceType(javaType) {
-		return "null"
-	}
-	// Other types are assumed to be structs - initialize them
-	return fmt.Sprintf("new %s()", javaType)
-}
-
-// isJavaPrimitiveType returns true if the type is a Java primitive type
+// isJavaPrimitiveType returns true if the type is a Java primitive type.
 func isJavaPrimitiveType(javaType string) bool {
 	switch javaType {
 	case "int", "long", "double", "float", "boolean", "char", "byte", "short", "String":
@@ -1303,7 +151,7 @@ func isJavaPrimitiveType(javaType string) bool {
 }
 
 // isJavaBuiltinReferenceType returns true if the type is a Java built-in reference type
-// that should not be treated as a custom struct (no copy constructor available)
+// that should not be treated as a custom struct.
 func isJavaBuiltinReferenceType(javaType string) bool {
 	switch javaType {
 	case "Object", "Integer", "Long", "Double", "Float", "Boolean", "Character", "Byte", "Short":
@@ -1314,9 +162,8 @@ func isJavaBuiltinReferenceType(javaType string) bool {
 }
 
 // isJavaFunctionalInterface returns true if the type is a Java functional interface
-// that should be copied by reference (not by calling a copy constructor)
+// that should be copied by reference (not by calling a copy constructor).
 func isJavaFunctionalInterface(javaType string) bool {
-	// Check for common functional interface types from java.util.function
 	if strings.HasPrefix(javaType, "BiFunction<") ||
 		strings.HasPrefix(javaType, "Function<") ||
 		strings.HasPrefix(javaType, "Consumer<") ||
@@ -1330,208 +177,301 @@ func isJavaFunctionalInterface(javaType string) bool {
 	return false
 }
 
-// needsByteCast returns true if a value needs to be cast to byte/short
-// This is needed because Java integer literals are 'int' by default
-func needsByteCast(fieldType, value string) bool {
-	if fieldType != "byte" && fieldType != "short" {
+// getJavaDefaultValueForStruct returns the default value for a field type,
+// initializing struct types with new instances (to match Go value semantics).
+func getJavaDefaultValueForStruct(javaType string) string {
+	switch javaType {
+	case "int":
+		return "0"
+	case "long":
+		return "0L"
+	case "double":
+		return "0.0"
+	case "float":
+		return "0.0f"
+	case "boolean":
+		return "false"
+	case "char":
+		return "'\\0'"
+	case "byte":
+		return "(byte)0"
+	case "short":
+		return "(short)0"
+	case "String":
+		return "\"\""
+	}
+	if strings.HasPrefix(javaType, "ArrayList<") ||
+		strings.HasPrefix(javaType, "HashMap<") ||
+		isJavaFunctionalInterface(javaType) ||
+		isJavaBuiltinReferenceType(javaType) {
+		return "null"
+	}
+	return fmt.Sprintf("new %s()", javaType)
+}
+
+func (e *JavaEmitter) SetFile(file *os.File) { e.file = file }
+func (e *JavaEmitter) GetFile() *os.File     { return e.file }
+
+// isByteTypeJ returns true if the given Go type is byte (uint8) or int8.
+func (e *JavaEmitter) isByteTypeJ(t types.Type) bool {
+	if t == nil {
 		return false
 	}
-	// Skip if already cast
-	if strings.HasPrefix(value, "(byte)") || strings.HasPrefix(value, "(short)") {
-		return false
-	}
-	// Check for numeric literals (positive or negative)
-	trimmed := strings.TrimSpace(value)
-	if len(trimmed) == 0 {
-		return false
-	}
-	// Skip if it's null
-	if trimmed == "null" {
-		return false
-	}
-	// Check if it's a number literal
-	firstChar := trimmed[0]
-	if firstChar >= '0' && firstChar <= '9' {
-		return true
-	}
-	// Check for negative number
-	if firstChar == '-' && len(trimmed) > 1 && trimmed[1] >= '0' && trimmed[1] <= '9' {
-		return true
-	}
-	// Check if it looks like a constant identifier (starts with letter/underscore)
-	// Constants like TokenTypeSemicolon or ast.PgOrderAsc need casting
-	if (firstChar >= 'A' && firstChar <= 'Z') || (firstChar >= 'a' && firstChar <= 'z') || firstChar == '_' {
-		// Not a method call (no parens) - allow dots for package-qualified constants
-		if !strings.Contains(trimmed, "(") {
-			return true
-		}
+	if basic, ok := t.Underlying().(*types.Basic); ok {
+		return basic.Kind() == types.Uint8 || basic.Kind() == types.Int8
 	}
 	return false
 }
 
-func getJavaKeyCast(keyType types.Type) (string, string) {
-	switch keyType.Underlying().String() {
-	case "int64":
-		return "(long)(", ")"
-	case "uint64":
-		return "(long)(", ")"
-	default:
-		// No cast needed for other types - they can be boxed directly
-		return "", ""
-	}
+// maskByteValueJ wraps a value with & 0xFF for unsigned byte semantics in Java.
+func (e *JavaEmitter) maskByteValueJ(value string) string {
+	return fmt.Sprintf("(%s & 0xFF)", value)
 }
 
-// getJavaTypeFromExpr converts an AST expression to a Java type string (fallback when TypesInfo unavailable)
-func (je *JavaEmitter) getJavaTypeFromExpr(expr ast.Expr) string {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		// Check type alias map first
-		if javaType, ok := je.typeAliasMap[e.Name]; ok {
-			return javaType
+// escapeRawStringToJava converts a Go raw string (backtick) content to a Java string literal.
+func escapeRawStringToJava(raw string) string {
+	s := strings.ReplaceAll(raw, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	return "\"" + s + "\""
+}
+
+// javaIndent returns indentation string for the given level.
+func javaIndent(indent int) string {
+	return strings.Repeat("  ", indent/2)
+}
+
+// javaDefaultForGoType returns Java default value for a Go type.
+func javaDefaultForGoType(t types.Type) string {
+	if t == nil {
+		return "null"
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		switch {
+		case u.Info()&types.IsString != 0:
+			return `""`
+		case u.Info()&types.IsBoolean != 0:
+			return "false"
+		case u.Info()&types.IsNumeric != 0:
+			return "0"
 		}
-		// Check standard Go to Java type mapping
-		if javaType, ok := javaTypesMap[e.Name]; ok {
-			return javaType
+	case *types.Slice:
+		elemType := getJavaPrimTypeName(u.Elem())
+		return fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType))
+	case *types.Map:
+		return "null"
+	case *types.Struct:
+		if named, ok := t.(*types.Named); ok {
+			return fmt.Sprintf("new %s()", named.Obj().Name())
 		}
-		// Return as-is (for struct names, etc.)
-		return e.Name
-	case *ast.ArrayType:
-		elemType := je.getJavaTypeFromExpr(e.Elt)
-		return fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType))
-	case *ast.MapType:
-		return "HashMap"
-	case *ast.StarExpr:
-		return je.getJavaTypeFromExpr(e.X)
-	case *ast.SelectorExpr:
-		// For package.Type, just use the type name
-		return e.Sel.Name
-	case *ast.FuncType:
-		return je.getFunctionalInterfaceType(e)
-	default:
+		return "null"
+	}
+	return "null"
+}
+
+// javaDefaultForGoTypeQ is like javaDefaultForGoType but uses qualified names for structs.
+func (e *JavaEmitter) javaDefaultForGoTypeQ(t types.Type) string {
+	if t == nil {
+		return "null"
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Basic:
+		switch {
+		case u.Info()&types.IsString != 0:
+			return `""`
+		case u.Info()&types.IsBoolean != 0:
+			return "false"
+		case u.Info()&types.IsNumeric != 0:
+			return "0"
+		}
+	case *types.Slice:
+		elemType := e.qualifiedJavaTypeName(u.Elem())
+		return fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType))
+	case *types.Map:
+		return "null"
+	case *types.Struct:
+		typeName := e.qualifiedJavaTypeName(t)
+		return fmt.Sprintf("new %s()", typeName)
+	}
+	return "null"
+}
+
+// getJavaPrimTypeName converts a Go type to its Java type name.
+// This is a method-local version adapted from getJavaTypeName that handles
+// Named, Basic, Slice, Map, and Signature types.
+func getJavaPrimTypeName(t types.Type) string {
+	if t == nil {
 		return "Object"
 	}
-}
-
-// getFunctionalInterfaceType maps a Go function type to a Java functional interface
-func (je *JavaEmitter) getFunctionalInterfaceType(funcType *ast.FuncType) string {
-	numParams := 0
-	if funcType.Params != nil {
-		for _, field := range funcType.Params.List {
-			if len(field.Names) == 0 {
-				numParams++
-			} else {
-				numParams += len(field.Names)
+	// Handle named types
+	if named, ok := t.(*types.Named); ok {
+		// Type alias to basic type
+		if basic, ok := named.Underlying().(*types.Basic); ok {
+			return javaBasicTypeName(basic)
+		}
+		// Slice alias
+		if sliceType, ok := named.Underlying().(*types.Slice); ok {
+			elemType := getJavaPrimTypeName(sliceType.Elem())
+			return fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType))
+		}
+		// Map alias
+		if _, ok := named.Underlying().(*types.Map); ok {
+			return "hmap.HashMap"
+		}
+		// Struct or other named type
+		typeName := named.Obj().Name()
+		if pkg := named.Obj().Pkg(); pkg != nil {
+			pkgName := pkg.Name()
+			if isJavaOuterClassPackage(pkgName) {
+				return pkgName + "." + typeName
 			}
 		}
+		return typeName
 	}
 
-	hasReturn := funcType.Results != nil && len(funcType.Results.List) > 0
-
-	// Map to Java functional interfaces
-	if !hasReturn {
-		switch numParams {
-		case 0:
-			return "Runnable"
-		case 1:
-			paramType := je.getFuncParamType(funcType, 0)
-			return fmt.Sprintf("Consumer<%s>", toBoxedType(paramType))
-		case 2:
-			p1 := je.getFuncParamType(funcType, 0)
-			p2 := je.getFuncParamType(funcType, 1)
-			return fmt.Sprintf("BiConsumer<%s, %s>", toBoxedType(p1), toBoxedType(p2))
-		default:
-			return "Object" // No standard interface for 3+ params
-		}
-	} else {
-		returnType := je.getFuncReturnType(funcType)
-		switch numParams {
-		case 0:
-			return fmt.Sprintf("Supplier<%s>", toBoxedType(returnType))
-		case 1:
-			paramType := je.getFuncParamType(funcType, 0)
-			return fmt.Sprintf("Function<%s, %s>", toBoxedType(paramType), toBoxedType(returnType))
-		case 2:
-			p1 := je.getFuncParamType(funcType, 0)
-			p2 := je.getFuncParamType(funcType, 1)
-			return fmt.Sprintf("BiFunction<%s, %s, %s>", toBoxedType(p1), toBoxedType(p2), toBoxedType(returnType))
-		default:
+	switch ut := t.Underlying().(type) {
+	case *types.Basic:
+		return javaBasicTypeName(ut)
+	case *types.Slice:
+		elemType := getJavaPrimTypeName(ut.Elem())
+		return fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType))
+	case *types.Map:
+		return "hmap.HashMap"
+	case *types.Pointer:
+		return getJavaPrimTypeName(ut.Elem())
+	case *types.Signature:
+		return javaSignatureTypeName(ut)
+	case *types.Interface:
+		if ut.Empty() {
 			return "Object"
 		}
-	}
-}
-
-// getFuncParamType gets the Java type of a function parameter at the given index
-func (je *JavaEmitter) getFuncParamType(funcType *ast.FuncType, index int) string {
-	if funcType.Params == nil {
+		return "Object"
+	default:
 		return "Object"
 	}
-	idx := 0
-	for _, field := range funcType.Params.List {
-		count := len(field.Names)
-		if count == 0 {
-			count = 1
-		}
-		if index < idx+count {
-			return je.getJavaTypeFromExpr(field.Type)
-		}
-		idx += count
-	}
-	return "Object"
 }
 
-// getFuncReturnType gets the Java type of a function's return value
-func (je *JavaEmitter) getFuncReturnType(funcType *ast.FuncType) string {
-	if funcType.Results == nil || len(funcType.Results.List) == 0 {
-		return "Void"
+// javaBasicTypeName maps a basic type to Java type name.
+func javaBasicTypeName(basic *types.Basic) string {
+	switch basic.Kind() {
+	case types.Int, types.Int32, types.UntypedInt, types.UntypedRune:
+		return "int"
+	case types.Int8:
+		return "byte"
+	case types.Int16:
+		return "short"
+	case types.Int64:
+		return "long"
+	case types.Uint8:
+		return "byte"
+	case types.Uint, types.Uint16, types.Uint32:
+		return "int"
+	case types.Uint64:
+		return "long"
+	case types.Float32:
+		return "float"
+	case types.Float64, types.UntypedFloat:
+		return "double"
+	case types.Bool, types.UntypedBool:
+		return "boolean"
+	case types.String, types.UntypedString:
+		return "String"
+	default:
+		return "Object"
 	}
-	// For simplicity, just get the first return type
-	return je.getJavaTypeFromExpr(funcType.Results.List[0].Type)
 }
 
-// getFunctionalInterfaceMethod returns the method name to call on a functional interface
-// based on the function signature
-func (je *JavaEmitter) getFunctionalInterfaceMethod(sig *types.Signature) string {
+// javaSignatureTypeName maps a Go function signature to Java functional interface type.
+func javaSignatureTypeName(sig *types.Signature) string {
 	numParams := sig.Params().Len()
 	hasReturn := sig.Results().Len() > 0
 
 	if !hasReturn {
 		switch numParams {
 		case 0:
-			return "run" // Runnable
-		case 1, 2:
-			return "accept" // Consumer, BiConsumer
+			return "Runnable"
+		case 1:
+			p1 := getJavaPrimTypeName(sig.Params().At(0).Type())
+			return fmt.Sprintf("Consumer<%s>", toBoxedType(p1))
+		case 2:
+			p1 := getJavaPrimTypeName(sig.Params().At(0).Type())
+			p2 := getJavaPrimTypeName(sig.Params().At(1).Type())
+			return fmt.Sprintf("BiConsumer<%s, %s>", toBoxedType(p1), toBoxedType(p2))
 		}
 	} else {
+		returnType := getJavaPrimTypeName(sig.Results().At(0).Type())
 		switch numParams {
 		case 0:
-			return "get" // Supplier
-		case 1, 2:
-			return "apply" // Function, BiFunction
+			return fmt.Sprintf("Supplier<%s>", toBoxedType(returnType))
+		case 1:
+			p1 := getJavaPrimTypeName(sig.Params().At(0).Type())
+			return fmt.Sprintf("Function<%s, %s>", toBoxedType(p1), toBoxedType(returnType))
+		case 2:
+			p1 := getJavaPrimTypeName(sig.Params().At(0).Type())
+			p2 := getJavaPrimTypeName(sig.Params().At(1).Type())
+			return fmt.Sprintf("BiFunction<%s, %s, %s>", toBoxedType(p1), toBoxedType(p2), toBoxedType(returnType))
 		}
 	}
-	return ""
+	return "Object"
 }
 
-func (je *JavaEmitter) SetFile(file *os.File) {
-	je.file = file
-}
-
-func (je *JavaEmitter) GetFile() *os.File {
-	return je.file
-}
-
-func (je *JavaEmitter) executeIfNotForwardDecls(fn func()) {
-	if je.forwardDecls {
-		return
+// toBoxedJavaType converts a primitive Java type to its boxed version.
+func toBoxedJavaType(t string) string {
+	if boxed, ok := javaBoxedTypes[t]; ok {
+		return boxed
 	}
-	fn()
+	return t
 }
 
-func (je *JavaEmitter) lowerToBuiltins(name string) string {
-	switch name {
-	case "println":
+// qualifiedJavaTypeName returns the Java type name with package prefix for cross-package struct types.
+func (e *JavaEmitter) qualifiedJavaTypeName(t types.Type) string {
+	if t == nil {
+		return "Object"
+	}
+	// Handle function types
+	if sig, ok := t.Underlying().(*types.Signature); ok {
+		return javaSignatureTypeName(sig)
+	}
+	// For named struct types from other packages, add the package prefix
+	if named, ok := t.(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			name := named.Obj().Name()
+			if named.Obj().Pkg() != nil {
+				pkgName := named.Obj().Pkg().Name()
+				if pkgName != e.currentPackage && pkgName != "main" {
+					return pkgName + "." + name
+				}
+			}
+			return name
+		}
+	}
+	// Handle slice of cross-package structs
+	if slice, ok := t.(*types.Slice); ok {
+		elemType := e.qualifiedJavaTypeName(slice.Elem())
+		return "ArrayList<" + toBoxedType(elemType) + ">"
+	}
+	// Handle map type
+	if _, ok := t.Underlying().(*types.Map); ok {
+		return "hmap.HashMap"
+	}
+	return getJavaPrimTypeName(t)
+}
+
+// javaLowerBuiltin maps Go stdlib selectors to Java equivalents.
+func javaLowerBuiltin(selector string) string {
+	switch selector {
+	case "fmt":
+		return ""
+	case "Sprintf":
+		return "Formatter.Sprintf"
+	case "Println":
 		return "System.out.println"
-	case "print":
+	case "Printf":
+		return "Formatter.Printf"
+	case "Print":
 		return "System.out.print"
 	case "len":
 		return "SliceBuiltins.Length"
@@ -1539,72 +479,290 @@ func (je *JavaEmitter) lowerToBuiltins(name string) string {
 		return "SliceBuiltins.Append"
 	case "panic":
 		return "GoanyPanic.goPanic"
-	case "true":
-		return "true"
-	case "false":
-		return "false"
-	// Handle fmt package functions
-	case "Printf":
-		return "Formatter.Printf"
-	case "Sprintf":
-		return "Formatter.Sprintf"
-	case "Println":
-		return "System.out.println"
-	case "Print":
-		return "System.out.print"
+	}
+	return selector
+}
+
+// isMapTypeExprJ checks if an expression has map type via TypesInfo.
+func (e *JavaEmitter) isMapTypeExprJ(expr ast.Expr) bool {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return false
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	if tv.Type != nil {
+		_, ok := tv.Type.Underlying().(*types.Map)
+		if ok {
+			return true
+		}
+	}
+	// Fallback: for identifiers, try ObjectOf/Uses
+	if ident, ok := expr.(*ast.Ident); ok {
+		if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+			_, isMap := obj.Type().Underlying().(*types.Map)
+			return isMap
+		}
+	}
+	return false
+}
+
+// getExprGoTypeJ returns the Go type for an expression, or nil.
+func (e *JavaEmitter) getExprGoTypeJ(expr ast.Expr) types.Type {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return nil
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	return tv.Type
+}
+
+// getMapKeyTypeConstJ returns the key type constant for a map's key type.
+func (e *JavaEmitter) getMapKeyTypeConstJ(mapType *ast.MapType) int {
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		if tv, ok := e.pkg.TypesInfo.Types[mapType.Key]; ok && tv.Type != nil {
+			if basic, isBasic := tv.Type.Underlying().(*types.Basic); isBasic {
+				switch basic.Kind() {
+				case types.String:
+					return 1
+				case types.Int:
+					return 2
+				case types.Bool:
+					return 3
+				case types.Int8:
+					return 4
+				case types.Int16:
+					return 5
+				case types.Int32:
+					return 6
+				case types.Int64:
+					return 7
+				case types.Uint8:
+					return 8
+				case types.Uint16:
+					return 9
+				case types.Uint32:
+					return 10
+				case types.Uint64:
+					return 11
+				case types.Float32:
+					return 12
+				case types.Float64:
+					return 13
+				}
+			}
+			if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
+				if named, ok := tv.Type.(*types.Named); ok {
+					if e.structKeyTypes == nil {
+						e.structKeyTypes = make(map[string]string)
+					}
+					structName := named.Obj().Name()
+					e.structKeyTypes[structName] = structName
+				}
+				return 100
+			}
+		}
+	}
+	return 1
+}
+
+// getJavaKeyCastJ returns the map key cast prefix/suffix for Java.
+func getJavaKeyCastJ(keyType types.Type) (string, string) {
+	return getJavaKeyCast(keyType)
+}
+
+// exprToJavaString converts a simple AST expression to its Java string representation.
+func exprToJavaString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return e.Value
+	case *ast.Ident:
+		return e.Name
+	case *ast.IndexExpr:
+		xStr := exprToJavaString(e.X)
+		indexStr := exprToJavaString(e.Index)
+		if xStr != "" && indexStr != "" {
+			return xStr + "[" + indexStr + "]"
+		}
+		return ""
+	case *ast.SelectorExpr:
+		xStr := exprToJavaString(e.X)
+		if xStr != "" {
+			return xStr + "." + e.Sel.Name
+		}
+		return ""
 	default:
-		return name
+		return ""
 	}
 }
 
-// writeJavaBoilerplate writes imports and panic runtime to the main output file
-func (je *JavaEmitter) writeJavaBoilerplate() {
-	imports := `import java.util.*;
-import java.util.function.*;
-
-`
-	je.file.WriteString(imports)
-	je.file.WriteString("// GoAny panic runtime\n")
-	je.file.WriteString(goanyrt.PanicJavaSource)
-	je.file.WriteString("\n")
+// javaMapKeyTypeConst returns the key type constant from types.Map.
+func javaMapKeyTypeConst(t *types.Map) int {
+	if t == nil {
+		return 1
+	}
+	if basic, ok := t.Key().Underlying().(*types.Basic); ok {
+		switch basic.Kind() {
+		case types.String:
+			return 1
+		case types.Int:
+			return 2
+		case types.Bool:
+			return 3
+		case types.Int8:
+			return 4
+		case types.Int16:
+			return 5
+		case types.Int32:
+			return 6
+		case types.Int64:
+			return 7
+		case types.Uint8:
+			return 8
+		case types.Uint16:
+			return 9
+		case types.Uint32:
+			return 10
+		case types.Uint64:
+			return 11
+		case types.Float32:
+			return 12
+		case types.Float64:
+			return 13
+		}
+	}
+	if named, ok := t.Key().(*types.Named); ok {
+		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+			return 100
+		}
+	}
+	return 1
 }
 
-// Main visitor methods
-
-func (je *JavaEmitter) PreVisitProgram(indent int) {
-	je.typeAliasMap = make(map[string]string)
-	je.multiReturnFuncs = make(map[string][]string)
-	je.resultClassDefs = nil
-	je.resultClassRegistry = make(map[string]string)
-	je.mapVarValueTypes = make(map[string]string)
-	je.declaredVarsStack = []map[string]bool{make(map[string]bool)}
-	je.funcParamsStack = []map[string]bool{make(map[string]bool)}
-	je.packageFiles = make(map[string]*os.File)
-	// Runtime packages are added to namespaces so they get proper type prefixing
-	for pkgName := range je.RuntimePackages {
-		namespaces[pkgName] = struct{}{}
+// getJavaFuncInterfaceMethod returns the method name to call on a Java functional interface
+// based on the Go function signature (number of params, has return value).
+func getJavaFuncInterfaceMethod(sig *types.Signature) string {
+	numParams := sig.Params().Len()
+	hasReturn := sig.Results().Len() > 0
+	if !hasReturn {
+		if numParams == 0 {
+			return "run"
+		}
+		return "accept"
 	}
+	if numParams == 0 {
+		return "get"
+	}
+	return "apply"
+}
 
-	// Sanitize output name for Java (replace hyphens with underscores, strip .java extension)
-	je.OutputName = sanitizeJavaIdentifier(je.OutputName)
-	// Rebuild the output path with sanitized name
-	je.Output = filepath.Join(je.OutputDir, je.OutputName+".java")
+// getJavaFuncInterfaceType returns the Java functional interface type string for a Go function signature.
+// e.g., func(int, string) bool -> BiFunction<Integer, String, Boolean>
+func (e *JavaEmitter) getJavaFuncInterfaceType(sig *types.Signature) string {
+	numParams := sig.Params().Len()
+	hasReturn := sig.Results().Len() > 0
 
-	outputFile := je.Output
-	je.shouldGenerate = true
+	if !hasReturn {
+		if numParams == 0 {
+			return "Runnable"
+		}
+		if numParams == 1 {
+			p := toBoxedType(e.qualifiedJavaTypeName(sig.Params().At(0).Type()))
+			return fmt.Sprintf("Consumer<%s>", p)
+		}
+		if numParams == 2 {
+			p1 := toBoxedType(e.qualifiedJavaTypeName(sig.Params().At(0).Type()))
+			p2 := toBoxedType(e.qualifiedJavaTypeName(sig.Params().At(1).Type()))
+			return fmt.Sprintf("BiConsumer<%s, %s>", p1, p2)
+		}
+		return "Object"
+	}
+	retType := toBoxedType(e.qualifiedJavaTypeName(sig.Results().At(0).Type()))
+	if numParams == 0 {
+		return fmt.Sprintf("Supplier<%s>", retType)
+	}
+	if numParams == 1 {
+		p := toBoxedType(e.qualifiedJavaTypeName(sig.Params().At(0).Type()))
+		return fmt.Sprintf("Function<%s, %s>", p, retType)
+	}
+	if numParams == 2 {
+		p1 := toBoxedType(e.qualifiedJavaTypeName(sig.Params().At(0).Type()))
+		p2 := toBoxedType(e.qualifiedJavaTypeName(sig.Params().At(1).Type()))
+		return fmt.Sprintf("BiFunction<%s, %s, %s>", p1, p2, retType)
+	}
+	return "Object"
+}
+
+// splitJavaArgs splits a Java argument string on ", " but respects parentheses, brackets, and angle brackets.
+func splitJavaArgs(argsStr string) []string {
+	if argsStr == "" {
+		return nil
+	}
+	var args []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(argsStr); i++ {
+		ch := argsStr[i]
+		if ch == '(' || ch == '[' || ch == '<' || ch == '{' {
+			depth++
+		} else if ch == ')' || ch == ']' || ch == '>' || ch == '}' {
+			depth--
+		} else if ch == ',' && depth == 0 {
+			args = append(args, strings.TrimSpace(argsStr[start:i]))
+			start = i + 1
+		}
+	}
+	args = append(args, strings.TrimSpace(argsStr[start:]))
+	return args
+}
+
+// ============================================================
+// Program / Package
+// ============================================================
+
+// writeJavaBoilerplate writes the standard Java imports, GoanyPanic, SliceBuiltins, and Formatter
+// classes to the given file. Used for both the main file and when renaming due to naming conflicts.
+func writeJavaBoilerplate(f *os.File) {
+	f.WriteString("import java.util.*;\nimport java.util.function.*;\n\n")
+	f.WriteString("// GoAny panic runtime\n")
+	f.WriteString(goanyrt.PanicJavaSource)
+	f.WriteString("\n")
+	writeJavaHelperClasses(f)
+}
+
+func (e *JavaEmitter) PreVisitProgram(indent int) {
 	var err error
-	je.file, err = os.Create(outputFile)
-	je.SetFile(je.file)
+
+	// Sanitize output name for Java
+	e.OutputName = sanitizeJavaIdentifier(e.OutputName)
+	// Rebuild the output path with sanitized name
+	e.Output = filepath.Join(e.OutputDir, e.OutputName+".java")
+
+	e.file, err = os.Create(e.Output)
 	if err != nil {
 		fmt.Println("Error opening file:", err)
 		return
 	}
 
-	// Write imports and panic runtime
-	je.writeJavaBoilerplate()
+	e.fs = NewFragmentStack(e.GetGoFIR())
+	e.typeAliasMap = make(map[string]string)
+	e.aliases = make(map[string]Alias)
+	e.structKeyTypes = make(map[string]string)
 
-	// Builtin helper classes
-	builtin := `class SliceBuiltins {
+	// Add runtime packages to namespaces for proper type prefixing
+	for pkgName := range e.RuntimePackages {
+		namespaces[pkgName] = struct{}{}
+	}
+
+	// Write Java header imports and runtime
+	e.file.WriteString("import java.util.*;\nimport java.util.function.*;\n\n")
+	e.file.WriteString("// GoAny panic runtime\n")
+	e.file.WriteString(goanyrt.PanicJavaSource)
+	e.file.WriteString("\n")
+
+	// Write SliceBuiltins and Formatter helper classes
+	writeJavaHelperClasses(e.file)
+}
+
+func writeJavaHelperClasses(f *os.File) {
+	f.WriteString(`class SliceBuiltins {
     public static <T> ArrayList<T> Append(ArrayList<T> list, T element) {
         if (list == null) list = new ArrayList<T>();
         list.add(element);
@@ -1746,62 +904,52 @@ class Formatter {
     }
 }
 
-`
-	str := je.emitAsString(builtin, indent)
-	je.emitToPackage(str)
-
-	je.insideForPostCond = false
+`)
 }
 
-func (je *JavaEmitter) PostVisitProgram(indent int) {
-	// Close the main class
-	if je.apiClassOpened {
-		je.emitToPackage("}\n")
+func (e *JavaEmitter) PostVisitProgram(indent int) {
+	// Reduce everything from program marker
+	tokens := e.fs.Reduce(string(PreVisitProgram))
+	// Write all accumulated code
+	for _, t := range tokens {
+		e.file.WriteString(t.Content)
 	}
-
-	emitTokensToFile(je.file, je.gir.tokenSlice)
-	je.file.Close()
+	e.file.Close()
 
 	// Replace placeholder struct key functions with working implementations
-	if len(je.structKeyTypes) > 0 {
-		je.replaceStructKeyFunctions()
+	if len(e.structKeyTypes) > 0 {
+		replaceStructKeyFunctionsJ(e.Output)
 	}
 
 	// Generate build files if link-runtime is enabled
-	if je.LinkRuntime != "" {
-		if err := je.GeneratePomXml(); err != nil {
+	if e.LinkRuntime != "" {
+		if err := GeneratePomXmlJ(e.OutputDir, e.OutputName, e.LinkRuntime); err != nil {
 			log.Printf("Warning: %v", err)
 		}
-		if err := je.CopyRuntimePackages(); err != nil {
+		if err := CopyRuntimePackagesJ(e.OutputDir, e.OutputName, e.LinkRuntime, e.RuntimePackages); err != nil {
 			log.Printf("Warning: %v", err)
 		}
 	}
 }
 
-// replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys
-func (je *JavaEmitter) replaceStructKeyFunctions() {
-	outputPath := je.Output
+// replaceStructKeyFunctionsJ replaces placeholder hash/equality functions for struct keys.
+func replaceStructKeyFunctionsJ(outputPath string) {
 	content, err := os.ReadFile(outputPath)
 	if err != nil {
 		log.Printf("Warning: could not read file for struct key replacement: %v", err)
 		return
 	}
 
-	// In Java, use Objects.hash() and Objects.equals() for struct keys
-	// Use regex to handle varying whitespace in generated code
 	newContent := string(content)
 
-	// Replace hashStructKey function - match placeholder that returns 0
 	hashPattern := regexp.MustCompile(`(?s)static\s+int\s+hashStructKey\s*\(\s*Object\s+key\s*\)\s*\{\s*return\s+0;\s*\}`)
 	newHashBody := `static int hashStructKey(Object key) {
-        // Use Object's hashCode - works for any struct since Java auto-generates hashCode based on fields
         int h = key.hashCode();
         if (h < 0) h = -h;
         return h;
     }`
 	newContent = hashPattern.ReplaceAllString(newContent, newHashBody)
 
-	// Replace structKeysEqual function - match placeholder that returns false
 	equalPattern := regexp.MustCompile(`(?s)static\s+boolean\s+structKeysEqual\s*\(\s*Object\s+a\s*,\s*Object\s+b\s*\)\s*\{\s*return\s+false;\s*\}`)
 	newEqualBody := `static boolean structKeysEqual(Object a, Object b) {
         return a.equals(b);
@@ -1813,3660 +961,20 @@ func (je *JavaEmitter) replaceStructKeyFunctions() {
 	}
 }
 
-func (je *JavaEmitter) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Analyze function body for closure-captured mutable variables
-		// This must be done before any code is emitted
-		if node.Body != nil {
-			je.analyzeClosureCapturedMutVars(node.Body)
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Clear closure analysis state after function is processed
-		je.closureCapturedMutVars = nil
-		je.closureCapturedVarType = nil
-
-		str := je.emitAsString("\n\n", 0)
-		je.emitToPackage(str)
-
-		// Pop the function parameter scope
-		if len(je.funcParamsStack) > 0 {
-			je.funcParamsStack = je.funcParamsStack[:len(je.funcParamsStack)-1]
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncDeclSignatures(indent int) {
-	je.forwardDecls = true
-}
-
-func (je *JavaEmitter) PostVisitFuncDeclSignatures(indent int) {
-	je.forwardDecls = false
-}
-
-func (je *JavaEmitter) PreVisitFuncDeclName(node *ast.Ident, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		var str string
-		if node.Name == "main" {
-			str = je.emitAsString("main", 0)
-		} else {
-			str = je.emitAsString(node.Name, 0)
-		}
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Push new scope for variable tracking
-		je.declaredVarsStack = append(je.declaredVarsStack, make(map[string]bool))
-
-		je.emitToken("{", LeftBrace, 1)
-		str := je.emitAsString("\n", 1)
-		je.emitToPackage(str)
-
-		if je.pendingRangeValueDecl {
-			valueDecl := je.emitAsString(fmt.Sprintf("var %s = %s.get(%s);\n",
-				je.pendingValueName, je.pendingCollectionExpr, je.pendingKeyName), indent+2)
-			je.emitToPackage(valueDecl)
-			// Track this variable in current scope
-			if len(je.declaredVarsStack) > 0 {
-				je.declaredVarsStack[len(je.declaredVarsStack)-1][je.pendingValueName] = true
-			}
-			je.pendingRangeValueDecl = false
-			je.pendingValueName = ""
-			je.pendingCollectionExpr = ""
-			je.pendingKeyName = ""
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("}", indent)
-		je.emitToPackage(str)
-		// Pop scope for variable tracking
-		if len(je.declaredVarsStack) > 0 {
-			je.declaredVarsStack = je.declaredVarsStack[:len(je.declaredVarsStack)-1]
-		}
-		// Note: Don't reset isArray here - it's reset in PostVisitCompositeLitElts
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Push a new function parameter scope for lambda shadowing detection
-		je.funcParamsStack = append(je.funcParamsStack, make(map[string]bool))
-
-		je.emitToken("(", LeftParen, 0)
-		// Add String[] args for main function
-		if node.Name.Name == "main" {
-			je.emitToPackage("String[] args")
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.emitToken(")", RightParen, 0)
-	})
-}
-
-// isTypeConversion tracks if current call expression is a type conversion
-var javaIsTypeConversion bool
-var javaSuppressTypeCastIdent bool
-
-func (je *JavaEmitter) PreVisitIdent(e *ast.Ident, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if !je.shouldGenerate {
-			return
-		}
-		// Suppress type emission for closure-captured variables (we use Object[] instead)
-		if je.suppressClosureTypeEmit {
-			return
-		}
-		if je.suppressTypeAliasEmit {
-			return
-		}
-		if je.suppressRangeEmit {
-			return
-		}
-		if javaSuppressTypeCastIdent {
-			return
-		}
-		if je.suppressTypeAliasSelectorX {
-			// When suppressTypeAliasSelectorX is set, we already emitted the resolved type
-			// in PreVisitDeclStmtValueSpecType, so suppress all identifiers in this context
-			return
-		}
-		if je.captureRangeExpr {
-			je.rangeCollectionExpr += e.Name
-			return
-		}
-		// Suppress package identifier (e.g., fmt, types) - we emit just the type/function name
-		if je.suppressFmtPackage {
-			return
-		}
-		// Suppress struct field key in composite literal (Java uses positional args)
-		if je.suppressKeyValueKey {
-			return
-		}
-		// Suppress identifier when we're in a function variable call (already emitted with .accept etc.)
-		if je.isFuncVarCall {
-			return
-		}
-		// Suppress individual return types when function has multiple return values
-		if je.suppressMultiReturnTypes {
-			return
-		}
-		// Suppress type identifiers in make([]Type, size) - handled separately
-		if je.isSliceMakeCall && je.inTypeContext {
-			return
-		}
-		// Suppress type identifiers in lambda parameters (Java uses type inference)
-		if je.inLambdaParams && je.inTypeContext {
-			return
-		}
-		// Suppress map key/value type identifiers during make(map[K]V) call
-		// But don't suppress "make" itself as it needs to be replaced
-		if je.isMapMakeCall && je.suppressMapEmit && e.Name != "make" {
-			return
-		}
-		// Also suppress when inside map type declarations (inTypeContext and suppressMapEmit)
-		// But don't suppress composite literal types - we need the type name for "new Type(...)"
-		if je.inTypeContext && je.suppressMapEmit && !je.inCompositeLitType {
-			return
-		}
-		// Suppress LHS identifiers during map assignment (handled in PreVisitAssignStmtRhs)
-		if je.suppressMapAssignLhs {
-			return
-		}
-		// Suppress map variable during map index read (handled in PostVisitIndexExprX)
-		if je.suppressMapIndexX {
-			return
-		}
-		// Suppress all identifiers during map comma-ok (handled in PostVisitAssignStmt)
-		if je.isMapCommaOk {
-			return
-		}
-		// Suppress all identifiers during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Suppress all identifiers during type assert comma-ok (handled in PostVisitAssignStmt)
-		if je.isTypeAssertCommaOk {
-			return
-		}
-		// Suppress for unsupported indexed function call (handled in PostVisitCallExpr)
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-
-		var str string
-		name := e.Name
-
-		// Check if this identifier is a function being passed as an argument (not being called)
-		// In Java, we need to emit method references (ClassName::methodName) instead of just the name
-		// Only convert if: we're inside call arguments AND not in the Fun part of a nested call
-		if je.inCallExprArgs && je.inCallExprFunDepth == 0 && je.pkg != nil && je.pkg.TypesInfo != nil {
-			if obj := je.pkg.TypesInfo.Uses[e]; obj != nil {
-				if sig, isFunc := obj.Type().(*types.Signature); isFunc {
-					// This is a function reference
-					className := je.OutputName
-					// Sanitize class name (replace hyphens with underscores)
-					className = strings.ReplaceAll(className, "-", "_")
-
-					// Check if function returns multiple values - need to wrap in lambda
-					// that converts result struct to Object[] for BiFunction compatibility
-					if sig.Results() != nil && sig.Results().Len() > 1 {
-						// Generate lambda that wraps multi-return function
-						// (arg0, arg1, ...) -> { var r = ClassName.funcName(arg0, arg1, ...); return new Object[]{r._0, r._1, ...}; }
-						numParams := sig.Params().Len()
-						paramNames := make([]string, numParams)
-						for i := 0; i < numParams; i++ {
-							paramNames[i] = fmt.Sprintf("_arg%d", i)
-						}
-						numResults := sig.Results().Len()
-						resultFields := make([]string, numResults)
-						for i := 0; i < numResults; i++ {
-							resultFields[i] = fmt.Sprintf("_r._%d", i)
-						}
-						lambda := fmt.Sprintf("(%s) -> { var _r = %s.%s(%s); return new Object[]{%s}; }",
-							strings.Join(paramNames, ", "),
-							className, name,
-							strings.Join(paramNames, ", "),
-							strings.Join(resultFields, ", "))
-						str = je.emitAsString(lambda, indent)
-					} else {
-						// Single return value - use method reference
-						str = je.emitAsString(className+"::"+name, indent)
-					}
-					je.emitToken(str, Identifier, 0)
-					return
-				}
-			}
-		}
-
-		// Map operation identifier replacements
-		if je.isMapMakeCall && name == "make" {
-			name = "newHashMap"
-		} else if je.isSliceMakeCall && name == "make" {
-			name = "" // Suppress "make" - we emit SliceBuiltins.MakeSlice in PreVisitCallExprArg
-		} else if je.isDeleteCall && name == "delete" {
-			name = je.deleteMapVarName + " = hashMapDelete"
-		} else if je.isMapLenCall && name == "len" {
-			name = "hashMapLen"
-		} else {
-			name = je.lowerToBuiltins(name)
-		}
-
-		if name == "nil" {
-			str = je.emitAsString("null", indent)
-		} else {
-			if n, ok := javaTypesMap[name]; ok {
-				// Use boxed types when inside ArrayList<...>
-				if je.inArrayTypeContext {
-					n = toBoxedType(n)
-				}
-				str = je.emitAsString(n, indent)
-			} else if underlyingType, ok := je.typeAliasMap[name]; ok {
-				// Use boxed types when inside ArrayList<...>
-				if je.inArrayTypeContext {
-					underlyingType = toBoxedType(underlyingType)
-				}
-				str = je.emitAsString(underlyingType, indent)
-			} else {
-				// Check if this identifier is a type from an outer class package
-				// If so, prefix with the package name (but not if we're already in a package-qualified expression)
-				prefixedName := name
-				if je.inTypeContext && !je.inPackageQualifiedExpr && je.pkg != nil && je.pkg.TypesInfo != nil {
-					if obj := je.pkg.TypesInfo.Uses[e]; obj != nil {
-						if typeName, isTypeName := obj.(*types.TypeName); isTypeName {
-							if pkg := typeName.Pkg(); pkg != nil {
-								if isJavaOuterClassPackage(pkg.Name()) {
-									prefixedName = pkg.Name() + "." + name
-								}
-							}
-						}
-					}
-				}
-				str = je.emitAsString(prefixedName, indent)
-			}
-		}
-
-		// Add cast and [0] suffix for closure-captured mutable variables (not during declaration, not in type context)
-		isCapturedAccess := false
-		capturedType := ""
-		if !je.inDeclName && !je.inTypeContext && je.closureCapturedMutVars != nil {
-			if je.closureCapturedMutVars[e.Name] {
-				isCapturedAccess = true
-				capturedType = je.closureCapturedVarType[e.Name]
-				// Emit cast prefix for read access and field access (even on LHS for field access)
-				// Direct LHS assignment: tokens[0] = ... (no cast needed)
-				// Field access on LHS: ((Type)ctx[0]).Field = ... (cast needed for field access)
-				// Read access: ((ArrayList<Token>)tokens[0]) (cast needed)
-				// Slice index assignment on LHS: ((ArrayList<T>)arr[0]).set(i, v) (cast needed for .set() call)
-				needsCast := !je.inAssignLhs || je.inSelectorX || je.isSliceIndexAssign
-				if capturedType != "" && needsCast {
-					je.emitToken("(("+capturedType+")", LeftParen, 0)
-				}
-			}
-		}
-
-		je.emitToken(str, Identifier, 0)
-
-		if isCapturedAccess {
-			je.emitToken("[0]", LeftBracket, 0)
-			// Emit cast suffix for read access and field access (even on LHS for field access)
-			// Slice index assignment on LHS: ((ArrayList<T>)arr[0]).set(i, v) (cast needed for .set() call)
-			needsCast := !je.inAssignLhs || je.inSelectorX || je.isSliceIndexAssign
-			if capturedType != "" && needsCast {
-				je.emitToken(")", RightParen, 0)
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitCallExpr(node *ast.CallExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Check for append call with struct argument that's a variable reference
-		// (not a composite literal or constructor call)
-		if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "append" && len(node.Args) >= 2 {
-			je.isAppendCall = true
-			je.appendStructType = ""
-			// Only apply copy constructor for variable references (Ident), not for
-			// composite literals or other expressions that already create new structs
-			if _, isIdent := node.Args[1].(*ast.Ident); isIdent {
-				// Check if the second argument is a struct type (needs copy constructor)
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
-					tv := je.pkg.TypesInfo.Types[node.Args[1]]
-					if tv.Type != nil {
-						if _, isStruct := tv.Type.Underlying().(*types.Struct); isStruct {
-							je.appendStructType = getJavaTypeName(tv.Type)
-						}
-					}
-				}
-			}
-		}
-		// Map operations
-		if ident, ok := node.Fun.(*ast.Ident); ok {
-			if ident.Name == "make" && len(node.Args) >= 1 {
-				if mapType, ok := node.Args[0].(*ast.MapType); ok {
-					je.isMapMakeCall = true
-					je.mapMakeKeyType = je.getMapKeyTypeConst(mapType)
-					je.suppressMapEmit = true // Suppress map type key/value emission
-					javaIsTypeConversion = false
-					return
-				}
-				if _, ok := node.Args[0].(*ast.ArrayType); ok && len(node.Args) >= 2 {
-					je.isSliceMakeCall = true
-					je.sliceMakeElemType = "Object"
-					if je.pkg != nil && je.pkg.TypesInfo != nil {
-						tv := je.pkg.TypesInfo.Types[node.Args[0]]
-						if tv.Type != nil {
-							if sliceType, ok := tv.Type.Underlying().(*types.Slice); ok {
-								je.sliceMakeElemType = getJavaTypeName(sliceType.Elem())
-							}
-						}
-					}
-					javaIsTypeConversion = false
-					return
-				}
-			}
-
-			if ident.Name == "delete" && len(node.Args) >= 2 {
-				je.isDeleteCall = true
-				je.deleteMapVarName = exprToString(node.Args[0])
-				je.mapKeyCastPrefix = ""
-				je.mapKeyCastSuffix = ""
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
-					tv := je.pkg.TypesInfo.Types[node.Args[0]]
-					if tv.Type != nil {
-						if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-							je.mapKeyCastPrefix, je.mapKeyCastSuffix = getJavaKeyCast(mapType.Key())
-						}
-					}
-				}
-				javaIsTypeConversion = false
-				return
-			}
-
-			if ident.Name == "len" && len(node.Args) >= 1 {
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
-					tv := je.pkg.TypesInfo.Types[node.Args[0]]
-					if tv.Type != nil {
-						if _, ok := tv.Type.Underlying().(*types.Map); ok {
-							je.isMapLenCall = true
-							javaIsTypeConversion = false
-							return
-						}
-					}
-				}
-			}
-		}
-
-		// Check if calling a function variable (functional interface)
-		// e.g., f(10, 20) where f is a BiConsumer -> f.accept(10, 20)
-		// Only applies to variables, not function declarations
-		if ident, ok := node.Fun.(*ast.Ident); ok {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil {
-					// Check if this is a variable (not a function declaration)
-					if _, isVar := obj.(*types.Var); isVar {
-						if sig, isFunc := obj.Type().Underlying().(*types.Signature); isFunc {
-							// This is a function variable call - transform to functional interface method
-							methodName := je.getFunctionalInterfaceMethod(sig)
-							if methodName != "" {
-								je.emitToPackage(fmt.Sprintf("%s.%s(", ident.Name, methodName))
-								je.isFuncVarCall = true
-								return
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Check if calling a struct field that is a function type (BiFunction)
-		// e.g., visitor.PreVisitFrom(state, expr) -> visitor.PreVisitFrom.apply(state, expr)
-		if selExpr, ok := node.Fun.(*ast.SelectorExpr); ok {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				// Get the type of the selection
-				if sel := je.pkg.TypesInfo.Selections[selExpr]; sel != nil {
-					// Check if the field type is a function signature
-					if sig, isFunc := sel.Type().Underlying().(*types.Signature); isFunc {
-						// This is a function field call - transform to functional interface method
-						methodName := je.getFunctionalInterfaceMethod(sig)
-						if methodName != "" {
-							// Set flag to add .apply() after selector but before args
-							je.funcFieldCallMethod = methodName
-						}
-					}
-				}
-			}
-		}
-
-		// Check for unsupported indexed function call: x[0](args)
-		// Java doesn't support calling functions from slice index directly
-		if indexExpr, ok := node.Fun.(*ast.IndexExpr); ok {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				tv := je.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if sliceType, ok := tv.Type.Underlying().(*types.Slice); ok {
-						if _, isFunc := sliceType.Elem().Underlying().(*types.Signature); isFunc {
-							je.isUnsupportedIndexedCall = true
-							je.unsupportedCallIndent = indent
-							return
-						}
-					}
-				}
-			}
-		}
-
-		// Check for type conversion
-		if ident, ok := node.Fun.(*ast.Ident); ok {
-			if _, isType := javaTypesMap[ident.Name]; isType {
-				javaIsTypeConversion = true
-				// Check if this is a byte-to-int conversion (need & 0xFF for unsigned semantics)
-				// Go's uint8/byte is unsigned, but Java's byte is signed
-				isByteToInt := false
-				targetType := ident.Name
-				if (targetType == "int" || targetType == "int32" || targetType == "int64" ||
-					targetType == "uint" || targetType == "uint32" || targetType == "uint64" ||
-					targetType == "long") && len(node.Args) == 1 {
-					if je.pkg != nil && je.pkg.TypesInfo != nil {
-						tv := je.pkg.TypesInfo.Types[node.Args[0]]
-						if tv.Type != nil {
-							argType := tv.Type.String()
-							if argType == "byte" || argType == "uint8" || argType == "int8" {
-								isByteToInt = true
-							}
-						}
-					}
-				}
-				je.byteToIntConversionStack = append(je.byteToIntConversionStack, isByteToInt)
-				return
-			}
-		}
-		// Not a type conversion - push false to maintain stack balance
-		je.byteToIntConversionStack = append(je.byteToIntConversionStack, false)
-
-		// Get parameter types for byte/short casting in arguments
-		je.callExprParamTypes = nil
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			tv := je.pkg.TypesInfo.Types[node.Fun]
-			if tv.Type != nil {
-				if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
-					params := sig.Params()
-					for i := 0; i < params.Len(); i++ {
-						je.callExprParamTypes = append(je.callExprParamTypes, getJavaTypeName(params.At(i).Type()))
-					}
-				}
-			}
-		}
-
-		javaIsTypeConversion = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitCallExprFun(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Mark that we're in the Fun part of a CallExpr (the function being called)
-		je.inCallExprFunDepth++
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Suppress for unsupported indexed function call
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		if javaIsTypeConversion {
-			if ident, ok := node.(*ast.Ident); ok {
-				typeName := ident.Name
-				if mapped, ok := javaTypesMap[typeName]; ok {
-					typeName = mapped
-				}
-				je.emitToken("(", LeftParen, 0)
-				je.emitToken(typeName, Identifier, 0)
-				je.emitToken(")", RightParen, 0)
-				javaSuppressTypeCastIdent = true
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inCallExprFunDepth--
-		javaSuppressTypeCastIdent = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitCallExprArgs(node []ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Mark that we're inside call expression arguments (for method reference detection)
-		je.inCallExprArgs = true
-		// Suppress for unsupported indexed function call
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		if je.isMultiReturnAssign {
-			return
-		}
-		if je.isMapMakeCall {
-			je.emitToken(fmt.Sprintf("(%d", je.mapMakeKeyType), LeftParen, 0)
-			return
-		}
-		if je.isSliceMakeCall {
-			return
-		}
-		// Suppress opening paren for func var call (already emitted with f.accept()
-		if je.isFuncVarCall {
-			return
-		}
-		// For struct field function calls, emit .apply( (or .accept(, etc.)
-		if je.funcFieldCallMethod != "" {
-			je.emitToPackage("." + je.funcFieldCallMethod + "(")
-			return
-		}
-		je.emitToken("(", LeftParen, 0)
-	})
-}
-
-func (je *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress for unsupported indexed function call
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		if je.isMultiReturnAssign {
-			return
-		}
-		if je.isSliceMakeCall {
-			je.emitToken(")", RightParen, 0)
-			je.isSliceMakeCall = false
-			je.sliceMakeElemType = ""
-			je.isArray = false
-			return
-		}
-		// Add & 0xFF for byte-to-int conversions to get unsigned semantics
-		if len(je.byteToIntConversionStack) > 0 {
-			isByteToInt := je.byteToIntConversionStack[len(je.byteToIntConversionStack)-1]
-			je.byteToIntConversionStack = je.byteToIntConversionStack[:len(je.byteToIntConversionStack)-1]
-			if isByteToInt {
-				je.emitToPackage(" & 0xFF")
-			}
-		}
-		je.emitToken(")", RightParen, 0)
-		// Reset functional interface call flags
-		je.isFuncVarCall = false
-		je.funcFieldCallMethod = ""
-		if je.isMapMakeCall {
-			je.suppressMapEmit = false
-		}
-		je.isMapMakeCall = false
-		if je.isDeleteCall {
-			je.mapKeyCastPrefix = ""
-			je.mapKeyCastSuffix = ""
-		}
-		je.isDeleteCall = false
-		je.deleteMapVarName = ""
-		je.isMapLenCall = false
-		je.inCallExprArgs = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitBasicLit(e *ast.BasicLit, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress literals during map assignment LHS (handled in PreVisitAssignStmtRhs)
-		if je.suppressMapAssignLhs {
-			return
-		}
-		// Suppress literals during map comma-ok (handled in PostVisitAssignStmt)
-		if je.isMapCommaOk {
-			return
-		}
-		// Suppress literals during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Suppress literals during type assert comma-ok (handled in PostVisitAssignStmt)
-		if je.isTypeAssertCommaOk {
-			return
-		}
-		// Suppress for unsupported indexed function call (handled in PostVisitCallExpr)
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		var str string
-		if e.Kind == token.STRING {
-			value := e.Value
-			if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
-				value = value[1 : len(value)-1]
-				str = je.emitAsString(fmt.Sprintf("\"%s\"", value), 0)
-			} else if len(value) >= 2 && value[0] == '`' && value[len(value)-1] == '`' {
-				// Raw string literal - Java doesn't have verbatim strings, escape as needed
-				value = value[1 : len(value)-1]
-				// Escape backslashes, quotes, and newlines for Java
-				value = strings.ReplaceAll(value, "\\", "\\\\")
-				value = strings.ReplaceAll(value, "\"", "\\\"")
-				value = strings.ReplaceAll(value, "\n", "\\n")
-				value = strings.ReplaceAll(value, "\r", "\\r")
-				value = strings.ReplaceAll(value, "\t", "\\t")
-				str = je.emitAsString(fmt.Sprintf("\"%s\"", value), 0)
-			} else {
-				str = je.emitAsString(fmt.Sprintf("\"%s\"", value), 0)
-			}
-			je.emitToken(str, StringLiteral, 0)
-		} else if e.Kind == token.CHAR {
-			str = je.emitAsString(e.Value, 0)
-			je.emitToken(str, NumberLiteral, 0)
-		} else if e.Kind == token.INT {
-			// Check if integer literal exceeds Java int max (2147483647)
-			value := e.Value
-			// Parse the integer value to check if it needs L suffix
-			if len(value) > 0 {
-				// Remove any underscores (Go allows _ in numeric literals)
-				cleanValue := strings.ReplaceAll(value, "_", "")
-				// Check if it's a large number (simple heuristic: > 10 digits or compare)
-				if len(cleanValue) >= 10 {
-					// Parse as int64 to check
-					if n, err := strconv.ParseInt(cleanValue, 0, 64); err == nil {
-						if n > 2147483647 || n < -2147483648 {
-							value = value + "L"
-						}
-					}
-				}
-			}
-			str = je.emitAsString(value, 0)
-			je.emitToken(str, NumberLiteral, 0)
-		} else {
-			str = je.emitAsString(e.Value, 0)
-			je.emitToken(str, NumberLiteral, 0)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.isArray = false
-		je.inTypeContext = true
-		// Track if there's an explicit initialization value
-		je.hasDeclValue = index < len(node.Values)
-		// Check if this variable is a closure-captured mutable variable
-		je.isClosureCapturedDecl = false
-		je.closureCapturedDeclName = ""
-		je.suppressClosureTypeEmit = false
-		if index < len(node.Names) && je.closureCapturedMutVars != nil {
-			varName := node.Names[index].Name
-			if je.closureCapturedMutVars[varName] {
-				je.isClosureCapturedDecl = true
-				je.closureCapturedDeclName = varName
-				// For closure-captured variables, emit Object[] instead of the actual type
-				// (Java doesn't allow generic array creation like ArrayList<T>[])
-				je.emitToPackage("Object[]")
-				je.suppressClosureTypeEmit = true
-				je.inTypeContext = false // Prevent normal type emission
-			}
-		}
-		if len(node.Values) == 0 && node.Type != nil {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				if typeAndValue, ok := je.pkg.TypesInfo.Types[node.Type]; ok {
-					if _, isMap := typeAndValue.Type.Underlying().(*types.Map); isMap {
-						if mapType, ok := node.Type.(*ast.MapType); ok {
-							je.pendingMapInit = true
-							je.pendingMapKeyType = je.getMapKeyTypeConst(mapType)
-						}
-					}
-					// Check for struct types that need initialization
-					if _, isStruct := typeAndValue.Type.Underlying().(*types.Struct); isStruct {
-						// Use getJavaTypeName which handles package prefixing
-						je.pendingStructInit = true
-						je.pendingStructTypeName = getJavaTypeName(typeAndValue.Type)
-					}
-					// Check for slice types - initialize to empty ArrayList
-					if sliceType, isSlice := typeAndValue.Type.Underlying().(*types.Slice); isSlice {
-						je.pendingSliceInit = true
-						je.pendingSliceElemType = toBoxedType(getJavaTypeName(sliceType.Elem()))
-					}
-					// Check for primitive types - initialize to default value
-					if basic, isBasic := typeAndValue.Type.Underlying().(*types.Basic); isBasic {
-						switch basic.Kind() {
-						case types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
-							types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64:
-							je.pendingPrimitiveInit = true
-							je.pendingPrimitiveDefault = "0"
-						case types.Float32, types.Float64:
-							je.pendingPrimitiveInit = true
-							je.pendingPrimitiveDefault = "0.0"
-						case types.Bool:
-							je.pendingPrimitiveInit = true
-							je.pendingPrimitiveDefault = "false"
-						case types.String:
-							je.pendingPrimitiveInit = true
-							je.pendingPrimitiveDefault = "\"\""
-						}
-					}
-					// Check if it's a type alias from another package - resolve to underlying type
-					if _, ok := node.Type.(*ast.SelectorExpr); ok {
-						underlyingType := typeAndValue.Type.Underlying()
-						if basic, ok := underlyingType.(*types.Basic); ok {
-							// Emit the underlying basic type directly
-							javaType := getJavaTypeName(basic)
-							je.emitToPackage(javaType)
-							je.suppressTypeAliasSelectorX = true
-							je.inTypeContext = false // Skip normal type emission
-						} else if _, ok := underlyingType.(*types.Slice); ok {
-							// Slice type alias - emit ArrayList<elemType> directly
-							javaType := getJavaTypeName(typeAndValue.Type)
-							je.emitToPackage(javaType)
-							je.suppressTypeAliasSelectorX = true
-							je.inTypeContext = false // Skip normal type emission
-						} else if _, ok := underlyingType.(*types.Map); ok {
-							// Map type alias - emit HashMap<K,V> directly
-							javaType := getJavaTypeName(typeAndValue.Type)
-							je.emitToPackage(javaType)
-							je.suppressTypeAliasSelectorX = true
-							je.inTypeContext = false // Skip normal type emission
-						}
-					}
-				}
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inTypeContext = false
-		je.suppressTypeAliasSelectorX = false
-		je.suppressClosureTypeEmit = false // Reset closure type suppression
-		je.isArray = false                 // Reset array flag after declaration type
-		// For closure-captured mutable variables, we already emitted Object[] in PreVisit
-		// (skipped normal type emission), so nothing to do here
-	})
-}
-
-func (je *JavaEmitter) PreVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Just emit space before name - the name itself is emitted by PreVisitIdent
-		str := je.emitAsString(" ", 0)
-		je.emitToPackage(str)
-		// Set flag to indicate we're in a declaration name (don't add [0] to the name)
-		je.inDeclName = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inDeclName = false // Reset declaration name context
-		if je.pendingMapInit {
-			if je.isClosureCapturedDecl {
-				je.emitToPackage(fmt.Sprintf(" = {newHashMap(%d)}", je.pendingMapKeyType))
-			} else {
-				je.emitToPackage(fmt.Sprintf(" = newHashMap(%d)", je.pendingMapKeyType))
-			}
-			je.pendingMapInit = false
-			je.pendingMapKeyType = 0
-		}
-		if je.pendingStructInit {
-			if je.isClosureCapturedDecl {
-				je.emitToPackage(fmt.Sprintf(" = {new %s()}", je.pendingStructTypeName))
-			} else {
-				je.emitToPackage(fmt.Sprintf(" = new %s()", je.pendingStructTypeName))
-			}
-			je.pendingStructInit = false
-			je.pendingStructTypeName = ""
-		}
-		if je.pendingSliceInit {
-			if je.isClosureCapturedDecl {
-				je.emitToPackage(fmt.Sprintf(" = {new ArrayList<%s>()}", je.pendingSliceElemType))
-			} else {
-				je.emitToPackage(fmt.Sprintf(" = new ArrayList<%s>()", je.pendingSliceElemType))
-			}
-			je.pendingSliceInit = false
-			je.pendingSliceElemType = ""
-		}
-		if je.pendingPrimitiveInit {
-			if je.isClosureCapturedDecl {
-				je.emitToPackage(fmt.Sprintf(" = {%s}", je.pendingPrimitiveDefault))
-			} else {
-				je.emitToPackage(fmt.Sprintf(" = %s", je.pendingPrimitiveDefault))
-			}
-			je.pendingPrimitiveInit = false
-			je.pendingPrimitiveDefault = ""
-		}
-		// Only emit semicolon if there's no value coming
-		if !je.hasDeclValue {
-			je.emitToPackage(";\n")
-			// Reset closure-captured decl flag
-			je.isClosureCapturedDecl = false
-			je.closureCapturedDeclName = ""
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isClosureCapturedDecl {
-			je.emitToPackage(" = {")
-		} else {
-			je.emitToPackage(" = ")
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isClosureCapturedDecl {
-			je.emitToPackage("};\n")
-			je.isClosureCapturedDecl = false
-			je.closureCapturedDeclName = ""
-		} else {
-			je.emitToPackage(";\n")
-		}
-		je.hasDeclValue = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitGenStructFieldType(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("public ", indent+4)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(" ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.emitToPackage(";\n")
-	})
-}
-
-func (je *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.pkg = pkg
-		je.currentPkgName = pkg.Name
-
-		// For non-main packages, create a separate file
-		// Exception: "hmap" is a utility package used by generated code, so keep it inline
-		if pkg.Name != "main" && pkg.Name != "hmap" {
-			// Check for naming conflict with main output file
-			if pkg.Name == je.OutputName {
-				// Naming conflict - rename main output to avoid collision
-				// Close and remove the current main file, create a new one with "_main" suffix
-				oldOutput := je.Output
-				je.file.Close()
-				os.Remove(oldOutput) // Remove the old file
-
-				je.OutputName = je.OutputName + "_main"
-				je.Output = filepath.Join(je.OutputDir, je.OutputName+".java")
-				var err error
-				je.file, err = os.Create(je.Output)
-				if err != nil {
-					fmt.Println("Error creating renamed main file:", err)
-					return
-				}
-				je.SetFile(je.file)
-				// Re-write imports and helpers to the new main file
-				je.writeJavaBoilerplate()
-			}
-
-			// Create separate file for this package
-			pkgFileName := filepath.Join(je.OutputDir, pkg.Name+".java")
-			pkgFile, err := os.Create(pkgFileName)
-			if err != nil {
-				fmt.Println("Error creating package file:", err)
-				return
-			}
-			je.packageFiles[pkg.Name] = pkgFile
-
-			// Write imports and class header to package file
-			imports := "import java.util.*;\nimport java.util.function.*;\n\n"
-			pkgFile.WriteString(imports)
-			pkgFile.WriteString(fmt.Sprintf("public class %s {\n\n", pkg.Name))
-
-			// Package is already in namespaces (added by base_pass.go), so type prefixing works
-			return
-		}
-
-		// For main package, use the main output file
-		// Only create class if not already opened
-		if je.apiClassOpened {
-			return
-		}
-		var className string
-		if je.OutputName != "" {
-			// Use the output file name as the class name, sanitized for Java
-			className = sanitizeJavaIdentifier(je.OutputName)
-		} else {
-			className = "Main"
-		}
-		str := je.emitAsString(fmt.Sprintf("public class %s {\n\n", className), indent)
-		je.emitToPackage(str)
-		_ = je.gir.emitToFileBufferString("", pkg.Name)
-		je.currentPackage = className
-		je.apiClassOpened = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// For non-main packages, close the class and file
-		if pkg.Name != "main" {
-			if pkgFile, exists := je.packageFiles[pkg.Name]; exists {
-				pkgFile.WriteString("}\n") // Close class
-				pkgFile.Close()
-
-				// Format the package file
-				pkgFileName := filepath.Join(je.OutputDir, pkg.Name+".java")
-				if err := FormatFile(pkgFileName, "--style=webkit"); err != nil {
-					log.Printf("Warning: failed to format %s: %v", pkgFileName, err)
-				}
-			}
-			return
-		}
-		// Don't close the main class here - it will be closed in PostVisitProgram
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.isArray = false
-	})
-}
-
-func (je *JavaEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("\n", indent)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitGenStructInfo(node GenTypeInfo, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(fmt.Sprintf("public static class %s {\n", node.Name), indent+2)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Generate constructor for the struct
-		if node.Struct != nil && node.Struct.Fields != nil {
-			var fields []struct {
-				name     string
-				javaType string
-			}
-
-			// Collect field names and types
-			for _, field := range node.Struct.Fields.List {
-				// Get Java type for the field
-				javaType := "Object"
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
-					tv := je.pkg.TypesInfo.Types[field.Type]
-					if tv.Type != nil {
-						javaType = getJavaTypeName(tv.Type)
-					}
-				} else {
-					// Fallback: try to get type from AST
-					javaType = je.getJavaTypeFromExpr(field.Type)
-				}
-
-				// Handle multiple field names (e.g., `a, b int`)
-				for _, name := range field.Names {
-					fields = append(fields, struct {
-						name     string
-						javaType string
-					}{name: name.Name, javaType: javaType})
-				}
-			}
-
-			// Generate default (no-arg) constructor that initializes fields to defaults
-			// Use getJavaDefaultValueForStruct to initialize nested structs (Go value semantics)
-			defaultConstructor := fmt.Sprintf("        public %s() {\n", node.Name)
-			for _, f := range fields {
-				defaultConstructor += fmt.Sprintf("            this.%s = %s;\n", f.name, getJavaDefaultValueForStruct(f.javaType))
-			}
-			defaultConstructor += "        }\n"
-			je.emitToPackage(defaultConstructor)
-
-			// Generate all-args constructor
-			constructorCode := fmt.Sprintf("        public %s(", node.Name)
-			for i, f := range fields {
-				if i > 0 {
-					constructorCode += ", "
-				}
-				constructorCode += fmt.Sprintf("%s %s", f.javaType, f.name)
-			}
-			constructorCode += ") {\n"
-			for _, f := range fields {
-				// For struct types, convert null to new instance (Go value semantics)
-				if !isJavaPrimitiveType(f.javaType) &&
-					!strings.HasPrefix(f.javaType, "ArrayList<") &&
-					!strings.HasPrefix(f.javaType, "HashMap<") &&
-					!isJavaFunctionalInterface(f.javaType) &&
-					!isJavaBuiltinReferenceType(f.javaType) {
-					constructorCode += fmt.Sprintf("            this.%s = %s != null ? %s : new %s();\n", f.name, f.name, f.name, f.javaType)
-				} else {
-					constructorCode += fmt.Sprintf("            this.%s = %s;\n", f.name, f.name)
-				}
-			}
-			constructorCode += "        }\n"
-			je.emitToPackage(constructorCode)
-
-			// Generate copy constructor for value semantics when appending to slices
-			copyConstructor := fmt.Sprintf("        public %s(%s other) {\n", node.Name, node.Name)
-			for _, f := range fields {
-				// Deep copy ArrayList/reference types, shallow copy primitives
-				if strings.HasPrefix(f.javaType, "ArrayList<") {
-					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new ArrayList<>(other.%s) : null;\n", f.name, f.name, f.name)
-				} else if strings.HasPrefix(f.javaType, "HashMap<") {
-					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new HashMap<>(other.%s) : null;\n", f.name, f.name, f.name)
-				} else if isJavaPrimitiveType(f.javaType) {
-					copyConstructor += fmt.Sprintf("            this.%s = other.%s;\n", f.name, f.name)
-				} else if isJavaFunctionalInterface(f.javaType) || isJavaBuiltinReferenceType(f.javaType) {
-					// Functional interfaces (lambdas) and built-in reference types can be copied by reference
-					copyConstructor += fmt.Sprintf("            this.%s = other.%s;\n", f.name, f.name)
-				} else {
-					// For other reference types (structs), use copy constructor if available
-					copyConstructor += fmt.Sprintf("            this.%s = other.%s != null ? new %s(other.%s) : null;\n", f.name, f.name, f.javaType, f.name)
-				}
-			}
-			copyConstructor += "        }\n"
-			je.emitToPackage(copyConstructor)
-
-			// Generate hashCode() method for struct map key support
-			hashCode := fmt.Sprintf("        @Override\n        public int hashCode() {\n            return java.util.Objects.hash(")
-			for i, f := range fields {
-				if i > 0 {
-					hashCode += ", "
-				}
-				hashCode += fmt.Sprintf("this.%s", f.name)
-			}
-			hashCode += ");\n        }\n"
-			je.emitToPackage(hashCode)
-
-			// Generate equals() method for struct map key support
-			equals := fmt.Sprintf("        @Override\n        public boolean equals(Object obj) {\n")
-			equals += fmt.Sprintf("            if (this == obj) return true;\n")
-			equals += fmt.Sprintf("            if (obj == null || getClass() != obj.getClass()) return false;\n")
-			equals += fmt.Sprintf("            %s other = (%s) obj;\n", node.Name, node.Name)
-			equals += fmt.Sprintf("            return ")
-			for i, f := range fields {
-				if i > 0 {
-					equals += " && "
-				}
-				if isJavaPrimitiveType(f.javaType) {
-					equals += fmt.Sprintf("this.%s == other.%s", f.name, f.name)
-				} else {
-					equals += fmt.Sprintf("java.util.Objects.equals(this.%s, other.%s)", f.name, f.name)
-				}
-			}
-			if len(fields) == 0 {
-				equals += "true"
-			}
-			equals += ";\n        }\n"
-			je.emitToPackage(equals)
-		}
-
-		str := je.emitAsString("}\n\n", indent+2)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitArrayType(node ast.ArrayType, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.suppressTypeAliasEmit || je.suppressMapEmit || je.suppressMultiReturnTypes || je.isSliceMakeCall || je.suppressClosureTypeEmit {
-			return
-		}
-		je.inArrayTypeContext = true // Track for boxed type conversion
-		// Detect byte/short element types for literal casting
-		if ident, ok := node.Elt.(*ast.Ident); ok {
-			switch ident.Name {
-			case "int8", "byte", "uint8":
-				je.sliceLitElemCast = "(byte)"
-			case "int16", "uint16":
-				je.sliceLitElemCast = "(short)"
-			default:
-				je.sliceLitElemCast = ""
-			}
-		} else {
-			je.sliceLitElemCast = ""
-		}
-		str := je.emitAsString("ArrayList", indent)
-		je.emitToPackage(str)
-		str = je.emitAsString("<", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.suppressTypeAliasEmit || je.suppressMapEmit || je.suppressMultiReturnTypes || je.isSliceMakeCall || je.suppressClosureTypeEmit {
-			return
-		}
-		je.inArrayTypeContext = false // Clear boxed type context
-		str := je.emitAsString(">", 0)
-		je.emitToPackage(str)
-
-		if je.isSliceMakeCall {
-			return
-		}
-
-		pointerAndPosition := SearchPointerIndexReverse(PreVisitArrayType, je.gir.pointerAndIndexVec)
-		if pointerAndPosition != nil {
-			tokens, _ := ExtractTokens(pointerAndPosition.Index, je.gir.tokenSlice)
-			je.isArray = true
-			je.arrayType = strings.Join(tokens, "")
-			je.gir.pointerAndIndexVec = RemovePointerEntryReverse(je.gir.pointerAndIndexVec, PreVisitArrayType)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitMapType(node *ast.MapType, indent int) {
-	if je.isMapMakeCall {
-		return
-	}
-	// Also suppress HashMap emission when inside slice make call type argument
-	if je.isSliceMakeCall && je.inTypeContext {
-		return
-	}
-	je.executeIfNotForwardDecls(func() {
-		if je.suppressMapEmit {
-			return
-		}
-		// Use HashMap without prefix since it's defined as an inner class
-		je.emitToPackage("HashMap")
-	})
-}
-
-func (je *JavaEmitter) PostVisitMapType(node *ast.MapType, indent int) {
-}
-
-func (je *JavaEmitter) PreVisitMapKeyType(node ast.Expr, indent int) {
-	je.suppressMapEmitStack = append(je.suppressMapEmitStack, je.suppressMapEmit)
-	je.suppressMapEmit = true
-	je.inTypeContext = true // Ensure type context is set
-}
-
-func (je *JavaEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
-	je.inTypeContext = false
-	if len(je.suppressMapEmitStack) > 0 {
-		je.suppressMapEmit = je.suppressMapEmitStack[len(je.suppressMapEmitStack)-1]
-		je.suppressMapEmitStack = je.suppressMapEmitStack[:len(je.suppressMapEmitStack)-1]
-	} else {
-		je.suppressMapEmit = false
-	}
-}
-
-func (je *JavaEmitter) PreVisitMapValueType(node ast.Expr, indent int) {
-	je.suppressMapEmitStack = append(je.suppressMapEmitStack, je.suppressMapEmit)
-	je.suppressMapEmit = true
-	je.inTypeContext = true // Ensure type context is set
-}
-
-func (je *JavaEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
-	je.inTypeContext = false
-	if len(je.suppressMapEmitStack) > 0 {
-		je.suppressMapEmit = je.suppressMapEmitStack[len(je.suppressMapEmitStack)-1]
-		je.suppressMapEmitStack = je.suppressMapEmitStack[:len(je.suppressMapEmitStack)-1]
-	} else {
-		je.suppressMapEmit = false
-	}
-}
-
-func (je *JavaEmitter) PreVisitFuncType(node *ast.FuncType, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inTypeContext = true
-		// Map Go function types to Java functional interfaces
-		funcInterfaceType := je.getFunctionalInterfaceType(node)
-		str := je.emitAsString(funcInterfaceType, indent)
-		je.emitToPackage(str)
-		// Suppress all type parameter emissions (we already emitted the full type)
-		je.suppressMultiReturnTypes = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inTypeContext = false
-		je.numFuncResults = 0
-		je.suppressMultiReturnTypes = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncTypeParam(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress parameter emissions for function types
-	})
-}
-
-func (je *JavaEmitter) PreVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Track that we're in selector X position (for closure-captured field access)
-		je.inSelectorX = true
-
-		// Check if X is a package - suppress it since all code is in one Java file
-		// Do this first before any early returns
-		if ident, ok := node.X.(*ast.Ident); ok {
-			if ident.Name == "fmt" {
-				je.suppressFmtPackage = true
-			}
-			// Check if this is a package-qualified reference (not a struct field access)
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				if uses, ok := je.pkg.TypesInfo.Uses[ident]; ok {
-					if _, isPkg := uses.(*types.PkgName); isPkg {
-						// Check if this is a runtime package or outer class package - if so, keep the prefix
-						// because these packages define a class with that name (e.g., fs, http, types)
-						if !isJavaOuterClassPackage(ident.Name) {
-							// Not a runtime or outer class package - suppress the package name
-							je.suppressFmtPackage = true // reuse this flag for package suppression
-						} else {
-							// We're in a package-qualified expression (types.Plan, http.Response)
-							// Set flag to prevent double-prefixing in PreVisitIdent
-							je.inPackageQualifiedExpr = true
-						}
-					}
-				}
-			}
-		}
-
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Suppress during map operations (handled elsewhere)
-		if je.suppressMapAssignLhs || je.isMapCommaOk || je.suppressMapIndexX {
-			return
-		}
-		// Suppress during type assert comma-ok (handled in PostVisitAssignStmt)
-		if je.isTypeAssertCommaOk {
-			return
-		}
-		// Skip if we've already resolved a type alias
-		if je.suppressTypeAliasSelectorX && je.inTypeContext {
-			return
-		}
-		if je.captureRangeExpr {
-			// X will be captured by PreVisitIdent, dot will be added by PostVisitSelectorExprX
-			return
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressFmtPackage = false
-		je.inPackageQualifiedExpr = false
-	})
-}
-
-func (je *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
-	// Reset selector X flag (we're done processing X, now processing Sel)
-	je.inSelectorX = false
-
-	je.executeIfNotForwardDecls(func() {
-		if je.isMultiReturnAssign {
-			return
-		}
-		if je.suppressTypeAliasSelectorX {
-			return
-		}
-		// Add dot to captured range expression (after X is captured by PreVisitIdent)
-		if je.captureRangeExpr {
-			je.rangeCollectionExpr += "."
-			return
-		}
-		// Skip package prefix (use types/functions directly since all in one file)
-		// Reset the flag so the type/function name is emitted
-		if je.suppressFmtPackage {
-			je.suppressFmtPackage = false // Reset so Sel identifier is emitted
-			return                        // Don't emit dot
-		}
-		// Don't emit dot for package-qualified type aliases that were resolved
-		if je.inTypeContext && je.suppressTypeAliasSelectorX {
-			return
-		}
-		// Suppress dot during map operations (handled in PreVisitAssignStmtRhs or PostVisitIndexExprX)
-		if je.suppressMapAssignLhs || je.isMapCommaOk || je.suppressMapIndexX {
-			return
-		}
-		// Suppress dot during type assert comma-ok (handled in PostVisitAssignStmt)
-		if je.isTypeAssertCommaOk {
-			return
-		}
-		// Suppress dot in lambda parameter types (Java uses type inference)
-		if je.inLambdaParams && je.inTypeContext {
-			return
-		}
-		// Suppress dot when suppressing multi-return types
-		if je.suppressMultiReturnTypes {
-			return
-		}
-		// Suppress dot when suppressing closure type emission
-		if je.suppressClosureTypeEmit {
-			return
-		}
-		str := je.emitAsString(".", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncTypeResults(node *ast.FieldList, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.suppressMultiReturnTypes {
-			return
-		}
-		if node != nil && len(node.List) > 0 {
-			je.numFuncResults = len(node.List)
-			je.emitToken(", ", Comma, 0)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if index > 0 {
-			str := je.emitAsString(", ", 0)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inTypeContext = false
-		je.emitToPackage(" ")
-		// Track this parameter name for lambda conflict detection
-		if node != nil {
-			je.addFuncParam(node.Name)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.suppressMultiReturnTypes {
-			return
-		}
-		if index > 0 {
-			str := je.emitAsString(", ", 0)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.isTuple = true
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.isTuple = false
-		je.numFuncResults = 0
-		je.suppressMultiReturnTypes = false
-		je.currentFuncName = node.Name.Name
-		je.currentFuncReturnType = "" // Reset single return type
-		if node.Type.Results != nil {
-			je.numFuncResults = len(node.Type.Results.List)
-			// Track single return type for byte/short casting
-			if len(node.Type.Results.List) == 1 && je.pkg != nil && je.pkg.TypesInfo != nil {
-				tv := je.pkg.TypesInfo.Types[node.Type.Results.List[0].Type]
-				if tv.Type != nil {
-					je.currentFuncReturnType = getJavaTypeName(tv.Type)
-				}
-			}
-		}
-
-		var resultClassName string
-		if je.numFuncResults > 1 {
-			// Collect return types
-			var returnTypes []string
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				for _, field := range node.Type.Results.List {
-					tv := je.pkg.TypesInfo.Types[field.Type]
-					if tv.Type != nil {
-						returnTypes = append(returnTypes, getJavaTypeName(tv.Type))
-					} else {
-						returnTypes = append(returnTypes, "Object")
-					}
-				}
-			} else {
-				for range node.Type.Results.List {
-					returnTypes = append(returnTypes, "Object")
-				}
-			}
-
-			// Create signature key for registry
-			signature := strings.Join(returnTypes, ",")
-
-			// Check if we already have a class for this signature
-			if existingClass, ok := je.resultClassRegistry[signature]; ok {
-				// Reuse existing class
-				resultClassName = existingClass
-			} else {
-				// Create new class with first function's name
-				resultClassName = node.Name.Name + "Result"
-				je.resultClassRegistry[signature] = resultClassName
-
-				// Generate and emit the result class definition
-				classCode := fmt.Sprintf("\n    public static class %s {\n", resultClassName)
-				for i, typeName := range returnTypes {
-					classCode += fmt.Sprintf("        public %s _%d;\n", typeName, i)
-				}
-				// Constructor
-				classCode += fmt.Sprintf("        public %s(", resultClassName)
-				for i, typeName := range returnTypes {
-					if i > 0 {
-						classCode += ", "
-					}
-					classCode += fmt.Sprintf("%s _%d", typeName, i)
-				}
-				classCode += ") {\n"
-				for i := range returnTypes {
-					classCode += fmt.Sprintf("            this._%d = _%d;\n", i, i)
-				}
-				classCode += "        }\n    }\n\n"
-				je.emitToPackage(classCode)
-			}
-
-			// Store for later use at call sites (use the shared class name)
-			je.multiReturnFuncs[node.Name.Name] = returnTypes
-		}
-
-		// Now emit the method signature
-		str := je.emitAsString("public static ", indent+2)
-		je.emitToPackage(str)
-
-		if je.numFuncResults == 0 {
-			str = je.emitAsString("void ", 0)
-			je.emitToPackage(str)
-		} else if je.numFuncResults > 1 {
-			// Get the result class name from registry based on signature
-			var returnTypes []string
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				for _, field := range node.Type.Results.List {
-					tv := je.pkg.TypesInfo.Types[field.Type]
-					if tv.Type != nil {
-						returnTypes = append(returnTypes, getJavaTypeName(tv.Type))
-					} else {
-						returnTypes = append(returnTypes, "Object")
-					}
-				}
-			}
-			signature := strings.Join(returnTypes, ",")
-			resultClassName = je.resultClassRegistry[signature]
-
-			// Emit the result class name as return type
-			str = je.emitAsString(resultClassName+" ", 0)
-			je.emitToPackage(str)
-			// Suppress individual return type emissions
-			je.suppressMultiReturnTypes = true
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressMultiReturnTypes = false
-		if je.numFuncResults == 1 {
-			str := je.emitAsString(" ", 0)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressTypeAliasEmit = true
-		je.currentAliasName = node.Name
-	})
-}
-
-func (je *JavaEmitter) PostVisitTypeAliasName(node *ast.Ident, indent int) {
-}
-
-func (je *JavaEmitter) PreVisitTypeAliasType(node ast.Expr, indent int) {
-	// Type aliases are recorded but not emitted in Java
-}
-
-func (je *JavaEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
-	if je.currentAliasName != "" {
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			tv := je.pkg.TypesInfo.Types[node]
-			if tv.Type != nil {
-				underlyingType := getJavaTypeName(tv.Type)
-				je.typeAliasMap[je.currentAliasName] = underlyingType
-			}
-		}
-	}
-	je.suppressTypeAliasEmit = false
-	je.currentAliasName = ""
-}
-
-func (je *JavaEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("return ", indent)
-		je.emitToPackage(str)
-
-		if len(node.Results) > 1 {
-			// Look up the shared result class name from the registry
-			var resultClassName string
-			if returnTypes, ok := je.multiReturnFuncs[je.currentFuncName]; ok {
-				signature := strings.Join(returnTypes, ",")
-				if className, ok := je.resultClassRegistry[signature]; ok {
-					resultClassName = className
-				} else {
-					resultClassName = je.currentFuncName + "Result"
-				}
-			} else {
-				resultClassName = je.currentFuncName + "Result"
-			}
-			je.emitToken(fmt.Sprintf("new %s(", resultClassName), LeftParen, 0)
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if len(node.Results) > 1 {
-			je.emitToken(")", RightParen, 0)
-		}
-		str := je.emitAsString(";", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if index > 0 {
-			str := je.emitAsString(", ", 0)
-			je.emitToPackage(str)
-		}
-
-		// Determine the return type for this result
-		var returnType string
-		if returnTypes, ok := je.multiReturnFuncs[je.currentFuncName]; ok && index < len(returnTypes) {
-			returnType = returnTypes[index]
-		} else if index == 0 && je.currentFuncReturnType != "" {
-			returnType = je.currentFuncReturnType
-		}
-
-		// Check if this is a numeric literal (including unary minus like -1)
-		isNumericLit := false
-		if _, isLit := node.(*ast.BasicLit); isLit {
-			isNumericLit = true
-		} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
-			// Handle -1, +1, etc.
-			if _, isLit := unary.X.(*ast.BasicLit); isLit {
-				isNumericLit = true
-			}
-		}
-
-		// Check if this is a binary expression (arithmetic/bitwise)
-		_, isBinary := node.(*ast.BinaryExpr)
-
-		// Add cast for byte/short return values
-		if returnType == "byte" || returnType == "short" {
-			if isNumericLit {
-				je.emitToPackage(fmt.Sprintf("(%s)", returnType))
-			} else if isBinary {
-				// For binary expressions, we need to wrap the whole expression
-				je.emitToPackage(fmt.Sprintf("(%s)(", returnType))
-				je.needsReturnCast = true
-				je.returnCastType = returnType
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Close the cast wrapper for binary expressions
-		if je.needsReturnCast {
-			je.emitToPackage(")")
-			je.needsReturnCast = false
-			je.returnCastType = ""
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isUnsupportedIndexedCall {
-			// Emit a comment for unsupported indexed function call
-			indentStr := strings.Repeat("    ", je.unsupportedCallIndent)
-			je.emitToPackage(fmt.Sprintf("%s/* TODO: Unsupported indexed function call: %s */",
-				indentStr, exprToString(node)))
-			je.isUnsupportedIndexedCall = false
-		}
-		// Clear parameter types after call expression
-		je.callExprParamTypes = nil
-		// Clear append call flags
-		je.isAppendCall = false
-		je.appendStructType = ""
-	})
-}
-
-func (je *JavaEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	// Check if all LHS are blank identifiers
-	allBlank := true
-	for _, lhs := range node.Lhs {
-		if ident, ok := lhs.(*ast.Ident); ok {
-			if ident.Name != "_" {
-				allBlank = false
-				break
-			}
-		} else {
-			allBlank = false
-			break
-		}
-	}
-	if allBlank {
-		je.suppressRangeEmit = true
-		return
-	}
-
-	// Detect comma-ok map access
-	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				tv := je.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						je.isMapCommaOk = true
-						je.mapCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-						je.mapCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-						je.mapCommaOkMapName = exprToString(indexExpr.X)
-						je.mapCommaOkValType = getJavaTypeName(mapType.Elem())
-						je.mapCommaOkIsDecl = (node.Tok == token.DEFINE)
-						je.mapCommaOkIndent = indent
-						je.mapKeyCastPrefix, je.mapKeyCastSuffix = getJavaKeyCast(mapType.Key())
-						je.suppressMapEmit = true
-						return
-					}
-				}
-			}
-		}
-		// Detect type assert comma-ok: val, ok := x.(Type)
-		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
-			je.isTypeAssertCommaOk = true
-			je.typeAssertCommaOkValName = node.Lhs[0].(*ast.Ident).Name
-			je.typeAssertCommaOkOkName = node.Lhs[1].(*ast.Ident).Name
-			je.typeAssertCommaOkXName = exprToString(typeAssert.X)
-			je.typeAssertCommaOkIsDecl = (node.Tok == token.DEFINE)
-			je.typeAssertCommaOkIndent = indent
-			// Get the type being asserted
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				tv := je.pkg.TypesInfo.Types[typeAssert.Type]
-				if tv.Type != nil {
-					je.typeAssertCommaOkType = getJavaTypeName(tv.Type)
-					je.typeAssertCommaOkBoxedType = toBoxedType(je.typeAssertCommaOkType)
-				}
-			}
-			return
-		}
-	}
-
-	// Detect multi-return function call assignment
-	if len(node.Lhs) > 1 && len(node.Rhs) == 1 {
-		if callExpr, ok := node.Rhs[0].(*ast.CallExpr); ok {
-			funcName := ""
-			if ident, ok := callExpr.Fun.(*ast.Ident); ok {
-				funcName = ident.Name
-			} else if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
-				funcName = sel.Sel.Name
-			}
-			if _, isMultiReturn := je.multiReturnFuncs[funcName]; isMultiReturn || funcName != "" {
-				// Collect LHS variable names and types
-				je.multiReturnLhsNames = nil
-				je.multiReturnLhsTypes = nil
-				for _, lhs := range node.Lhs {
-					if ident, ok := lhs.(*ast.Ident); ok {
-						je.multiReturnLhsNames = append(je.multiReturnLhsNames, ident.Name)
-						// Get the type of the LHS variable
-						if je.pkg != nil && je.pkg.TypesInfo != nil {
-							if tv, ok := je.pkg.TypesInfo.Types[ident]; ok {
-								javaType := getJavaTypeName(tv.Type)
-								je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, javaType)
-							} else if def := je.pkg.TypesInfo.Defs[ident]; def != nil {
-								javaType := getJavaTypeName(def.Type())
-								je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, javaType)
-							} else {
-								je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, "")
-							}
-						} else {
-							je.multiReturnLhsTypes = append(je.multiReturnLhsTypes, "")
-						}
-					}
-				}
-				je.isMultiReturnAssign = true
-				je.multiReturnIsDecl = (node.Tok == token.DEFINE)
-				je.multiReturnIndent = indent
-				return
-			}
-		}
-	}
-
-	// Detect map assignment (including nested maps)
-	if len(node.Lhs) == 1 {
-		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				tv := je.pkg.TypesInfo.Types[indexExpr.X]
-				if tv.Type != nil {
-					if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-						je.suppressMapEmit = true
-						je.suppressMapAssignLhs = true // Suppress LHS emission
-						je.assignmentToken = "="
-						je.mapKeyCastPrefix, je.mapKeyCastSuffix = getJavaKeyCast(mapType.Key())
-
-						// Check if this is a nested map assignment (e.g., m["a"]["b"] = v)
-						// Only handle as nested map if the inner expression is also a map access
-						if innerIndex, isNestedIndex := indexExpr.X.(*ast.IndexExpr); isNestedIndex {
-							// Check if the inner IndexExpr is accessing a map (not a slice)
-							innerTv := je.pkg.TypesInfo.Types[innerIndex.X]
-							if innerTv.Type != nil {
-								if _, isInnerMap := innerTv.Type.Underlying().(*types.Map); isInnerMap {
-									// Nested map assignment (map[K1]map[K2]V)
-									je.isNestedMapAssign = true
-									je.nestedMapAssignIndent = indent
-									rootVar, levels := je.collectNestedMapLevels(indexExpr.X)
-									je.nestedMapRootVar = rootVar
-									je.nestedMapLevels = levels
-									je.nestedMapAssignKey = exprToString(indexExpr.Index)
-									return
-								}
-								// Inner is a slice access with map element (e.g., sliceOfMaps[0][1]["a"] = v)
-								// This needs special handling for any depth of slice nesting
-								if _, isInnerSlice := innerTv.Type.Underlying().(*types.Slice); isInnerSlice {
-									je.isSliceOfMapAssign = true
-									// Collect all slice indices from the chain
-									rootVar, indices := je.collectSliceIndices(indexExpr.X)
-									je.sliceOfMapSliceVar = rootVar
-									je.sliceOfMapSliceIndices = indices
-									je.sliceOfMapMapKey = exprToString(indexExpr.Index)
-									je.sliceOfMapIndent = indent
-									je.suppressMapEmit = true
-									je.suppressMapAssignLhs = true
-									return
-								}
-							}
-						}
-
-						// Simple map assignment
-						je.isMapAssign = true
-						je.mapAssignIndent = indent
-						je.mapAssignVarName = exprToString(indexExpr.X)
-						return
-					}
-					// Detect slice index assignment: x[i] = value -> x.set(i, value)
-					if sliceType, ok := tv.Type.Underlying().(*types.Slice); ok {
-						je.isSliceIndexAssign = true
-						je.sliceIndexVarName = exprToString(indexExpr.X)
-						je.sliceIndexIndent = indent
-						je.sliceIndexLhsExpr = indexExpr // Track the specific LHS index expr
-						// Track element type for byte/short casting
-						je.sliceIndexElemType = getJavaTypeName(sliceType.Elem())
-						return
-					}
-				}
-			}
-		}
-	}
-
-	// Detect byte/short arithmetic: a = a + 5 where a is byte/short
-	// In Java, byte/short arithmetic produces int, so we need to cast back
-	if len(node.Lhs) == 1 && len(node.Rhs) == 1 {
-		// Check if RHS contains a binary expression (arithmetic)
-		if _, isBinary := node.Rhs[0].(*ast.BinaryExpr); isBinary {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				var lhsType types.Type
-				// Handle both simple identifiers and selector expressions (like c.Status)
-				if ident, ok := node.Lhs[0].(*ast.Ident); ok {
-					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil {
-						lhsType = obj.Type()
-					}
-				} else if sel, ok := node.Lhs[0].(*ast.SelectorExpr); ok {
-					if tv, ok := je.pkg.TypesInfo.Types[sel]; ok {
-						lhsType = tv.Type
-					}
-				}
-				if lhsType != nil {
-					typeName := lhsType.String()
-					switch typeName {
-					case "int8", "byte", "uint8":
-						je.needsSmallIntCast = true
-						je.smallIntCastType = "byte"
-					case "int16", "uint16":
-						je.needsSmallIntCast = true
-						je.smallIntCastType = "short"
-					}
-				}
-			}
-		}
-	}
-
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("", indent)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	// Handle map comma-ok
-	if je.isMapCommaOk {
-		// Check if val and ok are already declared
-		valVarDecl := ""
-		okVarDecl := ""
-		if je.mapCommaOkIsDecl {
-			if !je.isVarDeclared(je.mapCommaOkOkName) {
-				okVarDecl = "var "
-				je.declareVar(je.mapCommaOkOkName)
-			}
-			if !je.isVarDeclared(je.mapCommaOkValName) {
-				valVarDecl = "var "
-				je.declareVar(je.mapCommaOkValName)
-			}
-		}
-		// Add cast for the value type
-		boxedValType := toBoxedType(je.mapCommaOkValType)
-		keyExpr := exprToString(node.Rhs[0].(*ast.IndexExpr).Index)
-		// First emit ok variable
-		code := fmt.Sprintf("%s%s = hashMapContains(%s, %s%s%s);\n",
-			okVarDecl, je.mapCommaOkOkName,
-			je.mapCommaOkMapName,
-			je.mapKeyCastPrefix, keyExpr, je.mapKeyCastSuffix)
-		// Then emit val with ternary to provide default value when key not found
-		// This avoids NPE when auto-unboxing null for comparisons
-		defaultVal := getJavaDefaultValue(je.mapCommaOkValType)
-		code += fmt.Sprintf("%s%s = %s ? (%s)hashMapGet(%s, %s%s%s) : %s;\n",
-			valVarDecl, je.mapCommaOkValName,
-			je.mapCommaOkOkName,
-			boxedValType,
-			je.mapCommaOkMapName,
-			je.mapKeyCastPrefix, keyExpr, je.mapKeyCastSuffix,
-			defaultVal)
-		je.emitToPackage(code)
-		je.isMapCommaOk = false
-		je.suppressMapEmit = false
-		return
-	}
-
-	// Handle type assert comma-ok: val, ok := x.(Type)
-	if je.isTypeAssertCommaOk {
-		// Check if val and ok are already declared
-		valVarDecl := ""
-		okVarDecl := ""
-		if je.typeAssertCommaOkIsDecl {
-			if !je.isVarDeclared(je.typeAssertCommaOkOkName) {
-				okVarDecl = "var "
-				je.declareVar(je.typeAssertCommaOkOkName)
-			}
-			if !je.isVarDeclared(je.typeAssertCommaOkValName) {
-				valVarDecl = "var "
-				je.declareVar(je.typeAssertCommaOkValName)
-			}
-		}
-		indentStr := strings.Repeat("    ", je.typeAssertCommaOkIndent)
-		// Generate: var ok = x instanceof Type;
-		// Generate: var val = ok ? (Type)x : defaultValue;
-		code := fmt.Sprintf("%s%s%s = %s instanceof %s;\n",
-			indentStr, okVarDecl, je.typeAssertCommaOkOkName,
-			je.typeAssertCommaOkXName, je.typeAssertCommaOkBoxedType)
-
-		// Get default value for the type
-		defaultVal := getJavaDefaultValue(je.typeAssertCommaOkType)
-		code += fmt.Sprintf("%s%s%s = %s ? (%s)%s : %s;\n",
-			indentStr, valVarDecl, je.typeAssertCommaOkValName,
-			je.typeAssertCommaOkOkName,
-			je.typeAssertCommaOkType, je.typeAssertCommaOkXName,
-			defaultVal)
-
-		je.emitToPackage(code)
-		je.isTypeAssertCommaOk = false
-		return
-	}
-
-	// Handle multi-return function call assignment
-	if je.isMultiReturnAssign {
-		callExpr := node.Rhs[0].(*ast.CallExpr)
-		funcName := ""
-		isRuntimeCall := false // Track if this is a runtime package call that returns Object[]
-		if ident, ok := callExpr.Fun.(*ast.Ident); ok {
-			funcName = ident.Name
-		} else if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
-			// Check if X is a package - if so, use function name with or without prefix
-			if xIdent, ok := sel.X.(*ast.Ident); ok {
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
-					if uses, ok := je.pkg.TypesInfo.Uses[xIdent]; ok {
-						if _, isPkg := uses.(*types.PkgName); isPkg {
-							// It's a package reference - check if it's an outer class package
-							if isJavaOuterClassPackage(xIdent.Name) {
-								// Runtime or outer class package - keep the package prefix (e.g., fs.ReadFile, types.AddLiteralToPlan)
-								funcName = xIdent.Name + "." + sel.Sel.Name
-								// Check if this runtime package returns Object[] (fs, http, net)
-								// Graphics package uses proper result classes (like GetMouseResult), not Object[]
-								if xIdent.Name == "fs" || xIdent.Name == "http" || xIdent.Name == "net" {
-									isRuntimeCall = true
-								}
-							} else {
-								// Regular package - just use the function name
-								funcName = sel.Sel.Name
-							}
-						} else {
-							funcName = exprToString(sel.X) + "." + sel.Sel.Name
-						}
-					} else {
-						funcName = exprToString(sel.X) + "." + sel.Sel.Name
-					}
-				} else {
-					funcName = exprToString(sel.X) + "." + sel.Sel.Name
-				}
-			} else {
-				funcName = exprToString(sel.X) + "." + sel.Sel.Name
-			}
-		}
-
-		// Generate function call arguments using Java-specific expression conversion
-		// Get parameter types for byte/short casting
-		var paramTypes []string
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			tv := je.pkg.TypesInfo.Types[callExpr.Fun]
-			if tv.Type != nil {
-				if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
-					params := sig.Params()
-					for i := 0; i < params.Len(); i++ {
-						paramTypes = append(paramTypes, getJavaTypeName(params.At(i).Type()))
-					}
-				}
-			}
-		}
-		var args []string
-		for i, arg := range callExpr.Args {
-			// Use closure-aware expression converter
-			argStr := javaExprToStringWithClosures(arg, je.closureCapturedMutVars, je.closureCapturedVarType)
-			// Add cast for byte/short parameters
-			if i < len(paramTypes) && needsByteCast(paramTypes[i], argStr) {
-				argStr = fmt.Sprintf("(%s)(%s)", paramTypes[i], argStr)
-			}
-			args = append(args, argStr)
-		}
-		argsStr := strings.Join(args, ", ")
-
-		// Use unique result variable name to avoid redeclaration
-		je.multiReturnCounter++
-		resultVarName := fmt.Sprintf("_result%d", je.multiReturnCounter)
-
-		indentStr := strings.Repeat("    ", je.multiReturnIndent)
-		code := fmt.Sprintf("%svar %s = %s(%s);\n", indentStr, resultVarName, funcName, argsStr)
-
-		// Unpack fields with variable shadowing check
-		// Runtime functions return Object[] (use array indexing with cast), user functions return tuple (use ._N fields)
-		for i, name := range je.multiReturnLhsNames {
-			if name == "_" {
-				continue // Skip blank identifiers
-			}
-			var valueExpr string
-			if isRuntimeCall {
-				// For runtime calls, we need to cast the Object[] element to the correct type
-				javaType := ""
-				if i < len(je.multiReturnLhsTypes) {
-					javaType = je.multiReturnLhsTypes[i]
-				}
-				if javaType != "" && javaType != "Object" {
-					// Use boxed type for cast, then auto-unbox
-					boxedType := toBoxedType(javaType)
-					valueExpr = fmt.Sprintf("(%s)%s[%d]", boxedType, resultVarName, i)
-				} else {
-					valueExpr = fmt.Sprintf("%s[%d]", resultVarName, i)
-				}
-			} else {
-				valueExpr = fmt.Sprintf("%s._%d", resultVarName, i)
-			}
-			// Check if this LHS variable is closure-captured
-			lhsName := name
-			isClosureCaptured := je.closureCapturedMutVars != nil && je.closureCapturedMutVars[name]
-			if isClosureCaptured {
-				lhsName = name + "[0]"
-			}
-			if je.multiReturnIsDecl && !je.isVarDeclared(name) && !isClosureCaptured {
-				code += fmt.Sprintf("%svar %s = %s;\n", indentStr, name, valueExpr)
-				je.declareVar(name)
-			} else {
-				code += fmt.Sprintf("%s%s = %s;\n", indentStr, lhsName, valueExpr)
-			}
-		}
-
-		je.emitToPackage(code)
-		je.isMultiReturnAssign = false
-		je.multiReturnLhsNames = nil
-		je.multiReturnLhsTypes = nil
-		return
-	}
-
-	// Handle map assignment
-	if je.isMapAssign {
-		je.isMapAssign = false
-		je.suppressMapEmit = false
-		return
-	}
-
-	// Handle nested map assignment
-	if je.isNestedMapAssign {
-		// Close all the nested hashMapSet calls
-		// For n levels, we have n+1 hashMapSet calls, so we need n+1 closing parens
-		// Plus 1 for the semicolon
-		closingParens := strings.Repeat(")", len(je.nestedMapLevels)+1) + ";"
-		je.emitToPackage(closingParens)
-		je.isNestedMapAssign = false
-		je.nestedMapRootVar = ""
-		je.nestedMapLevels = nil
-		je.nestedMapAssignKey = ""
-		je.suppressMapEmit = false
-		return
-	}
-
-	// Handle slice-of-map assignment
-	if je.isSliceOfMapAssign {
-		// Close the hashMapSet and set calls: ));
-		je.emitToPackage("));")
-		je.isSliceOfMapAssign = false
-		je.sliceOfMapSliceVar = ""
-		je.sliceOfMapSliceIndices = nil
-		je.sliceOfMapMapKey = ""
-		je.suppressMapEmit = false
-		return
-	}
-
-	// Handle slice index assignment
-	if je.isSliceIndexAssign {
-		je.isSliceIndexAssign = false
-		je.sliceIndexLhsExpr = nil
-		je.sliceIndexElemType = ""
-		return
-	}
-
-	if je.suppressRangeEmit {
-		je.suppressRangeEmit = false
-		return
-	}
-
-	// Don't emit semicolon if we're inside for loop init or post (handled elsewhere)
-	if je.insideForInit || je.insideForPostCond {
-		return
-	}
-
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(";", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	if je.isMapCommaOk || je.isTypeAssertCommaOk || je.isMultiReturnAssign {
-		return
-	}
-	je.executeIfNotForwardDecls(func() {
-		if je.isMapAssign {
-			je.suppressMapAssignLhs = false // Reset LHS suppression
-			indexExpr := node.Lhs[0].(*ast.IndexExpr)
-			keyStr := exprToString(indexExpr.Index)
-			je.emitToPackage(fmt.Sprintf("%s = hashMapSet(%s, %s%s%s, ",
-				je.mapAssignVarName, je.mapAssignVarName,
-				je.mapKeyCastPrefix, keyStr, je.mapKeyCastSuffix))
-			return
-		}
-		// Handle nested map assignment: m["a"]["b"] = v
-		// Generates: m = hashMapSet(m, "a", hashMapSet(((HashMap)hashMapGet(m, "a")), "b", v));
-		if je.isNestedMapAssign {
-			je.suppressMapAssignLhs = false // Reset LHS suppression
-
-			// Build the nested hashMapSet/hashMapGet expression
-			// For m["a"]["b"] = v with levels=[{"a", "HashMap"}] and finalKey="b":
-			// Output: m = hashMapSet(m, "a", hashMapSet(((HashMap)hashMapGet(m, "a")), "b", v));
-
-			var code string
-			rootVar := je.nestedMapRootVar
-			levels := je.nestedMapLevels
-			finalKey := je.nestedMapAssignKey
-
-			// Start with outermost: rootVar = hashMapSet(rootVar, levels[0].key,
-			code = fmt.Sprintf("%s = hashMapSet(%s, %s, ", rootVar, rootVar, levels[0].keyExpr)
-
-			// For each intermediate level (1 to n-1), wrap with hashMapSet(hashMapGet(...), key,
-			for i := 1; i < len(levels); i++ {
-				// Get expression for levels[0..i-1]
-				getExpr := je.generateNestedMapGetExpr(rootVar, levels[:i])
-				code += fmt.Sprintf("hashMapSet(%s, %s, ", getExpr, levels[i].keyExpr)
-			}
-
-			// Innermost: hashMapSet(getExpr(all levels), finalKey, [value will be emitted next]
-			getExpr := je.generateNestedMapGetExpr(rootVar, levels)
-			code += fmt.Sprintf("hashMapSet(%s, %s, ", getExpr, finalKey)
-
-			je.emitToPackage(code)
-			return
-		}
-		// Handle slice-of-map assignment: sliceOfMaps[i][j]...["key"] = v
-		// For slice[0][1]["x"] = v, generates:
-		// slice.get(0).set(1, hashMapSet(slice.get(0).get(1), "x", v));
-		if je.isSliceOfMapAssign {
-			je.suppressMapAssignLhs = false // Reset LHS suppression
-			indices := je.sliceOfMapSliceIndices
-			rootVar := je.sliceOfMapSliceVar
-
-			var code string
-			if len(indices) == 1 {
-				// Simple case: slice[0]["key"] = v
-				code = fmt.Sprintf("%s.set(%s, hashMapSet(%s.get(%s), %s, ",
-					rootVar, indices[0],
-					rootVar, indices[0],
-					je.sliceOfMapMapKey)
-			} else {
-				// Multi-level case: slice[0][1]...["key"] = v
-				// First, generate the get chain for all but the last index
-				getChainBeforeLast := je.generateSliceGetChain(rootVar, indices[:len(indices)-1])
-				// Then, generate the full get chain for the map access
-				fullGetChain := je.generateSliceGetChain(rootVar, indices)
-				// Generate: getChainBeforeLast.set(lastIdx, hashMapSet(fullGetChain, key,
-				lastIdx := indices[len(indices)-1]
-				code = fmt.Sprintf("%s.set(%s, hashMapSet(%s, %s, ",
-					getChainBeforeLast, lastIdx,
-					fullGetChain,
-					je.sliceOfMapMapKey)
-			}
-			je.emitToPackage(code)
-			return
-		}
-		// For slice index assignment: emit ", " between index and value
-		if je.isSliceIndexAssign {
-			je.emitToPackage(", ")
-			// Add cast for byte/short element types
-			if je.sliceIndexElemType == "byte" || je.sliceIndexElemType == "short" {
-				je.emitToPackage(fmt.Sprintf("(%s)", je.sliceIndexElemType))
-			}
-			return
-		}
-		str := je.emitAsString(" ", 0)
-		je.emitToPackage(str)
-		if node.Tok == token.DEFINE {
-			if je.isClosureCapturedDecl {
-				str = je.emitAsString("= {", 0)
-			} else {
-				str = je.emitAsString("= ", 0)
-			}
-		} else {
-			str = je.emitAsString(node.Tok.String()+" ", 0)
-		}
-		je.emitToPackage(str)
-		// Emit cast prefix for byte/short arithmetic
-		if je.needsSmallIntCast {
-			je.emitToPackage(fmt.Sprintf("(%s)(", je.smallIntCastType))
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	// Close closure-captured variable array wrapper
-	if je.isClosureCapturedDecl {
-		je.emitToPackage("}")
-		je.isClosureCapturedDecl = false
-		je.closureCapturedDeclName = ""
-	}
-	// Close byte/short arithmetic cast
-	if je.needsSmallIntCast {
-		je.emitToPackage(")")
-		je.needsSmallIntCast = false
-		je.smallIntCastType = ""
-	}
-	if je.isMapAssign {
-		je.emitToPackage(");\n")
-	}
-	// For slice index assignment: emit closing );\n
-	if je.isSliceIndexAssign {
-		je.emitToPackage(");\n")
-	}
-}
-
-func (je *JavaEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	if index > 0 && !je.isMapCommaOk && !je.isTypeAssertCommaOk && !je.isMultiReturnAssign {
-		je.executeIfNotForwardDecls(func() {
-			str := je.emitAsString(", ", 0)
-			je.emitToPackage(str)
-		})
-	}
-}
-
-func (je *JavaEmitter) PreVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	// Track that we're in assignment LHS (skip cast for closure-captured vars)
-	je.inAssignLhs = true
-	if je.isMapCommaOk || je.isTypeAssertCommaOk || je.isMapAssign || je.isMultiReturnAssign {
-		return
-	}
-	je.executeIfNotForwardDecls(func() {
-		if node.Tok == token.DEFINE {
-			// Check if any LHS variable is already declared
-			allNew := true
-			for _, lhs := range node.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok {
-					if ident.Name != "_" && je.isVarDeclared(ident.Name) {
-						allNew = false
-						break
-					}
-				}
-			}
-			if allNew {
-				// Check if any LHS variable is a closure-captured mutable variable
-				isClosureCaptured := false
-				if je.closureCapturedMutVars != nil && len(node.Lhs) == 1 {
-					if ident, ok := node.Lhs[0].(*ast.Ident); ok {
-						if je.closureCapturedMutVars[ident.Name] {
-							isClosureCaptured = true
-							je.isClosureCapturedDecl = true
-							je.closureCapturedDeclName = ident.Name
-						}
-					}
-				}
-
-				// Check if RHS is a function literal - if so, emit the functional interface type
-				// instead of var (Java can't infer lambda types from var)
-				isFuncLit := false
-				var funcLitType string
-				if len(node.Rhs) == 1 {
-					if funcLit, ok := node.Rhs[0].(*ast.FuncLit); ok {
-						isFuncLit = true
-						// Determine the functional interface type based on params and return
-						numParams := 0
-						hasReturn := false
-						if funcLit.Type.Params != nil {
-							numParams = len(funcLit.Type.Params.List)
-						}
-						if funcLit.Type.Results != nil && len(funcLit.Type.Results.List) > 0 {
-							hasReturn = true
-						}
-						if !hasReturn {
-							funcLitType = "Runnable"
-						} else {
-							funcLitType = "Supplier<Object>"
-						}
-						_ = numParams // Future: could use Consumer, Function, etc. for params
-					}
-				}
-
-				if isClosureCaptured {
-					// Use Object[] for closure-captured mutable variables
-					str := je.emitAsString("Object[] ", 0)
-					je.emitToPackage(str)
-					// Set inDeclName to prevent [0] suffix on the variable name
-					je.inDeclName = true
-				} else if isFuncLit {
-					str := je.emitAsString(funcLitType+" ", 0)
-					je.emitToPackage(str)
-				} else {
-					str := je.emitAsString("var ", 0)
-					je.emitToPackage(str)
-				}
-				// Mark variables as declared
-				for _, lhs := range node.Lhs {
-					if ident, ok := lhs.(*ast.Ident); ok {
-						if ident.Name != "_" {
-							je.declareVar(ident.Name)
-						}
-					}
-				}
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	// Reset assignment LHS flag
-	je.inAssignLhs = false
-	// Reset declaration name flag (for closure-captured short var declarations)
-	je.inDeclName = false
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isMapAssign || je.isMapCommaOk || je.isNestedMapAssign || je.isSliceOfMapAssign {
-			return
-		}
-		// Push current map index state to stack before processing this expression
-		// This allows nested index expressions to restore the outer state when done
-		je.mapIndexStack = append(je.mapIndexStack, mapIndexStackEntry{
-			isMapIndex:        je.isMapIndex,
-			mapIndexValueType: je.mapIndexValueType,
-			mapReadVarName:    je.mapReadVarName,
-			mapKeyCastPrefix:  je.mapKeyCastPrefix,
-			mapKeyCastSuffix:  je.mapKeyCastSuffix,
-		})
-		// Reset state for this expression
-		je.isMapIndex = false
-		je.mapIndexValueType = ""
-		je.mapReadVarName = ""
-		je.mapKeyCastPrefix = ""
-		je.mapKeyCastSuffix = ""
-
-		// Check if this is a map index
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			tv := je.pkg.TypesInfo.Types[node.X]
-			if tv.Type != nil {
-				if mapType, ok := tv.Type.Underlying().(*types.Map); ok {
-					je.isMapIndex = true
-					je.mapIndexValueType = getJavaTypeName(mapType.Elem())
-					je.mapKeyCastPrefix, je.mapKeyCastSuffix = getJavaKeyCast(mapType.Key())
-					// For nested map access, emit ((Type)hashMapGet( BEFORE X is traversed
-					// This way the X expression (which could be another IndexExpr) is emitted inside
-					boxedType := toBoxedType(je.mapIndexValueType)
-					je.emitToPackage(fmt.Sprintf("((%s)hashMapGet(", boxedType))
-					// Store the map variable name - but don't suppress X emission for nested cases
-					je.mapReadVarName = exprToString(node.X)
-					// Only suppress X if it's a simple identifier (not another IndexExpr)
-					if _, isIndexExpr := node.X.(*ast.IndexExpr); !isIndexExpr {
-						je.suppressMapIndexX = true
-					}
-				}
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isMapAssign || je.isMapCommaOk || je.isNestedMapAssign || je.isSliceOfMapAssign {
-			return
-		}
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		if je.isMultiReturnAssign {
-			return
-		}
-		if je.isMapIndex {
-			je.suppressMapIndexX = false // Reset
-			je.currentMapGetValueType = je.mapIndexValueType
-			// The ((Type)hashMapGet( was already emitted in PreVisitIndexExpr
-			// Check if X was a nested IndexExpr (already emitted) or a simple ident (needs emitting)
-			if _, isIndexExpr := node.X.(*ast.IndexExpr); isIndexExpr {
-				// X was a nested IndexExpr, it has been emitted, just add comma
-				je.emitToPackage(", ")
-			} else {
-				// X was a simple expression, emit it then comma
-				je.emitToPackage(je.mapReadVarName + ", ")
-			}
-			return
-		}
-		// Check if base is a string - use charAt instead of get
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			tv := je.pkg.TypesInfo.Types[node.X]
-			if tv.Type != nil {
-				if basic, ok := tv.Type.Underlying().(*types.Basic); ok {
-					if basic.Kind() == types.String {
-						je.emitToken(".charAt(", LeftBracket, 0)
-						return
-					}
-				}
-			}
-		}
-		// For slice index assignment: x[i] = v -> x.set(i, v)
-		// Only the actual LHS index expression should use .set(), nested indices use .get()
-		if je.isSliceIndexAssign && node == je.sliceIndexLhsExpr {
-			je.emitToken(".set(", LeftBracket, 0)
-			return
-		}
-		je.emitToken(".get(", LeftBracket, 0)
-	})
-}
-
-func (je *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isMapAssign || je.isMapCommaOk || je.isNestedMapAssign || je.isSliceOfMapAssign {
-			return
-		}
-		// Reset map read state
-		je.suppressMapIndexX = false
-		je.mapReadVarName = ""
-	})
-}
-
-func (je *JavaEmitter) PreVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isMapAssign || je.isMapCommaOk || je.isNestedMapAssign || je.isSliceOfMapAssign {
-			return
-		}
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		if je.isMultiReturnAssign {
-			return
-		}
-		if je.isMapIndex {
-			// Map variable already emitted in PostVisitIndexExprX, just emit key cast if needed
-			if je.mapKeyCastPrefix != "" {
-				je.emitToPackage(je.mapKeyCastPrefix)
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isMapAssign || je.isMapCommaOk || je.isNestedMapAssign || je.isSliceOfMapAssign {
-			return
-		}
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		if je.isMultiReturnAssign {
-			return
-		}
-		if je.isMapIndex {
-			if je.mapKeyCastSuffix != "" {
-				je.emitToPackage(je.mapKeyCastSuffix)
-			}
-			// Close both hashMapGet() and the cast wrapper
-			je.emitToPackage("))")
-		} else {
-			// Check if index is byte/uint8 type - need to add & 0xFF to convert signed to unsigned
-			// Java's byte is signed (-128 to 127), but when used as index we need unsigned (0 to 255)
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				tv := je.pkg.TypesInfo.Types[node.Index]
-				if tv.Type != nil {
-					typeName := tv.Type.String()
-					if typeName == "byte" || typeName == "uint8" || typeName == "int8" {
-						je.emitToPackage(" & 0xFF")
-					}
-				}
-			}
-			// For slice index assignment, don't emit ) here - it will be emitted after the value
-			// Only suppress for the actual LHS index expression
-			if je.isSliceIndexAssign && node == je.sliceIndexLhsExpr {
-				// Don't pop stack here - let the outer handler deal with it
-			} else {
-				je.emitToken(")", RightBracket, 0)
-			}
-		}
-
-		// Pop and restore previous map index state from stack
-		if len(je.mapIndexStack) > 0 {
-			prevState := je.mapIndexStack[len(je.mapIndexStack)-1]
-			je.mapIndexStack = je.mapIndexStack[:len(je.mapIndexStack)-1]
-			je.isMapIndex = prevState.isMapIndex
-			je.mapIndexValueType = prevState.mapIndexValueType
-			je.mapReadVarName = prevState.mapReadVarName
-			je.mapKeyCastPrefix = prevState.mapKeyCastPrefix
-			je.mapKeyCastSuffix = prevState.mapKeyCastSuffix
-		}
-		je.currentMapGetValueType = ""
-	})
-}
-
-func (je *JavaEmitter) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Initialize byte comparison state for this expression
-		maskLhs := false
-		maskRhs := false
-
-		// Check for byte comparison with integer (need & 0xFF for unsigned semantics)
-		// This applies to <, >, <=, >=, ==, != operators
-		if node.Op == token.LSS || node.Op == token.GTR || node.Op == token.LEQ ||
-			node.Op == token.GEQ || node.Op == token.EQL || node.Op == token.NEQ {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				// Check LHS type - handle both identifiers and other expressions
-				var lhsType string
-				if ident, ok := node.X.(*ast.Ident); ok {
-					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
-						lhsType = obj.Type().String()
-					}
-				}
-				if lhsType == "" {
-					if tvX, ok := je.pkg.TypesInfo.Types[node.X]; ok && tvX.Type != nil {
-						lhsType = tvX.Type.String()
-					}
-				}
-				if lhsType == "byte" || lhsType == "uint8" || lhsType == "int8" {
-					// Check if RHS is a literal, constant, or larger integer type
-					// For byte < 128, RHS might be untyped int or a constant
-					var rhsType string
-					if ident, ok := node.Y.(*ast.Ident); ok {
-						if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
-							rhsType = obj.Type().String()
-						}
-					}
-					if rhsType == "" {
-						if tvY, ok := je.pkg.TypesInfo.Types[node.Y]; ok && tvY.Type != nil {
-							rhsType = tvY.Type.String()
-						}
-					}
-					// If RHS is a BasicLit (literal), always mask LHS
-					if _, isLit := node.Y.(*ast.BasicLit); isLit {
-						maskLhs = true
-					} else if rhsType != "" {
-						// If RHS is not also a byte, we need to mask LHS
-						if rhsType != "byte" && rhsType != "uint8" && rhsType != "int8" {
-							maskLhs = true
-						}
-					} else {
-						// RHS type is unknown/untyped - this is an untyped constant, mask LHS
-						maskLhs = true
-					}
-				}
-				// Check RHS type - handle both identifiers and other expressions
-				var rhsType string
-				if ident, ok := node.Y.(*ast.Ident); ok {
-					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
-						rhsType = obj.Type().String()
-					}
-				}
-				if rhsType == "" {
-					if tvY, ok := je.pkg.TypesInfo.Types[node.Y]; ok && tvY.Type != nil {
-						rhsType = tvY.Type.String()
-					}
-				}
-				if rhsType == "byte" || rhsType == "uint8" || rhsType == "int8" {
-					// Check if LHS is a literal, constant, or larger integer type
-					var lhsTypeForRhs string
-					if ident, ok := node.X.(*ast.Ident); ok {
-						if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil && obj.Type() != nil {
-							lhsTypeForRhs = obj.Type().String()
-						}
-					}
-					if lhsTypeForRhs == "" {
-						if tvX, ok := je.pkg.TypesInfo.Types[node.X]; ok && tvX.Type != nil {
-							lhsTypeForRhs = tvX.Type.String()
-						}
-					}
-					if _, isLit := node.X.(*ast.BasicLit); isLit {
-						maskRhs = true
-					} else if lhsTypeForRhs != "" {
-						// If LHS is not also a byte, we need to mask RHS
-						if lhsTypeForRhs != "byte" && lhsTypeForRhs != "uint8" && lhsTypeForRhs != "int8" {
-							maskRhs = true
-						}
-					} else {
-						// LHS type is unknown/untyped - this is an untyped constant, mask RHS
-						maskRhs = true
-					}
-				}
-			}
-		}
-
-		// Check for right shift on byte (need & 0xFF for unsigned/logical shift)
-		// Java's >> on a signed byte does arithmetic shift, but we need logical shift
-		if node.Op == token.SHR {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				if tvX, ok := je.pkg.TypesInfo.Types[node.X]; ok && tvX.Type != nil {
-					lhsType := tvX.Type.String()
-					if lhsType == "byte" || lhsType == "uint8" || lhsType == "int8" {
-						maskLhs = true
-					}
-				}
-			}
-		}
-
-		// Push state to stack for this binary expression
-		je.byteComparisonStack = append(je.byteComparisonStack, struct {
-			maskLhs bool
-			maskRhs bool
-		}{maskLhs, maskRhs})
-
-		// Check for string comparison (== or !=)
-		if node.Op == token.EQL || node.Op == token.NEQ {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				// Check if LHS is a string
-				if tv, ok := je.pkg.TypesInfo.Types[node.X]; ok {
-					if tv.Type != nil && tv.Type.String() == "string" {
-						je.isStringComparison = true
-						je.stringComparisonOp = node.Op.String()
-						je.stringComparisonLhsExpr = exprToString(node.X)
-						// For !=, emit "!"
-						if node.Op == token.NEQ {
-							je.emitToPackage("!")
-						}
-						// Emit opening paren to wrap the LHS for proper precedence
-						// This ensures (String)a becomes ((String)a).equals() not (String)(a.equals())
-						je.emitToPackage("(")
-						return
-					}
-				}
-			}
-		}
-
-		// Emit opening paren if we need to mask LHS
-		if maskLhs {
-			je.emitToPackage("(")
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Pop byte comparison state from stack and close RHS mask if needed
-		if len(je.byteComparisonStack) > 0 {
-			state := je.byteComparisonStack[len(je.byteComparisonStack)-1]
-			je.byteComparisonStack = je.byteComparisonStack[:len(je.byteComparisonStack)-1]
-			if state.maskRhs {
-				je.emitToPackage(" & 0xFF)")
-			}
-		}
-		// Close .equals() for string comparison
-		if je.isStringComparison {
-			je.emitToPackage(")")
-			je.isStringComparison = false
-			je.stringComparisonOp = ""
-			je.stringComparisonLhsExpr = ""
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitBinaryExprOperator(op token.Token, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// For string comparison, close LHS paren and emit .equals(
-		if je.isStringComparison {
-			je.emitToPackage(").equals(")
-			return
-		}
-		// Get current byte comparison state from stack
-		var maskLhs, maskRhs bool
-		if len(je.byteComparisonStack) > 0 {
-			state := je.byteComparisonStack[len(je.byteComparisonStack)-1]
-			maskLhs = state.maskLhs
-			maskRhs = state.maskRhs
-		}
-		// For byte comparison, close LHS mask if needed
-		if maskLhs {
-			je.emitToPackage(" & 0xFF)")
-		}
-		str := je.emitAsString(" "+op.String()+" ", 0)
-		je.emitToPackage(str)
-		// For byte comparison, open RHS mask if needed
-		if maskRhs {
-			je.emitToPackage("(")
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isUnsupportedIndexedCall {
-			return
-		}
-		if je.isMultiReturnAssign {
-			return
-		}
-		if je.isSliceMakeCall {
-			if index == 0 {
-				// Skip the type argument - mark that we're in the type arg
-				je.inTypeContext = true
-				return
-			}
-			if index == 1 {
-				// Use MakeSlice helper to create ArrayList with actual elements
-				if je.sliceMakeElemType == "boolean" || je.sliceMakeElemType == "Boolean" {
-					je.emitToPackage("SliceBuiltins.MakeBoolSlice(")
-				} else {
-					je.emitToPackage("SliceBuiltins.<"+toBoxedType(je.sliceMakeElemType)+">MakeSlice(")
-				}
-				return
-			}
-		}
-		if index > 0 {
-			str := je.emitAsString(", ", 0)
-			je.emitToPackage(str)
-		}
-		// For append call with struct argument, wrap with copy constructor
-		if je.isAppendCall && index > 0 && je.appendStructType != "" {
-			je.emitToPackage("new " + je.appendStructType + "(")
-		}
-		// Add cast for byte/short parameters when passing integer literals/constants
-		if index < len(je.callExprParamTypes) {
-			paramType := je.callExprParamTypes[index]
-			// Check if argument needs cast (integer literal or constant to byte/short)
-			needsCast := false
-			if _, isLit := node.(*ast.BasicLit); isLit {
-				needsCast = true
-			} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
-				// Handle -1, +1, etc.
-				if _, isLit := unary.X.(*ast.BasicLit); isLit {
-					needsCast = true
-				}
-			} else if ident, isIdent := node.(*ast.Ident); isIdent {
-				// Check if it's a constant
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
-					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil {
-						if _, isConst := obj.(*types.Const); isConst {
-							needsCast = true
-						}
-					}
-				}
-			}
-			if needsCast {
-				switch paramType {
-				case "byte":
-					je.emitToPackage("(byte)(")
-				case "short":
-					je.emitToPackage("(short)(")
-				}
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isSliceMakeCall && index == 0 {
-			// Clear type context after first argument
-			je.inTypeContext = false
-		}
-		// Close copy constructor for append with struct
-		if je.isAppendCall && index > 0 && je.appendStructType != "" {
-			je.emitToPackage(")")
-		}
-		// Close cast for byte/short parameters
-		if index < len(je.callExprParamTypes) {
-			paramType := je.callExprParamTypes[index]
-			// Check if argument was cast
-			needsCast := false
-			if _, isLit := node.(*ast.BasicLit); isLit {
-				needsCast = true
-			} else if unary, isUnary := node.(*ast.UnaryExpr); isUnary {
-				if _, isLit := unary.X.(*ast.BasicLit); isLit {
-					needsCast = true
-				}
-			} else if ident, isIdent := node.(*ast.Ident); isIdent {
-				if je.pkg != nil && je.pkg.TypesInfo != nil {
-					if obj := je.pkg.TypesInfo.ObjectOf(ident); obj != nil {
-						if _, isConst := obj.(*types.Const); isConst {
-							needsCast = true
-						}
-					}
-				}
-			}
-			if needsCast && (paramType == "byte" || paramType == "short") {
-				je.emitToPackage(")")
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(";", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// If there's an Init, don't emit "if " here; let Init be a separate statement
-		if node.Init != nil {
-			je.hasIfInit = true
-			je.ifInitIndent = indent
-			return
-		}
-		je.hasIfInit = false
-		str := je.emitAsString("if ", indent)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitIfStmtInit(node ast.Stmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Init will be emitted as a regular statement
-	})
-}
-
-func (je *JavaEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// After init, emit newline - the statement already has its own semicolon
-		je.emitToPackage("\n")
-	})
-}
-
-func (je *JavaEmitter) PreVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// If there was an Init, emit "if " now with proper indentation
-		if je.hasIfInit {
-			str := je.emitAsString("if (", je.ifInitIndent)
-			je.emitToPackage(str)
-			je.hasIfInit = false // Reset flag after use
-		} else {
-			str := je.emitAsString("(", 0)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(") ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Push a scope for for-loop init variables (these are scoped to the for statement)
-		je.declaredVarsStack = append(je.declaredVarsStack, make(map[string]bool))
-
-		je.isInfiniteLoop = node.Init == nil && node.Cond == nil && node.Post == nil
-		if je.isInfiniteLoop {
-			str := je.emitAsString("while (true) ", indent)
-			je.emitToPackage(str)
-		} else {
-			str := je.emitAsString("for (", indent)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitForStmtInit(node ast.Stmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.insideForInit = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.insideForInit = false
-		if je.isInfiniteLoop {
-			return
-		}
-		str := je.emitAsString("; ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitForStmtPost(node ast.Stmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.insideForPostCond = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.insideForPostCond = false
-		if je.isInfiniteLoop {
-			return
-		}
-		str := je.emitAsString(") ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(" else ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isInfiniteLoop {
-			return
-		}
-		str := je.emitAsString("; ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.isInfiniteLoop = false
-		// Pop the for-loop scope
-		if len(je.declaredVarsStack) > 0 {
-			je.declaredVarsStack = je.declaredVarsStack[:len(je.declaredVarsStack)-1]
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Push a scope for range loop variables
-		je.declaredVarsStack = append(je.declaredVarsStack, make(map[string]bool))
-
-		je.rangeStmtIndent = indent
-		je.isKeyValueRange = false
-		je.rangeKeyName = ""
-		je.rangeValueName = ""
-		je.rangeCollectionExpr = ""
-
-		// Determine if key-value or index-only range
-		// Handle key (index)
-		if node.Key != nil {
-			if keyIdent, ok := node.Key.(*ast.Ident); ok {
-				if keyIdent.Name != "_" {
-					je.rangeKeyName = keyIdent.Name
-				}
-			}
-		}
-		// Handle value
-		if node.Value != nil {
-			if valIdent, ok := node.Value.(*ast.Ident); ok {
-				if valIdent.Name != "_" {
-					je.rangeValueName = valIdent.Name
-					je.isKeyValueRange = true
-				}
-			}
-		}
-
-		str := je.emitAsString("for (", indent)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitRangeStmtKey(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressRangeEmit = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitRangeStmtValue(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressRangeEmit = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitRangeStmtX(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.captureRangeExpr = true
-		je.rangeCollectionExpr = ""
-	})
-}
-
-func (je *JavaEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.captureRangeExpr = false
-
-		// Check if ranging over a string - need to use .toCharArray() for Java
-		collectionExpr := je.rangeCollectionExpr
-		isStringRange := false
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			if t := je.pkg.TypesInfo.TypeOf(node); t != nil {
-				if basic, ok := t.Underlying().(*types.Basic); ok {
-					if basic.Kind() == types.String {
-						isStringRange = true
-						collectionExpr = je.rangeCollectionExpr + ".toCharArray()"
-					}
-				}
-			}
-		}
-
-		if je.isKeyValueRange && je.rangeKeyName != "" {
-			// For key-value range: for (int key = 0; key < collection.size(); key++)
-			sizeMethod := ".size()"
-			if isStringRange {
-				sizeMethod = ".length()"
-			}
-			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s%s; %s++) ",
-				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, sizeMethod, je.rangeKeyName))
-			je.pendingRangeValueDecl = true
-			je.pendingValueName = je.rangeValueName
-			je.pendingCollectionExpr = je.rangeCollectionExpr
-			je.pendingKeyName = je.rangeKeyName
-		} else if je.rangeKeyName != "" && je.rangeValueName == "" {
-			// Index-only range: for (int i = 0; i < collection.size(); i++)
-			sizeMethod := ".size()"
-			if isStringRange {
-				sizeMethod = ".length()"
-			}
-			je.emitToPackage(fmt.Sprintf("int %s = 0; %s < %s%s; %s++) ",
-				je.rangeKeyName, je.rangeKeyName, je.rangeCollectionExpr, sizeMethod, je.rangeKeyName))
-		} else if je.rangeValueName != "" {
-			// Value-only range (key is "_" or not used): for (var val : collection)
-			je.emitToPackage(fmt.Sprintf("var %s : %s) ", je.rangeValueName, collectionExpr))
-		} else {
-			// Neither key nor value specified: for (var __item : collection)
-			je.emitToPackage(fmt.Sprintf("var __item : %s) ", collectionExpr))
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.isKeyValueRange = false
-		// Pop the range loop scope
-		if len(je.declaredVarsStack) > 0 {
-			je.declaredVarsStack = je.declaredVarsStack[:len(je.declaredVarsStack)-1]
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if !je.insideForPostCond {
-			str := je.emitAsString(node.Tok.String(), 0)
-			je.emitToPackage(str)
-			str = je.emitAsString(";", 0)
-			je.emitToPackage(str)
-		} else {
-			str := je.emitAsString(node.Tok.String(), 0)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Push a new state to the stack for this composite literal
-		state := structLitState{
-			isStructLit:  false,
-			buffer:       &strings.Builder{},
-			fieldBuffers: make(map[string]string),
-		}
-
-		// Check if any element is a key-value expression (partial struct initialization)
-		hasKeyValue := false
-		for _, elt := range node.Elts {
-			if _, ok := elt.(*ast.KeyValueExpr); ok {
-				hasKeyValue = true
-				break
-			}
-		}
-
-		if hasKeyValue && je.pkg != nil && je.pkg.TypesInfo != nil {
-			// Get the type of the composite literal
-			tv := je.pkg.TypesInfo.Types[node]
-			if tv.Type != nil {
-				// Check if it's a struct type
-				if structType, ok := tv.Type.Underlying().(*types.Struct); ok {
-					state.isStructLit = true
-					state.structLitType = tv.Type
-					state.fieldOrder = make([]string, structType.NumFields())
-					state.fieldTypes = make(map[string]string)
-
-					// Build the field order and types
-					for i := 0; i < structType.NumFields(); i++ {
-						field := structType.Field(i)
-						state.fieldOrder[i] = field.Name()
-						state.fieldTypes[field.Name()] = getJavaTypeName(field.Type())
-					}
-				}
-			}
-		}
-
-		je.structLitStack = append(je.structLitStack, state)
-	})
-}
-
-func (je *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Pop from the struct literal stack
-		if len(je.structLitStack) > 0 {
-			je.structLitStack = je.structLitStack[:len(je.structLitStack)-1]
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitCompositeLitType(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("new ", 0)
-		je.emitToPackage(str)
-		// Set type context so type names get proper package prefix
-		je.inTypeContext = true
-		je.inCompositeLitType = true
-
-		// Check if the type is a package-qualified slice/map type alias
-		// If so, emit the resolved type directly and suppress normal selector emission
-		if _, ok := node.(*ast.SelectorExpr); ok {
-			if je.pkg != nil && je.pkg.TypesInfo != nil {
-				typeAndValue := je.pkg.TypesInfo.Types[node]
-				if typeAndValue.Type != nil {
-					underlyingType := typeAndValue.Type.Underlying()
-					if _, ok := underlyingType.(*types.Slice); ok {
-						// Slice type alias - emit ArrayList<elemType> directly
-						javaType := getJavaTypeName(typeAndValue.Type)
-						je.emitToPackage(javaType)
-						je.suppressTypeAliasSelectorX = true
-						je.inTypeContext = false // Skip normal type emission
-					} else if _, ok := underlyingType.(*types.Map); ok {
-						// Map type alias - emit HashMap<K,V> directly
-						javaType := getJavaTypeName(typeAndValue.Type)
-						je.emitToPackage(javaType)
-						je.suppressTypeAliasSelectorX = true
-						je.inTypeContext = false // Skip normal type emission
-					}
-				}
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inTypeContext = false
-		je.inCompositeLitType = false
-		je.suppressTypeAliasSelectorX = false // Reset after composite literal type
-		if je.isArray {
-			str := je.emitAsString("(Arrays.asList", 0)
-			je.emitToPackage(str)
-		} else {
-			str := je.emitAsString("(", 0)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitCompositeLitElts(node []ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isArray {
-			str := je.emitAsString("(", 0)
-			je.emitToPackage(str)
-		}
-		// Enable capturing mode for struct literals with key-value pairs (use stack)
-		if len(je.structLitStack) > 0 {
-			top := &je.structLitStack[len(je.structLitStack)-1]
-			if top.isStructLit {
-				top.capturing = true
-				top.buffer.Reset()
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isArray {
-			str := je.emitAsString("))", 0)
-			je.emitToPackage(str)
-			je.isArray = false
-			je.sliceLitElemCast = "" // Reset after processing slice literal
-		} else if len(je.structLitStack) > 0 {
-			top := &je.structLitStack[len(je.structLitStack)-1]
-			if top.isStructLit && top.capturing {
-				// Stop capturing and emit the properly ordered constructor arguments
-				top.capturing = false
-
-				// Build the argument list in field order with default values for missing fields
-				var args []string
-				for _, fieldName := range top.fieldOrder {
-					fieldType := top.fieldTypes[fieldName]
-					if val, exists := top.fieldBuffers[fieldName]; exists {
-						// Add cast for byte/short fields if the value needs it
-						if needsByteCast(fieldType, val) {
-							val = fmt.Sprintf("(%s)(%s)", fieldType, val)
-						}
-						args = append(args, val)
-					} else {
-						// Field not provided - emit default value based on type
-						defaultVal := getJavaDefaultValue(fieldType)
-						args = append(args, defaultVal)
-					}
-				}
-
-				// Emit all arguments with commas
-				str := je.emitAsString(strings.Join(args, ", "), 0)
-				je.emitToPackage(str)
-				str = je.emitAsString(")", 0)
-				je.emitToPackage(str)
-			} else {
-				str := je.emitAsString(")", 0)
-				je.emitToPackage(str)
-			}
-		} else {
-			str := je.emitAsString(")", 0)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// When capturing struct literal elements (check stack), reset buffer for each element
-		// and skip comma emission (we'll handle commas in PostVisitCompositeLitElts)
-		if len(je.structLitStack) > 0 {
-			top := &je.structLitStack[len(je.structLitStack)-1]
-			if top.capturing {
-				top.buffer.Reset()
-				return
-			}
-		}
-		if index > 0 {
-			str := je.emitAsString(", ", 0)
-			je.emitToPackage(str)
-		}
-		// Emit cast prefix for byte/short slice literal elements
-		if je.sliceLitElemCast != "" && je.isArray {
-			// Only apply cast to BasicLit (numeric literals)
-			if _, ok := node.(*ast.BasicLit); ok {
-				je.emitToPackage(je.sliceLitElemCast)
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// When capturing struct literal elements (check stack), save the buffer for the current key
-		if len(je.structLitStack) > 0 {
-			top := &je.structLitStack[len(je.structLitStack)-1]
-			if top.capturing && top.currentKey != "" {
-				top.fieldBuffers[top.currentKey] = top.buffer.String()
-				top.currentKey = "" // Reset for next element
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Capture the key name for struct literal element mapping (use stack)
-		if len(je.structLitStack) > 0 {
-			top := &je.structLitStack[len(je.structLitStack)-1]
-			if top.capturing {
-				if ident, ok := node.Key.(*ast.Ident); ok {
-					top.currentKey = ident.Name
-				}
-			}
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitSliceExprX(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Capture the X expression name for later use (for .size() call when High is nil)
-		je.sliceExprXName = exprToString(node)
-		// Wrap subList with new ArrayList<>() to convert List back to ArrayList
-		je.emitToPackage("new ArrayList<>(")
-	})
-}
-
-func (je *JavaEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		str := je.emitAsString(".subList(", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitSliceExprXBegin(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress the second X traversal
-		je.suppressRangeEmit = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressRangeEmit = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitSliceExprLow(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// If Low is nil (like a[:high]), emit 0
-		if node == nil {
-			je.emitToPackage("0")
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		str := je.emitAsString(", ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitSliceExprXEnd(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress the third X traversal
-		je.suppressRangeEmit = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressRangeEmit = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitSliceExprHigh(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// If High is nil (like a[low:]), emit X.size()
-		if node == nil {
-			je.emitToPackage(je.sliceExprXName+".size()")
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress during multi-return assignment (handled in PostVisitAssignStmt)
-		if je.isMultiReturnAssign {
-			return
-		}
-		// Close both subList() and the ArrayList wrapper
-		str := je.emitAsString("))", 0)
-		je.emitToPackage(str)
-		je.sliceExprXName = "" // Reset
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncLit(node *ast.FuncLit, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inLambdaParams = true
-		je.emitToken("(", LeftParen, 0)
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inLambdaParams = false
-		je.emitToken(") -> ", RightParen, 0)
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if index > 0 {
-			je.emitToken(", ", Comma, 0)
-		}
-		// Emit parameter name only for lambda (Java uses type inference)
-		if len(node.Names) > 0 {
-			paramName := node.Names[0].Name
-			// Check if parameter name conflicts with an outer scope variable (Java doesn't allow shadowing in lambdas)
-			if je.isVarDeclared(paramName) || je.isFuncParam(paramName) {
-				// Append underscore to make the name unique
-				paramName = paramName + "_"
-			}
-			je.emitToPackage(paramName)
-		}
-		// Set type context to suppress type emission
-		je.inTypeContext = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.inTypeContext = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncLitBody(node *ast.BlockStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitFuncLitTypeResult(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Lambda return types are inferred in Java - suppress emission
-		je.shouldGenerate = false
-	})
-}
-
-func (je *JavaEmitter) PostVisitFuncLitTypeResult(node *ast.Field, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.shouldGenerate = true
-	})
-}
-
-func (je *JavaEmitter) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Skip if we're inside a slice make call (the type is handled separately)
-		if je.isSliceMakeCall {
-			return
-		}
-		str := je.emitAsString("Object", indent)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitKeyValueExprKey(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Suppress struct field key - Java uses positional constructor args
-		je.suppressKeyValueKey = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitKeyValueExprKey(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.suppressKeyValueKey = false
-	})
-}
-
-func (je *JavaEmitter) PreVisitKeyValueExprValue(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(node.Op.String(), 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitParenExpr(node *ast.ParenExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.emitToPackage("(")
-	})
-}
-
-func (je *JavaEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.emitToPackage(")")
-	})
-}
-
-func (je *JavaEmitter) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("public static final ", indent+2)
-		je.emitToPackage(str)
-
-		// Try to infer type from value
-		if je.pkg != nil && je.pkg.TypesInfo != nil {
-			if obj := je.pkg.TypesInfo.Defs[node]; obj != nil {
-				typeName := getJavaTypeName(obj.Type())
-				je.emitToPackage(typeName+" ")
-			}
-		}
-		str = je.emitAsString(node.Name+" = ", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.emitToPackage(";\n")
-	})
-}
-
-func (je *JavaEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("switch ", indent)
-		je.emitToPackage(str)
-		je.emitToken("(", LeftParen, 0)
-	})
-}
-
-func (je *JavaEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString("}\n", indent)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		je.emitToken(")", RightParen, 0)
-		str := je.emitAsString(" {\n", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		// Add break after each case unless it's a fallthrough
-		str := je.emitAsString("break;\n", indent+2)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if len(node) == 0 {
-			str := je.emitAsString("default:\n", indent)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PreVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if index == 0 {
-			str := je.emitAsString("case ", indent)
-			je.emitToPackage(str)
-		}
-	})
-}
-
-func (je *JavaEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(":\n", 0)
-		je.emitToPackage(str)
-	})
-}
-
-func (je *JavaEmitter) PreVisitTypeAssertExprType(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isTypeAssertCommaOk {
-			return
-		}
-		je.emitToken("(", LeftParen, 0)
-		// Set type context so type names get proper package prefix
-		je.inTypeContext = true
-	})
-}
-
-func (je *JavaEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		if je.isTypeAssertCommaOk {
-			return
-		}
-		je.inTypeContext = false
-		je.emitToken(")", RightParen, 0)
-	})
-}
-
-func (je *JavaEmitter) PreVisitTypeAssertExprX(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
-	je.executeIfNotForwardDecls(func() {
-	})
-}
-
-func (je *JavaEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
-	je.executeIfNotForwardDecls(func() {
-		str := je.emitAsString(strings.ToLower(node.Tok.String())+";", indent)
-		je.emitToPackage(str)
-	})
-}
-
-// Build file generation
-
-func (je *JavaEmitter) GeneratePomXml() error {
-	if je.LinkRuntime == "" {
+// GeneratePomXmlJ generates a pom.xml for the Java project.
+func GeneratePomXmlJ(outputDir, outputName, linkRuntime string) error {
+	if linkRuntime == "" {
 		return nil
 	}
 
-	pomPath := filepath.Join(je.OutputDir, "pom.xml")
+	pomPath := filepath.Join(outputDir, "pom.xml")
 	file, err := os.Create(pomPath)
 	if err != nil {
 		return fmt.Errorf("failed to create pom.xml: %w", err)
 	}
 	defer file.Close()
 
-	// Sanitize output name for Java class name (replace hyphens with underscores)
-	mainClass := strings.ReplaceAll(je.OutputName, "-", "_")
+	mainClass := strings.ReplaceAll(outputName, "-", "_")
 
 	pom := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -5520,7 +1028,7 @@ func (je *JavaEmitter) GeneratePomXml() error {
         </plugins>
     </build>
 </project>
-`, je.OutputName, mainClass, mainClass)
+`, outputName, mainClass, mainClass)
 
 	_, err = file.WriteString(pom)
 	if err != nil {
@@ -5531,12 +1039,13 @@ func (je *JavaEmitter) GeneratePomXml() error {
 	return nil
 }
 
-func (je *JavaEmitter) CopyRuntimePackages() error {
-	if je.LinkRuntime == "" {
+// CopyRuntimePackagesJ copies runtime .java files for all detected runtime packages.
+func CopyRuntimePackagesJ(outputDir, outputName, linkRuntime string, runtimePackages map[string]string) error {
+	if linkRuntime == "" {
 		return nil
 	}
 
-	for name, variant := range je.RuntimePackages {
+	for name, variant := range runtimePackages {
 		if variant == "none" {
 			continue
 		}
@@ -5551,7 +1060,7 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 			srcFileName = capName + "Runtime.java"
 		}
 
-		runtimeSrcPath := filepath.Join(je.LinkRuntime, name, "java", srcFileName)
+		runtimeSrcPath := filepath.Join(linkRuntime, name, "java", srcFileName)
 		content, err := os.ReadFile(runtimeSrcPath)
 		if err != nil {
 			DebugLogPrintf("Skipping Java runtime for %s: %v", name, err)
@@ -5559,7 +1068,7 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 		}
 
 		dstFileName := capName + "Runtime.java"
-		dstPath := filepath.Join(je.OutputDir, dstFileName)
+		dstPath := filepath.Join(outputDir, dstFileName)
 		if err := os.WriteFile(dstPath, content, 0644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", dstFileName, err)
 		}
@@ -5568,9 +1077,9 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 		// For graphics with tigr variant, also copy native JNI files
 		if name == "graphics" && variant == "tigr" {
 			// Copy JNI C file
-			jniSrc := filepath.Join(je.LinkRuntime, "graphics", "java", "graphics_jni.c")
+			jniSrc := filepath.Join(linkRuntime, "graphics", "java", "graphics_jni.c")
 			if jniContent, err := os.ReadFile(jniSrc); err == nil {
-				jniDst := filepath.Join(je.OutputDir, "graphics_jni.c")
+				jniDst := filepath.Join(outputDir, "graphics_jni.c")
 				if err := os.WriteFile(jniDst, jniContent, 0644); err != nil {
 					return fmt.Errorf("failed to write graphics_jni.c: %w", err)
 				}
@@ -5578,9 +1087,9 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 			}
 
 			// Copy Makefile as Makefile.jni (avoid overwriting C++ Makefile)
-			makeSrc := filepath.Join(je.LinkRuntime, "graphics", "java", "Makefile")
+			makeSrc := filepath.Join(linkRuntime, "graphics", "java", "Makefile")
 			if makeContent, err := os.ReadFile(makeSrc); err == nil {
-				makeDst := filepath.Join(je.OutputDir, "Makefile.jni")
+				makeDst := filepath.Join(outputDir, "Makefile.jni")
 				if err := os.WriteFile(makeDst, makeContent, 0644); err != nil {
 					return fmt.Errorf("failed to write Makefile.jni: %w", err)
 				}
@@ -5590,9 +1099,9 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 			// Copy TIGR files from cpp directory
 			tigrFiles := []string{"tigr.c", "tigr.h", "screen_helper.c"}
 			for _, file := range tigrFiles {
-				src := filepath.Join(je.LinkRuntime, "graphics", "cpp", file)
+				src := filepath.Join(linkRuntime, "graphics", "cpp", file)
 				if fileContent, err := os.ReadFile(src); err == nil {
-					dst := filepath.Join(je.OutputDir, file)
+					dst := filepath.Join(outputDir, file)
 					if err := os.WriteFile(dst, fileContent, 0644); err != nil {
 						return fmt.Errorf("failed to write %s: %w", file, err)
 					}
@@ -5601,11 +1110,12 @@ func (je *JavaEmitter) CopyRuntimePackages() error {
 			}
 
 			// Generate run.sh script with correct platform-specific flags
+			sanitizedName := sanitizeJavaIdentifier(outputName)
 			runScript := `#!/bin/bash
 # Run script for Java graphics application
 # Automatically adds required JVM flags for each platform
 
-MAIN_CLASS="${1:-` + je.OutputName + `}"
+MAIN_CLASS="${1:-` + sanitizedName + `}"
 
 # Detect OS and set appropriate flags
 case "$(uname -s)" in
@@ -5625,13 +1135,2899 @@ case "$(uname -s)" in
         ;;
 esac
 `
-			runScriptPath := filepath.Join(je.OutputDir, "run.sh")
+			runScriptPath := filepath.Join(outputDir, "run.sh")
 			if err := os.WriteFile(runScriptPath, []byte(runScript), 0755); err != nil {
 				return fmt.Errorf("failed to write run.sh: %w", err)
 			}
 			DebugLogPrintf("Generated run.sh")
 		}
 	}
-
 	return nil
+}
+
+// ============================================================
+// Package visitors
+// ============================================================
+
+func (e *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
+	e.pkg = pkg
+	name := pkg.Name
+	if name == "main" {
+		className := sanitizeJavaIdentifier(e.OutputName)
+		if className == "" {
+			className = "Main"
+		}
+		e.currentPackage = className
+		e.fs.PushCode(fmt.Sprintf("public class %s {\n\n", className))
+	} else if name == "hmap" {
+		// hmap is inlined in the main file
+		e.currentPackage = name
+		e.fs.PushCode(fmt.Sprintf("class %s {\n\n", name))
+	} else {
+		// For non-main, non-hmap packages, create separate file with imports
+		e.currentPackage = name
+
+		// Check for naming conflict with main output file
+		if name == e.OutputName {
+			// Naming conflict - rename main output to avoid collision
+			oldOutput := e.Output
+			e.file.Close()
+			os.Remove(oldOutput)
+
+			e.OutputName = e.OutputName + "_main"
+			e.Output = filepath.Join(e.OutputDir, e.OutputName+".java")
+			var err error
+			e.file, err = os.Create(e.Output)
+			if err != nil {
+				fmt.Println("Error creating renamed main file:", err)
+				return
+			}
+			// Re-write imports and helpers to the new main file
+			writeJavaBoilerplate(e.file)
+		}
+
+		// Flush current tokens to main file before switching
+		tokens := e.fs.Reduce(string(PreVisitProgram))
+		for _, t := range tokens {
+			e.file.WriteString(t.Content)
+		}
+		// Re-push program marker
+		e.fs.PushMarker(string(PreVisitProgram))
+
+		// Create separate file for this package
+		pkgFileName := filepath.Join(e.OutputDir, name+".java")
+		pkgFile, err := os.Create(pkgFileName)
+		if err != nil {
+			fmt.Println("Error creating package file:", err)
+			return
+		}
+
+		// Write imports and class header to package file
+		pkgFile.WriteString("import java.util.*;\nimport java.util.function.*;\n\n")
+		pkgFile.WriteString(fmt.Sprintf("public class %s {\n\n", name))
+		pkgFile.Close()
+
+		// The package content will be accumulated in the fragment stack
+		// and appended to the package file in PostVisitPackage
+		e.fs.PushCode("")
+	}
+}
+
+func (e *JavaEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
+	name := pkg.Name
+
+	if name != "main" && name != "hmap" {
+		// Reduce tokens accumulated for this package
+		// They were pushed after the PreVisitPackage marker
+		// Close the class
+		e.fs.PushCode("}\n")
+
+		// Collect all tokens and append to the package file
+		// The tokens from this package need to be written to the separate file
+		tokens := e.fs.Reduce(string(PreVisitProgram))
+		pkgFileName := filepath.Join(e.OutputDir, name+".java")
+		pkgFile, err := os.OpenFile(pkgFileName, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Println("Error opening package file:", err)
+			return
+		}
+		for _, t := range tokens {
+			pkgFile.WriteString(t.Content)
+		}
+		pkgFile.Close()
+		// Re-push program marker for subsequent packages
+		e.fs.PushMarker(string(PreVisitProgram))
+		return
+	}
+
+	e.fs.PushCode("}\n")
+}
+
+// ============================================================
+// Literals and Identifiers
+// ============================================================
+
+func (e *JavaEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
+	val := node.Value
+	if node.Kind == token.STRING && len(val) > 1 && val[0] == '`' {
+		// Raw string literal -> Java regular string with escaped quotes
+		val = escapeRawStringToJava(val[1 : len(val)-1])
+	}
+	// Add L suffix for large integer literals that exceed Java int range
+	if node.Kind == token.INT {
+		// Parse the integer value to check if it exceeds int range
+		numVal, err := strconv.ParseInt(val, 0, 64)
+		if err == nil && (numVal > 2147483647 || numVal < -2147483648) {
+			if !strings.HasSuffix(val, "L") && !strings.HasSuffix(val, "l") {
+				val = val + "L"
+			}
+		}
+	}
+	// Convert Go character literals to numeric values
+	if node.Kind == token.CHAR && len(val) >= 3 && val[0] == '\'' {
+		inner := val[1 : len(val)-1]
+		if len(inner) == 1 {
+			val = fmt.Sprintf("%d", inner[0])
+		} else if inner == "\\n" {
+			val = "10"
+		} else if inner == "\\t" {
+			val = "9"
+		} else if inner == "\\r" {
+			val = "13"
+		} else if inner == "\\\\" {
+			val = "92"
+		} else if inner == "\\'" {
+			val = "39"
+		} else if inner == "\\\"" {
+			val = "34"
+		} else if inner == "\\0" {
+			val = "0"
+		} else {
+			val = fmt.Sprintf("(int)'%s'", inner)
+		}
+	}
+	e.fs.Push(val, TagLiteral, nil)
+}
+
+func (e *JavaEmitter) PreVisitIdent(node *ast.Ident, indent int) {
+	name := node.Name
+	// Map Go builtins
+	switch name {
+	case "true", "false":
+		e.fs.Push(name, TagLiteral, nil)
+		return
+	case "nil":
+		e.fs.Push("null", TagLiteral, nil)
+		return
+	case "string":
+		e.fs.Push("String", TagType, nil)
+		return
+	case "bool":
+		e.fs.Push("boolean", TagType, nil)
+		return
+	}
+	// Check javaTypesMap for type mappings
+	if javaType, ok := javaTypesMap[name]; ok {
+		e.fs.Push(javaType, TagType, nil)
+		return
+	}
+	// Check typeAliasMap
+	if underlyingType, ok := e.typeAliasMap[name]; ok {
+		e.fs.Push(underlyingType, TagType, nil)
+		return
+	}
+	// Check if this is a reference to another package
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		if obj := e.pkg.TypesInfo.Uses[node]; obj != nil {
+			if obj.Pkg() != nil && obj.Pkg().Name() != e.currentPackage && obj.Pkg().Name() != "main" {
+				name = obj.Pkg().Name() + "." + name
+			}
+		}
+	}
+	goType := e.getExprGoTypeJ(node)
+
+	// Closure capture: wrap reads of captured mutable variables
+	if e.closureCapturedMutVars != nil && e.closureCapturedMutVars[name] {
+		capturedType := e.closureCapturedVarType[name]
+		if capturedType != "" {
+			e.fs.Push(fmt.Sprintf("((%s)%s[0])", capturedType, name), TagIdent, goType)
+		} else {
+			e.fs.Push(fmt.Sprintf("%s[0]", name), TagIdent, goType)
+		}
+		return
+	}
+
+	e.fs.Push(name, TagIdent, goType)
+}
+
+// closureUnwrapLhs extracts "name[0]" from "((Type)name[0])" for assignment LHS.
+func closureUnwrapLhs(expr string) string {
+	// Pattern: ((Type)name[0]) -> name[0]
+	if strings.HasPrefix(expr, "((") && strings.HasSuffix(expr, "[0])") {
+		inner := expr[1 : len(expr)-1] // Remove outer parens: (Type)name[0]
+		if idx := strings.Index(inner, ")"); idx >= 0 {
+			return inner[idx+1:] // name[0]
+		}
+	}
+	return expr
+}
+
+// closureUnwrapName extracts "name" from "((Type)name[0])" for declarations.
+func closureUnwrapName(expr string) string {
+	// Pattern: ((Type)name[0]) -> name
+	if strings.HasPrefix(expr, "((") && strings.HasSuffix(expr, "[0])") {
+		inner := expr[1 : len(expr)-1] // Remove outer parens: (Type)name[0]
+		if idx := strings.Index(inner, ")"); idx >= 0 {
+			rest := inner[idx+1:] // name[0]
+			if bracketIdx := strings.Index(rest, "[0]"); bracketIdx >= 0 {
+				return rest[:bracketIdx] // name
+			}
+		}
+	}
+	return expr
+}
+
+// ============================================================
+// Binary Expressions
+// ============================================================
+
+func (e *JavaEmitter) PostVisitBinaryExprLeft(node ast.Expr, indent int) {
+	left := e.fs.ReduceToCode(string(PreVisitBinaryExprLeft))
+	e.fs.PushCode(left)
+}
+
+func (e *JavaEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
+	right := e.fs.ReduceToCode(string(PreVisitBinaryExprRight))
+	e.fs.PushCode(right)
+}
+
+func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitBinaryExpr))
+	left := ""
+	right := ""
+	if len(tokens) >= 1 {
+		left = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		right = tokens[1].Content
+	}
+	op := node.Op.String()
+
+	// Check for string comparison: use .equals() for == and != on strings
+	leftType := e.getExprGoTypeJ(node.X)
+	rightType := e.getExprGoTypeJ(node.Y)
+	if leftType != nil {
+		if basic, ok := leftType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+			if op == "==" {
+				e.fs.PushCode(fmt.Sprintf("%s.equals(%s)", left, right))
+				return
+			}
+			if op == "!=" {
+				e.fs.PushCode(fmt.Sprintf("!%s.equals(%s)", left, right))
+				return
+			}
+		}
+	}
+
+	// Byte comparison masking: Java byte is signed (-128..127), Go byte/uint8 is unsigned (0..255).
+	// Any comparison involving a byte value needs & 0xFF masking for correct unsigned semantics.
+	// Skip masking for literal constants (they're already the correct value).
+	if op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" {
+		_, lhsIsLit := node.X.(*ast.BasicLit)
+		_, rhsIsLit := node.Y.(*ast.BasicLit)
+		if e.isByteTypeJ(leftType) && !lhsIsLit {
+			left = e.maskByteValueJ(left)
+		}
+		if e.isByteTypeJ(rightType) && !rhsIsLit {
+			right = e.maskByteValueJ(right)
+		}
+	}
+
+	// Right shift on byte: need & 0xFF for logical (unsigned) shift
+	if op == ">>" && e.isByteTypeJ(leftType) {
+		left = e.maskByteValueJ(left)
+	}
+
+	// Bitwise AND with byte operands compared against non-zero: mask result
+	// e.g., (rowByte & mask) != 0 — the parent comparison will handle masking,
+	// but (byte & byte) already promotes to int in Java, so the & 0xFF is needed
+	// when the result is later compared.
+	if op == "&" && e.isByteTypeJ(leftType) && e.isByteTypeJ(rightType) {
+		expr := fmt.Sprintf("(%s %s %s & 0xFF)", left, op, right)
+		e.fs.PushCode(expr)
+		return
+	}
+
+	expr := fmt.Sprintf("%s %s %s", left, op, right)
+
+	// For arithmetic ops on narrow types, Java promotes to int - add narrowing cast
+	goType := e.getExprGoTypeJ(node)
+	if goType != nil {
+		if basic, ok := goType.Underlying().(*types.Basic); ok {
+			switch basic.Kind() {
+			case types.Int8, types.Uint8:
+				expr = fmt.Sprintf("(byte)(%s)", expr)
+			case types.Int16:
+				expr = fmt.Sprintf("(short)(%s)", expr)
+			}
+		}
+	}
+
+	e.fs.PushCode(expr)
+}
+
+// ============================================================
+// Call Expressions
+// ============================================================
+
+func (e *JavaEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
+	funCode := e.fs.ReduceToCode(string(PreVisitCallExprFun))
+	e.fs.PushCode(funCode)
+}
+
+func (e *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
+	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
+
+	// Check if this arg is a function reference (identifier referencing a function)
+	// In Java, function references need ClassName::methodName syntax
+	if ident, ok := node.(*ast.Ident); ok && e.pkg != nil && e.pkg.TypesInfo != nil {
+		if obj := e.pkg.TypesInfo.Uses[ident]; obj != nil {
+			if _, isFunc := obj.(*types.Func); isFunc {
+				className := strings.ReplaceAll(e.OutputName, "-", "_")
+				// Check if it's from another package
+				if obj.Pkg() != nil && obj.Pkg().Name() != e.currentPackage && obj.Pkg().Name() != "main" {
+					className = obj.Pkg().Name()
+				}
+				argCode = className + "::" + ident.Name
+			}
+		}
+	}
+
+	e.fs.PushCode(argCode)
+}
+
+func (e *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
+	argTokens := e.fs.Reduce(string(PreVisitCallExprArgs))
+	var args []string
+	for _, t := range argTokens {
+		if t.Content != "" {
+			args = append(args, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(args, ", "))
+}
+
+func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCallExpr))
+	funName := ""
+	argsStr := ""
+	if len(tokens) >= 1 {
+		funName = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		argsStr = tokens[1].Content
+	}
+
+	// Handle special built-in functions
+	switch funName {
+	case "len", "SliceBuiltins.Length":
+		// len(x) - for maps use hmap.hashMapLen(x), otherwise SliceBuiltins.Length(x)
+		if len(node.Args) > 0 && e.isMapTypeExprJ(node.Args[0]) {
+			e.fs.PushCode(fmt.Sprintf("hmap.hashMapLen(%s)", argsStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("SliceBuiltins.Length(%s)", argsStr))
+		}
+		return
+	case "append", "SliceBuiltins.Append":
+		e.fs.PushCode(fmt.Sprintf("SliceBuiltins.Append(%s)", argsStr))
+		return
+	case "delete":
+		// delete(m, k) -> m = hmap.hashMapDelete(m, k)
+		if len(node.Args) >= 2 {
+			mapName := exprToJavaString(node.Args[0])
+			e.fs.PushCode(fmt.Sprintf("%s = hmap.hashMapDelete(%s)", mapName, argsStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("hmap.hashMapDelete(%s)", argsStr))
+		}
+		return
+	case "make":
+		if len(node.Args) >= 1 {
+			if mapType, ok := node.Args[0].(*ast.MapType); ok {
+				keyTypeConst := e.getMapKeyTypeConstJ(mapType)
+				e.fs.PushCode(fmt.Sprintf("hmap.newHashMap(%d)", keyTypeConst))
+				return
+			}
+			if _, ok := node.Args[0].(*ast.ArrayType); ok {
+				// make([]T, n) -> SliceBuiltins.MakeSlice(n) or MakeBoolSlice(n)
+				elemType := "Object"
+				isBool := false
+				if e.pkg != nil && e.pkg.TypesInfo != nil {
+					if tv, ok := e.pkg.TypesInfo.Types[node.Args[0]]; ok && tv.Type != nil {
+						if slice, ok := tv.Type.(*types.Slice); ok {
+							elemType = e.qualifiedJavaTypeName(slice.Elem())
+							if basic, ok := slice.Elem().Underlying().(*types.Basic); ok && basic.Kind() == types.Bool {
+								isBool = true
+							}
+						}
+					}
+				}
+				parts := strings.SplitN(argsStr, ", ", 2)
+				if len(parts) >= 2 {
+					if isBool {
+						e.fs.PushCode(fmt.Sprintf("SliceBuiltins.MakeBoolSlice(%s)", parts[1]))
+					} else {
+						boxed := toBoxedType(elemType)
+						e.fs.PushCode(fmt.Sprintf("SliceBuiltins.<%s>MakeSlice(%s)", boxed, parts[1]))
+					}
+				} else {
+					e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType)))
+				}
+				return
+			}
+		}
+		e.fs.PushCode(fmt.Sprintf("make(%s)", argsStr))
+		return
+	case "GoanyPanic.goPanic":
+		e.fs.PushCode(fmt.Sprintf("GoanyPanic.goPanic(%s)", argsStr))
+		return
+	}
+
+	// Check if this is a type conversion (e.g., int(x), string(x), byte(x))
+	if ident, ok := node.Fun.(*ast.Ident); ok {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+				if _, isTypeName := obj.(*types.TypeName); isTypeName {
+					javaType := e.qualifiedJavaTypeName(obj.Type())
+					if javaType == "String" {
+						// string(x) -> String.valueOf((char)(x))
+						// Check if the argument is a byte/int for char conversion
+						if len(node.Args) > 0 {
+							argType := e.getExprGoTypeJ(node.Args[0])
+							if argType != nil {
+								if basic, ok := argType.Underlying().(*types.Basic); ok {
+									if basic.Kind() == types.Int || basic.Kind() == types.Int32 ||
+										basic.Kind() == types.Uint8 || basic.Kind() == types.Int8 {
+										e.fs.PushCode(fmt.Sprintf("String.valueOf((char)(%s))", argsStr))
+										return
+									}
+								}
+							}
+						}
+						e.fs.PushCode(fmt.Sprintf("String.valueOf(%s)", argsStr))
+						return
+					}
+					// byte-to-int: int(byteVar) -> (byteVar & 0xFF) for unsigned semantics
+					if (javaType == "int") && len(node.Args) > 0 {
+						argType := e.getExprGoTypeJ(node.Args[0])
+						if e.isByteTypeJ(argType) {
+							e.fs.PushCode(e.maskByteValueJ(argsStr))
+							return
+						}
+					}
+					e.fs.PushCode(fmt.Sprintf("(%s)(%s)", javaType, argsStr))
+					return
+				}
+			}
+		}
+	}
+
+	// Lower builtins (fmt.Println -> System.out.println, etc.)
+	lowered := javaLowerBuiltin(funName)
+	if lowered != funName {
+		funName = lowered
+	}
+
+	// Check if calling a function from an indexed expression (e.g., funcs[0](args))
+	// Java needs: funcs.get(0).apply(args) instead of funcs.get(0)(args)
+	if indexExpr, ok := node.Fun.(*ast.IndexExpr); ok {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			tv := e.pkg.TypesInfo.Types[indexExpr]
+			if tv.Type != nil {
+				if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
+					method := getJavaFuncInterfaceMethod(sig)
+					if method != "" {
+						e.fs.PushCode(fmt.Sprintf("%s.%s(%s)", funName, method, argsStr))
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Check if calling a struct field that is a function type
+	// e.g., visitor.PreVisitFrom(args) -> visitor.PreVisitFrom.apply(args)
+	if selExpr, ok := node.Fun.(*ast.SelectorExpr); ok {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if sel := e.pkg.TypesInfo.Selections[selExpr]; sel != nil {
+				if sig, ok := sel.Type().Underlying().(*types.Signature); ok {
+					method := getJavaFuncInterfaceMethod(sig)
+					if method != "" {
+						e.fs.PushCode(fmt.Sprintf("%s.%s(%s)", funName, method, argsStr))
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// Check if calling a function variable (e.g., fn(args) where fn is a var of function type)
+	// Java needs: fn.apply(args) instead of fn(args)
+	if ident, ok := node.Fun.(*ast.Ident); ok {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+				if _, isVar := obj.(*types.Var); isVar {
+					if sig, ok := obj.Type().Underlying().(*types.Signature); ok {
+						method := getJavaFuncInterfaceMethod(sig)
+						if method != "" {
+							e.fs.PushCode(fmt.Sprintf("%s.%s(%s)", funName, method, argsStr))
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Add narrowing casts for byte/short function parameters
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		var funType types.Type
+		if identExpr, ok := node.Fun.(*ast.Ident); ok {
+			if obj := e.pkg.TypesInfo.ObjectOf(identExpr); obj != nil {
+				funType = obj.Type()
+			}
+		} else if selExpr, ok := node.Fun.(*ast.SelectorExpr); ok {
+			if sel := e.pkg.TypesInfo.Selections[selExpr]; sel != nil {
+				funType = sel.Type()
+			} else if obj := e.pkg.TypesInfo.Uses[selExpr.Sel]; obj != nil {
+				funType = obj.Type()
+			}
+		}
+		if funType != nil {
+			if sig, ok := funType.Underlying().(*types.Signature); ok {
+				args := splitJavaArgs(argsStr)
+				changed := false
+				for i := 0; i < sig.Params().Len() && i < len(args); i++ {
+					param := sig.Params().At(i)
+					if basic, ok := param.Type().Underlying().(*types.Basic); ok {
+						switch basic.Kind() {
+						case types.Int8, types.Uint8:
+							args[i] = "(byte)(" + args[i] + ")"
+							changed = true
+						case types.Int16, types.Uint16:
+							args[i] = "(short)(" + args[i] + ")"
+							changed = true
+						}
+					}
+				}
+				if changed {
+					argsStr = strings.Join(args, ", ")
+				}
+			}
+		}
+	}
+
+	e.fs.PushCode(fmt.Sprintf("%s(%s)", funName, argsStr))
+}
+
+// ============================================================
+// Selector Expressions (a.b)
+// ============================================================
+
+func (e *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitSelectorExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JavaEmitter) PostVisitSelectorExprSel(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitSelectorExprSel))
+	e.fs.PushCode(node.Name)
+}
+
+func (e *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSelectorExpr))
+	xCode := ""
+	selCode := ""
+	if len(tokens) >= 1 {
+		xCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		selCode = tokens[1].Content
+	}
+
+	// Check if selector is a type alias
+	if _, isAlias := e.typeAliasMap[selCode]; isAlias {
+		e.fs.PushCode(e.typeAliasMap[selCode])
+		return
+	}
+
+	// Lower builtins: fmt.Println -> System.out.println
+	loweredX := javaLowerBuiltin(xCode)
+	loweredSel := javaLowerBuiltin(selCode)
+
+	if loweredX == "" {
+		e.fs.PushCode(loweredSel)
+	} else {
+		e.fs.PushCode(loweredX + "." + loweredSel)
+	}
+}
+
+// ============================================================
+// Index Expressions (a[i])
+// ============================================================
+
+func (e *JavaEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitIndexExprX))
+	e.fs.PushCode(xCode)
+	e.lastIndexXCode = xCode
+}
+
+func (e *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
+	idxCode := e.fs.ReduceToCode(string(PreVisitIndexExprIndex))
+	e.fs.PushCode(idxCode)
+	e.lastIndexKeyCode = idxCode
+}
+
+func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitIndexExpr))
+	xCode := ""
+	idxCode := ""
+	if len(tokens) >= 1 {
+		xCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		idxCode = tokens[1].Content
+	}
+
+	if e.isMapTypeExprJ(node.X) {
+		mapGoType := e.getExprGoTypeJ(node.X)
+		valType := "Object"
+		pfx := ""
+		sfx := ""
+		if mapGoType != nil {
+			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
+				valType = e.qualifiedJavaTypeName(mapUnderlying.Elem())
+				pfx, sfx = getJavaKeyCastJ(mapUnderlying.Key())
+			}
+		}
+		e.fs.PushCodeWithType(
+			fmt.Sprintf("((%s)hmap.hashMapGet(%s, %s%s%s))", valType, xCode, pfx, idxCode, sfx),
+			e.getExprGoTypeJ(node),
+		)
+	} else {
+		// Check for string indexing: s[i] -> (int)s.charAt(i)
+		xType := e.getExprGoTypeJ(node.X)
+		if xType != nil {
+			if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+				e.fs.PushCode(fmt.Sprintf("(int)%s.charAt(%s)", xCode, idxCode))
+				return
+			}
+		}
+		// Slice access: x[i] -> x.get(i)
+		if xType != nil {
+			if _, ok := xType.Underlying().(*types.Slice); ok {
+				e.fs.PushCode(fmt.Sprintf("%s.get(%s)", xCode, idxCode))
+				return
+			}
+		}
+		// Fallback to array-style access
+		e.fs.PushCode(fmt.Sprintf("%s.get(%s)", xCode, idxCode))
+	}
+}
+
+// ============================================================
+// Unary Expressions
+// ============================================================
+
+func (e *JavaEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitUnaryExpr))
+	op := node.Op.String()
+	// Go ^ is bitwise complement, Java uses ~
+	if op == "^" {
+		e.fs.PushCode("~" + xCode)
+	} else {
+		e.fs.PushCode(op + xCode)
+	}
+}
+
+// ============================================================
+// Paren Expressions
+// ============================================================
+
+func (e *JavaEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
+	inner := e.fs.ReduceToCode(string(PreVisitParenExpr))
+	e.fs.PushCode("(" + inner + ")")
+}
+
+// ============================================================
+// javaMixedOp for nested map/slice index chain analysis
+// ============================================================
+
+type javaMixedOp struct {
+	accessType    string // "map" or "slice"
+	keyExpr       string
+	valueJavaType string
+	keyCastPfx    string
+	keyCastSfx    string
+	mapVarExpr    string
+	tempVarName   string
+}
+
+// analyzeLhsIndexChainJ walks a chain of IndexExpr on the LHS of an assignment
+// (e.g., m[k1][k2][i] = val) and returns a list of javaMixedOp describing each
+// indexing step from outermost to innermost.
+//
+// For each step, javaMixedOp fields are populated as follows:
+//   - accessType: "map" if the indexed expression is a map, "slice" otherwise
+//   - keyExpr: the Java code for the index/key expression
+//   - valueJavaType: (map only) the Java type name of the map's value type
+//   - keyCastPfx/keyCastSfx: (map only) cast prefix/suffix for the map key
+//   - mapVarExpr, tempVarName: populated later by the caller for intermediate map gets
+//
+// hasIntermediateMap is true if any non-final step in the chain is a map access,
+// meaning temporary variables are needed for intermediate map.get() calls.
+func (e *JavaEmitter) analyzeLhsIndexChainJ(expr ast.Expr) (ops []javaMixedOp, hasIntermediateMap bool) {
+	var chain []ast.Expr
+	current := expr
+	for {
+		indexExpr, ok := current.(*ast.IndexExpr)
+		if !ok {
+			break
+		}
+		chain = append(chain, indexExpr)
+		current = indexExpr.X
+	}
+	// Reverse: chain[0] = outermost, chain[len-1] = innermost
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	hasIntermediateMap = false
+	for i, node := range chain {
+		ie := node.(*ast.IndexExpr)
+		var exprType types.Type
+		tv := e.pkg.TypesInfo.Types[ie.X]
+		if tv.Type != nil {
+			exprType = tv.Type
+		} else if ident, ok2 := ie.X.(*ast.Ident); ok2 {
+			if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+				exprType = obj.Type()
+			}
+		}
+		if exprType == nil {
+			continue
+		}
+		isLast := (i == len(chain)-1)
+		if mapType, ok := exprType.Underlying().(*types.Map); ok {
+			op := javaMixedOp{
+				accessType:    "map",
+				keyExpr:       exprToJavaString(ie.Index),
+				valueJavaType: e.qualifiedJavaTypeName(mapType.Elem()),
+			}
+			op.keyCastPfx, op.keyCastSfx = getJavaKeyCastJ(mapType.Key())
+			if !isLast {
+				hasIntermediateMap = true
+			}
+			ops = append(ops, op)
+		} else {
+			op := javaMixedOp{
+				accessType: "slice",
+				keyExpr:    exprToJavaString(ie.Index),
+			}
+			ops = append(ops, op)
+		}
+	}
+	return ops, hasIntermediateMap
+}
+
+// convertGoTypeToJava converts a Go type string to Java syntax.
+func convertGoTypeToJava(goType string) string {
+	result := goType
+
+	if strings.HasPrefix(result, "[]") {
+		elementType := result[2:]
+		elementType = convertGoTypeToJava(elementType)
+		return "ArrayList<" + toBoxedType(elementType) + ">"
+	}
+
+	if strings.HasPrefix(result, "map[") {
+		return "hmap.HashMap"
+	}
+
+	if strings.Contains(result, "/") {
+		lastSlash := strings.LastIndex(result, "/")
+		result = result[lastSlash+1:]
+	}
+
+	if javaType, exists := javaTypesMap[result]; exists {
+		return javaType
+	}
+
+	return result
+}
+
+// ============================================================
+// Composite Literals
+// ============================================================
+
+func (e *JavaEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitCompositeLitType))
+}
+
+func (e *JavaEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
+	eltCode := e.fs.ReduceToCode(string(PreVisitCompositeLitElt))
+	e.fs.PushCode(eltCode)
+}
+
+func (e *JavaEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
+	eltTokens := e.fs.Reduce(string(PreVisitCompositeLitElts))
+	for _, t := range eltTokens {
+		if t.Content != "" {
+			e.fs.Push(t.Content, TagLiteral, nil)
+		}
+	}
+}
+
+func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCompositeLit))
+	var elts []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			elts = append(elts, t.Content)
+		}
+	}
+	eltsStr := strings.Join(elts, ", ")
+
+	litType := e.getExprGoTypeJ(node)
+	if litType == nil {
+		e.fs.PushCode("new ArrayList<>(java.util.Arrays.asList(" + eltsStr + "))")
+		return
+	}
+
+	switch u := litType.Underlying().(type) {
+	case *types.Struct:
+		typeName := ""
+		if node.Type != nil {
+			typeName = exprToString(node.Type)
+		}
+		if typeName == "" {
+			typeName = "Object"
+		}
+		// Helper to add narrowing casts for byte/short struct fields
+		narrowArg := func(arg string, fieldType types.Type) string {
+			if basic, ok := fieldType.Underlying().(*types.Basic); ok {
+				switch basic.Kind() {
+				case types.Int8, types.Uint8:
+					return "(byte)(" + arg + ")"
+				case types.Int16, types.Uint16:
+					return "(short)(" + arg + ")"
+				}
+			}
+			return arg
+		}
+		// Check if using named fields (KeyValueExpr)
+		if len(node.Elts) > 0 {
+			if _, isKV := node.Elts[0].(*ast.KeyValueExpr); isKV {
+				kvMap := make(map[string]string)
+				for _, elt := range elts {
+					parts := strings.SplitN(elt, ": ", 2)
+					if len(parts) == 2 {
+						key := parts[0]
+						if dotIdx := strings.LastIndex(key, "."); dotIdx >= 0 {
+							key = key[dotIdx+1:]
+						}
+						kvMap[key] = parts[1]
+					}
+				}
+				// Build ordered args by struct field order
+				var orderedArgs []string
+				for i := 0; i < u.NumFields(); i++ {
+					fieldName := u.Field(i).Name()
+					if val, ok := kvMap[fieldName]; ok {
+						orderedArgs = append(orderedArgs, narrowArg(val, u.Field(i).Type()))
+					} else {
+						// Use default for missing fields (with narrowing)
+						orderedArgs = append(orderedArgs, narrowArg(e.javaDefaultForGoTypeQ(u.Field(i).Type()), u.Field(i).Type()))
+					}
+				}
+				e.fs.PushCode(fmt.Sprintf("new %s(%s)", typeName, strings.Join(orderedArgs, ", ")))
+				return
+			}
+		}
+		// Positional struct literal - add narrowing casts
+		if u.NumFields() > 0 && len(elts) > 0 {
+			var narrowedElts []string
+			for i, elt := range elts {
+				if i < u.NumFields() {
+					narrowedElts = append(narrowedElts, narrowArg(elt, u.Field(i).Type()))
+				} else {
+					narrowedElts = append(narrowedElts, elt)
+				}
+			}
+			eltsStr = strings.Join(narrowedElts, ", ")
+		}
+		e.fs.PushCode(fmt.Sprintf("new %s(%s)", typeName, eltsStr))
+	case *types.Slice:
+		elemType := e.qualifiedJavaTypeName(u.Elem())
+		if eltsStr == "" {
+			e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType)))
+		} else {
+			// Cast integer literals for byte/short slice elements
+			needsCast := ""
+			if basic, ok := u.Elem().Underlying().(*types.Basic); ok {
+				if basic.Kind() == types.Int8 || basic.Kind() == types.Uint8 {
+					needsCast = "(byte)"
+				} else if basic.Kind() == types.Int16 || basic.Kind() == types.Uint16 {
+					needsCast = "(short)"
+				}
+			}
+			if needsCast != "" {
+				var castElts []string
+				for _, elt := range elts {
+					castElts = append(castElts, needsCast+elt)
+				}
+				eltsStr = strings.Join(castElts, ", ")
+			}
+			// Check if elements contain lambdas (function type) — use double-brace init
+			if _, isFuncElem := u.Elem().Underlying().(*types.Signature); isFuncElem {
+				var sb strings.Builder
+				sb.WriteString(fmt.Sprintf("new ArrayList<%s>() {{ ", toBoxedType(elemType)))
+				for _, elt := range elts {
+					sb.WriteString(fmt.Sprintf("add(%s); ", elt))
+				}
+				sb.WriteString("}}")
+				e.fs.PushCode(sb.String())
+			} else {
+				e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>(java.util.Arrays.asList(%s))", toBoxedType(elemType), eltsStr))
+			}
+		}
+	case *types.Map:
+		keyTypeConst := javaMapKeyTypeConst(u)
+		if keyTypeConst == 100 {
+			if e.structKeyTypes == nil {
+				e.structKeyTypes = make(map[string]string)
+			}
+			if named, ok := u.Key().(*types.Named); ok {
+				e.structKeyTypes[named.Obj().Name()] = named.Obj().Name()
+			}
+		}
+		if len(elts) == 0 {
+			e.fs.PushCode(fmt.Sprintf("hmap.newHashMap(%d)", keyTypeConst))
+		} else {
+			pfx, sfx := getJavaKeyCastJ(u.Key())
+			e.nestedMapCounter++
+			tmpVar := fmt.Sprintf("_m%d", e.nestedMapCounter)
+			// Wrap in a lambda that creates and initializes
+			initCode := fmt.Sprintf("((java.util.function.Supplier<Object>)(() -> { Object %s = hmap.newHashMap(%d); ", tmpVar, keyTypeConst)
+			for _, elt := range elts {
+				parts := strings.SplitN(elt, ": ", 2)
+				if len(parts) == 2 {
+					initCode += fmt.Sprintf("%s = hmap.hashMapSet(%s, %s%s%s, %s); ", tmpVar, tmpVar, pfx, parts[0], sfx, parts[1])
+				}
+			}
+			initCode += fmt.Sprintf("return %s; })).get()", tmpVar)
+			e.fs.PushCode(initCode)
+		}
+	default:
+		elemType := "Object"
+		if slice, ok := litType.(*types.Slice); ok {
+			elemType = e.qualifiedJavaTypeName(slice.Elem())
+		}
+		if eltsStr == "" {
+			e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType)))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>(java.util.Arrays.asList(%s))", toBoxedType(elemType), eltsStr))
+		}
+	}
+}
+
+// ============================================================
+// KeyValue Expressions (for composite literals)
+// ============================================================
+
+func (e *JavaEmitter) PostVisitKeyValueExprKey(node ast.Expr, indent int) {
+	keyCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprKey))
+	e.fs.PushCode(keyCode)
+}
+
+func (e *JavaEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprValue))
+	e.fs.PushCode(valCode)
+}
+
+func (e *JavaEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitKeyValueExpr))
+	keyCode := ""
+	valCode := ""
+	if len(tokens) >= 1 {
+		keyCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		valCode = tokens[1].Content
+	}
+	e.fs.PushCode(keyCode + ": " + valCode)
+}
+
+// ============================================================
+// Slice Expressions (a[lo:hi])
+// ============================================================
+
+func (e *JavaEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitSliceExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JavaEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitSliceExprXBegin))
+}
+
+func (e *JavaEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
+	lowCode := e.fs.ReduceToCode(string(PreVisitSliceExprLow))
+	e.fs.PushCode(lowCode)
+}
+
+func (e *JavaEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitSliceExprXEnd))
+}
+
+func (e *JavaEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
+	highCode := e.fs.ReduceToCode(string(PreVisitSliceExprHigh))
+	e.fs.PushCode(highCode)
+}
+
+func (e *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSliceExpr))
+	xCode := ""
+	lowCode := ""
+	highCode := ""
+
+	idx := 0
+	if idx < len(tokens) {
+		xCode = tokens[idx].Content
+		idx++
+	}
+	if node.Low != nil && idx < len(tokens) {
+		lowCode = tokens[idx].Content
+		idx++
+	}
+	if node.High != nil && idx < len(tokens) {
+		highCode = tokens[idx].Content
+	}
+
+	if lowCode == "" {
+		lowCode = "0"
+	}
+
+	// Check if slicing a string
+	xType := e.getExprGoTypeJ(node.X)
+	isString := false
+	if xType != nil {
+		if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+			isString = true
+		}
+	}
+
+	if isString {
+		if highCode == "" {
+			e.fs.PushCode(fmt.Sprintf("%s.substring(%s)", xCode, lowCode))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%s.substring(%s, %s)", xCode, lowCode, highCode))
+		}
+	} else {
+		if highCode == "" {
+			e.fs.PushCode(fmt.Sprintf("new ArrayList<>(%s.subList(%s, %s.size()))", xCode, lowCode, xCode))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("new ArrayList<>(%s.subList(%s, %s))", xCode, lowCode, highCode))
+		}
+	}
+}
+
+// ============================================================
+// Array Type
+// ============================================================
+
+func (e *JavaEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
+	typeTokens := e.fs.Reduce(string(PreVisitArrayType))
+	elemType := ""
+	for _, t := range typeTokens {
+		elemType += t.Content
+	}
+	if elemType == "" {
+		elemType = "Object"
+	}
+	e.fs.Push(fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType)), TagType, nil)
+}
+
+// ============================================================
+// Map Type
+// ============================================================
+
+func (e *JavaEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitMapKeyType))
+}
+
+func (e *JavaEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitMapValueType))
+}
+
+func (e *JavaEmitter) PostVisitMapType(node *ast.MapType, indent int) {
+	e.fs.Reduce(string(PreVisitMapType))
+	e.fs.Push("hmap.HashMap", TagType, nil)
+}
+
+// ============================================================
+// Function Type (Java functional interfaces)
+// ============================================================
+
+func (e *JavaEmitter) PostVisitFuncTypeResult(node *ast.Field, index int, indent int) {
+	resultCode := e.fs.ReduceToCode(string(PreVisitFuncTypeResult))
+	e.fs.PushCode(resultCode)
+}
+
+func (e *JavaEmitter) PostVisitFuncTypeResults(node *ast.FieldList, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncTypeResults))
+	var resultTypes []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			resultTypes = append(resultTypes, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(resultTypes, ", "))
+}
+
+func (e *JavaEmitter) PostVisitFuncTypeParam(node *ast.Field, index int, indent int) {
+	paramCode := e.fs.ReduceToCode(string(PreVisitFuncTypeParam))
+	e.fs.PushCode(paramCode)
+}
+
+func (e *JavaEmitter) PostVisitFuncTypeParams(node *ast.FieldList, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncTypeParams))
+	var paramTypes []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			paramTypes = append(paramTypes, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(paramTypes, ", "))
+}
+
+func (e *JavaEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncType))
+	resultTypes := ""
+	paramTypes := ""
+	if node.Results != nil && node.Results.NumFields() > 0 {
+		if len(tokens) >= 1 {
+			resultTypes = tokens[0].Content
+		}
+		if len(tokens) >= 2 {
+			paramTypes = tokens[1].Content
+		}
+		resultBoxed := toBoxedJavaType(resultTypes)
+		if paramTypes != "" {
+			params := strings.Split(paramTypes, ", ")
+			if len(params) == 1 {
+				e.fs.PushCode(fmt.Sprintf("Function<%s, %s>", toBoxedJavaType(params[0]), resultBoxed))
+			} else if len(params) == 2 {
+				e.fs.PushCode(fmt.Sprintf("BiFunction<%s, %s, %s>", toBoxedJavaType(params[0]), toBoxedJavaType(params[1]), resultBoxed))
+			} else {
+				e.fs.PushCode(fmt.Sprintf("Function<%s, %s>", toBoxedJavaType(params[0]), resultBoxed))
+			}
+		} else {
+			e.fs.PushCode(fmt.Sprintf("Supplier<%s>", resultBoxed))
+		}
+	} else {
+		if len(tokens) >= 1 {
+			paramTypes = tokens[0].Content
+		}
+		if paramTypes != "" {
+			params := strings.Split(paramTypes, ", ")
+			if len(params) == 1 {
+				e.fs.PushCode(fmt.Sprintf("Consumer<%s>", toBoxedJavaType(params[0])))
+			} else if len(params) == 2 {
+				e.fs.PushCode(fmt.Sprintf("BiConsumer<%s, %s>", toBoxedJavaType(params[0]), toBoxedJavaType(params[1])))
+			} else {
+				e.fs.PushCode(fmt.Sprintf("Consumer<%s>", toBoxedJavaType(params[0])))
+			}
+		} else {
+			e.fs.PushCode("Runnable")
+		}
+	}
+}
+
+// ============================================================
+// Function Literals (closures / lambdas)
+// ============================================================
+
+func (e *JavaEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
+	e.fs.Reduce(string(PreVisitFuncLitTypeParam))
+	// For Java lambdas, omit parameter types and use inference
+	// Rename params that shadow enclosing scope variables (Java doesn't allow this)
+	for _, name := range node.Names {
+		paramName := name.Name
+		shadowed := false
+		for _, fp := range e.funcParamNames {
+			if fp == paramName {
+				shadowed = true
+				break
+			}
+		}
+		if !shadowed && e.declaredVarNames != nil && e.declaredVarNames[paramName] {
+			shadowed = true
+		}
+		if shadowed {
+			newName := paramName + "_"
+			if e.lambdaParamRenames == nil {
+				e.lambdaParamRenames = make(map[string]string)
+			}
+			e.lambdaParamRenames[paramName] = newName
+			paramName = newName
+		}
+		e.fs.Push(paramName, TagIdent, nil)
+	}
+}
+
+func (e *JavaEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParams))
+	var paramNames []string
+	for _, t := range tokens {
+		if t.Tag == TagIdent && t.Content != "" {
+			paramNames = append(paramNames, t.Content)
+		}
+	}
+	paramsStr := strings.Join(paramNames, ", ")
+	if paramsStr == "" {
+		paramsStr = " "
+	}
+	e.fs.PushCode(paramsStr)
+}
+
+func (e *JavaEmitter) PostVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
+	e.fs.Reduce(string(PreVisitFuncLitTypeResults))
+}
+
+func (e *JavaEmitter) PostVisitFuncLitBody(node *ast.BlockStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncLitBody))
+	e.fs.PushCode(bodyCode)
+}
+
+func (e *JavaEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncLit))
+	paramsCode := ""
+	bodyCode := ""
+	if len(tokens) >= 1 {
+		paramsCode = strings.TrimSpace(tokens[0].Content)
+	}
+	if len(tokens) >= 2 {
+		bodyCode = tokens[1].Content
+	}
+
+	// Apply lambda param renames to body code.
+	// Per-rename regex compilation is acceptable here: word boundary matching (\b)
+	// requires per-name patterns, and typically there are only 1-2 renames per lambda.
+	if e.lambdaParamRenames != nil {
+		for oldName, newName := range e.lambdaParamRenames {
+			re := regexp.MustCompile(`\b` + regexp.QuoteMeta(oldName) + `\b`)
+			bodyCode = re.ReplaceAllString(bodyCode, newName)
+		}
+		e.lambdaParamRenames = nil
+	}
+
+	e.fs.PushCode(fmt.Sprintf("(%s) -> %s", paramsCode, bodyCode))
+}
+
+// ============================================================
+// Type Assertions
+// ============================================================
+
+func (e *JavaEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprType))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *JavaEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JavaEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitTypeAssertExpr))
+	typeCode := ""
+	xCode := ""
+	if len(tokens) >= 1 {
+		typeCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		xCode = tokens[1].Content
+	}
+	if typeCode != "" {
+		e.fs.PushCode(fmt.Sprintf("((%s)%s)", typeCode, xCode))
+	} else {
+		e.fs.PushCode(xCode)
+	}
+}
+
+// ============================================================
+// Star Expressions (dereference - pass through in Java)
+// ============================================================
+
+func (e *JavaEmitter) PostVisitStarExpr(node *ast.StarExpr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitStarExpr))
+	e.fs.PushCode(xCode)
+}
+
+// ============================================================
+// Interface Type
+// ============================================================
+
+func (e *JavaEmitter) PostVisitInterfaceType(node *ast.InterfaceType, indent int) {
+	e.fs.Reduce(string(PreVisitInterfaceType))
+	e.fs.Push("Object", TagType, nil)
+}
+
+// ============================================================
+// Function Declarations
+// ============================================================
+
+func (e *JavaEmitter) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
+	// Analyze closure captures for this function
+	e.analyzeClosureCapturesJ(node.Body, node.Type.Params)
+}
+
+func (e *JavaEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	e.numFuncResults = 0
+	e.funcReturnType = nil
+	if node.Type.Results != nil {
+		e.numFuncResults = node.Type.Results.NumFields()
+		if e.numFuncResults == 1 && e.pkg != nil && e.pkg.TypesInfo != nil {
+			field := node.Type.Results.List[0]
+			if tv, ok := e.pkg.TypesInfo.Types[field.Type]; ok && tv.Type != nil {
+				e.funcReturnType = tv.Type
+			}
+		}
+	}
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeResultsList))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResults))
+	var resultTypes []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			resultTypes = append(resultTypes, t.Content)
+		}
+	}
+	if len(resultTypes) == 0 {
+		e.fs.Push("void", TagType, nil)
+	} else if len(resultTypes) == 1 {
+		e.fs.Push(resultTypes[0], TagType, nil)
+	} else {
+		// Multi-return: use Object[] for now
+		e.fs.Push("Object[]", TagType, nil)
+	}
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclName))
+	name := node.Name
+	e.fs.Push(name, TagIdent, nil)
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeParamsListType))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsArgName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsList))
+	typeStr := ""
+	var names []string
+	for _, t := range tokens {
+		if t.Tag == TagExpr && typeStr == "" {
+			typeStr = t.Content
+		} else if t.Tag == TagIdent {
+			names = append(names, t.Content)
+		}
+	}
+	for _, name := range names {
+		e.fs.Push(fmt.Sprintf("%s %s", typeStr, name), TagIdent, nil)
+	}
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
+	var paramDecls []string
+	for _, t := range tokens {
+		if t.Tag == TagIdent {
+			paramDecls = append(paramDecls, t.Content)
+		}
+	}
+	// Track function parameter names for lambda shadowing detection
+	e.funcParamNames = nil
+	e.declaredVarNames = make(map[string]bool)
+	if node.Type.Params != nil {
+		for _, field := range node.Type.Params.List {
+			for _, name := range field.Names {
+				e.funcParamNames = append(e.funcParamNames, name.Name)
+			}
+		}
+	}
+	e.fs.PushCode(strings.Join(paramDecls, ", "))
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
+	returnType := "void"
+	funcName := ""
+	paramsStr := ""
+	for _, t := range tokens {
+		if t.Tag == TagType && returnType == "void" {
+			returnType = t.Content
+		} else if t.Tag == TagIdent && funcName == "" {
+			funcName = t.Content
+		} else if t.Tag == TagExpr {
+			paramsStr = t.Content
+		}
+	}
+
+	if funcName == "main" {
+		sig := fmt.Sprintf("\npublic static void main(String[] args)")
+		e.fs.PushCode(sig)
+	} else {
+		sig := fmt.Sprintf("\npublic static %s %s(%s)", returnType, funcName, paramsStr)
+		e.fs.PushCode(sig)
+	}
+}
+
+// analyzeClosureCapturesJ identifies variables in a function body that are captured by closures
+// and also mutated (assigned to), which in Java requires wrapping in Object[] arrays.
+func (e *JavaEmitter) analyzeClosureCapturesJ(body *ast.BlockStmt, funcParams *ast.FieldList) {
+	e.closureCapturedMutVars = nil
+	e.closureCapturedVarType = nil
+
+	if body == nil {
+		return
+	}
+
+	// Collect outer (local) variable declarations and parameters
+	outerVars := make(map[string]bool)
+	outerVarTypes := make(map[string]types.Type)
+	if funcParams != nil {
+		for _, field := range funcParams.List {
+			for _, name := range field.Names {
+				outerVars[name.Name] = true
+				if e.pkg != nil && e.pkg.TypesInfo != nil {
+					if obj := e.pkg.TypesInfo.Defs[name]; obj != nil {
+						outerVarTypes[name.Name] = obj.Type()
+					}
+				}
+			}
+		}
+	}
+
+	// Walk body to find local variable declarations (short var decls)
+	var collectLocalVars func(stmts []ast.Stmt)
+	collectLocalVars = func(stmts []ast.Stmt) {
+		for _, stmt := range stmts {
+			switch s := stmt.(type) {
+			case *ast.AssignStmt:
+				if s.Tok == token.DEFINE {
+					for _, lhs := range s.Lhs {
+						if ident, ok := lhs.(*ast.Ident); ok {
+							outerVars[ident.Name] = true
+							if e.pkg != nil && e.pkg.TypesInfo != nil {
+								if obj := e.pkg.TypesInfo.Defs[ident]; obj != nil {
+									outerVarTypes[ident.Name] = obj.Type()
+								}
+							}
+						}
+					}
+				}
+			case *ast.DeclStmt:
+				if gd, ok := s.Decl.(*ast.GenDecl); ok {
+					for _, spec := range gd.Specs {
+						if vs, ok := spec.(*ast.ValueSpec); ok {
+							for _, name := range vs.Names {
+								outerVars[name.Name] = true
+								if e.pkg != nil && e.pkg.TypesInfo != nil {
+									if obj := e.pkg.TypesInfo.Defs[name]; obj != nil {
+										outerVarTypes[name.Name] = obj.Type()
+									}
+								}
+							}
+						}
+					}
+				}
+			case *ast.BlockStmt:
+				collectLocalVars(s.List)
+			case *ast.IfStmt:
+				if s.Body != nil {
+					collectLocalVars(s.Body.List)
+				}
+				if s.Else != nil {
+					if block, ok := s.Else.(*ast.BlockStmt); ok {
+						collectLocalVars(block.List)
+					}
+				}
+			case *ast.ForStmt:
+				if s.Body != nil {
+					collectLocalVars(s.Body.List)
+				}
+			case *ast.RangeStmt:
+				if s.Body != nil {
+					collectLocalVars(s.Body.List)
+				}
+			}
+		}
+	}
+	collectLocalVars(body.List)
+
+	// Find variables that are assigned to anywhere in the function (including inside closures)
+	assignedVars := make(map[string]bool)
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range s.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok {
+					assignedVars[ident.Name] = true
+				}
+			}
+		case *ast.IncDecStmt:
+			if ident, ok := s.X.(*ast.Ident); ok {
+				assignedVars[ident.Name] = true
+			}
+		}
+		return true
+	})
+
+	// Find variables that are captured by closures (used inside FuncLit bodies)
+	capturedVars := make(map[string]bool)
+	var findCaptured func(node ast.Node)
+	findCaptured = func(node ast.Node) {
+		if node == nil {
+			return
+		}
+		ast.Inspect(node, func(n ast.Node) bool {
+			if funcLit, ok := n.(*ast.FuncLit); ok {
+				// Collect lambda parameter names to exclude
+				lambdaParams := make(map[string]bool)
+				if funcLit.Type != nil && funcLit.Type.Params != nil {
+					for _, field := range funcLit.Type.Params.List {
+						for _, name := range field.Names {
+							lambdaParams[name.Name] = true
+						}
+					}
+				}
+				// Walk the lambda body looking for idents that match outer vars
+				ast.Inspect(funcLit.Body, func(inner ast.Node) bool {
+					if ident, ok := inner.(*ast.Ident); ok {
+						if outerVars[ident.Name] && !lambdaParams[ident.Name] {
+							capturedVars[ident.Name] = true
+						}
+					}
+					// Don't recurse into nested func lits for this level
+					if _, isFuncLit := inner.(*ast.FuncLit); isFuncLit && inner != funcLit.Body {
+						return false
+					}
+					return true
+				})
+				return false // Don't recurse into FuncLit children again
+			}
+			return true
+		})
+	}
+	findCaptured(body)
+
+	// Variables that are captured AND assigned need wrapping
+	for varName := range outerVars {
+		if capturedVars[varName] && assignedVars[varName] {
+			if e.closureCapturedMutVars == nil {
+				e.closureCapturedMutVars = make(map[string]bool)
+				e.closureCapturedVarType = make(map[string]string)
+			}
+			e.closureCapturedMutVars[varName] = true
+			if varType, ok := outerVarTypes[varName]; ok && varType != nil {
+				e.closureCapturedVarType[varName] = getJavaPrimTypeName(varType)
+			}
+		}
+	}
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncDeclBody))
+	e.fs.PushCode(bodyCode)
+}
+
+func (e *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
+	sigCode := ""
+	bodyCode := ""
+	if len(tokens) >= 1 {
+		sigCode = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		bodyCode = tokens[1].Content
+	}
+	e.fs.PushCode(sigCode + " " + bodyCode + "\n")
+}
+
+// ============================================================
+// Forward Declaration Signatures (suppressed)
+// ============================================================
+
+func (e *JavaEmitter) PreVisitFuncDeclSignatures(indent int) {
+	e.forwardDecl = true
+}
+
+func (e *JavaEmitter) PostVisitFuncDeclSignatures(indent int) {
+	e.fs.Reduce(string(PreVisitFuncDeclSignatures))
+	e.forwardDecl = false
+}
+
+// ============================================================
+// Block Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JavaEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
+	itemCode := e.fs.ReduceToCode(string(PreVisitBlockStmtList))
+	e.fs.PushCode(itemCode)
+}
+
+func (e *JavaEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
+	var sb strings.Builder
+	sb.WriteString("{\n")
+	for _, t := range tokens {
+		if t.Content != "" {
+			sb.WriteString(t.Content)
+		}
+	}
+	sb.WriteString(javaIndent(indent/2) + "}")
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Assignment Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	e.indent = indent
+	e.mapAssignVar = ""
+	e.mapAssignKey = ""
+}
+
+func (e *JavaEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
+	lhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtLhsExpr))
+
+	if indexExpr, ok := node.(*ast.IndexExpr); ok {
+		// Save LHS index info before RHS is visited (RHS may overwrite lastIndexXCode/lastIndexKeyCode)
+		e.lhsIndexXCode = e.lastIndexXCode
+		e.lhsIndexKeyCode = e.lastIndexKeyCode
+		if e.isMapTypeExprJ(indexExpr.X) {
+			e.mapAssignVar = e.lhsIndexXCode
+			e.mapAssignKey = e.lhsIndexKeyCode
+			e.fs.PushCode(lhsCode)
+			return
+		}
+	}
+	e.fs.PushCode(lhsCode)
+}
+
+func (e *JavaEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtLhs))
+	var lhsExprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			lhsExprs = append(lhsExprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(lhsExprs, ", "))
+}
+
+func (e *JavaEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
+	rhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtRhsExpr))
+	e.fs.PushCode(rhsCode)
+}
+
+func (e *JavaEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmtRhs))
+	var rhsExprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			rhsExprs = append(rhsExprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(rhsExprs, ", "))
+}
+
+func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitAssignStmt))
+	lhsStr := ""
+	rhsStr := ""
+	if len(tokens) >= 1 {
+		lhsStr = tokens[0].Content
+	}
+	if len(tokens) >= 2 {
+		rhsStr = tokens[1].Content
+	}
+
+	ind := javaIndent(indent / 2)
+	tokStr := node.Tok.String()
+
+	// Mixed index chain: nested map/slice assignments like m["outer"]["inner"] = v
+	if len(node.Lhs) == 1 {
+		if _, isIndex := node.Lhs[0].(*ast.IndexExpr); isIndex && e.pkg != nil && e.pkg.TypesInfo != nil {
+			ops, hasIntermediateMap := e.analyzeLhsIndexChainJ(node.Lhs[0])
+			if hasIntermediateMap && len(ops) >= 2 {
+				// Find root variable
+				rootExpr := node.Lhs[0]
+				for {
+					if ie, ok := rootExpr.(*ast.IndexExpr); ok {
+						rootExpr = ie.X
+					} else {
+						break
+					}
+				}
+				rootVar := exprToJavaString(rootExpr)
+
+				// Assign temp var names
+				currentVar := rootVar
+				for i := range ops {
+					if ops[i].accessType == "map" {
+						ops[i].mapVarExpr = currentVar
+						ops[i].tempVarName = fmt.Sprintf("__nested_inner_%d", e.nestedMapCounter)
+						e.nestedMapCounter++
+						currentVar = ops[i].tempVarName
+					} else {
+						ops[i].mapVarExpr = currentVar
+						currentVar = currentVar + ".get(" + ops[i].keyExpr + ")"
+					}
+				}
+
+				lastIdx := len(ops) - 1
+				var sb strings.Builder
+
+				// Prologue: extract temp variables for intermediate map accesses
+				for i, op := range ops {
+					if op.accessType == "map" && i < lastIdx {
+						key := op.keyExpr
+						if op.keyCastPfx != "" {
+							key = op.keyCastPfx + key + op.keyCastSfx
+						}
+						sb.WriteString(fmt.Sprintf("%svar %s = (%s)hmap.hashMapGet(%s, %s);\n",
+							ind, op.tempVarName, op.valueJavaType, op.mapVarExpr, key))
+					}
+				}
+
+				// Assignment
+				lastOp := ops[lastIdx]
+				if lastOp.accessType == "map" {
+					key := lastOp.keyExpr
+					if lastOp.keyCastPfx != "" {
+						key = lastOp.keyCastPfx + key + lastOp.keyCastSfx
+					}
+					// If mapVarExpr contains .get(), it's inside a slice — use .set() to write back
+					if strings.Contains(lastOp.mapVarExpr, ".get(") {
+						lastGetIdx := strings.LastIndex(lastOp.mapVarExpr, ".get(")
+						parentExpr := lastOp.mapVarExpr[:lastGetIdx]
+						closeParen := strings.LastIndex(lastOp.mapVarExpr, ")")
+						idxExpr := lastOp.mapVarExpr[lastGetIdx+5 : closeParen]
+						newMapVal := fmt.Sprintf("hmap.hashMapSet(%s, %s, %s)",
+							lastOp.mapVarExpr, key, rhsStr)
+						sb.WriteString(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, parentExpr, idxExpr, newMapVal))
+					} else {
+						sb.WriteString(fmt.Sprintf("%s%s = hmap.hashMapSet(%s, %s, %s);\n",
+							ind, lastOp.mapVarExpr, lastOp.mapVarExpr, key, rhsStr))
+					}
+				} else {
+					sb.WriteString(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, lastOp.mapVarExpr, lastOp.keyExpr, rhsStr))
+				}
+
+				// Epilogue: write back intermediate maps in reverse
+				for i := lastIdx - 1; i >= 0; i-- {
+					op := ops[i]
+					if op.accessType == "map" {
+						key := op.keyExpr
+						if op.keyCastPfx != "" {
+							key = op.keyCastPfx + key + op.keyCastSfx
+						}
+						sb.WriteString(fmt.Sprintf("%s%s = hmap.hashMapSet(%s, %s, %s);\n",
+							ind, op.mapVarExpr, op.mapVarExpr, key, op.tempVarName))
+					}
+				}
+				e.fs.PushCode(sb.String())
+				e.mapAssignVar = ""
+				e.mapAssignKey = ""
+				return
+			}
+		}
+	}
+
+	// Slice index assignment: x.set(idx, val)
+	if len(node.Lhs) == 1 && e.mapAssignVar == "" {
+		if indexExpr, ok := node.Lhs[0].(*ast.IndexExpr); ok {
+			xType := e.getExprGoTypeJ(indexExpr.X)
+			if xType != nil {
+				if sliceType, isSlice := xType.Underlying().(*types.Slice); isSlice {
+					xCode := e.lhsIndexXCode
+					idxCode := e.lhsIndexKeyCode
+					// Add byte/short narrowing for slice element type
+					valStr := rhsStr
+					if basic, ok := sliceType.Elem().Underlying().(*types.Basic); ok {
+						if basic.Kind() == types.Int8 || basic.Kind() == types.Uint8 {
+							valStr = "(byte)(" + rhsStr + ")"
+						} else if basic.Kind() == types.Int16 || basic.Kind() == types.Uint16 {
+							valStr = "(short)(" + rhsStr + ")"
+						}
+					}
+					e.fs.PushCode(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, xCode, idxCode, valStr))
+					return
+				}
+			}
+		}
+	}
+
+	// Map assignment: m[k] = v -> hmap.hashMapSet(m, k, v)
+	if e.mapAssignVar != "" && e.mapAssignKey != "" {
+		mapGoType := e.getExprGoTypeJ(node.Lhs[0].(*ast.IndexExpr).X)
+		pfx := ""
+		sfx := ""
+		if mapGoType != nil {
+			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
+				pfx, sfx = getJavaKeyCastJ(mapUnderlying.Key())
+			}
+		}
+		// If mapAssignVar contains .get(), it's a slice-of-map pattern
+		// e.g., sliceOfMaps.get(0) = hashMapSet(...) -> sliceOfMaps.set(0, hashMapSet(...))
+		if strings.Contains(e.mapAssignVar, ".get(") {
+			lastGetIdx := strings.LastIndex(e.mapAssignVar, ".get(")
+			parentExpr := e.mapAssignVar[:lastGetIdx]
+			closeParen := strings.LastIndex(e.mapAssignVar, ")")
+			idxExpr := e.mapAssignVar[lastGetIdx+5 : closeParen]
+			newMapVal := fmt.Sprintf("hmap.hashMapSet(%s, %s%s%s, %s)",
+				e.mapAssignVar, pfx, e.mapAssignKey, sfx, rhsStr)
+			e.fs.PushCode(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, parentExpr, idxExpr, newMapVal))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%s%s = hmap.hashMapSet(%s, %s%s%s, %s);\n",
+				ind, e.mapAssignVar, e.mapAssignVar, pfx, e.mapAssignKey, sfx, rhsStr))
+		}
+		e.mapAssignVar = ""
+		e.mapAssignKey = ""
+		return
+	}
+
+	// Comma-ok map read: val, ok := m[key]
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {
+			if e.isMapTypeExprJ(indexExpr.X) {
+				valName := exprToString(node.Lhs[0])
+				okName := exprToString(node.Lhs[1])
+				mapName := exprToString(indexExpr.X)
+				keyStr := exprToString(indexExpr.Index)
+
+				mapGoType := e.getExprGoTypeJ(indexExpr.X)
+				valType := "Object"
+				pfx := ""
+				sfx := ""
+				zeroVal := "null"
+				if mapGoType != nil {
+					if mapUnderlying, ok2 := mapGoType.Underlying().(*types.Map); ok2 {
+						valType = e.qualifiedJavaTypeName(mapUnderlying.Elem())
+						pfx, sfx = getJavaKeyCastJ(mapUnderlying.Key())
+						zeroVal = e.javaDefaultForGoTypeQ(mapUnderlying.Elem())
+					}
+				}
+				if tokStr == ":=" {
+					e.fs.PushCode(fmt.Sprintf("%svar %s = hmap.hashMapContains(%s, %s%s%s);\n",
+						ind, okName, mapName, pfx, keyStr, sfx))
+					e.fs.PushCode(fmt.Sprintf("%svar %s = %s ? (%s)hmap.hashMapGet(%s, %s%s%s) : %s;\n",
+						ind, valName, okName, valType, mapName, pfx, keyStr, sfx, zeroVal))
+				} else {
+					e.fs.PushCode(fmt.Sprintf("%s%s = hmap.hashMapContains(%s, %s%s%s);\n",
+						ind, okName, mapName, pfx, keyStr, sfx))
+					e.fs.PushCode(fmt.Sprintf("%s%s = %s ? (%s)hmap.hashMapGet(%s, %s%s%s) : %s;\n",
+						ind, valName, okName, valType, mapName, pfx, keyStr, sfx, zeroVal))
+				}
+				return
+			}
+		}
+	}
+
+	// Comma-ok type assertion: val, ok := x.(Type)
+	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
+		if typeAssert, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+			valName := exprToString(node.Lhs[0])
+			okName := exprToString(node.Lhs[1])
+			assertType := ""
+			if typeAssert.Type != nil {
+				assertType = exprToString(typeAssert.Type)
+				if javaType, ok := javaTypesMap[assertType]; ok {
+					assertType = javaType
+				}
+			}
+			boxedAssertType := toBoxedType(assertType)
+			xExpr := exprToString(typeAssert.X)
+			if tokStr == ":=" {
+				e.fs.PushCode(fmt.Sprintf("%svar %s = %s instanceof %s;\n", ind, okName, xExpr, boxedAssertType))
+				e.fs.PushCode(fmt.Sprintf("%svar %s = %s ? (%s)%s : null;\n",
+					ind, valName, okName, assertType, xExpr))
+			} else {
+				e.fs.PushCode(fmt.Sprintf("%s%s = %s instanceof %s;\n", ind, okName, xExpr, boxedAssertType))
+				e.fs.PushCode(fmt.Sprintf("%s%s = %s ? (%s)%s : null;\n",
+					ind, valName, okName, assertType, xExpr))
+			}
+			return
+		}
+	}
+
+	// Multi-value return unpacking: a, b := func() -> var result = func(); var a = result[0]; ...
+	if len(node.Lhs) > 1 && len(node.Rhs) == 1 {
+		tmpVar := fmt.Sprintf("_mr%d", e.nestedMapCounter)
+		e.nestedMapCounter++
+
+		// Get return types from the RHS function signature
+		var returnTypes []types.Type
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if callExpr, ok := node.Rhs[0].(*ast.CallExpr); ok {
+				funType := e.getExprGoTypeJ(callExpr.Fun)
+				if funType != nil {
+					if sig, ok := funType.Underlying().(*types.Signature); ok {
+						results := sig.Results()
+						for ri := 0; ri < results.Len(); ri++ {
+							returnTypes = append(returnTypes, results.At(ri).Type())
+						}
+					}
+				}
+			}
+		}
+
+		// Helper to get Go type for LHS at index
+		getLhsGoType := func(i int, lhs ast.Expr) types.Type {
+			if i < len(returnTypes) && returnTypes[i] != nil {
+				return returnTypes[i]
+			}
+			if ident, ok := lhs.(*ast.Ident); ok && e.pkg != nil && e.pkg.TypesInfo != nil {
+				if obj := e.pkg.TypesInfo.Defs[ident]; obj != nil && obj.Type() != nil {
+					return obj.Type()
+				}
+				if obj := e.pkg.TypesInfo.Uses[ident]; obj != nil && obj.Type() != nil {
+					return obj.Type()
+				}
+			}
+			return e.getExprGoTypeJ(lhs)
+		}
+
+		// Generate the cast expression for a multi-return element
+		// For narrow types (byte/short), use Number methods to avoid ClassCastException
+		genCast := func(goType types.Type, arrExpr string) string {
+			javaType := "Object"
+			if goType != nil {
+				javaType = e.qualifiedJavaTypeName(goType)
+				if basic, ok := goType.Underlying().(*types.Basic); ok {
+					switch basic.Kind() {
+					case types.Int8, types.Uint8:
+						return fmt.Sprintf("((Number)%s).byteValue()", arrExpr)
+					case types.Int16, types.Uint16:
+						return fmt.Sprintf("((Number)%s).shortValue()", arrExpr)
+					case types.Int, types.Int32, types.Uint32:
+						return fmt.Sprintf("((Number)%s).intValue()", arrExpr)
+					case types.Int64, types.Uint64:
+						return fmt.Sprintf("((Number)%s).longValue()", arrExpr)
+					case types.Float32:
+						return fmt.Sprintf("((Number)%s).floatValue()", arrExpr)
+					case types.Float64:
+						return fmt.Sprintf("((Number)%s).doubleValue()", arrExpr)
+					case types.Bool:
+						return fmt.Sprintf("(boolean)%s", arrExpr)
+					case types.String:
+						return fmt.Sprintf("(String)%s", arrExpr)
+					}
+				}
+			}
+			return fmt.Sprintf("(%s)%s", javaType, arrExpr)
+		}
+
+		var sb strings.Builder
+		if tokStr == ":=" {
+			sb.WriteString(fmt.Sprintf("%svar %s = %s;\n", ind, tmpVar, rhsStr))
+			for i, lhs := range node.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
+					continue
+				}
+				lhsName := exprToString(lhs)
+				goType := getLhsGoType(i, lhs)
+				castExpr := genCast(goType, fmt.Sprintf("%s[%d]", tmpVar, i))
+				// Check if this LHS var is closure-captured
+				if ident, ok := lhs.(*ast.Ident); ok && e.closureCapturedMutVars != nil && e.closureCapturedMutVars[ident.Name] {
+					sb.WriteString(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, lhsName, castExpr))
+				} else {
+					sb.WriteString(fmt.Sprintf("%svar %s = %s;\n", ind, lhsName, castExpr))
+				}
+			}
+		} else {
+			sb.WriteString(fmt.Sprintf("%svar %s = %s;\n", ind, tmpVar, rhsStr))
+			for i, lhs := range node.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
+					continue
+				}
+				lhsName := exprToString(lhs)
+				goType := getLhsGoType(i, lhs)
+				castExpr := genCast(goType, fmt.Sprintf("%s[%d]", tmpVar, i))
+				// Check if this LHS var is closure-captured
+				if ident, ok := lhs.(*ast.Ident); ok && e.closureCapturedMutVars != nil && e.closureCapturedMutVars[ident.Name] {
+					sb.WriteString(fmt.Sprintf("%s%s[0] = %s;\n", ind, lhsName, castExpr))
+				} else {
+					sb.WriteString(fmt.Sprintf("%s%s = %s;\n", ind, lhsName, castExpr))
+				}
+			}
+		}
+		e.fs.PushCode(sb.String())
+		return
+	}
+
+	// Check if LHS needs narrowing cast (byte, short)
+	narrowCast := ""
+	if len(node.Lhs) == 1 {
+		if lhsType := e.getExprGoTypeJ(node.Lhs[0]); lhsType != nil {
+			if basic, ok := lhsType.Underlying().(*types.Basic); ok {
+				switch basic.Kind() {
+				case types.Int8, types.Uint8:
+					narrowCast = "(byte)"
+				case types.Int16:
+					narrowCast = "(short)"
+				}
+			}
+		}
+	}
+
+	// Track declared variable names for lambda shadowing detection
+	if tokStr == ":=" && e.declaredVarNames != nil {
+		for _, lhs := range node.Lhs {
+			if ident, ok := lhs.(*ast.Ident); ok && ident.Name != "_" {
+				e.declaredVarNames[ident.Name] = true
+			}
+		}
+	}
+
+	// Check if LHS is a closure-captured mutable variable
+	isClosureCaptured := false
+	closureCapturedName := ""
+	if len(node.Lhs) == 1 {
+		if ident, ok := node.Lhs[0].(*ast.Ident); ok && e.closureCapturedMutVars != nil && e.closureCapturedMutVars[ident.Name] {
+			isClosureCaptured = true
+			closureCapturedName = ident.Name
+		}
+	}
+
+	switch tokStr {
+	case ":=":
+		if isClosureCaptured {
+			// Declaration of closure-captured variable: Object[] name = {rhsStr};
+			e.fs.PushCode(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, closureCapturedName, rhsStr))
+		} else if narrowCast != "" {
+			// Use explicit type for narrow types
+			lhsType := e.getExprGoTypeJ(node.Lhs[0])
+			javaType := getJavaPrimTypeName(lhsType)
+			e.fs.PushCode(fmt.Sprintf("%s%s %s = %s(%s);\n", ind, javaType, lhsStr, narrowCast, rhsStr))
+		} else {
+			// Check if RHS is a func literal — Java can't infer lambda type with var
+			usedExplicitType := false
+			if len(node.Rhs) == 1 {
+				if _, isFuncLit := node.Rhs[0].(*ast.FuncLit); isFuncLit {
+					// For new definitions, get type from Defs
+					var lhsType types.Type
+					if ident, ok := node.Lhs[0].(*ast.Ident); ok && e.pkg != nil && e.pkg.TypesInfo != nil {
+						if obj := e.pkg.TypesInfo.Defs[ident]; obj != nil {
+							lhsType = obj.Type()
+						}
+					}
+					if lhsType == nil {
+						lhsType = e.getExprGoTypeJ(node.Lhs[0])
+					}
+					if lhsType != nil {
+						if sig, ok := lhsType.Underlying().(*types.Signature); ok {
+							funcType := e.getJavaFuncInterfaceType(sig)
+							e.fs.PushCode(fmt.Sprintf("%s%s %s = %s;\n", ind, funcType, lhsStr, rhsStr))
+							usedExplicitType = true
+						}
+					}
+				}
+			}
+			if !usedExplicitType {
+				e.fs.PushCode(fmt.Sprintf("%svar %s = %s;\n", ind, lhsStr, rhsStr))
+			}
+		}
+	case "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=":
+		if isClosureCaptured {
+			// Compound assignment to captured var: name[0] = ((Type)name[0]) op rhsStr
+			lhs := closureUnwrapLhs(lhsStr)
+			e.fs.PushCode(fmt.Sprintf("%s%s = %s %s %s;\n", ind, lhs, lhsStr, tokStr[:len(tokStr)-1], rhsStr))
+		} else if narrowCast != "" {
+			e.fs.PushCode(fmt.Sprintf("%s%s = %s(%s %s %s);\n", ind, lhsStr, narrowCast, lhsStr, tokStr[:len(tokStr)-1], rhsStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%s%s %s %s;\n", ind, lhsStr, tokStr, rhsStr))
+		}
+	default:
+		if isClosureCaptured {
+			// Simple assignment to captured var: name[0] = rhsStr
+			lhs := closureUnwrapLhs(lhsStr)
+			e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, lhs, rhsStr))
+		} else if narrowCast != "" {
+			e.fs.PushCode(fmt.Sprintf("%s%s = %s(%s);\n", ind, lhsStr, narrowCast, rhsStr))
+		} else {
+			e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, lhsStr, rhsStr))
+		}
+	}
+}
+
+// ============================================================
+// Declaration Statements (var x int, var y = 5)
+// ============================================================
+
+func (e *JavaEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JavaEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitDeclStmtValueSpecType))
+	typeStr := ""
+	for _, t := range tokens {
+		typeStr += t.Content
+	}
+	var goType types.Type
+	if e.pkg != nil && e.pkg.TypesInfo != nil && index < len(node.Names) {
+		if obj := e.pkg.TypesInfo.Defs[node.Names[index]]; obj != nil {
+			goType = obj.Type()
+		}
+	}
+	e.fs.Push(typeStr, TagType, goType)
+}
+
+func (e *JavaEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
+	e.fs.Reduce(string(PreVisitDeclStmtValueSpecNames))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *JavaEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitDeclStmtValueSpecValue))
+	e.fs.Push(valCode, TagExpr, nil)
+}
+
+func (e *JavaEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
+	ind := javaIndent(indent / 2)
+
+	var sb strings.Builder
+	i := 0
+	for i < len(tokens) {
+		typeStr := ""
+		var goType types.Type
+		nameStr := ""
+		valueStr := ""
+
+		if i < len(tokens) && tokens[i].Tag == TagType {
+			typeStr = tokens[i].Content
+			goType = tokens[i].GoType
+			i++
+		}
+		if i < len(tokens) && tokens[i].Tag == TagIdent {
+			nameStr = tokens[i].Content
+			i++
+		}
+		if i < len(tokens) && tokens[i].Tag == TagExpr {
+			valueStr = tokens[i].Content
+			i++
+		}
+
+		if nameStr == "" {
+			continue
+		}
+
+		// Check if this is a closure-captured variable
+		isCaptured := e.closureCapturedMutVars != nil && e.closureCapturedMutVars[nameStr]
+
+		if valueStr != "" {
+			if isCaptured {
+				sb.WriteString(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, nameStr, valueStr))
+			} else {
+				sb.WriteString(fmt.Sprintf("%s%s %s = %s;\n", ind, typeStr, nameStr, valueStr))
+			}
+		} else {
+			// No initializer - generate default value
+			defaultVal := "null"
+			if goType != nil {
+				if _, isSlice := goType.Underlying().(*types.Slice); isSlice {
+					defaultVal = fmt.Sprintf("new %s()", typeStr)
+				} else if _, isMap := goType.Underlying().(*types.Map); isMap {
+					if e.pkg != nil && e.pkg.TypesInfo != nil {
+						for _, spec := range node.Decl.(*ast.GenDecl).Specs {
+							if vs, ok := spec.(*ast.ValueSpec); ok {
+								if mapType, ok := vs.Type.(*ast.MapType); ok {
+									keyConst := e.getMapKeyTypeConstJ(mapType)
+									defaultVal = fmt.Sprintf("hmap.newHashMap(%d)", keyConst)
+								}
+							}
+						}
+					}
+				} else if _, isStruct := goType.Underlying().(*types.Struct); isStruct {
+					defaultVal = fmt.Sprintf("new %s()", typeStr)
+				} else {
+					defaultVal = e.javaDefaultForGoTypeQ(goType)
+				}
+			}
+			if isCaptured {
+				sb.WriteString(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, nameStr, defaultVal))
+			} else {
+				sb.WriteString(fmt.Sprintf("%s%s %s = %s;\n", ind, typeStr, nameStr, defaultVal))
+			}
+		}
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Return Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JavaEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
+	resultCode := e.fs.ReduceToCode(string(PreVisitReturnStmtResult))
+	e.fs.PushCode(resultCode)
+}
+
+func (e *JavaEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitReturnStmt))
+	ind := javaIndent(indent / 2)
+
+	if len(tokens) == 0 {
+		e.fs.PushCode(ind + "return;\n")
+	} else if len(tokens) == 1 {
+		retExpr := tokens[0].Content
+		// Add narrowing cast if return type is narrower than int
+		if e.funcReturnType != nil {
+			if basic, ok := e.funcReturnType.Underlying().(*types.Basic); ok {
+				switch basic.Kind() {
+				case types.Int8, types.Uint8:
+					retExpr = fmt.Sprintf("(byte)(%s)", retExpr)
+				case types.Int16:
+					retExpr = fmt.Sprintf("(short)(%s)", retExpr)
+				}
+			}
+		}
+		e.fs.PushCode(fmt.Sprintf("%sreturn %s;\n", ind, retExpr))
+	} else {
+		// Multi-value return: return new Object[]{a, b}
+		var vals []string
+		for _, t := range tokens {
+			vals = append(vals, t.Content)
+		}
+		e.fs.PushCode(fmt.Sprintf("%sreturn new Object[]{%s};\n", ind, strings.Join(vals, ", ")))
+	}
+}
+
+// ============================================================
+// Expression Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JavaEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitExprStmtX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JavaEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitExprStmt))
+	code := ""
+	if len(tokens) >= 1 {
+		code = tokens[0].Content
+	}
+	ind := javaIndent(indent / 2)
+	e.fs.PushCode(ind + code + ";\n")
+}
+
+// ============================================================
+// If Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
+	e.indent = indent
+	e.ifInitStack = append(e.ifInitStack, "")
+	e.ifCondStack = append(e.ifCondStack, "")
+	e.ifBodyStack = append(e.ifBodyStack, "")
+	e.ifElseStack = append(e.ifElseStack, "")
+}
+
+func (e *JavaEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
+	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtInit))
+}
+
+func (e *JavaEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
+	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtCond))
+}
+
+func (e *JavaEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
+	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtBody))
+}
+
+func (e *JavaEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
+	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtElse))
+}
+
+func (e *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
+	e.fs.Reduce(string(PreVisitIfStmt))
+	ind := javaIndent(indent / 2)
+
+	n := len(e.ifInitStack)
+	initCode := e.ifInitStack[n-1]
+	condCode := e.ifCondStack[n-1]
+	bodyCode := e.ifBodyStack[n-1]
+	elseCode := e.ifElseStack[n-1]
+	e.ifInitStack = e.ifInitStack[:n-1]
+	e.ifCondStack = e.ifCondStack[:n-1]
+	e.ifBodyStack = e.ifBodyStack[:n-1]
+	e.ifElseStack = e.ifElseStack[:n-1]
+
+	var sb strings.Builder
+	if initCode != "" {
+		sb.WriteString(fmt.Sprintf("%s{\n", ind))
+		sb.WriteString(initCode)
+		sb.WriteString(fmt.Sprintf("%sif (%s) %s", ind, condCode, bodyCode))
+	} else {
+		sb.WriteString(fmt.Sprintf("%sif (%s) %s", ind, condCode, bodyCode))
+	}
+	if elseCode != "" {
+		trimmed := strings.TrimLeft(elseCode, " \t\n")
+		if strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(") {
+			sb.WriteString(" else " + trimmed)
+		} else {
+			sb.WriteString(" else " + elseCode)
+		}
+	}
+	sb.WriteString("\n")
+	if initCode != "" {
+		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// For Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
+	e.indent = indent
+	e.forInitStack = append(e.forInitStack, "")
+	e.forCondStack = append(e.forCondStack, "")
+	e.forPostStack = append(e.forPostStack, "")
+}
+
+func (e *JavaEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
+	initCode := e.fs.ReduceToCode(string(PreVisitForStmtInit))
+	initCode = strings.TrimRight(initCode, ";\n \t")
+	initCode = strings.TrimLeft(initCode, " \t")
+	e.forInitStack[len(e.forInitStack)-1] = initCode
+}
+
+func (e *JavaEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
+	e.forCondStack[len(e.forCondStack)-1] = e.fs.ReduceToCode(string(PreVisitForStmtCond))
+}
+
+func (e *JavaEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
+	postCode := e.fs.ReduceToCode(string(PreVisitForStmtPost))
+	postCode = strings.TrimRight(postCode, ";\n \t")
+	postCode = strings.TrimLeft(postCode, " \t")
+	e.forPostStack[len(e.forPostStack)-1] = postCode
+}
+
+func (e *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
+	bodyCode := e.fs.ReduceToCode(string(PreVisitForStmt))
+	ind := javaIndent(indent / 2)
+
+	n := len(e.forInitStack)
+	initCode := e.forInitStack[n-1]
+	condCode := e.forCondStack[n-1]
+	postCode := e.forPostStack[n-1]
+	e.forInitStack = e.forInitStack[:n-1]
+	e.forCondStack = e.forCondStack[:n-1]
+	e.forPostStack = e.forPostStack[:n-1]
+
+	if node.Init == nil && node.Cond == nil && node.Post == nil {
+		e.fs.PushCode(fmt.Sprintf("%swhile (true) %s\n", ind, bodyCode))
+		return
+	}
+
+	if node.Init == nil && node.Post == nil && node.Cond != nil {
+		e.fs.PushCode(fmt.Sprintf("%swhile (%s) %s\n", ind, condCode, bodyCode))
+		return
+	}
+
+	e.fs.PushCode(fmt.Sprintf("%sfor (%s; %s; %s) %s\n", ind, initCode, condCode, postCode, bodyCode))
+}
+
+// ============================================================
+// Range Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JavaEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
+	keyCode := e.fs.ReduceToCode(string(PreVisitRangeStmtKey))
+	e.fs.Push(keyCode, TagIdent, nil)
+}
+
+func (e *JavaEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
+	valCode := e.fs.ReduceToCode(string(PreVisitRangeStmtValue))
+	e.fs.Push(valCode, TagIdent, nil)
+}
+
+func (e *JavaEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitRangeStmtX))
+	e.fs.PushCode(xCode)
+}
+
+func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitRangeStmt))
+	ind := javaIndent(indent / 2)
+
+	keyCode := ""
+	valCode := ""
+	xCode := ""
+	bodyCode := ""
+
+	idx := 0
+	if node.Key != nil {
+		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+			keyCode = tokens[idx].Content
+			idx++
+		}
+	}
+	if node.Value != nil {
+		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+			valCode = tokens[idx].Content
+			idx++
+		}
+	}
+	if idx < len(tokens) {
+		xCode = tokens[idx].Content
+		idx++
+	}
+	if idx < len(tokens) {
+		bodyCode = tokens[idx].Content
+	}
+	if node.Key == nil && valCode != "" {
+		keyCode = "_"
+	}
+
+	isMap := false
+	if node.X != nil {
+		isMap = e.isMapTypeExprJ(node.X)
+	}
+
+	if isMap {
+		mapGoType := e.getExprGoTypeJ(node.X)
+		valType := "Object"
+		if mapGoType != nil {
+			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
+				valType = e.qualifiedJavaTypeName(mapUnderlying.Elem())
+			}
+		}
+		keysVar := fmt.Sprintf("_keys%d", e.rangeVarCounter)
+		loopIdx := fmt.Sprintf("_mi%d", e.rangeVarCounter)
+		e.rangeVarCounter++
+		if valCode != "" && valCode != "_" {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%s{\n", ind))
+			sb.WriteString(fmt.Sprintf("%s  var %s = hmap.hashMapKeys(%s);\n", ind, keysVar, xCode))
+			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			if keyCode != "_" {
+				sb.WriteString(fmt.Sprintf("%s    var %s = %s.get(%s);\n", ind, keyCode, keysVar, loopIdx))
+			}
+			sb.WriteString(fmt.Sprintf("%s    var %s = (%s)hmap.hashMapGet(%s, %s.get(%s));\n", ind, valCode, valType, xCode, keysVar, loopIdx))
+			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
+			sb.WriteString(fmt.Sprintf("%s  }\n", ind))
+			sb.WriteString(fmt.Sprintf("%s}\n", ind))
+			e.fs.PushCode(sb.String())
+		} else {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%s{\n", ind))
+			sb.WriteString(fmt.Sprintf("%s  var %s = hmap.hashMapKeys(%s);\n", ind, keysVar, xCode))
+			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			if keyCode != "_" {
+				sb.WriteString(fmt.Sprintf("%s    var %s = %s.get(%s);\n", ind, keyCode, keysVar, loopIdx))
+			}
+			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
+			sb.WriteString(fmt.Sprintf("%s  }\n", ind))
+			sb.WriteString(fmt.Sprintf("%s}\n", ind))
+			e.fs.PushCode(sb.String())
+		}
+		return
+	}
+
+	// Check if ranging over string (affects .size() vs .length())
+	xType := e.getExprGoTypeJ(node.X)
+	lenExpr := xCode + ".size()"
+	isString := false
+	if xType != nil {
+		if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+			lenExpr = xCode + ".length()"
+			isString = true
+		}
+	}
+
+	// Slice/string range
+	if valCode != "" && valCode != "_" {
+		loopVar := keyCode
+		if loopVar == "_" || loopVar == "" {
+			loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
+			e.rangeVarCounter++
+		}
+
+		var valDecl string
+		if isString {
+			valDecl = fmt.Sprintf("%s    var %s = (int)%s.charAt(%s);\n", ind, valCode, xCode, loopVar)
+		} else {
+			valDecl = fmt.Sprintf("%s    var %s = %s.get(%s);\n", ind, valCode, xCode, loopVar)
+		}
+		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+
+		e.fs.PushCode(fmt.Sprintf("%sfor (var %s = 0; %s < %s; %s++) %s\n",
+			ind, loopVar, loopVar, lenExpr, loopVar, bodyWithDecl))
+	} else {
+		loopVar := keyCode
+		if loopVar == "_" || loopVar == "" {
+			loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
+			e.rangeVarCounter++
+		}
+		e.fs.PushCode(fmt.Sprintf("%sfor (var %s = 0; %s < %s; %s++) %s\n",
+			ind, loopVar, loopVar, lenExpr, loopVar, bodyCode))
+	}
+}
+
+// ============================================================
+// Switch / Case Statements
+// ============================================================
+
+func (e *JavaEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+	e.indent = indent
+}
+
+func (e *JavaEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
+	tagCode := e.fs.ReduceToCode(string(PreVisitSwitchStmtTag))
+	e.fs.PushCode(tagCode)
+}
+
+func (e *JavaEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitSwitchStmt))
+	ind := javaIndent(indent / 2)
+
+	tagCode := ""
+	idx := 0
+	if idx < len(tokens) {
+		tagCode = tokens[idx].Content
+		idx++
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%sswitch (%s) {\n", ind, tagCode))
+	for i := idx; i < len(tokens); i++ {
+		sb.WriteString(tokens[i].Content)
+	}
+	sb.WriteString(ind + "}\n")
+	e.fs.PushCode(sb.String())
+}
+
+func (e *JavaEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
+	e.indent = indent
+}
+
+func (e *JavaEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
+	exprCode := e.fs.ReduceToCode(string(PreVisitCaseClauseListExpr))
+	e.fs.PushCode(exprCode)
+}
+
+func (e *JavaEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCaseClauseList))
+	var exprs []string
+	for _, t := range tokens {
+		if t.Content != "" {
+			exprs = append(exprs, t.Content)
+		}
+	}
+	e.fs.PushCode(strings.Join(exprs, ", "))
+}
+
+func (e *JavaEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitCaseClause))
+	ind := javaIndent(indent / 2)
+
+	var sb strings.Builder
+	idx := 0
+	if len(node.List) == 0 {
+		sb.WriteString(ind + "default:\n")
+	} else {
+		caseExprs := ""
+		if idx < len(tokens) {
+			caseExprs = tokens[idx].Content
+			idx++
+		}
+		vals := strings.Split(caseExprs, ", ")
+		for _, v := range vals {
+			sb.WriteString(fmt.Sprintf("%scase %s:\n", ind, v))
+		}
+	}
+	for i := idx; i < len(tokens); i++ {
+		sb.WriteString(tokens[i].Content)
+	}
+	bodyStr := sb.String()
+	if !strings.Contains(bodyStr, "return ") && !strings.Contains(bodyStr, "break;") {
+		sb.WriteString(ind + "  break;\n")
+	}
+	e.fs.PushCode(sb.String())
+}
+
+// ============================================================
+// Inc/Dec Statements
+// ============================================================
+
+func (e *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
+	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
+	ind := javaIndent(indent / 2)
+
+	// Handle closure-captured variables: ((Type)name[0])++ -> name[0] = ((Type)name[0]) + 1
+	if ident, ok := node.X.(*ast.Ident); ok && e.closureCapturedMutVars != nil && e.closureCapturedMutVars[ident.Name] {
+		opVal := "1"
+		op := "+"
+		if node.Tok == token.DEC {
+			op = "-"
+		}
+		lhs := closureUnwrapLhs(xCode)
+		e.fs.PushCode(fmt.Sprintf("%s%s = %s %s %s;\n", ind, lhs, xCode, op, opVal))
+		return
+	}
+
+	e.fs.PushCode(fmt.Sprintf("%s%s%s;\n", ind, xCode, node.Tok.String()))
+}
+
+// ============================================================
+// Branch Statements (break, continue)
+// ============================================================
+
+func (e *JavaEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
+	ind := javaIndent(indent / 2)
+	switch node.Tok {
+	case token.BREAK:
+		e.fs.PushCode(ind + "break;\n")
+	case token.CONTINUE:
+		e.fs.PushCode(ind + "continue;\n")
+	}
+}
+
+// ============================================================
+// Struct Declarations (GenStructInfo)
+// ============================================================
+
+func (e *JavaEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
+	typeCode := e.fs.ReduceToCode(string(PreVisitGenStructFieldType))
+	e.fs.PushCode(typeCode)
+}
+
+func (e *JavaEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
+	e.fs.Reduce(string(PreVisitGenStructFieldName))
+	e.fs.Push(node.Name, TagIdent, nil)
+}
+
+func (e *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
+	tokens := e.fs.Reduce(string(PreVisitGenStructInfo))
+
+	if node.Struct == nil {
+		return
+	}
+
+	// Collect field types and names
+	type fieldInfo struct {
+		typeName string
+		name     string
+	}
+	var fields []fieldInfo
+	i := 0
+	for i < len(tokens) {
+		if tokens[i].Tag == TagExpr {
+			fi := fieldInfo{typeName: tokens[i].Content}
+			i++
+			if i < len(tokens) && tokens[i].Tag == TagIdent {
+				fi.name = tokens[i].Content
+				i++
+			}
+			fields = append(fields, fi)
+		} else if tokens[i].Tag == TagIdent {
+			fields = append(fields, fieldInfo{typeName: "Object", name: tokens[i].Content})
+			i++
+		} else {
+			i++
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("static class %s {\n", node.Name))
+
+	// Public fields
+	for _, f := range fields {
+		sb.WriteString(fmt.Sprintf("  public %s %s;\n", f.typeName, f.name))
+	}
+
+	// No-arg constructor with defaults
+	sb.WriteString(fmt.Sprintf("  public %s() {\n", node.Name))
+	for _, f := range fields {
+		sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", f.name, getJavaDefaultValueForStruct(f.typeName)))
+	}
+	sb.WriteString("  }\n")
+
+	// All-args constructor
+	sb.WriteString(fmt.Sprintf("  public %s(", node.Name))
+	for i, f := range fields {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(fmt.Sprintf("%s %s", f.typeName, f.name))
+	}
+	sb.WriteString(") {\n")
+	for _, f := range fields {
+		if !isJavaPrimitiveType(f.typeName) &&
+			!strings.HasPrefix(f.typeName, "ArrayList<") &&
+			!strings.HasPrefix(f.typeName, "HashMap<") &&
+			!isJavaFunctionalInterface(f.typeName) &&
+			!isJavaBuiltinReferenceType(f.typeName) &&
+			f.typeName != "hmap.HashMap" &&
+			f.typeName != "Object" &&
+			f.typeName != "String" {
+			sb.WriteString(fmt.Sprintf("    this.%s = %s != null ? %s : new %s();\n", f.name, f.name, f.name, f.typeName))
+		} else {
+			sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", f.name, f.name))
+		}
+	}
+	sb.WriteString("  }\n")
+
+	// Copy constructor
+	sb.WriteString(fmt.Sprintf("  public %s(%s other) {\n", node.Name, node.Name))
+	for _, f := range fields {
+		if strings.HasPrefix(f.typeName, "ArrayList<") {
+			sb.WriteString(fmt.Sprintf("    this.%s = other.%s != null ? new ArrayList<>(other.%s) : null;\n", f.name, f.name, f.name))
+		} else if f.typeName == "hmap.HashMap" || strings.HasPrefix(f.typeName, "HashMap<") {
+			sb.WriteString(fmt.Sprintf("    this.%s = other.%s;\n", f.name, f.name))
+		} else if isJavaPrimitiveType(f.typeName) {
+			sb.WriteString(fmt.Sprintf("    this.%s = other.%s;\n", f.name, f.name))
+		} else if isJavaFunctionalInterface(f.typeName) || isJavaBuiltinReferenceType(f.typeName) {
+			sb.WriteString(fmt.Sprintf("    this.%s = other.%s;\n", f.name, f.name))
+		} else {
+			sb.WriteString(fmt.Sprintf("    this.%s = other.%s != null ? new %s(other.%s) : null;\n", f.name, f.name, f.typeName, f.name))
+		}
+	}
+	sb.WriteString("  }\n")
+
+	// hashCode()
+	sb.WriteString("  @Override\n  public int hashCode() {\n    return java.util.Objects.hash(")
+	for i, f := range fields {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(fmt.Sprintf("this.%s", f.name))
+	}
+	sb.WriteString(");\n  }\n")
+
+	// equals()
+	sb.WriteString("  @Override\n  public boolean equals(Object obj) {\n")
+	sb.WriteString("    if (this == obj) return true;\n")
+	sb.WriteString("    if (obj == null || getClass() != obj.getClass()) return false;\n")
+	sb.WriteString(fmt.Sprintf("    %s other = (%s) obj;\n", node.Name, node.Name))
+	sb.WriteString("    return ")
+	for i, f := range fields {
+		if i > 0 {
+			sb.WriteString(" && ")
+		}
+		if isJavaPrimitiveType(f.typeName) && f.typeName != "String" {
+			sb.WriteString(fmt.Sprintf("this.%s == other.%s", f.name, f.name))
+		} else {
+			sb.WriteString(fmt.Sprintf("java.util.Objects.equals(this.%s, other.%s)", f.name, f.name))
+		}
+	}
+	if len(fields) == 0 {
+		sb.WriteString("true")
+	}
+	sb.WriteString(";\n  }\n")
+
+	sb.WriteString("}\n\n")
+	e.fs.PushCode(sb.String())
+}
+
+func (e *JavaEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
+	// Structs are already pushed to the stack
+}
+
+// ============================================================
+// Constants (GenDeclConst)
+// ============================================================
+
+func (e *JavaEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
+	valTokens := e.fs.Reduce(string(PreVisitGenDeclConstName))
+	valCode := ""
+	for _, t := range valTokens {
+		valCode += t.Content
+	}
+	if valCode == "" {
+		valCode = "0"
+	}
+
+	// Determine the type from type info
+	constType := "int"
+	if e.pkg != nil && e.pkg.TypesInfo != nil {
+		if obj := e.pkg.TypesInfo.Defs[node]; obj != nil {
+			ut := obj.Type().Underlying()
+			resolved := getJavaPrimTypeName(ut)
+			if resolved == "Object" {
+				if basic, ok := ut.(*types.Basic); ok {
+					if basic.Info()&types.IsInteger != 0 {
+						resolved = "int"
+					} else if basic.Info()&types.IsFloat != 0 {
+						resolved = "double"
+					} else if basic.Info()&types.IsString != 0 {
+						resolved = "String"
+					} else if basic.Info()&types.IsBoolean != 0 {
+						resolved = "boolean"
+					}
+				}
+			}
+			constType = resolved
+		}
+	}
+
+	name := node.Name
+	e.fs.PushCode(fmt.Sprintf("public static final %s %s = %s;\n", constType, name, valCode))
+}
+
+func (e *JavaEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
+	// Let const tokens flow through
+}
+
+// ============================================================
+// Type Aliases
+// ============================================================
+
+func (e *JavaEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
+	e.currentAliasName = node.Name
+}
+
+func (e *JavaEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
+	e.fs.Reduce(string(PreVisitTypeAliasName))
+
+	if e.currentAliasName != "" {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if tv, ok := e.pkg.TypesInfo.Types[node]; ok && tv.Type != nil {
+				underlyingType := tv.Type.String()
+				underlyingType = convertGoTypeToJava(underlyingType)
+				if e.typeAliasMap == nil {
+					e.typeAliasMap = make(map[string]string)
+				}
+				e.typeAliasMap[e.currentAliasName] = underlyingType
+			}
+		}
+	}
+	e.currentAliasName = ""
 }
