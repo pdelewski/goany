@@ -3,11 +3,15 @@ package main
 import (
 	"fmt"
 	"libs/anyllm"
+	"os"
 	"runtime/fs"
 )
 
 func main() {
 	path := "model.gguf"
+	if len(os.Args) > 1 {
+		path = os.Args[1]
+	}
 	if !fs.Exists(path) {
 		fmt.Println("No model file found at: " + path)
 		fmt.Println("Place a .gguf file as model.gguf to test")

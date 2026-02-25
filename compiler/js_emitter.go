@@ -839,6 +839,11 @@ func (e *JSEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
 		selCode = tokens[1].Content
 	}
 
+	if xCode == "os" && selCode == "Args" {
+		e.fs.PushCode("process.argv")
+		return
+	}
+
 	// Lower builtins: fmt.Println → console.log
 	loweredX := jsLowerBuiltin(xCode)
 	loweredSel := jsLowerBuiltin(selCode)

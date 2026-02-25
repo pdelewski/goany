@@ -1734,6 +1734,11 @@ func (e *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 		selCode = tokens[1].Content
 	}
 
+	if xCode == "os" && selCode == "Args" {
+		e.fs.PushCode("goany_os_args")
+		return
+	}
+
 	// Check if selector is a type alias
 	if _, isAlias := e.typeAliasMap[selCode]; isAlias {
 		e.fs.PushCode(e.typeAliasMap[selCode])
@@ -2753,6 +2758,9 @@ func (e *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	}
 	if len(tokens) >= 2 {
 		bodyCode = tokens[1].Content
+	}
+	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
+		bodyCode = "{\n" + javaIndent(2) + "ArrayList<String> goany_os_args = new ArrayList<>(java.util.Arrays.asList(args));\n" + bodyCode[2:]
 	}
 	e.fs.PushCode(sigCode + " " + bodyCode + "\n")
 }
