@@ -129,8 +129,7 @@ func main() {
 	useCs := useAll || backendSet["cs"]
 	useRust := useAll || backendSet["rust"]
 	useJs := backendSet["js"]             // JS is opt-in, not included in "all"
-	useJava := backendSet["java"]         // Java (old backend) is opt-in, not included in "all"
-	useJavaPrim := backendSet["javaprim"] // JavaPrim (new shift-reduce backend) is opt-in
+	useJava := backendSet["java"] // Java is opt-in, not included in "all"
 
 	// Build passes list
 	var passes []compiler.Pass
@@ -220,18 +219,6 @@ func main() {
 	}
 	if useJava {
 		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
-			BaseEmitter:     compiler.BaseEmitter{},
-			Output:          output + ".java",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-		}}
-		passes = append(passes, javaBackend)
-		programFiles = append(programFiles, "java")
-	}
-	if useJavaPrim {
-		javaPrimBackend := &compiler.BasePass{PassName: "JavaPrimGen", Emitter: &compiler.JavaPrimEmitter{
 			Emitter:         &compiler.BaseEmitter{},
 			Output:          output + ".java",
 			LinkRuntime:     linkRuntime,
@@ -239,7 +226,7 @@ func main() {
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 		}}
-		passes = append(passes, javaPrimBackend)
+		passes = append(passes, javaBackend)
 		programFiles = append(programFiles, "java")
 	}
 	passManager := &compiler.PassManager{
@@ -251,7 +238,7 @@ func main() {
 
 	// Format generated files
 	// Use astyle for C++/C#/Java, rustfmt for Rust
-	hasAstyleFiles := useCpp || useCs || useJava || useJavaPrim
+	hasAstyleFiles := useCpp || useCs || useJava
 	if hasAstyleFiles {
 		compiler.DebugLogPrintf("Using astyle version: %s\n", compiler.GetAStyleVersion())
 		const astyleOptions = "--style=webkit"
@@ -270,7 +257,7 @@ func main() {
 				log.Fatalf("Failed to format %s: %v", filePath, err)
 			}
 		}
-		if useJava || useJavaPrim {
+		if useJava {
 			// Compute sanitized Java output path (matching java_emitter sanitization)
 			javaOutputName := strings.ReplaceAll(outputName, "-", "_")
 			if strings.HasSuffix(javaOutputName, ".java") {
