@@ -12,6 +12,7 @@ import (
 // ReadOnlyAnalysis holds the results of read-only parameter analysis.
 type ReadOnlyAnalysis struct {
 	ReadOnly      map[string][]bool // funcKey → per-param read-only flags
+	MutRef        map[string][]bool // funcKey → per-param mutable-ref flags (slice-element mutations only)
 	FuncsAsValues map[string]bool   // functions used as callbacks
 }
 
@@ -22,6 +23,7 @@ type ReadOnlyAnalysis struct {
 func AnalyzeReadOnlyParams(pkg *packages.Package) *ReadOnlyAnalysis {
 	result := &ReadOnlyAnalysis{
 		ReadOnly:      make(map[string][]bool),
+		MutRef:        make(map[string][]bool),
 		FuncsAsValues: CollectFuncsUsedAsValues(pkg),
 	}
 
@@ -66,8 +68,17 @@ func AnalyzeReadOnlyParams(pkg *packages.Package) *ReadOnlyAnalysis {
 				}
 			}
 
-			// Build read-only flags for each parameter
+			// Collect direct mutations (struct field reassignment, not slice element writes)
+			directMutatedVars := make(map[string]bool)
+			if body != nil {
+				for _, stmt := range body.List {
+					CollectDirectMutatedVarsInStmt(stmt, directMutatedVars)
+				}
+			}
+
+			// Build read-only and mut-ref flags for each parameter
 			var readOnly []bool
+			var mutRef []bool
 			for _, field := range params {
 				for _, name := range field.Names {
 					paramName := name.Name
@@ -78,12 +89,24 @@ func AnalyzeReadOnlyParams(pkg *packages.Package) *ReadOnlyAnalysis {
 						!mutatedVars[paramName] &&
 						!returnedVars[paramName] &&
 						!assignedFromVars[paramName]
+					// MutRef: mutated only via slice element access, not direct field assignment
+					isMutRef := isEligible &&
+						mutatedVars[paramName] &&
+						!directMutatedVars[paramName] &&
+						!returnedVars[paramName] &&
+						!assignedFromVars[paramName]
 					readOnly = append(readOnly, isReadOnly)
+					mutRef = append(mutRef, isMutRef)
 				}
 			}
 			result.ReadOnly[key] = readOnly
+			result.MutRef[key] = mutRef
 		}
 	}
+
+	// Propagate MutRef up the call chain
+	PropagateMutRef(result, pkg)
+
 	return result
 }
 
@@ -167,6 +190,84 @@ func CollectMutatedVarsInStmt(stmt ast.Stmt, result map[string]bool) {
 		for _, bodyStmt := range s.Body {
 			CollectMutatedVarsInStmt(bodyStmt, result)
 		}
+	}
+}
+
+// CollectDirectMutatedVarsInStmt collects variables that are directly mutated
+// (struct field reassignment or whole-variable assignment), excluding mutations
+// that only go through index expressions (slice element writes).
+func CollectDirectMutatedVarsInStmt(stmt ast.Stmt, result map[string]bool) {
+	if stmt == nil {
+		return
+	}
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		if s.Tok == token.ASSIGN || s.Tok == token.ADD_ASSIGN || s.Tok == token.SUB_ASSIGN ||
+			s.Tok == token.MUL_ASSIGN || s.Tok == token.QUO_ASSIGN || s.Tok == token.REM_ASSIGN {
+			for _, lhs := range s.Lhs {
+				CollectDirectMutatedVarsInExpr(lhs, result)
+			}
+		}
+	case *ast.IncDecStmt:
+		CollectDirectMutatedVarsInExpr(s.X, result)
+	case *ast.IfStmt:
+		if s.Body != nil {
+			for _, bodyStmt := range s.Body.List {
+				CollectDirectMutatedVarsInStmt(bodyStmt, result)
+			}
+		}
+		if s.Else != nil {
+			CollectDirectMutatedVarsInStmt(s.Else, result)
+		}
+	case *ast.ForStmt:
+		if s.Post != nil {
+			CollectDirectMutatedVarsInStmt(s.Post, result)
+		}
+		if s.Body != nil {
+			for _, bodyStmt := range s.Body.List {
+				CollectDirectMutatedVarsInStmt(bodyStmt, result)
+			}
+		}
+	case *ast.RangeStmt:
+		if s.Body != nil {
+			for _, bodyStmt := range s.Body.List {
+				CollectDirectMutatedVarsInStmt(bodyStmt, result)
+			}
+		}
+	case *ast.BlockStmt:
+		for _, bodyStmt := range s.List {
+			CollectDirectMutatedVarsInStmt(bodyStmt, result)
+		}
+	case *ast.SwitchStmt:
+		if s.Body != nil {
+			for _, bodyStmt := range s.Body.List {
+				CollectDirectMutatedVarsInStmt(bodyStmt, result)
+			}
+		}
+	case *ast.CaseClause:
+		for _, bodyStmt := range s.Body {
+			CollectDirectMutatedVarsInStmt(bodyStmt, result)
+		}
+	}
+}
+
+// CollectDirectMutatedVarsInExpr collects variables that are directly mutated,
+// stopping at IndexExpr boundaries. For example:
+//   - tc.Field = x      → marks tc as directly mutated (SelectorExpr)
+//   - tc = x            → marks tc as directly mutated (Ident)
+//   - tc.Field[i] = x   → does NOT mark tc (IndexExpr stops recursion)
+func CollectDirectMutatedVarsInExpr(expr ast.Expr, result map[string]bool) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *ast.Ident:
+		result[e.Name] = true
+	case *ast.IndexExpr:
+		// Stop here — indexing into a slice field is not a direct struct mutation
+		return
+	case *ast.SelectorExpr:
+		CollectDirectMutatedVarsInExpr(e.X, result)
 	}
 }
 
@@ -462,6 +563,88 @@ func ExprContainsSelectorPath(expr ast.Expr, exact string, prefix string) bool {
 		return true
 	})
 	return found
+}
+
+// PropagateMutRef propagates MutRef requirements up the call chain.
+// If a function's ReadOnly param is passed to a callee's MutRef position,
+// upgrade it to MutRef (fixpoint iteration).
+func PropagateMutRef(result *ReadOnlyAnalysis, pkg *packages.Package) {
+	changed := true
+	for changed {
+		changed = false
+		for _, file := range pkg.Syntax {
+			for _, decl := range file.Decls {
+				funcDecl, ok := decl.(*ast.FuncDecl)
+				if !ok || funcDecl.Type == nil || funcDecl.Type.Params == nil || funcDecl.Body == nil {
+					continue
+				}
+				funcKey := pkg.Name + "." + funcDecl.Name.Name
+
+				// Build param name → param index map
+				paramIndex := make(map[string]int)
+				idx := 0
+				for _, field := range funcDecl.Type.Params.List {
+					for _, name := range field.Names {
+						paramIndex[name.Name] = idx
+						idx++
+					}
+				}
+
+				// Walk function body looking for call expressions
+				ast.Inspect(funcDecl.Body, func(n ast.Node) bool {
+					callExpr, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					// Resolve callee name
+					calleeName := ""
+					if ident, ok := callExpr.Fun.(*ast.Ident); ok {
+						calleeName = pkg.Name + "." + ident.Name
+					} else if sel, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
+						if pkgIdent, ok := sel.X.(*ast.Ident); ok {
+							calleeName = pkgIdent.Name + "." + sel.Sel.Name
+						}
+					}
+					if calleeName == "" {
+						return true
+					}
+					calleeMutRef := result.MutRef[calleeName]
+					if calleeMutRef == nil {
+						return true
+					}
+					// Check each argument
+					for i, arg := range callExpr.Args {
+						if i >= len(calleeMutRef) || !calleeMutRef[i] {
+							continue
+						}
+						// Argument at position i goes to a MutRef param
+						argName := ""
+						if ident, ok := arg.(*ast.Ident); ok {
+							argName = ident.Name
+						}
+						if argName == "" {
+							continue
+						}
+						pIdx, isParam := paramIndex[argName]
+						if !isParam {
+							continue
+						}
+						// This param is passed to a MutRef position
+						readOnly := result.ReadOnly[funcKey]
+						mutRef := result.MutRef[funcKey]
+						if readOnly != nil && pIdx < len(readOnly) && readOnly[pIdx] {
+							readOnly[pIdx] = false
+							if mutRef != nil && pIdx < len(mutRef) {
+								mutRef[pIdx] = true
+							}
+							changed = true
+						}
+					}
+					return true
+				})
+			}
+		}
+	}
 }
 
 // isRefOptEligibleType checks if a Go type is eligible for &T optimization in Rust.

@@ -45,14 +45,32 @@ type GGUFHeader struct {
 
 // GGUFMetadata holds a single metadata key-value pair
 type GGUFMetadata struct {
-	Key       string
-	ValueType int
-	IntVal    int64
-	FloatVal  float64
-	BoolVal   bool
-	StringVal string
-	ArrayLen  int64
-	ArrayType int
+	Key         string
+	ValueType   int
+	IntVal      int64
+	FloatVal    float64
+	BoolVal     bool
+	StringVal   string
+	ArrayLen    int64
+	ArrayType   int
+	ValueOffset int64
+}
+
+// ModelConfig holds extracted model configuration
+type ModelConfig struct {
+	Architecture    string
+	EmbeddingLength int
+	BlockCount      int
+	HeadCount       int
+	HeadCountKV     int
+	VocabSize       int
+	ContextLength   int
+	FFNLength       int
+	RopeFreqBase    float64
+	RMSNormEps      float64
+	ExpertCount     int
+	ExpertUsedCount int
+	Error           string
 }
 
 // GGUFTensorInfo holds information about a single tensor
@@ -66,10 +84,20 @@ type GGUFTensorInfo struct {
 
 // GGUFFile holds the complete parsed GGUF file
 type GGUFFile struct {
-	Header   GGUFHeader
-	Metadata []GGUFMetadata
-	Tensors  []GGUFTensorInfo
-	Error    string
+	Header         GGUFHeader
+	Metadata       []GGUFMetadata
+	Tensors        []GGUFTensorInfo
+	Error          string
+	Handle         int
+	DataBaseOffset int64
+}
+
+// TensorCache holds cached dequantized tensor data in a flat array
+type TensorCache struct {
+	Entries []float64
+	Offsets []int
+	Counts  []int
+	UsedArr []int
 }
 
 // ReadState tracks the state of binary reading

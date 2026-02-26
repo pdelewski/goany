@@ -220,7 +220,9 @@ func LoadGGUF(path string) GGUFFile {
 			fs.Close(handle)
 			return result
 		}
+		valueOffset := rsM3.Pos
 		rsM4, md := readMetadataValue(rsM3, valueType)
+		md.ValueOffset = valueOffset
 		if rsM4.Err != "" {
 			result.Error = rsM4.Err
 			fs.Close(handle)
@@ -285,6 +287,289 @@ func LoadGGUF(path string) GGUFFile {
 		ti = ti + 1
 	}
 
+	// Compute aligned data base offset (align to 32 bytes)
+	endPos := rsT.Pos
+	result.DataBaseOffset = ((endPos + 31) / 32) * 32
+
 	fs.Close(handle)
+	return result
+}
+
+// OpenGGUF parses a GGUF file and keeps the handle open for ReadAt access
+func OpenGGUF(path string) GGUFFile {
+	result := GGUFFile{}
+	result.Metadata = []GGUFMetadata{}
+	result.Tensors = []GGUFTensorInfo{}
+
+	handle, err := fs.Open(path)
+	if err != "" {
+		result.Error = err
+		return result
+	}
+
+	rs := newReadState(handle)
+
+	// Read magic
+	rs2, magic := readUint32LE(rs)
+	if rs2.Err != "" {
+		result.Error = rs2.Err
+		fs.Close(handle)
+		return result
+	}
+	if magic != GGUFMagic {
+		result.Error = "invalid GGUF magic number"
+		fs.Close(handle)
+		return result
+	}
+	result.Header.Magic = magic
+
+	// Read version
+	rs3, version := readUint32LE(rs2)
+	if rs3.Err != "" {
+		result.Error = rs3.Err
+		fs.Close(handle)
+		return result
+	}
+	if version != 2 && version != 3 {
+		result.Error = "unsupported GGUF version"
+		fs.Close(handle)
+		return result
+	}
+	result.Header.Version = version
+
+	// Read tensor count
+	rs4, tensorCount := readUint64LE(rs3)
+	if rs4.Err != "" {
+		result.Error = rs4.Err
+		fs.Close(handle)
+		return result
+	}
+	result.Header.TensorCount = tensorCount
+
+	// Read metadata count
+	rs5, metadataCount := readUint64LE(rs4)
+	if rs5.Err != "" {
+		result.Error = rs5.Err
+		fs.Close(handle)
+		return result
+	}
+	result.Header.MetadataCount = metadataCount
+
+	// Read metadata entries
+	rsM := rs5
+	mi := int64(0)
+	for mi < metadataCount {
+		rsM2, key := readGGUFString(rsM)
+		if rsM2.Err != "" {
+			result.Error = rsM2.Err
+			fs.Close(handle)
+			return result
+		}
+		rsM3, valueType := readUint32LE(rsM2)
+		if rsM3.Err != "" {
+			result.Error = rsM3.Err
+			fs.Close(handle)
+			return result
+		}
+		valueOffset := rsM3.Pos
+		rsM4, md := readMetadataValue(rsM3, valueType)
+		md.ValueOffset = valueOffset
+		if rsM4.Err != "" {
+			result.Error = rsM4.Err
+			fs.Close(handle)
+			return result
+		}
+		md.Key = key
+		result.Metadata = append(result.Metadata, md)
+		rsM = rsM4
+		mi = mi + 1
+	}
+
+	// Read tensor info entries
+	rsT := rsM
+	ti := int64(0)
+	for ti < tensorCount {
+		rsT2, name := readGGUFString(rsT)
+		if rsT2.Err != "" {
+			result.Error = rsT2.Err
+			fs.Close(handle)
+			return result
+		}
+		rsT3, nDims := readUint32LE(rsT2)
+		if rsT3.Err != "" {
+			result.Error = rsT3.Err
+			fs.Close(handle)
+			return result
+		}
+		dims := []int64{}
+		rsD := rsT3
+		di := 0
+		for di < nDims {
+			rsD2, dim := readUint64LE(rsD)
+			if rsD2.Err != "" {
+				result.Error = rsD2.Err
+				fs.Close(handle)
+				return result
+			}
+			dims = append(dims, dim)
+			rsD = rsD2
+			di = di + 1
+		}
+		rsT4, dtype := readUint32LE(rsD)
+		if rsT4.Err != "" {
+			result.Error = rsT4.Err
+			fs.Close(handle)
+			return result
+		}
+		rsT5, offset := readUint64LE(rsT4)
+		if rsT5.Err != "" {
+			result.Error = rsT5.Err
+			fs.Close(handle)
+			return result
+		}
+		tensor := GGUFTensorInfo{}
+		tensor.Name = name
+		tensor.NDims = nDims
+		tensor.Dims = dims
+		tensor.DType = dtype
+		tensor.Offset = offset
+		result.Tensors = append(result.Tensors, tensor)
+		rsT = rsT5
+		ti = ti + 1
+	}
+
+	// Compute aligned data base offset (align to 32 bytes)
+	endPos := rsT.Pos
+	result.DataBaseOffset = ((endPos + 31) / 32) * 32
+
+	// Keep handle open for ReadAt access
+	result.Handle = handle
+	return result
+}
+
+// CloseGGUF closes the file handle of an opened GGUF file
+func CloseGGUF(file GGUFFile) {
+	if file.Handle > 0 {
+		fs.Close(file.Handle)
+	}
+}
+
+// FindMetadata finds a metadata entry by key and returns its index, or -1 if not found
+func FindMetadata(file GGUFFile, key string) int {
+	i := 0
+	for i < len(file.Metadata) {
+		if file.Metadata[i].Key == key {
+			return i
+		}
+		i = i + 1
+	}
+	return -1
+}
+
+// GetMetadataInt returns the integer value of a metadata entry, or defaultVal if not found
+func GetMetadataInt(file GGUFFile, key string, defaultVal int64) int64 {
+	idx := FindMetadata(file, key)
+	if idx < 0 {
+		return defaultVal
+	}
+	return file.Metadata[idx].IntVal
+}
+
+// GetMetadataFloat returns the float value of a metadata entry, or defaultVal if not found
+func GetMetadataFloat(file GGUFFile, key string, defaultVal float64) float64 {
+	idx := FindMetadata(file, key)
+	if idx < 0 {
+		return defaultVal
+	}
+	return file.Metadata[idx].FloatVal
+}
+
+// GetMetadataString returns the string value of a metadata entry, or defaultVal if not found
+func GetMetadataString(file GGUFFile, key string, defaultVal string) string {
+	idx := FindMetadata(file, key)
+	if idx < 0 {
+		return defaultVal
+	}
+	return file.Metadata[idx].StringVal
+}
+
+// ReadMetadataStringArray reads a string array metadata value by seeking to its ValueOffset
+func ReadMetadataStringArray(file GGUFFile, key string) []string {
+	emptyStrs := []string{}
+	idx := FindMetadata(file, key)
+	if idx < 0 {
+		return emptyStrs
+	}
+	md := file.Metadata[idx]
+	if md.ValueType != GGUFTypeArray || md.ArrayType != GGUFTypeString {
+		return emptyStrs
+	}
+	// Seek to the value offset (past the array type and length)
+	rs := ReadState{}
+	rs.Handle = file.Handle
+	rs.Pos = md.ValueOffset
+	rs.Err = ""
+	// Skip array type (4 bytes) and array length (8 bytes)
+	rs = skipBytes(rs, 12)
+	if rs.Err != "" {
+		return emptyStrs
+	}
+	result := []string{}
+	ai := int64(0)
+	for ai < md.ArrayLen {
+		rs2, strVal := readGGUFString(rs)
+		if rs2.Err != "" {
+			return result
+		}
+		result = append(result, strVal)
+		rs = rs2
+		ai = ai + 1
+	}
+	return result
+}
+
+// ReadMetadataFloatArray reads a float array metadata value by seeking to its ValueOffset
+func ReadMetadataFloatArray(file GGUFFile, key string) []float64 {
+	emptyFloats := []float64{}
+	idx := FindMetadata(file, key)
+	if idx < 0 {
+		return emptyFloats
+	}
+	md := file.Metadata[idx]
+	if md.ValueType != GGUFTypeArray {
+		return emptyFloats
+	}
+	// Seek to the value offset (past the array type and length)
+	rs := ReadState{}
+	rs.Handle = file.Handle
+	rs.Pos = md.ValueOffset
+	rs.Err = ""
+	// Skip array type (4 bytes) and array length (8 bytes)
+	rs = skipBytes(rs, 12)
+	if rs.Err != "" {
+		return emptyFloats
+	}
+	result := []float64{}
+	ai := int64(0)
+	for ai < md.ArrayLen {
+		if md.ArrayType == GGUFTypeFloat32 {
+			rs2, fval := readFloat32LE(rs)
+			if rs2.Err != "" {
+				return result
+			}
+			result = append(result, fval)
+			rs = rs2
+		} else if md.ArrayType == GGUFTypeFloat64 {
+			rs2, fval := readFloat64LE(rs)
+			if rs2.Err != "" {
+				return result
+			}
+			result = append(result, fval)
+			rs = rs2
+		} else {
+			return result
+		}
+		ai = ai + 1
+	}
 	return result
 }

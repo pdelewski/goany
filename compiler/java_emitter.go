@@ -1596,11 +1596,15 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 						e.fs.PushCode(fmt.Sprintf("String.valueOf(%s)", argsStr))
 						return
 					}
-					// byte-to-int: int(byteVar) -> (byteVar & 0xFF) for unsigned semantics
-					if (javaType == "int") && len(node.Args) > 0 {
+					// byte-to-int/long: int(byteVar) -> (byteVar & 0xFF), int64(byteVar) -> (long)(byteVar & 0xFF)
+					if (javaType == "int" || javaType == "long") && len(node.Args) > 0 {
 						argType := e.getExprGoTypeJ(node.Args[0])
 						if e.isByteTypeJ(argType) {
-							e.fs.PushCode(e.maskByteValueJ(argsStr))
+							if javaType == "long" {
+								e.fs.PushCode(fmt.Sprintf("(long)(%s)", e.maskByteValueJ(argsStr)))
+							} else {
+								e.fs.PushCode(e.maskByteValueJ(argsStr))
+							}
 							return
 						}
 					}
@@ -2760,7 +2764,7 @@ func (e *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 		bodyCode = tokens[1].Content
 	}
 	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
-		bodyCode = "{\n" + javaIndent(2) + "ArrayList<String> goany_os_args = new ArrayList<>(java.util.Arrays.asList(args));\n" + bodyCode[2:]
+		bodyCode = "{\n" + javaIndent(2) + "ArrayList<String> goany_os_args = new ArrayList<>();\n" + javaIndent(2) + "goany_os_args.add(\"program\");\n" + javaIndent(2) + "goany_os_args.addAll(java.util.Arrays.asList(args));\n" + bodyCode[2:]
 	}
 	e.fs.PushCode(sigCode + " " + bodyCode + "\n")
 }

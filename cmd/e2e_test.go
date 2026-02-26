@@ -47,6 +47,7 @@ var e2eTestCases = []TestCase{
 	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false},
 	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true},
 	{"gguf-demo", "../examples/gguf-demo", true, true, false, true, true, false, true, false},
+	{"llm-demo", "../examples/llm-demo", true, true, false, true, true, false, true, false},
 	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false},
 	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false},
 	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false},

@@ -173,6 +173,7 @@ func main() {
 			OutputDir:       outputDir,
 			OutputName:      outputName,
 			OptimizeMoves:   optimizeMoves,
+			OptimizeRefs:    optimizeRefs,
 		}}
 		passes = append(passes, cppBackend)
 		programFiles = append(programFiles, "cpp")
@@ -185,6 +186,7 @@ func main() {
 			RuntimePackages: runtimePackages,
 			OutputDir:       outputDir,
 			OutputName:      outputName,
+			OptimizeRefs:    optimizeRefs,
 		}}
 		passes = append(passes, csBackend)
 		programFiles = append(programFiles, "cs")

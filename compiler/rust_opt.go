@@ -36,11 +36,13 @@ type RustOptState struct {
 	goTypeToRust func(string) string
 
 	// Ref optimization
-	refOptReadOnly         *ReadOnlyAnalysis
-	refOptCurrentFunc      string
-	refOptCurrentPkg       string
-	refOptCalleeReadOnly   [][]bool
-	refOptCurrentRefParams map[string]bool
+	refOptReadOnly            *ReadOnlyAnalysis
+	refOptCurrentFunc         string
+	refOptCurrentPkg          string
+	refOptCalleeReadOnly      [][]bool
+	refOptCalleeMutRef        [][]bool
+	refOptCurrentRefParams    map[string]bool
+	refOptCurrentMutRefParams map[string]bool
 
 	// Move optimization
 	currentAssignLhsNames     map[string]bool
@@ -91,6 +93,9 @@ func (o *RustOptState) AccumulateReadOnlyAnalysis(pkg *packages.Package) {
 		for k, v := range pkgAnalysis.ReadOnly {
 			o.refOptReadOnly.ReadOnly[k] = v
 		}
+		for k, v := range pkgAnalysis.MutRef {
+			o.refOptReadOnly.MutRef[k] = v
+		}
 		for k, v := range pkgAnalysis.FuncsAsValues {
 			o.refOptReadOnly.FuncsAsValues[k] = v
 		}
@@ -137,6 +142,19 @@ func (o *RustOptState) isRefOptArg(index int) bool {
 		return false
 	}
 	flags := o.refOptCalleeReadOnly[len(o.refOptCalleeReadOnly)-1]
+	if flags == nil || index >= len(flags) {
+		return false
+	}
+	return flags[index]
+}
+
+// isMutRefOptArg checks if the current call's argument at the given index corresponds
+// to a mutable-reference parameter in the callee function (slice-element mutations only).
+func (o *RustOptState) isMutRefOptArg(index int) bool {
+	if !o.OptimizeRefs || len(o.refOptCalleeMutRef) == 0 {
+		return false
+	}
+	flags := o.refOptCalleeMutRef[len(o.refOptCalleeMutRef)-1]
 	if flags == nil || index >= len(flags) {
 		return false
 	}
