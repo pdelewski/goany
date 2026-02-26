@@ -1113,6 +1113,7 @@ func (e *RustEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 	e.Opt.refOptCurrentFunc = e.Opt.refOptCurrentPkg + "." + node.Name
 	e.Opt.currentParamIndex = 0
 	e.Opt.refOptCurrentRefParams = make(map[string]bool)
+	e.Opt.refOptCurrentMutRefParams = make(map[string]bool)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
@@ -1137,15 +1138,23 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 			names = append(names, t.Content)
 		}
 	}
-	// Rust params: name: mut Type (or name: &Type for ref-opt)
+	// Rust params: name: mut Type, name: &Type (ref-opt), or name: &mut Type (mut-ref-opt)
 	paramIdx := e.Opt.currentParamIndex
 	for _, name := range names {
 		escapedName := escapeRustKeyword(name)
 		isRefOpt := false
+		isMutRefOpt := false
 		if e.Opt.OptimizeRefs && e.Opt.refOptReadOnly != nil {
 			if readOnlyFlags, ok := e.Opt.refOptReadOnly.ReadOnly[e.Opt.refOptCurrentFunc]; ok {
 				if paramIdx >= 0 && paramIdx < len(readOnlyFlags) && readOnlyFlags[paramIdx] {
 					isRefOpt = true
+				}
+			}
+			if !isRefOpt {
+				if mutRefFlags, ok := e.Opt.refOptReadOnly.MutRef[e.Opt.refOptCurrentFunc]; ok {
+					if paramIdx >= 0 && paramIdx < len(mutRefFlags) && mutRefFlags[paramIdx] {
+						isMutRefOpt = true
+					}
 				}
 			}
 		}
@@ -1155,6 +1164,13 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 				e.Opt.refOptCurrentRefParams = make(map[string]bool)
 			}
 			e.Opt.refOptCurrentRefParams[escapedName] = true
+		} else if isMutRefOpt {
+			e.fs.Push(fmt.Sprintf("%s: &mut %s", escapedName, typeStr), TagIdent, nil)
+			if e.Opt.refOptCurrentMutRefParams == nil {
+				e.Opt.refOptCurrentMutRefParams = make(map[string]bool)
+			}
+			e.Opt.refOptCurrentMutRefParams[escapedName] = true
+			e.Opt.RefOptCount++
 		} else {
 			e.fs.Push(fmt.Sprintf("mut %s: %s", escapedName, typeStr), TagIdent, nil)
 		}

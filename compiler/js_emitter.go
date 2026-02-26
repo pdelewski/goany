@@ -840,7 +840,7 @@ func (e *JSEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
 	}
 
 	if xCode == "os" && selCode == "Args" {
-		e.fs.PushCode("process.argv")
+		e.fs.PushCode("process.argv.slice(1)")
 		return
 	}
 

@@ -26,7 +26,9 @@ type CppEmitter struct {
 	LinkRuntime     string
 	RuntimePackages map[string]string
 	OptimizeMoves   bool
+	OptimizeRefs    bool
 	MoveOptCount    int
+	RefOptCount     int
 	file            *os.File
 	Emitter
 	pkg            *packages.Package
@@ -52,6 +54,13 @@ type CppEmitter struct {
 	// Move optimization guards
 	currentAssignLhsNames     map[string]bool
 	currentCallArgIdentsStack []map[string]int
+	// Reference optimization
+	refOptReadOnly        *ReadOnlyAnalysis
+	refOptCurrentFunc     string
+	refOptCurrentPkg      string
+	refOptCurrentRefParams    map[string]bool
+	refOptCurrentMutRefParams map[string]bool
+	currentParamIndex     int
 	// C++-specific
 	forwardDecl      bool
 	funcLitDepth     int
@@ -483,13 +492,33 @@ func (e *CppEmitter) PostVisitProgram(indent int) {
 	if e.OptimizeMoves && e.MoveOptCount > 0 {
 		fmt.Printf("  C++: %d copy(ies) replaced by std::move()\n", e.MoveOptCount)
 	}
+	if e.OptimizeRefs && e.RefOptCount > 0 {
+		fmt.Printf("  C++: %d copy(ies) removed by reference optimization\n", e.RefOptCount)
+	}
 }
 
 func (e *CppEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	e.pkg = pkg
 	e.currentPackage = pkg.Name
+	e.refOptCurrentPkg = pkg.Name
 	if e.structKeyTypes == nil {
 		e.structKeyTypes = make(map[string]string)
+	}
+	if e.OptimizeRefs {
+		pkgAnalysis := AnalyzeReadOnlyParams(pkg)
+		if e.refOptReadOnly == nil {
+			e.refOptReadOnly = pkgAnalysis
+		} else {
+			for k, v := range pkgAnalysis.ReadOnly {
+				e.refOptReadOnly.ReadOnly[k] = v
+			}
+			for k, v := range pkgAnalysis.MutRef {
+				e.refOptReadOnly.MutRef[k] = v
+			}
+			for k, v := range pkgAnalysis.FuncsAsValues {
+				e.refOptReadOnly.FuncsAsValues[k] = v
+			}
+		}
 	}
 	if pkg.Name != "main" {
 		e.inNamespace = true
@@ -909,7 +938,7 @@ func (e *CppEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 	} else {
 		endExpr = fmt.Sprintf("%s.begin() + %s", xCode, highCode)
 	}
-	e.fs.PushCode(fmt.Sprintf("std::vector<std::remove_reference<decltype(%s[0])>::type>(%s, %s)", xCode, beginExpr, endExpr))
+	e.fs.PushCode(fmt.Sprintf("std::vector<std::remove_const<std::remove_reference<decltype(%s[0])>::type>::type>(%s, %s)", xCode, beginExpr, endExpr))
 }
 
 // ============================================================
@@ -1331,6 +1360,10 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, i
 func (e *CppEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 	e.fs.Reduce(string(PreVisitFuncDeclName))
 	e.fs.Push(node.Name, TagIdent, nil)
+	e.refOptCurrentFunc = e.refOptCurrentPkg + "." + node.Name
+	e.currentParamIndex = 0
+	e.refOptCurrentRefParams = make(map[string]bool)
+	e.refOptCurrentMutRefParams = make(map[string]bool)
 }
 
 func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
@@ -1355,9 +1388,38 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, i
 			names = append(names, t.Content)
 		}
 	}
+	paramIdx := e.currentParamIndex
 	for _, name := range names {
-		e.fs.Push(typeStr+" "+name, TagExpr, nil)
+		isRefOpt := false
+		isMutRefOpt := false
+		if e.OptimizeRefs && e.refOptReadOnly != nil {
+			if readOnlyFlags, ok := e.refOptReadOnly.ReadOnly[e.refOptCurrentFunc]; ok {
+				if paramIdx >= 0 && paramIdx < len(readOnlyFlags) && readOnlyFlags[paramIdx] {
+					isRefOpt = true
+				}
+			}
+			if !isRefOpt {
+				if mutRefFlags, ok := e.refOptReadOnly.MutRef[e.refOptCurrentFunc]; ok {
+					if paramIdx >= 0 && paramIdx < len(mutRefFlags) && mutRefFlags[paramIdx] {
+						isMutRefOpt = true
+					}
+				}
+			}
+		}
+		if isRefOpt {
+			e.fs.Push("const "+typeStr+"& "+name, TagExpr, nil)
+			e.refOptCurrentRefParams[name] = true
+			e.RefOptCount++
+		} else if isMutRefOpt {
+			e.fs.Push(typeStr+"& "+name, TagExpr, nil)
+			e.refOptCurrentMutRefParams[name] = true
+			e.RefOptCount++
+		} else {
+			e.fs.Push(typeStr+" "+name, TagExpr, nil)
+		}
+		paramIdx++
 	}
+	e.currentParamIndex = paramIdx
 }
 
 func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {

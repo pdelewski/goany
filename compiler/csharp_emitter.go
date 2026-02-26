@@ -205,6 +205,8 @@ type CSharpEmitter struct {
 	OutputName      string
 	LinkRuntime     string
 	RuntimePackages map[string]string
+	OptimizeRefs    bool
+	RefOptCount     int
 	file            *os.File
 	Emitter
 	pkg            *packages.Package
@@ -226,6 +228,15 @@ type CSharpEmitter struct {
 	ifCondStack []string
 	ifBodyStack []string
 	ifElseStack []string
+	// Reference optimization
+	refOptReadOnly            *ReadOnlyAnalysis
+	refOptCurrentFunc         string
+	refOptCurrentPkg          string
+	refOptCurrentRefParams    map[string]bool
+	refOptCurrentMutRefParams map[string]bool
+	refOptCalleeReadOnly      [][]bool
+	refOptCalleeMutRef        [][]bool
+	currentParamIndex         int
 	// C#-specific
 	forwardDecl      bool
 	nestedMapCounter int
@@ -238,6 +249,39 @@ type CSharpEmitter struct {
 
 func (e *CSharpEmitter) SetFile(file *os.File) { e.file = file }
 func (e *CSharpEmitter) GetFile() *os.File     { return e.file }
+
+// csRefOptFuncKey converts a C# function name to the analysis key format (pkg.Func).
+func (e *CSharpEmitter) csRefOptFuncKey(csFuncName string) string {
+	key := strings.ReplaceAll(csFuncName, ".", ".")
+	if !strings.Contains(key, ".") {
+		key = e.refOptCurrentPkg + "." + key
+	}
+	return key
+}
+
+// csIsRefOptArg checks if the current call's argument at the given index is read-only.
+func (e *CSharpEmitter) csIsRefOptArg(index int) bool {
+	if !e.OptimizeRefs || len(e.refOptCalleeReadOnly) == 0 {
+		return false
+	}
+	flags := e.refOptCalleeReadOnly[len(e.refOptCalleeReadOnly)-1]
+	if flags == nil || index >= len(flags) {
+		return false
+	}
+	return flags[index]
+}
+
+// csIsMutRefOptArg checks if the current call's argument at the given index is mut-ref.
+func (e *CSharpEmitter) csIsMutRefOptArg(index int) bool {
+	if !e.OptimizeRefs || len(e.refOptCalleeMutRef) == 0 {
+		return false
+	}
+	flags := e.refOptCalleeMutRef[len(e.refOptCalleeMutRef)-1]
+	if flags == nil || index >= len(flags) {
+		return false
+	}
+	return flags[index]
+}
 
 // csIndent returns indentation string for the given level.
 func csIndent(indent int) string {
@@ -798,6 +842,10 @@ func (e *CSharpEmitter) PostVisitProgram(indent int) {
 	}
 	e.file.Close()
 
+	if e.OptimizeRefs && e.RefOptCount > 0 {
+		fmt.Printf("  C#: %d copy(ies) removed by reference optimization\n", e.RefOptCount)
+	}
+
 	// Replace placeholder struct key functions with working implementations
 	if len(e.structKeyTypes) > 0 {
 		e.replaceStructKeyFunctions()
@@ -848,10 +896,27 @@ func (e *CSharpEmitter) replaceStructKeyFunctions() {
 func (e *CSharpEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	e.pkg = pkg
 	name := pkg.Name
+	e.refOptCurrentPkg = pkg.Name
 	if name == "main" {
 		e.currentPackage = "MainClass"
 	} else {
 		e.currentPackage = name
+	}
+	if e.OptimizeRefs {
+		pkgAnalysis := AnalyzeReadOnlyParams(pkg)
+		if e.refOptReadOnly == nil {
+			e.refOptReadOnly = pkgAnalysis
+		} else {
+			for k, v := range pkgAnalysis.ReadOnly {
+				e.refOptReadOnly.ReadOnly[k] = v
+			}
+			for k, v := range pkgAnalysis.MutRef {
+				e.refOptReadOnly.MutRef[k] = v
+			}
+			for k, v := range pkgAnalysis.FuncsAsValues {
+				e.refOptReadOnly.FuncsAsValues[k] = v
+			}
+		}
 	}
 	e.fs.PushCode(fmt.Sprintf("public static class %s {\n\n", e.currentPackage))
 }
@@ -984,11 +1049,39 @@ func (e *CSharpEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 
 func (e *CSharpEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 	funCode := e.fs.ReduceToCode(string(PreVisitCallExprFun))
+
+	// Push callee's read-only and mut-ref parameter flags for ref optimization
+	if e.OptimizeRefs && e.refOptReadOnly != nil {
+		funcKey := e.csRefOptFuncKey(funCode)
+		if flags, ok := e.refOptReadOnly.ReadOnly[funcKey]; ok {
+			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, flags)
+		} else {
+			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, nil)
+		}
+		if flags, ok := e.refOptReadOnly.MutRef[funcKey]; ok {
+			e.refOptCalleeMutRef = append(e.refOptCalleeMutRef, flags)
+		} else {
+			e.refOptCalleeMutRef = append(e.refOptCalleeMutRef, nil)
+		}
+	}
+
 	e.fs.PushCode(funCode)
 }
 
 func (e *CSharpEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
 	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
+
+	// Reference optimization: add in/ref at call site.
+	// Only for simple identifiers — C# requires lvalues for in/ref.
+	// Index expressions (list[i]), field accesses, and calls return rvalues.
+	if _, isIdent := node.(*ast.Ident); isIdent {
+		if e.csIsRefOptArg(index) {
+			argCode = "in " + argCode
+		} else if e.csIsMutRefOptArg(index) {
+			argCode = "ref " + argCode
+		}
+	}
+
 	e.fs.PushCode(argCode)
 }
 
@@ -1004,6 +1097,16 @@ func (e *CSharpEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 }
 
 func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
+	// Pop callee ref-opt flags (pushed in PostVisitCallExprFun)
+	if e.OptimizeRefs {
+		if len(e.refOptCalleeReadOnly) > 0 {
+			e.refOptCalleeReadOnly = e.refOptCalleeReadOnly[:len(e.refOptCalleeReadOnly)-1]
+		}
+		if len(e.refOptCalleeMutRef) > 0 {
+			e.refOptCalleeMutRef = e.refOptCalleeMutRef[:len(e.refOptCalleeMutRef)-1]
+		}
+	}
+
 	tokens := e.fs.Reduce(string(PreVisitCallExpr))
 	funName := ""
 	argsStr := ""
@@ -1718,6 +1821,10 @@ func (e *CSharpEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 		name = "Main"
 	}
 	e.fs.Push(name, TagIdent, nil)
+	e.refOptCurrentFunc = e.refOptCurrentPkg + "." + node.Name
+	e.currentParamIndex = 0
+	e.refOptCurrentRefParams = make(map[string]bool)
+	e.refOptCurrentMutRefParams = make(map[string]bool)
 }
 
 func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
@@ -1742,9 +1849,38 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field
 			names = append(names, t.Content)
 		}
 	}
+	paramIdx := e.currentParamIndex
 	for _, name := range names {
-		e.fs.Push(fmt.Sprintf("%s %s", typeStr, name), TagIdent, nil)
+		isRefOpt := false
+		isMutRefOpt := false
+		if e.OptimizeRefs && e.refOptReadOnly != nil {
+			if readOnlyFlags, ok := e.refOptReadOnly.ReadOnly[e.refOptCurrentFunc]; ok {
+				if paramIdx >= 0 && paramIdx < len(readOnlyFlags) && readOnlyFlags[paramIdx] {
+					isRefOpt = true
+				}
+			}
+			if !isRefOpt {
+				if mutRefFlags, ok := e.refOptReadOnly.MutRef[e.refOptCurrentFunc]; ok {
+					if paramIdx >= 0 && paramIdx < len(mutRefFlags) && mutRefFlags[paramIdx] {
+						isMutRefOpt = true
+					}
+				}
+			}
+		}
+		if isRefOpt {
+			e.fs.Push(fmt.Sprintf("in %s %s", typeStr, name), TagIdent, nil)
+			e.refOptCurrentRefParams[name] = true
+			e.RefOptCount++
+		} else if isMutRefOpt {
+			e.fs.Push(fmt.Sprintf("ref %s %s", typeStr, name), TagIdent, nil)
+			e.refOptCurrentMutRefParams[name] = true
+			e.RefOptCount++
+		} else {
+			e.fs.Push(fmt.Sprintf("%s %s", typeStr, name), TagIdent, nil)
+		}
+		paramIdx++
 	}
+	e.currentParamIndex = paramIdx
 }
 
 func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
@@ -1798,7 +1934,7 @@ func (e *CSharpEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 		bodyCode = tokens[1].Content
 	}
 	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
-		bodyCode = "{\n" + csIndent(2) + "List<string> goany_os_args = new List<string>(args);\n" + bodyCode[2:]
+		bodyCode = "{\n" + csIndent(2) + "List<string> goany_os_args = new List<string>();\n" + csIndent(2) + "goany_os_args.Add(\"program\");\n" + csIndent(2) + "goany_os_args.AddRange(args);\n" + bodyCode[2:]
 	}
 	e.fs.PushCode(sigCode + " " + bodyCode + "\n")
 }
@@ -2701,10 +2837,23 @@ func (e *CSharpEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 		}
 	}
 
+	hasStringField := false
+	for _, f := range fields {
+		if f.typeName == "string" {
+			hasStringField = true
+		}
+	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("public struct %s {\n", node.Name))
+	if hasStringField {
+		sb.WriteString(fmt.Sprintf("  public %s() {}\n", node.Name))
+	}
 	for _, f := range fields {
-		sb.WriteString(fmt.Sprintf("  public %s %s;\n", f.typeName, f.name))
+		if f.typeName == "string" {
+			sb.WriteString(fmt.Sprintf("  public %s %s = \"\";\n", f.typeName, f.name))
+		} else {
+			sb.WriteString(fmt.Sprintf("  public %s %s;\n", f.typeName, f.name))
+		}
 	}
 	sb.WriteString("}\n\n")
 	e.fs.PushCode(sb.String())

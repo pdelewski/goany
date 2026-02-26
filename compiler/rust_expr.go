@@ -244,13 +244,18 @@ func (e *RustEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 		e.Opt.currentCalleeName = ""
 	}
 
-	// Push callee's read-only parameter flags for ref optimization
+	// Push callee's read-only and mut-ref parameter flags for ref optimization
 	if e.Opt.OptimizeRefs && e.Opt.refOptReadOnly != nil {
 		funcKey := e.Opt.refOptFuncKey(funCode)
 		if flags, ok := e.Opt.refOptReadOnly.ReadOnly[funcKey]; ok {
 			e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, flags)
 		} else {
 			e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, nil)
+		}
+		if flags, ok := e.Opt.refOptReadOnly.MutRef[funcKey]; ok {
+			e.Opt.refOptCalleeMutRef = append(e.Opt.refOptCalleeMutRef, flags)
+		} else {
+			e.Opt.refOptCalleeMutRef = append(e.Opt.refOptCalleeMutRef, nil)
 		}
 	}
 
@@ -300,6 +305,20 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 		}
 		if !isAlreadyRef {
 			argCode = "&" + argCode
+		}
+		e.Opt.RefOptCount++
+		e.fs.PushCode(argCode)
+		return
+	}
+
+	// Mutable reference optimization: if callee param is mut-ref, use &mut instead of .clone()
+	if e.Opt.isMutRefOptArg(index) {
+		isAlreadyMutRef := false
+		if ident, ok := node.(*ast.Ident); ok {
+			isAlreadyMutRef = e.Opt.refOptCurrentMutRefParams[ident.Name]
+		}
+		if !isAlreadyMutRef {
+			argCode = "&mut " + argCode
 		}
 		e.Opt.RefOptCount++
 		e.fs.PushCode(argCode)
@@ -381,6 +400,9 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		e.Opt.currentCallIsLen = false
 		if e.Opt.OptimizeRefs && len(e.Opt.refOptCalleeReadOnly) > 0 {
 			e.Opt.refOptCalleeReadOnly = e.Opt.refOptCalleeReadOnly[:len(e.Opt.refOptCalleeReadOnly)-1]
+		}
+		if e.Opt.OptimizeRefs && len(e.Opt.refOptCalleeMutRef) > 0 {
+			e.Opt.refOptCalleeMutRef = e.Opt.refOptCalleeMutRef[:len(e.Opt.refOptCalleeMutRef)-1]
 		}
 	}()
 

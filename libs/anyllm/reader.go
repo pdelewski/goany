@@ -261,6 +261,11 @@ func charToString(ch int) string {
 	return ""
 }
 
+// IntToStringPub converts an int to its string representation
+func IntToStringPub(n int) string {
+	return intToString(n)
+}
+
 func intToString(n int) string {
 	if n == 0 {
 		return "0"
