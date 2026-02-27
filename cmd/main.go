@@ -105,7 +105,8 @@ func main() {
 	}
 
 	// Detect runtime package usage (e.g. runtime/http, runtime/graphics, etc.)
-	runtimePackages := detectRuntimePackages(pkgs)
+	// Scan allPkgs (not just top-level pkgs) so transitive runtime imports are detected
+	runtimePackages := detectRuntimePackages(allPkgs)
 	// Apply graphics variant from CLI flag
 	if _, ok := runtimePackages["graphics"]; ok {
 		runtimePackages["graphics"] = graphicsRuntime

@@ -70,7 +70,7 @@ func Forward(file GGUFFile, cfg ModelConfig, cache KVCache, tCache TensorCache, 
 		// Some models tie output weights to embedding
 		outIdx = embIdx
 	}
-	outWeights := ReadTensorCached(file, outIdx, tCache)
-	logits := MatVecMul(outWeights, x, cfg.VocabSize, dim)
+	outOff := CacheOffset(tCache, outIdx)
+	logits := MatVecMulOff(tCache.Entries, outOff, x, cfg.VocabSize, dim)
 	return logits
 }

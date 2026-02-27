@@ -89,7 +89,13 @@ func ComputeCacheElements(file GGUFFile, cfg ModelConfig) int {
 func NewTensorCache(file GGUFFile, cfg ModelConfig) TensorCache {
 	tc := TensorCache{}
 	numTensors := len(file.Tensors)
-	maxElements := ComputeCacheElements(file, cfg)
+	attnElements := ComputeCacheElements(file, cfg)
+
+	ffnSlotSize := 0
+	if cfg.FFNLength > 0 {
+		ffnSlotSize = cfg.FFNLength * cfg.EmbeddingLength
+	}
+	maxElements := attnElements + 3*ffnSlotSize
 
 	tc.Entries = make([]float64, maxElements)
 	tc.Offsets = make([]int, numTensors)
@@ -104,7 +110,25 @@ func NewTensorCache(file GGUFFile, cfg ModelConfig) TensorCache {
 		ci = ci + 1
 	}
 
+	if ffnSlotSize > 0 {
+		tc.FFNSlot1 = attnElements
+		tc.FFNSlot2 = attnElements + ffnSlotSize
+		tc.FFNSlot3 = attnElements + 2*ffnSlotSize
+	} else {
+		tc.FFNSlot1 = -1
+		tc.FFNSlot2 = -1
+		tc.FFNSlot3 = -1
+	}
+
 	return tc
+}
+
+// CacheOffset returns the offset of a tensor in the cache, or -1 if not cached
+func CacheOffset(tc TensorCache, tensorIdx int) int {
+	if tensorIdx < 0 || tensorIdx >= len(tc.Offsets) {
+		return -1
+	}
+	return tc.Offsets[tensorIdx]
 }
 
 // ReadTensorCached reads a tensor, returning cached data if available

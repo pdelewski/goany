@@ -1,5 +1,7 @@
 package anyllm
 
+import "runtime/math"
+
 // Abs returns the absolute value of x
 func Abs(x float64) float64 {
 	if x < 0.0 {
@@ -171,78 +173,22 @@ func Ln(x float64) float64 {
 
 // VecDot computes dot product of two vectors
 func VecDot(a []float64, b []float64, n int) float64 {
-	sum := 0.0
-	i := 0
-	for i < n {
-		sum = sum + a[i]*b[i]
-		i = i + 1
-	}
-	return sum
+	return math.VecDot(a, b, n)
 }
 
 // MatVecMul multiplies a matrix (row-major) by a vector: result[i] = dot(mat[i*cols..], vec)
 func MatVecMul(mat []float64, vec []float64, rows int, cols int) []float64 {
-	result := make([]float64, rows)
-	i := 0
-	for i < rows {
-		sum := 0.0
-		j := 0
-		off := i * cols
-		for j < cols {
-			sum = sum + mat[off+j]*vec[j]
-			j = j + 1
-		}
-		result[i] = sum
-		i = i + 1
-	}
-	return result
+	return math.MatVecMul(mat, vec, rows, cols)
 }
 
 // RMSNorm applies RMS normalization: x[i] * weight[i] / sqrt(mean(x^2) + eps)
 func RMSNorm(x []float64, weight []float64, n int, eps float64) []float64 {
-	ss := 0.0
-	i := 0
-	for i < n {
-		ss = ss + x[i]*x[i]
-		i = i + 1
-	}
-	ss = ss / float64(n)
-	ss = 1.0 / Sqrt(ss+eps)
-	result := make([]float64, n)
-	j := 0
-	for j < n {
-		result[j] = x[j] * ss * weight[j]
-		j = j + 1
-	}
-	return result
+	return math.RMSNorm(x, weight, n, eps)
 }
 
 // Softmax applies softmax normalization to a vector
 func Softmax(x []float64, n int) []float64 {
-	// Find max for numerical stability
-	maxVal := x[0]
-	i := 1
-	for i < n {
-		if x[i] > maxVal {
-			maxVal = x[i]
-		}
-		i = i + 1
-	}
-	result := make([]float64, n)
-	sum := 0.0
-	j := 0
-	for j < n {
-		val := Exp(x[j] - maxVal)
-		result[j] = val
-		sum = sum + val
-		j = j + 1
-	}
-	k := 0
-	for k < n {
-		result[k] = result[k] / sum
-		k = k + 1
-	}
-	return result
+	return math.Softmax(x, n)
 }
 
 // SiLU activation: x * sigmoid(x) = x / (1 + exp(-x))
@@ -252,24 +198,47 @@ func SiLU(x float64) float64 {
 
 // VecAdd adds two vectors element-wise
 func VecAdd(a []float64, b []float64, n int) []float64 {
-	result := make([]float64, n)
-	i := 0
-	for i < n {
-		result[i] = a[i] + b[i]
-		i = i + 1
-	}
-	return result
+	return math.VecAdd(a, b, n)
 }
 
 // VecMul multiplies two vectors element-wise
 func VecMul(a []float64, b []float64, n int) []float64 {
-	result := make([]float64, n)
-	i := 0
+	return math.VecMul(a, b, n)
+}
+
+// MatVecMulOff multiplies a matrix at offset (row-major) by a vector
+func MatVecMulOff(mat []float64, matOff int, vec []float64, rows int, cols int) []float64 {
+	return math.MatVecMulOff(mat, matOff, vec, rows, cols)
+}
+
+// VecDotOff computes dot product with offsets into both arrays
+func VecDotOff(a []float64, aOff int, b []float64, bOff int, n int) float64 {
+	return math.VecDotOff(a, aOff, b, bOff, n)
+}
+
+// SoftmaxInPlace applies softmax normalization in-place
+func SoftmaxInPlace(x []float64, n int) {
+	maxVal := x[0]
+	i := 1
 	for i < n {
-		result[i] = a[i] * b[i]
+		if x[i] > maxVal {
+			maxVal = x[i]
+		}
 		i = i + 1
 	}
-	return result
+	sum := 0.0
+	j := 0
+	for j < n {
+		x[j] = Exp(x[j] - maxVal)
+		sum = sum + x[j]
+		j = j + 1
+	}
+	invSum := 1.0 / sum
+	k := 0
+	for k < n {
+		x[k] = x[k] * invSum
+		k = k + 1
+	}
 }
 
 // ArgMax returns the index of the maximum value in a vector
