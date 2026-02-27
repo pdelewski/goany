@@ -105,44 +105,41 @@ func (o *RustOptState) AccumulateReadOnlyAnalysis(pkg *packages.Package) {
 	o.registerRuntimeReadOnly(pkg)
 }
 
-// registerRuntimeReadOnly scans the package's imports for runtime packages
-// and derives read-only parameter flags from their Go function signatures.
-// Slice parameters are marked read-only; basic types (int, float64) are not.
-// This avoids maintaining a hard-coded list that must be updated when new
-// runtime functions are added.
+// registerRuntimeReadOnly registers read-only parameter flags for runtime/math
+// functions. These are hand-written Rust functions that accept &[f64] slices,
+// so slice parameters can safely use pass-by-reference optimization.
+// Other runtime packages (graphics, net, fs) are excluded because their
+// hand-written Rust functions accept owned types (Vec<u8>, Window, etc.).
 func (o *RustOptState) registerRuntimeReadOnly(pkg *packages.Package) {
 	if o.refOptReadOnly == nil {
 		return
 	}
-	for importPath, impPkg := range pkg.Imports {
-		if !strings.HasPrefix(importPath, "runtime/") {
+	impPkg, ok := pkg.Imports["runtime/math"]
+	if !ok || impPkg.Types == nil {
+		return
+	}
+	scope := impPkg.Types.Scope()
+	for _, name := range scope.Names() {
+		obj := scope.Lookup(name)
+		fn, ok := obj.(*types.Func)
+		if !ok || !fn.Exported() {
 			continue
 		}
-		if impPkg.Types == nil {
+		sig, ok := fn.Type().(*types.Signature)
+		if !ok {
 			continue
 		}
-		scope := impPkg.Types.Scope()
-		for _, name := range scope.Names() {
-			obj := scope.Lookup(name)
-			fn, ok := obj.(*types.Func)
-			if !ok || !fn.Exported() {
-				continue
-			}
-			sig, ok := fn.Type().(*types.Signature)
-			if !ok {
-				continue
-			}
-			key := impPkg.Types.Name() + "." + name
-			if _, exists := o.refOptReadOnly.ReadOnly[key]; exists {
-				continue
-			}
-			params := sig.Params()
-			flags := make([]bool, params.Len())
-			for i := 0; i < params.Len(); i++ {
-				flags[i] = isRefOptEligibleType(params.At(i).Type())
-			}
-			o.refOptReadOnly.ReadOnly[key] = flags
+		key := impPkg.Types.Name() + "." + name
+		if _, exists := o.refOptReadOnly.ReadOnly[key]; exists {
+			continue
 		}
+		params := sig.Params()
+		flags := make([]bool, params.Len())
+		for i := 0; i < params.Len(); i++ {
+			_, isSlice := params.At(i).Type().Underlying().(*types.Slice)
+			flags[i] = isSlice
+		}
+		o.refOptReadOnly.ReadOnly[key] = flags
 	}
 }
 
