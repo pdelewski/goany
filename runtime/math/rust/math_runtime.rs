@@ -15,7 +15,7 @@ extern "C" {
     fn simd_vec_dot_off(a: *const c_double, a_off: c_int, b: *const c_double, b_off: c_int, n: c_int, result: *mut c_double);
 }
 
-pub fn VecDot(a: Vec<f64>, b: Vec<f64>, n: i32) -> f64 {
+pub fn VecDot(a: &[f64], b: &[f64], n: i32) -> f64 {
     let mut result: f64 = 0.0;
     unsafe {
         simd_vec_dot(a.as_ptr(), b.as_ptr(), n as c_int, &mut result);
@@ -23,7 +23,7 @@ pub fn VecDot(a: Vec<f64>, b: Vec<f64>, n: i32) -> f64 {
     result
 }
 
-pub fn MatVecMul(mat: Vec<f64>, vec_arg: Vec<f64>, rows: i32, cols: i32) -> Vec<f64> {
+pub fn MatVecMul(mat: &[f64], vec_arg: &[f64], rows: i32, cols: i32) -> Vec<f64> {
     let mut out = vec![0.0f64; rows as usize];
     unsafe {
         simd_mat_vec_mul(mat.as_ptr(), vec_arg.as_ptr(), rows as c_int, cols as c_int, out.as_mut_ptr());
@@ -31,7 +31,7 @@ pub fn MatVecMul(mat: Vec<f64>, vec_arg: Vec<f64>, rows: i32, cols: i32) -> Vec<
     out
 }
 
-pub fn VecAdd(a: Vec<f64>, b: Vec<f64>, n: i32) -> Vec<f64> {
+pub fn VecAdd(a: &[f64], b: &[f64], n: i32) -> Vec<f64> {
     let mut out = vec![0.0f64; n as usize];
     unsafe {
         simd_vec_add(a.as_ptr(), b.as_ptr(), n as c_int, out.as_mut_ptr());
@@ -39,7 +39,7 @@ pub fn VecAdd(a: Vec<f64>, b: Vec<f64>, n: i32) -> Vec<f64> {
     out
 }
 
-pub fn VecMul(a: Vec<f64>, b: Vec<f64>, n: i32) -> Vec<f64> {
+pub fn VecMul(a: &[f64], b: &[f64], n: i32) -> Vec<f64> {
     let mut out = vec![0.0f64; n as usize];
     unsafe {
         simd_vec_mul(a.as_ptr(), b.as_ptr(), n as c_int, out.as_mut_ptr());
@@ -47,7 +47,7 @@ pub fn VecMul(a: Vec<f64>, b: Vec<f64>, n: i32) -> Vec<f64> {
     out
 }
 
-pub fn RMSNorm(x: Vec<f64>, weight: Vec<f64>, n: i32, eps: f64) -> Vec<f64> {
+pub fn RMSNorm(x: &[f64], weight: &[f64], n: i32, eps: f64) -> Vec<f64> {
     let mut out = vec![0.0f64; n as usize];
     unsafe {
         simd_rms_norm(x.as_ptr(), weight.as_ptr(), n as c_int, eps, out.as_mut_ptr());
@@ -55,7 +55,7 @@ pub fn RMSNorm(x: Vec<f64>, weight: Vec<f64>, n: i32, eps: f64) -> Vec<f64> {
     out
 }
 
-pub fn Softmax(x: Vec<f64>, n: i32) -> Vec<f64> {
+pub fn Softmax(x: &[f64], n: i32) -> Vec<f64> {
     let mut out = x[..n as usize].to_vec();
     unsafe {
         simd_softmax(out.as_mut_ptr(), n as c_int);
@@ -63,7 +63,7 @@ pub fn Softmax(x: Vec<f64>, n: i32) -> Vec<f64> {
     out
 }
 
-pub fn SiLUVec(x: Vec<f64>, n: i32) -> Vec<f64> {
+pub fn SiLUVec(x: &[f64], n: i32) -> Vec<f64> {
     let mut out = x[..n as usize].to_vec();
     unsafe {
         simd_silu_vec(out.as_mut_ptr(), n as c_int);
@@ -71,7 +71,7 @@ pub fn SiLUVec(x: Vec<f64>, n: i32) -> Vec<f64> {
     out
 }
 
-pub fn MatVecMulOff(mat: Vec<f64>, mat_off: i32, vec_arg: Vec<f64>, rows: i32, cols: i32) -> Vec<f64> {
+pub fn MatVecMulOff(mat: &[f64], mat_off: i32, vec_arg: &[f64], rows: i32, cols: i32) -> Vec<f64> {
     let mut out = vec![0.0f64; rows as usize];
     unsafe {
         simd_mat_vec_mul_off(mat.as_ptr(), mat_off as c_int, vec_arg.as_ptr(), rows as c_int, cols as c_int, out.as_mut_ptr());
@@ -79,7 +79,7 @@ pub fn MatVecMulOff(mat: Vec<f64>, mat_off: i32, vec_arg: Vec<f64>, rows: i32, c
     out
 }
 
-pub fn VecDotOff(a: Vec<f64>, a_off: i32, b: Vec<f64>, b_off: i32, n: i32) -> f64 {
+pub fn VecDotOff(a: &[f64], a_off: i32, b: &[f64], b_off: i32, n: i32) -> f64 {
     let mut result: f64 = 0.0;
     unsafe {
         simd_vec_dot_off(a.as_ptr(), a_off as c_int, b.as_ptr(), b_off as c_int, n as c_int, &mut result);

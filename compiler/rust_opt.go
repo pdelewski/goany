@@ -100,6 +100,50 @@ func (o *RustOptState) AccumulateReadOnlyAnalysis(pkg *packages.Package) {
 			o.refOptReadOnly.FuncsAsValues[k] = v
 		}
 	}
+	// Auto-register read-only info for runtime packages (hand-written Rust,
+	// not transpiled Go code) by deriving flags from their Go type signatures.
+	o.registerRuntimeReadOnly(pkg)
+}
+
+// registerRuntimeReadOnly scans the package's imports for runtime packages
+// and derives read-only parameter flags from their Go function signatures.
+// Slice parameters are marked read-only; basic types (int, float64) are not.
+// This avoids maintaining a hard-coded list that must be updated when new
+// runtime functions are added.
+func (o *RustOptState) registerRuntimeReadOnly(pkg *packages.Package) {
+	if o.refOptReadOnly == nil {
+		return
+	}
+	for importPath, impPkg := range pkg.Imports {
+		if !strings.HasPrefix(importPath, "runtime/") {
+			continue
+		}
+		if impPkg.Types == nil {
+			continue
+		}
+		scope := impPkg.Types.Scope()
+		for _, name := range scope.Names() {
+			obj := scope.Lookup(name)
+			fn, ok := obj.(*types.Func)
+			if !ok || !fn.Exported() {
+				continue
+			}
+			sig, ok := fn.Type().(*types.Signature)
+			if !ok {
+				continue
+			}
+			key := impPkg.Types.Name() + "." + name
+			if _, exists := o.refOptReadOnly.ReadOnly[key]; exists {
+				continue
+			}
+			params := sig.Params()
+			flags := make([]bool, params.Len())
+			for i := 0; i < params.Len(); i++ {
+				flags[i] = isRefOptEligibleType(params.At(i).Type())
+			}
+			o.refOptReadOnly.ReadOnly[key] = flags
+		}
+	}
 }
 
 // canMoveArg checks if a call argument identifier can be moved instead of cloned.
