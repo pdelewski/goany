@@ -103,6 +103,14 @@ type TensorCache struct {
 	FFNSlot3 int
 }
 
+// GenerateParams holds parameters for text generation
+type GenerateParams struct {
+	Temperature float64
+	TopP        float64
+	ChatFormat  int
+	Seed        int64
+}
+
 // ReadState tracks the state of binary reading
 type ReadState struct {
 	Handle int
