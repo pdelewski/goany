@@ -328,6 +328,42 @@ func float64ToString(f float64) string {
 	return result
 }
 
+// ParseFloat parses a float64 from a string (transpiler-safe, no strconv)
+func ParseFloat(s string) float64 {
+	if len(s) == 0 {
+		return 0.0
+	}
+	negative := false
+	i := 0
+	if int(s[0]) == 45 { // '-'
+		negative = true
+		i = 1
+	}
+	// Parse integer part
+	intPart := 0.0
+	for i < len(s) && int(s[i]) >= 48 && int(s[i]) <= 57 {
+		intPart = intPart*10.0 + float64(int(s[i])-48)
+		i = i + 1
+	}
+	result := intPart
+	// Parse fractional part
+	if i < len(s) && int(s[i]) == 46 { // '.'
+		i = i + 1
+		frac := 0.0
+		scale := 0.1
+		for i < len(s) && int(s[i]) >= 48 && int(s[i]) <= 57 {
+			frac = frac + float64(int(s[i])-48)*scale
+			scale = scale / 10.0
+			i = i + 1
+		}
+		result = result + frac
+	}
+	if negative {
+		result = -result
+	}
+	return result
+}
+
 func newReadState(handle int) ReadState {
 	rs := ReadState{}
 	rs.Handle = handle

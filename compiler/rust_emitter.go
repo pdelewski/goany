@@ -1562,6 +1562,15 @@ edition = "2021"
 		}
 	}
 
+	// Add math SIMD runtime dependencies (needs cc to compile math_simd.c)
+	if _, hasMath := e.RuntimePackages["math"]; hasMath {
+		if !strings.Contains(cargoToml, "[build-dependencies]") {
+			cargoToml += "\n[build-dependencies]\ncc = \"1.0\"\n"
+		} else if !strings.Contains(cargoToml, "cc = ") {
+			cargoToml = strings.Replace(cargoToml, "[build-dependencies]", "[build-dependencies]\ncc = \"1.0\"", 1)
+		}
+	}
+
 	_, err = file.WriteString(cargoToml)
 	return err
 }
@@ -1571,7 +1580,9 @@ func (e *RustEmitter) GenerateBuildRs() error {
 		return nil
 	}
 	graphicsBackend := e.RuntimePackages["graphics"]
-	if graphicsBackend != "tigr" && graphicsBackend != "sdl2" {
+	_, hasMath := e.RuntimePackages["math"]
+
+	if graphicsBackend != "tigr" && graphicsBackend != "sdl2" && !hasMath {
 		return nil
 	}
 
@@ -1582,9 +1593,10 @@ func (e *RustEmitter) GenerateBuildRs() error {
 	}
 	defer file.Close()
 
+	content := "fn main() {\n"
+
 	if graphicsBackend == "tigr" {
-		content := `fn main() {
-    cc::Build::new()
+		content += `    cc::Build::new()
         .file("src/tigr.c")
         .file("src/screen_helper.c")
         .compile("tigr");
@@ -1609,10 +1621,20 @@ func (e *RustEmitter) GenerateBuildRs() error {
         println!("cargo:rustc-link-lib=advapi32");
         println!("cargo:rustc-link-lib=legacy_stdio_definitions");
     }
-}
 `
-		_, err = file.WriteString(content)
 	}
+
+	if hasMath {
+		content += `    cc::Build::new()
+        .file("src/math_simd.c")
+        .opt_level(3)
+        .compile("math_simd");
+`
+	}
+
+	content += "}\n"
+
+	_, err = file.WriteString(content)
 	return err
 }
 
@@ -1651,6 +1673,21 @@ func (e *RustEmitter) CopyRuntimeMods() error {
 		if name == "graphics" && variant == "tigr" {
 			for _, extraFile := range []string{"tigr.c", "tigr.h", "screen_helper.c"} {
 				src := filepath.Join(e.LinkRuntime, "graphics", "cpp", extraFile)
+				dst := filepath.Join(srcDir, extraFile)
+				data, err := os.ReadFile(src)
+				if err != nil {
+					return fmt.Errorf("failed to read %s: %w", extraFile, err)
+				}
+				if err := os.WriteFile(dst, data, 0644); err != nil {
+					return fmt.Errorf("failed to write %s: %w", extraFile, err)
+				}
+			}
+		}
+
+		// Copy extra C files for math SIMD runtime
+		if name == "math" {
+			for _, extraFile := range []string{"math_simd.c", "math_simd.h"} {
+				src := filepath.Join(e.LinkRuntime, "math", "c", extraFile)
 				dst := filepath.Join(srcDir, extraFile)
 				data, err := os.ReadFile(src)
 				if err != nil {

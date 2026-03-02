@@ -94,10 +94,21 @@ type GGUFFile struct {
 
 // TensorCache holds cached dequantized tensor data in a flat array
 type TensorCache struct {
-	Entries []float64
-	Offsets []int
-	Counts  []int
-	UsedArr []int
+	Entries  []float64
+	Offsets  []int
+	Counts   []int
+	UsedArr  []int
+	FFNSlot1 int
+	FFNSlot2 int
+	FFNSlot3 int
+}
+
+// GenerateParams holds parameters for text generation
+type GenerateParams struct {
+	Temperature float64
+	TopP        float64
+	ChatFormat  int
+	Seed        int64
 }
 
 // ReadState tracks the state of binary reading

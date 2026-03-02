@@ -191,6 +191,159 @@ func ReadTensorQ6K(file GGUFFile, tensorIdx int) []float64 {
 	return result
 }
 
+// ReadTensorInto reads any supported tensor type into an existing buffer
+func ReadTensorInto(file GGUFFile, tensorIdx int, result []float64) {
+	if tensorIdx < 0 || tensorIdx >= len(file.Tensors) {
+		return
+	}
+	tensor := file.Tensors[tensorIdx]
+	elements := int(TensorElementCount(tensor))
+	data := ReadTensorRaw(file, tensorIdx)
+	if len(data) == 0 {
+		return
+	}
+	if tensor.DType == GGMLTypeF32 {
+		i := 0
+		for i < elements {
+			off := i * 4
+			result[i] = decodeF32Bytes(data, off)
+			i = i + 1
+		}
+	} else if tensor.DType == GGMLTypeF16 {
+		i := 0
+		for i < elements {
+			off := i * 2
+			result[i] = decodeF16(data, off)
+			i = i + 1
+		}
+	} else if tensor.DType == GGMLTypeQ8_0 {
+		numBlocks := elements / 32
+		bi := 0
+		for bi < numBlocks {
+			blockOffset := bi * 34
+			scale := decodeF16(data, blockOffset)
+			j := 0
+			for j < 32 {
+				raw := int(data[blockOffset+2+j])
+				val := raw
+				if val > 127 {
+					val = val - 256
+				}
+				result[bi*32+j] = scale * float64(val)
+				j = j + 1
+			}
+			bi = bi + 1
+		}
+	} else if tensor.DType == GGMLTypeQ2K {
+		numBlocks := elements / QK_K
+		bi := 0
+		for bi < numBlocks {
+			dequantQ2K(data, bi*Q2K_BlockSize, result, bi*QK_K)
+			bi = bi + 1
+		}
+	} else if tensor.DType == GGMLTypeQ3K {
+		numBlocks := elements / QK_K
+		bi := 0
+		for bi < numBlocks {
+			dequantQ3K(data, bi*Q3K_BlockSize, result, bi*QK_K)
+			bi = bi + 1
+		}
+	} else if tensor.DType == GGMLTypeQ6K {
+		numBlocks := elements / QK_K
+		bi := 0
+		for bi < numBlocks {
+			dequantQ6K(data, bi*Q6K_BlockSize, result, bi*QK_K)
+			bi = bi + 1
+		}
+	}
+}
+
+// TensorCacheLoadFFN dequantizes a tensor directly into tc.Entries at slotOff
+// This avoids allocating a new float64 slice per FFN weight read
+func TensorCacheLoadFFN(tc TensorCache, file GGUFFile, tensorIdx int, slotOff int) {
+	if tensorIdx < 0 || tensorIdx >= len(file.Tensors) {
+		return
+	}
+	tensor := file.Tensors[tensorIdx]
+	elements := int(TensorElementCount(tensor))
+	data := ReadTensorRaw(file, tensorIdx)
+	if len(data) == 0 {
+		return
+	}
+	if tensor.DType == GGMLTypeF32 {
+		i := 0
+		for i < elements {
+			off := i * 4
+			tc.Entries[slotOff+i] = decodeF32Bytes(data, off)
+			i = i + 1
+		}
+	} else if tensor.DType == GGMLTypeF16 {
+		i := 0
+		for i < elements {
+			off := i * 2
+			tc.Entries[slotOff+i] = decodeF16(data, off)
+			i = i + 1
+		}
+	} else if tensor.DType == GGMLTypeQ8_0 {
+		numBlocks := elements / 32
+		bi := 0
+		for bi < numBlocks {
+			blockOffset := bi * 34
+			scale := decodeF16(data, blockOffset)
+			j := 0
+			for j < 32 {
+				raw := int(data[blockOffset+2+j])
+				val := raw
+				if val > 127 {
+					val = val - 256
+				}
+				tc.Entries[slotOff+bi*32+j] = scale * float64(val)
+				j = j + 1
+			}
+			bi = bi + 1
+		}
+	} else if tensor.DType == GGMLTypeQ2K {
+		numBlocks := elements / QK_K
+		tmpBlock := make([]float64, QK_K)
+		bi := 0
+		for bi < numBlocks {
+			dequantQ2K(data, bi*Q2K_BlockSize, tmpBlock, 0)
+			j := 0
+			for j < QK_K {
+				tc.Entries[slotOff+bi*QK_K+j] = tmpBlock[j]
+				j = j + 1
+			}
+			bi = bi + 1
+		}
+	} else if tensor.DType == GGMLTypeQ3K {
+		numBlocks := elements / QK_K
+		tmpBlock := make([]float64, QK_K)
+		bi := 0
+		for bi < numBlocks {
+			dequantQ3K(data, bi*Q3K_BlockSize, tmpBlock, 0)
+			j := 0
+			for j < QK_K {
+				tc.Entries[slotOff+bi*QK_K+j] = tmpBlock[j]
+				j = j + 1
+			}
+			bi = bi + 1
+		}
+	} else if tensor.DType == GGMLTypeQ6K {
+		numBlocks := elements / QK_K
+		tmpBlock := make([]float64, QK_K)
+		bi := 0
+		for bi < numBlocks {
+			dequantQ6K(data, bi*Q6K_BlockSize, tmpBlock, 0)
+			j := 0
+			for j < QK_K {
+				tc.Entries[slotOff+bi*QK_K+j] = tmpBlock[j]
+				j = j + 1
+			}
+			bi = bi + 1
+		}
+	}
+}
+
 // ReadTensor reads any supported tensor type and returns float64 values
 func ReadTensor(file GGUFFile, tensorIdx int) []float64 {
 	noData := []float64{}

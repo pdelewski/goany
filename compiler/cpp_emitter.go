@@ -2824,6 +2824,45 @@ endif
 		makefile = strings.Replace(makefile, "\nall:", networkFlags+"\nall:", 1)
 	}
 
+	// Add math SIMD compilation if runtime/math is used
+	if _, hasMath := e.RuntimePackages["math"]; hasMath {
+		mathSrc := fmt.Sprintf("%s/math/c/math_simd.c", absRuntimePath)
+
+		// Ensure CC is defined (needed for non-tigr cases)
+		if !strings.Contains(makefile, "CC = ") {
+			makefile = strings.Replace(makefile, "CXX = g++", "CXX = g++\nCC = gcc", 1)
+		}
+		if !strings.Contains(makefile, "CFLAGS = ") {
+			makefile = strings.Replace(makefile, "CXXFLAGS =", "CFLAGS = -O3\nCXXFLAGS =", 1)
+		}
+
+		// Add MATH_SIMD_SRC variable after SRCS line
+		mathVar := fmt.Sprintf("MATH_SIMD_SRC = %s", mathSrc)
+		makefile = strings.Replace(makefile, "\nall:", "\n"+mathVar+"\n\nall:", 1)
+
+		// Add math_simd.o as a prerequisite of $(TARGET)
+		// This substring-matches both "$(TARGET): $(SRCS)" and "$(TARGET): $(SRCS) tigr.o ..."
+		makefile = strings.Replace(makefile, "$(TARGET): $(SRCS)", "$(TARGET): $(SRCS) math_simd.o", 1)
+		// For tigr case: also add math_simd.o to the explicit link command
+		makefile = strings.Replace(makefile, "screen_helper.o $(LDFLAGS)", "screen_helper.o math_simd.o $(LDFLAGS)", 1)
+
+		// Add math_simd.o build rule and clean before .PHONY
+		mathRule := `
+# Math SIMD runtime
+MATH_CFLAGS = -O3 -march=native
+math_simd.o: $(MATH_SIMD_SRC)
+	$(CC) $(MATH_CFLAGS) -c $< -o $@
+
+`
+		makefile = strings.Replace(makefile, ".PHONY:", mathRule+".PHONY:", 1)
+		makefile = strings.Replace(makefile, "rm -f $(TARGET)", "rm -f $(TARGET) math_simd.o", 1)
+
+		// Add -lm for math library (exp, sqrt, etc.)
+		if !strings.Contains(makefile, "-lm") {
+			makefile = strings.Replace(makefile, "LDFLAGS =", "LDFLAGS = -lm", 1)
+		}
+	}
+
 	_, err = file.WriteString(makefile)
 	if err != nil {
 		return fmt.Errorf("failed to write Makefile: %w", err)
