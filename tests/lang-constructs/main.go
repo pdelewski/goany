@@ -1805,6 +1805,70 @@ func testNestedStructMapKeys() {
 	fmt.Println("All nested struct map key tests passed!")
 }
 
+// Pointer parameter test helpers
+func incrPtr(p *int) {
+	*p = *p + 1
+}
+
+func setPersonAge(p *Person, age int) {
+	p.age = age
+}
+
+func swapInts(a *int, b *int) {
+	tmp := *a
+	*a = *b
+	*b = tmp
+}
+
+func readPtr(p *int) int {
+	return *p
+}
+
+// Test pointer parameter with int
+func testPointerParamInt() {
+	x := 10
+	incrPtr(&x)
+	if x == 11 {
+		fmt.Println("PASS: pointer param int")
+	} else {
+		panic("FAIL: pointer param int")
+	}
+}
+
+// Test pointer parameter with struct
+func testPointerParamStruct() {
+	bob := Person{name: "Bob", age: 25}
+	setPersonAge(&bob, 30)
+	if bob.age == 30 {
+		fmt.Println("PASS: pointer param struct")
+	} else {
+		panic("FAIL: pointer param struct")
+	}
+}
+
+// Test pointer parameter with multiple pointer args
+func testPointerParamMultiple() {
+	x := 10
+	y := 20
+	swapInts(&x, &y)
+	if x == 20 && y == 10 {
+		fmt.Println("PASS: pointer param multiple")
+	} else {
+		panic("FAIL: pointer param multiple")
+	}
+}
+
+// Test pointer parameter read-only
+func testPointerParamReadOnly() {
+	x := 42
+	result := readPtr(&x)
+	if result == 42 {
+		fmt.Println("PASS: pointer param read only")
+	} else {
+		panic("FAIL: pointer param read only")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1854,6 +1918,10 @@ func main() {
 	testMultiVariablePatterns()
 	testStructMapKeys()
 	testNestedStructMapKeys()
+	testPointerParamInt()
+	testPointerParamStruct()
+	testPointerParamMultiple()
+	testPointerParamReadOnly()
 
 	fmt.Println("=== Done ===")
 }
