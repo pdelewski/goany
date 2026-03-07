@@ -13,9 +13,8 @@ import (
 // Populated by the transform, consumed by emitters to emit comments instead of code.
 var PtrLocalComments = map[token.Pos]string{}
 
-// PointerTransformPass transforms pointer parameters (*T) to single-element
-// slices ([]T) and rewrites pointer operations accordingly.
-// This runs between SemaChecker and emitter passes.
+// PointerTransformPass transforms pointer operations into pool-based indexing
+// for cross-backend compatibility. This runs between SemaChecker and emitter passes.
 type PointerTransformPass struct{}
 
 func (p *PointerTransformPass) Name() string { return "PointerTransform" }
@@ -35,9 +34,11 @@ func (p *PointerTransformPass) PostVisit(visitor ast.Visitor, visited map[string
 
 // ptrTransformVisitor collects function declarations during AST walk
 type ptrTransformVisitor struct {
-	pkg      *packages.Package
-	funcs    []*ast.FuncDecl
-	genDecls []*ast.GenDecl
+	pkg         *packages.Package
+	funcs       []*ast.FuncDecl
+	genDecls    []*ast.GenDecl
+	poolTypes   map[string]bool   // type names that are *T targets (e.g. "ListNode")
+	ptrFieldMap map[string][]string // struct name → list of pointer field names
 }
 
 func (v *ptrTransformVisitor) Visit(node ast.Node) ast.Visitor {
@@ -67,9 +68,29 @@ type ptrIndexLocalInfo struct {
 type ptrAnalysis struct {
 	ptrParams      map[string]types.Type         // param name -> element type (for *T params)
 	ptrVars        map[string]types.Type         // var p *T declarations -> element type
-	boxedVars      map[string]types.Type         // local var name -> original type (vars whose address is taken)
+	poolVars       map[string]types.Type         // all vars whose addr is taken (pool index vars)
 	ptrLocals      map[string]*ptrLocalInfo      // alias name -> target info (p := &x)
 	ptrIndexLocals map[string]*ptrIndexLocalInfo // alias name -> target info (p := &arr[i])
+}
+
+// poolNameForType returns the pool variable name for a given element type
+func poolNameForType(t types.Type) string {
+	if named, ok := t.(*types.Named); ok {
+		return "_pool_" + named.Obj().Name()
+	}
+	if basic, ok := t.(*types.Basic); ok {
+		return "_pool_" + basic.Name()
+	}
+	return "_pool_unknown"
+}
+
+// poolIndexExpr creates _pool_T[index] with proper type registration
+func (v *ptrTransformVisitor) poolIndexExpr(index ast.Expr, elemType types.Type) *ast.IndexExpr {
+	poolIdent := &ast.Ident{Name: poolNameForType(elemType)}
+	v.registerType(poolIdent, types.NewSlice(elemType))
+	indexExpr := &ast.IndexExpr{X: poolIdent, Index: index}
+	v.registerType(indexExpr, elemType)
+	return indexExpr
 }
 
 func (v *ptrTransformVisitor) transform() {
@@ -78,15 +99,17 @@ func (v *ptrTransformVisitor) transform() {
 
 	for _, fd := range v.funcs {
 		analysis := v.analyzeFuncDecl(fd)
-		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.boxedVars) == 0 && len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 {
+		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.poolVars) == 0 && len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 {
 			continue
 		}
 		v.rewriteFuncDecl(fd, analysis)
 	}
 }
 
-// rewriteStructTypes rewrites pointer fields (*T) in struct type declarations to []T.
+// rewriteStructTypes rewrites pointer fields (*T) in struct type declarations to int (pool index).
 func (v *ptrTransformVisitor) rewriteStructTypes() {
+	v.poolTypes = make(map[string]bool)
+	v.ptrFieldMap = make(map[string][]string)
 	for _, gd := range v.genDecls {
 		for _, spec := range gd.Specs {
 			ts, ok := spec.(*ast.TypeSpec)
@@ -99,14 +122,17 @@ func (v *ptrTransformVisitor) rewriteStructTypes() {
 			}
 			for _, field := range st.Fields.List {
 				if starExpr, ok := field.Type.(*ast.StarExpr); ok {
-					newType := &ast.ArrayType{Elt: starExpr.X}
-					field.Type = newType
-					// Register type info (same pattern as param rewriting)
-					if v.pkg != nil && v.pkg.TypesInfo != nil {
-						if elemTV, ok := v.pkg.TypesInfo.Types[starExpr.X]; ok {
-							v.registerType(newType, types.NewSlice(elemTV.Type))
+					// Record pool type info
+					if ident, ok := starExpr.X.(*ast.Ident); ok {
+						v.poolTypes[ident.Name] = true
+						for _, fname := range field.Names {
+							v.ptrFieldMap[ts.Name.Name] = append(v.ptrFieldMap[ts.Name.Name], fname.Name)
 						}
 					}
+					// Rewrite *T → int
+					newType := &ast.Ident{Name: "int"}
+					field.Type = newType
+					v.registerType(newType, types.Typ[types.Int])
 				}
 			}
 		}
@@ -117,7 +143,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 	result := &ptrAnalysis{
 		ptrParams:      make(map[string]types.Type),
 		ptrVars:        make(map[string]types.Type),
-		boxedVars:      make(map[string]types.Type),
+		poolVars:       make(map[string]types.Type),
 		ptrLocals:      make(map[string]*ptrLocalInfo),
 		ptrIndexLocals: make(map[string]*ptrIndexLocalInfo),
 	}
@@ -169,7 +195,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 		})
 	}
 
-	// Find boxed vars (locals whose address is taken via &)
+	// Find pool vars (locals whose address is taken via &) — all go to poolVars
 	if fd.Body != nil {
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			unary, ok := n.(*ast.UnaryExpr)
@@ -191,7 +217,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			// Get the type of the variable
 			if v.pkg != nil && v.pkg.TypesInfo != nil {
 				if obj := v.pkg.TypesInfo.Uses[ident]; obj != nil {
-					result.boxedVars[ident.Name] = obj.Type()
+					result.poolVars[ident.Name] = obj.Type()
 				}
 			}
 			return true
@@ -212,7 +238,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 				if !ok {
 					continue
 				}
-				if elemType, isBoxed := result.boxedVars[rhsIdent.Name]; isBoxed {
+				if elemType, isBoxed := result.poolVars[rhsIdent.Name]; isBoxed {
 					if i < len(assign.Lhs) {
 						if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
 							result.ptrLocals[lhsIdent.Name] = &ptrLocalInfo{
@@ -249,7 +275,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 					if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
 						if elemType, isPtrVar := result.ptrVars[lhsIdent.Name]; isPtrVar {
 							// x (the target) must be boxed
-							if _, isBoxed := result.boxedVars[rhsIdent.Name]; isBoxed {
+							if _, isBoxed := result.poolVars[rhsIdent.Name]; isBoxed {
 								result.ptrLocals[lhsIdent.Name] = &ptrLocalInfo{
 									targetName: rhsIdent.Name,
 									elemType:   elemType,
@@ -338,19 +364,40 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 
 
 func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAnalysis) {
-	// Rewrite param types: *T -> []T
+	// Track pool types from params (these already have pool passed in, no local decl needed)
+	poolParamTypes := make(map[string]types.Type) // pool name → elem type
+
+	// Rewrite param types: *T -> int, and collect pool types from params
 	if fd.Type.Params != nil {
 		for _, field := range fd.Type.Params.List {
 			if starExpr, ok := field.Type.(*ast.StarExpr); ok {
-				newType := &ast.ArrayType{Elt: starExpr.X}
-				field.Type = newType
-				// Register type info for the new ArrayType
+				// Get elem type before rewriting
+				var elemType types.Type
 				if v.pkg != nil && v.pkg.TypesInfo != nil {
 					if elemTV, ok := v.pkg.TypesInfo.Types[starExpr.X]; ok {
-						v.registerType(newType, types.NewSlice(elemTV.Type))
+						elemType = elemTV.Type
 					}
 				}
+				// *T → int
+				newType := &ast.Ident{Name: "int"}
+				field.Type = newType
+				v.registerType(newType, types.Typ[types.Int])
+				if elemType != nil {
+					pn := poolNameForType(elemType)
+					poolParamTypes[pn] = elemType
+				}
 			}
+		}
+		// Append _pool_T []T params at end for each unique pool type from pointer params
+		for poolName, elemType := range poolParamTypes {
+			typeExpr := v.typeToExpr(elemType)
+			arrType := &ast.ArrayType{Elt: typeExpr}
+			sliceType := types.NewSlice(elemType)
+			v.registerType(arrType, sliceType)
+			fd.Type.Params.List = append(fd.Type.Params.List, &ast.Field{
+				Names: []*ast.Ident{{Name: poolName}},
+				Type:  arrType,
+			})
 		}
 	}
 
@@ -359,43 +406,99 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 		v.rewriteBlockStmt(fd.Body, analysis)
 	}
 
-	// Parameter boxing: for non-pointer params whose address is taken (in boxedVars),
-	// rename param x -> __x and prepend boxing statement: x := []T{__x}
-	if fd.Type.Params != nil && fd.Body != nil {
-		var boxingStmts []ast.Stmt
-		for _, field := range fd.Type.Params.List {
-			for _, name := range field.Names {
-				if elemType, isBoxed := analysis.boxedVars[name.Name]; isBoxed {
-					origName := name.Name
-					prefixedName := "__" + origName
+	// Pool declarations + parameter boxing: combined so pool decls come first
+	// Prepend order: [pool decls] [boxing stmts] [original body]
+	if fd.Body != nil {
+		var preamble []ast.Stmt
 
-					// Rename the parameter ident
-					name.Name = prefixedName
+		// 1. Pool declarations for types not provided via params
+		if len(analysis.poolVars) > 0 {
+			poolTypesNeeded := make(map[string]types.Type)
+			for _, elemType := range analysis.poolVars {
+				pn := poolNameForType(elemType)
+				if _, fromParam := poolParamTypes[pn]; !fromParam {
+					poolTypesNeeded[pn] = elemType
+				}
+			}
+			for poolName, elemType := range poolTypesNeeded {
+				typeExpr := v.typeToExpr(elemType)
+				arrType := &ast.ArrayType{Elt: typeExpr}
+				sliceType := types.NewSlice(elemType)
+				v.registerType(arrType, sliceType)
+				decl := &ast.DeclStmt{Decl: &ast.GenDecl{
+					Tok: token.VAR,
+					Specs: []ast.Spec{&ast.ValueSpec{
+						Names: []*ast.Ident{{Name: poolName}},
+						Type:  arrType,
+					}},
+				}}
+				preamble = append(preamble, decl)
+			}
+		}
 
-					// Build boxing assignment: origName := []T{__origName}
-					typeExpr := v.typeToExpr(elemType)
-					arrType := &ast.ArrayType{Elt: typeExpr}
-					paramRef := &ast.Ident{Name: prefixedName}
-					compLit := &ast.CompositeLit{
-						Type: arrType,
-						Elts: []ast.Expr{paramRef},
+		// 2. Parameter boxing for non-pointer params whose address is taken
+		if fd.Type.Params != nil {
+			for _, field := range fd.Type.Params.List {
+				for _, name := range field.Names {
+					if elemType, isPool := analysis.poolVars[name.Name]; isPool {
+						origName := name.Name
+						prefixedName := "__" + origName
+						name.Name = prefixedName
+
+						pn := poolNameForType(elemType)
+						sliceType := types.NewSlice(elemType)
+
+						// _pool_T = append(_pool_T, __origName)
+						poolIdent1 := &ast.Ident{Name: pn}
+						poolIdent2 := &ast.Ident{Name: pn}
+						paramRef := &ast.Ident{Name: prefixedName}
+						appendCall := &ast.CallExpr{
+							Fun:  &ast.Ident{Name: "append"},
+							Args: []ast.Expr{poolIdent1, paramRef},
+						}
+						v.registerType(poolIdent1, sliceType)
+						v.registerType(poolIdent2, sliceType)
+						v.registerType(appendCall, sliceType)
+						v.registerType(paramRef, elemType)
+						preamble = append(preamble, &ast.AssignStmt{
+							Lhs: []ast.Expr{poolIdent2},
+							Tok: token.ASSIGN,
+							Rhs: []ast.Expr{appendCall},
+						})
+
+						// origName := int(len(_pool_T) - 1)
+						poolIdent3 := &ast.Ident{Name: pn}
+						v.registerType(poolIdent3, sliceType)
+						lenCall := &ast.CallExpr{
+							Fun:  &ast.Ident{Name: "len"},
+							Args: []ast.Expr{poolIdent3},
+						}
+						v.registerType(lenCall, types.Typ[types.Int])
+						oneLit := &ast.BasicLit{Kind: token.INT, Value: "1"}
+						v.registerType(oneLit, types.Typ[types.Int])
+						lenMinus1 := &ast.BinaryExpr{X: lenCall, Op: token.SUB, Y: oneLit}
+						v.registerType(lenMinus1, types.Typ[types.Int])
+						intIdent := &ast.Ident{Name: "int"}
+						intCast := &ast.CallExpr{Fun: intIdent, Args: []ast.Expr{lenMinus1}}
+						v.registerType(intCast, types.Typ[types.Int])
+						if v.pkg != nil && v.pkg.TypesInfo != nil {
+							intObj := types.Universe.Lookup("int")
+							if intObj != nil {
+								v.pkg.TypesInfo.Uses[intIdent] = intObj
+							}
+						}
+						preamble = append(preamble, &ast.AssignStmt{
+							Lhs: []ast.Expr{&ast.Ident{Name: origName}},
+							Tok: token.DEFINE,
+							Rhs: []ast.Expr{intCast},
+						})
 					}
-					sliceType := types.NewSlice(elemType)
-					v.registerType(arrType, sliceType)
-					v.registerType(compLit, sliceType)
-					v.registerType(paramRef, elemType)
-
-					boxingStmt := &ast.AssignStmt{
-						Lhs: []ast.Expr{&ast.Ident{Name: origName}},
-						Tok: token.DEFINE,
-						Rhs: []ast.Expr{compLit},
-					}
-					boxingStmts = append(boxingStmts, boxingStmt)
 				}
 			}
 		}
-		if len(boxingStmts) > 0 {
-			fd.Body.List = append(boxingStmts, fd.Body.List...)
+
+		if len(preamble) > 0 {
+			fd.Body.List = append(preamble, fd.Body.List...)
 		}
 	}
 }
@@ -406,9 +509,107 @@ func (v *ptrTransformVisitor) rewriteBlockStmt(block *ast.BlockStmt, analysis *p
 		if v.isPtrVarEliminatedStmt(stmt, analysis) {
 			continue
 		}
-		newList = append(newList, v.rewriteStmt(stmt, analysis))
+		expanded := v.rewriteStmtExpand(stmt, analysis)
+		newList = append(newList, expanded...)
 	}
 	block.List = newList
+}
+
+// rewriteStmtExpand returns one or more statements. For pool var := assignments,
+// it expands into: append to pool + index assignment.
+func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnalysis) []ast.Stmt {
+	// Handle x := val where x is a pool var
+	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && assignStmt.Tok == token.DEFINE {
+		if len(assignStmt.Lhs) == 1 && len(assignStmt.Rhs) == 1 {
+			if lhsIdent, ok := assignStmt.Lhs[0].(*ast.Ident); ok {
+				if elemType, isPool := analysis.poolVars[lhsIdent.Name]; isPool {
+					return v.expandPoolVarAssign(lhsIdent.Name, assignStmt.Rhs[0], elemType, analysis)
+				}
+			}
+		}
+	}
+	// Handle var x T where x is a pool var
+	if declStmt, ok := stmt.(*ast.DeclStmt); ok {
+		if genDecl, ok := declStmt.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
+			for _, spec := range genDecl.Specs {
+				if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+					for _, name := range valueSpec.Names {
+						if elemType, isPool := analysis.poolVars[name.Name]; isPool {
+							zeroVal := v.zeroValueExpr(elemType)
+							return v.expandPoolVarAssign(name.Name, zeroVal, elemType, analysis)
+						}
+					}
+				}
+			}
+		}
+	}
+	return []ast.Stmt{v.rewriteStmt(stmt, analysis)}
+}
+
+// expandPoolVarAssign expands: varName := CompositeLit{...}
+// into:
+//   _pool_T = append(_pool_T, rewrittenRHS)
+//   varName := len(_pool_T) - 1
+func (v *ptrTransformVisitor) expandPoolVarAssign(varName string, rhs ast.Expr, elemType types.Type, analysis *ptrAnalysis) []ast.Stmt {
+	poolName := poolNameForType(elemType)
+
+	// Rewrite the RHS (handles nested &x → x, injects -1 defaults, etc.)
+	rewrittenRHS := v.rewriteExpr(rhs, analysis)
+
+	// Statement 1: _pool_T = append(_pool_T, rewrittenRHS)
+	poolIdent1 := &ast.Ident{Name: poolName}
+	poolIdent2 := &ast.Ident{Name: poolName}
+	appendCall := &ast.CallExpr{
+		Fun:  &ast.Ident{Name: "append"},
+		Args: []ast.Expr{poolIdent1, rewrittenRHS},
+	}
+	sliceType := types.NewSlice(elemType)
+	v.registerType(poolIdent1, sliceType)
+	v.registerType(poolIdent2, sliceType)
+	v.registerType(appendCall, sliceType)
+	appendStmt := &ast.AssignStmt{
+		Lhs: []ast.Expr{poolIdent2},
+		Tok: token.ASSIGN,
+		Rhs: []ast.Expr{appendCall},
+	}
+
+	// Statement 2: varName := int(len(_pool_T) - 1)
+	poolIdent3 := &ast.Ident{Name: poolName}
+	v.registerType(poolIdent3, sliceType)
+	lenCall := &ast.CallExpr{
+		Fun:  &ast.Ident{Name: "len"},
+		Args: []ast.Expr{poolIdent3},
+	}
+	v.registerType(lenCall, types.Typ[types.Int])
+	oneLit := &ast.BasicLit{Kind: token.INT, Value: "1"}
+	v.registerType(oneLit, types.Typ[types.Int])
+	lenMinus1 := &ast.BinaryExpr{
+		X:  lenCall,
+		Op: token.SUB,
+		Y:  oneLit,
+	}
+	v.registerType(lenMinus1, types.Typ[types.Int])
+	// Wrap in int() to ensure C++ emits int type (len returns size_t in C++)
+	intIdent := &ast.Ident{Name: "int"}
+	intCast := &ast.CallExpr{
+		Fun:  intIdent,
+		Args: []ast.Expr{lenMinus1},
+	}
+	v.registerType(intCast, types.Typ[types.Int])
+	// Register the int ident as a type name so emitters (especially C#) recognize it
+	if v.pkg != nil && v.pkg.TypesInfo != nil {
+		intObj := types.Universe.Lookup("int")
+		if intObj != nil {
+			v.pkg.TypesInfo.Uses[intIdent] = intObj
+		}
+	}
+	indexStmt := &ast.AssignStmt{
+		Lhs: []ast.Expr{&ast.Ident{Name: varName}},
+		Tok: token.DEFINE,
+		Rhs: []ast.Expr{intCast},
+	}
+
+	return []ast.Stmt{appendStmt, indexStmt}
 }
 
 // isPtrVarEliminatedStmt checks if a statement should be eliminated because it's
@@ -541,39 +742,10 @@ func (v *ptrTransformVisitor) rewriteStmt(stmt ast.Stmt, analysis *ptrAnalysis) 
 
 func (v *ptrTransformVisitor) rewriteAssignStmt(s *ast.AssignStmt, analysis *ptrAnalysis) ast.Stmt {
 	if s.Tok == token.DEFINE {
-		// Short variable declaration (:=)
-		// Track which RHS indices were handled by boxing
-		boxedIndices := make(map[int]bool)
-
-		for i, lhs := range s.Lhs {
-			if ident, ok := lhs.(*ast.Ident); ok {
-				if elemType, isBoxed := analysis.boxedVars[ident.Name]; isBoxed {
-					if i < len(s.Rhs) {
-						// Rewrite RHS first (may contain pointer ops)
-						rewrittenRhs := v.rewriteExpr(s.Rhs[i], analysis)
-						// Wrap in []T{val}
-						typeExpr := v.typeToExpr(elemType)
-						arrType := &ast.ArrayType{Elt: typeExpr}
-						compLit := &ast.CompositeLit{
-							Type: arrType,
-							Elts: []ast.Expr{rewrittenRhs},
-						}
-						s.Rhs[i] = compLit
-						// Register type info
-						sliceType := types.NewSlice(elemType)
-						v.registerType(arrType, sliceType)
-						v.registerType(compLit, sliceType)
-						boxedIndices[i] = true
-					}
-				}
-			}
-		}
-
-		// Rewrite non-boxed RHS
+		// Pool var := assignments are handled by rewriteStmtExpand, not here.
+		// Just rewrite all RHS normally.
 		for i, rhs := range s.Rhs {
-			if !boxedIndices[i] {
-				s.Rhs[i] = v.rewriteExpr(rhs, analysis)
-			}
+			s.Rhs[i] = v.rewriteExpr(rhs, analysis)
 		}
 		return s
 	}
@@ -593,37 +765,16 @@ func (v *ptrTransformVisitor) rewriteDeclStmt(s *ast.DeclStmt, analysis *ptrAnal
 		for _, spec := range genDecl.Specs {
 			if valueSpec, ok := spec.(*ast.ValueSpec); ok {
 				for _, name := range valueSpec.Names {
-					if elemType, isBoxed := analysis.boxedVars[name.Name]; isBoxed {
-						// Change type from T to []T
-						typeExpr := v.typeToExpr(elemType)
-						arrType := &ast.ArrayType{Elt: typeExpr}
-						valueSpec.Type = arrType
-						// Add initialization: = []T{zero}
-						zeroVal := v.zeroValueExpr(elemType)
-						initArrType := &ast.ArrayType{Elt: v.typeToExpr(elemType)}
-						compLit := &ast.CompositeLit{
-							Type: initArrType,
-							Elts: []ast.Expr{zeroVal},
-						}
-						valueSpec.Values = []ast.Expr{compLit}
-						// Register type info
-						sliceType := types.NewSlice(elemType)
-						v.registerType(arrType, sliceType)
-						v.registerType(initArrType, sliceType)
-						v.registerType(compLit, sliceType)
-					} else if elemType, isPtrVar := analysis.ptrVars[name.Name]; isPtrVar {
-						// Skip ptrVars that were converted to ptrLocals or ptrIndexLocals (will be eliminated)
+					// poolVars: var x T → handled by rewriteStmtExpand (pool append)
+					// ptrVars that are ptrLocals/ptrIndexLocals: eliminated by isPtrVarEliminatedStmt
+					if _, isPtrVar := analysis.ptrVars[name.Name]; isPtrVar {
 						_, isLocal := analysis.ptrLocals[name.Name]
 						_, isIndexLocal := analysis.ptrIndexLocals[name.Name]
 						if !isLocal && !isIndexLocal {
-							// Change type from *T (StarExpr) to []T (ArrayType)
-							typeExpr := v.typeToExpr(elemType)
-							arrType := &ast.ArrayType{Elt: typeExpr}
-							valueSpec.Type = arrType
-							// No zero-value init (nil slice = nil pointer)
-							// Register type info
-							sliceType := types.NewSlice(elemType)
-							v.registerType(arrType, sliceType)
+							// Change type from *T (StarExpr) to int (pool index)
+							newType := &ast.Ident{Name: "int"}
+							valueSpec.Type = newType
+							v.registerType(newType, types.Typ[types.Int])
 						}
 					}
 				}
@@ -647,41 +798,44 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 				return newIndexExpr
 			}
 		}
-		// *p -> p[0]
-		inner := v.rewriteExpr(e.X, analysis)
-		zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
-		indexExpr := &ast.IndexExpr{X: inner, Index: zeroLit}
-		v.registerType(zeroLit, types.Typ[types.Int])
-		// Register type info for the IndexExpr result and X slice type
+
+		// All pointer derefs use pool indexing: *p -> _pool_T[p]
 		if ident, ok := e.X.(*ast.Ident); ok {
+			// ptrParams: *p -> _pool_T[p]
 			if elemType, isPtr := analysis.ptrParams[ident.Name]; isPtr {
-				v.registerType(indexExpr, elemType)
-				v.registerType(inner, types.NewSlice(elemType))
-			} else if info, isLocal := analysis.ptrLocals[ident.Name]; isLocal {
-				v.registerType(indexExpr, info.elemType)
-				v.registerType(inner, types.NewSlice(info.elemType))
-			} else if elemType, isPtrVar := analysis.ptrVars[ident.Name]; isPtrVar {
-				v.registerType(indexExpr, elemType)
-				v.registerType(inner, types.NewSlice(elemType))
+				return v.poolIndexExpr(ident, elemType)
 			}
-		} else {
-			// Fallback for non-Ident X (e.g., *n.next where X is a SelectorExpr)
-			if v.pkg != nil && v.pkg.TypesInfo != nil {
-				if tv, ok := v.pkg.TypesInfo.Types[e.X]; ok {
-					if ptrType, isPtr := tv.Type.(*types.Pointer); isPtr {
-						v.registerType(indexExpr, ptrType.Elem())
-						v.registerType(inner, types.NewSlice(ptrType.Elem()))
-					}
+			// ptrLocals: *p -> _pool_T[target]
+			if info, isLocal := analysis.ptrLocals[ident.Name]; isLocal {
+				targetIdent := &ast.Ident{Name: info.targetName}
+				v.registerType(targetIdent, types.Typ[types.Int])
+				return v.poolIndexExpr(targetIdent, info.elemType)
+			}
+			// ptrVars: *p -> _pool_T[p]
+			if elemType, isPtrVar := analysis.ptrVars[ident.Name]; isPtrVar {
+				return v.poolIndexExpr(ident, elemType)
+			}
+		}
+
+		// Fallback: pool-based deref for non-Ident X (e.g., *n.next where X is SelectorExpr)
+		if v.pkg != nil && v.pkg.TypesInfo != nil {
+			if tv, ok := v.pkg.TypesInfo.Types[e.X]; ok {
+				if ptrType, isPtr := tv.Type.(*types.Pointer); isPtr {
+					inner := v.rewriteExpr(e.X, analysis)
+					return v.poolIndexExpr(inner, ptrType.Elem())
 				}
 			}
 		}
-		return indexExpr
+
+		// Last resort fallback (shouldn't normally be reached)
+		inner := v.rewriteExpr(e.X, analysis)
+		return inner
 
 	case *ast.UnaryExpr:
 		if e.Op == token.AND {
-			// &y -> y (if y is boxed, the var is already a slice)
+			// &x -> x (if x is a pool var, the value is the pool index)
 			if ident, ok := e.X.(*ast.Ident); ok {
-				if _, isBoxed := analysis.boxedVars[ident.Name]; isBoxed {
+				if _, isPool := analysis.poolVars[ident.Name]; isPool {
 					return ident
 				}
 			}
@@ -699,34 +853,18 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 				return e
 			}
 		}
-		// Handle p.field for pointer params: p.field -> p[0].field
+		// Handle p.field for pointer params/locals/vars: p.field -> _pool_T[p].field
 		if ident, ok := e.X.(*ast.Ident); ok {
 			if elemType, isPtr := analysis.ptrParams[ident.Name]; isPtr {
-				zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
-				indexExpr := &ast.IndexExpr{X: ident, Index: zeroLit}
-				v.registerType(zeroLit, types.Typ[types.Int])
-				v.registerType(indexExpr, elemType)
-				v.registerType(ident, types.NewSlice(elemType))
-				e.X = indexExpr
+				e.X = v.poolIndexExpr(ident, elemType)
 				return e
 			} else if info, isLocal := analysis.ptrLocals[ident.Name]; isLocal {
-				// p.field -> target[0].field
 				targetIdent := &ast.Ident{Name: info.targetName}
-				zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
-				indexExpr := &ast.IndexExpr{X: targetIdent, Index: zeroLit}
-				v.registerType(zeroLit, types.Typ[types.Int])
-				v.registerType(indexExpr, info.elemType)
-				v.registerType(targetIdent, types.NewSlice(info.elemType))
-				e.X = indexExpr
+				v.registerType(targetIdent, types.Typ[types.Int])
+				e.X = v.poolIndexExpr(targetIdent, info.elemType)
 				return e
 			} else if elemType, isPtrVar := analysis.ptrVars[ident.Name]; isPtrVar {
-				// p.field -> p[0].field for pure ptrVars (not converted to ptrLocals)
-				zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
-				indexExpr := &ast.IndexExpr{X: ident, Index: zeroLit}
-				v.registerType(zeroLit, types.Typ[types.Int])
-				v.registerType(indexExpr, elemType)
-				v.registerType(ident, types.NewSlice(elemType))
-				e.X = indexExpr
+				e.X = v.poolIndexExpr(ident, elemType)
 				return e
 			}
 		}
@@ -738,36 +876,26 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 			}
 		}
 
-		// General case: recurse into X (handles boxed vars via Ident case)
+		// General case: recurse into X (handles pool vars via Ident case)
 		e.X = v.rewriteExpr(e.X, analysis)
 
-		// Auto-deref: if original X was *T (pointer), insert [0] index
-		// e.g., n.next.value where next is *Node -> n.next[0].value
+		// Auto-deref: if original X was *T (pointer), insert pool indexing
 		if xOrigType != nil {
 			if ptrType, isPtr := xOrigType.(*types.Pointer); isPtr {
-				zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
-				indexExpr := &ast.IndexExpr{X: e.X, Index: zeroLit}
-				v.registerType(zeroLit, types.Typ[types.Int])
-				v.registerType(indexExpr, ptrType.Elem())
-				e.X = indexExpr
+				e.X = v.poolIndexExpr(e.X, ptrType.Elem())
 			}
 		}
 		return e
 
 	case *ast.Ident:
-		// y -> y[0] for boxed variables
-		if elemType, isBoxed := analysis.boxedVars[e.Name]; isBoxed {
-			zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
-			indexExpr := &ast.IndexExpr{X: e, Index: zeroLit}
-			v.registerType(zeroLit, types.Typ[types.Int])
-			v.registerType(indexExpr, elemType)
-			v.registerType(e, types.NewSlice(elemType))
-			return indexExpr
+		// y -> _pool_T[y] for pool variables
+		if elemType, isPool := analysis.poolVars[e.Name]; isPool {
+			return v.poolIndexExpr(e, elemType)
 		}
-		// p -> target for ptrLocals (bare alias replacement, no [0])
+		// p -> target for ptrLocals (bare alias replacement — target is a pool index)
 		if info, isLocal := analysis.ptrLocals[e.Name]; isLocal {
 			targetIdent := &ast.Ident{Name: info.targetName}
-			v.registerType(targetIdent, types.NewSlice(info.elemType))
+			v.registerType(targetIdent, types.Typ[types.Int])
 			return targetIdent
 		}
 		// p -> sliceExpr for ptrIndexLocals (bare alias, return the slice)
@@ -786,6 +914,8 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		for i, arg := range e.Args {
 			e.Args[i] = v.rewriteExpr(arg, analysis)
 		}
+		// Inject pool args for calls to functions with *T params
+		v.injectPoolArgs(e)
 		return e
 
 	case *ast.ParenExpr:
@@ -798,8 +928,39 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		return e
 
 	case *ast.CompositeLit:
+		// Rewrite elements first
 		for i, elt := range e.Elts {
 			e.Elts[i] = v.rewriteExpr(elt, analysis)
+		}
+		// Inject -1 defaults for missing pointer fields
+		if typeIdent, ok := e.Type.(*ast.Ident); ok {
+			if ptrFields, hasPtrFields := v.ptrFieldMap[typeIdent.Name]; hasPtrFields {
+				// Find which pointer fields are already present
+				present := make(map[string]bool)
+				for _, elt := range e.Elts {
+					if kv, ok := elt.(*ast.KeyValueExpr); ok {
+						if key, ok := kv.Key.(*ast.Ident); ok {
+							present[key.Name] = true
+						}
+					}
+				}
+				// Inject -1 for missing pointer fields
+				for _, fieldName := range ptrFields {
+					if !present[fieldName] {
+						minusOne := &ast.UnaryExpr{
+							Op: token.SUB,
+							X:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+						}
+						v.registerType(minusOne, types.Typ[types.Int])
+						v.registerType(minusOne.X.(*ast.BasicLit), types.Typ[types.Int])
+						kv := &ast.KeyValueExpr{
+							Key:   &ast.Ident{Name: fieldName},
+							Value: minusOne,
+						}
+						e.Elts = append(e.Elts, kv)
+					}
+				}
+			}
 		}
 		return e
 
@@ -835,6 +996,46 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		return e
 	}
 	return expr
+}
+
+// injectPoolArgs appends _pool_T arguments for calls to functions with *T params
+func (v *ptrTransformVisitor) injectPoolArgs(call *ast.CallExpr) {
+	if v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+	// Get the function being called
+	var funIdent *ast.Ident
+	if id, ok := call.Fun.(*ast.Ident); ok {
+		funIdent = id
+	}
+	if funIdent == nil {
+		return
+	}
+	obj := v.pkg.TypesInfo.Uses[funIdent]
+	if obj == nil {
+		return
+	}
+	fnType, ok := obj.Type().(*types.Signature)
+	if !ok {
+		return
+	}
+	// Check params for *T types and collect unique pool names
+	poolsNeeded := make(map[string]types.Type) // poolName → elemType (dedup)
+	params := fnType.Params()
+	for i := 0; i < params.Len(); i++ {
+		paramType := params.At(i).Type()
+		if ptrType, isPtr := paramType.(*types.Pointer); isPtr {
+			elemType := ptrType.Elem()
+			pn := poolNameForType(elemType)
+			poolsNeeded[pn] = elemType
+		}
+	}
+	// Append pool idents as extra args
+	for poolName, elemType := range poolsNeeded {
+		poolIdent := &ast.Ident{Name: poolName}
+		v.registerType(poolIdent, types.NewSlice(elemType))
+		call.Args = append(call.Args, poolIdent)
+	}
 }
 
 // registerType adds a type info entry for an AST node
