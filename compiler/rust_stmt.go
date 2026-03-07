@@ -136,6 +136,17 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 
 	ind := rustIndent(indent / 2)
+
+	// Pointer alias elimination: emit comment instead of assignment
+	if len(node.Lhs) == 1 {
+		if lhsIdent, ok := node.Lhs[0].(*ast.Ident); ok {
+			if comment, ok := PtrLocalComments[lhsIdent.Pos()]; ok {
+				e.fs.PushCode(fmt.Sprintf("%s%s\n", ind, comment))
+				return
+			}
+		}
+	}
+
 	tokStr := node.Tok.String()
 
 	// Local closure inlining: save closure body for later call-site inlining

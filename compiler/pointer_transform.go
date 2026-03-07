@@ -1,12 +1,17 @@
 package compiler
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
 
 	"golang.org/x/tools/go/packages"
 )
+
+// PtrLocalComments maps the token.Pos of ptrLocal LHS idents to comment strings.
+// Populated by the transform, consumed by emitters to emit comments instead of code.
+var PtrLocalComments = map[token.Pos]string{}
 
 // PointerTransformPass transforms pointer parameters (*T) to single-element
 // slices ([]T) and rewrites pointer operations accordingly.
@@ -41,16 +46,23 @@ func (v *ptrTransformVisitor) Visit(node ast.Node) ast.Visitor {
 	return v
 }
 
+// ptrLocalInfo holds info about a local pointer alias (p := &x)
+type ptrLocalInfo struct {
+	targetName string     // the boxed variable this aliases (e.g., "x")
+	elemType   types.Type // element type of the pointer
+}
+
 // ptrAnalysis holds analysis results for a single function
 type ptrAnalysis struct {
-	ptrParams map[string]types.Type // param name -> element type (for *T params)
-	boxedVars map[string]types.Type // local var name -> original type (vars whose address is taken)
+	ptrParams map[string]types.Type    // param name -> element type (for *T params)
+	boxedVars map[string]types.Type    // local var name -> original type (vars whose address is taken)
+	ptrLocals map[string]*ptrLocalInfo // alias name -> target info (p := &x)
 }
 
 func (v *ptrTransformVisitor) transform() {
 	for _, fd := range v.funcs {
 		analysis := v.analyzeFuncDecl(fd)
-		if len(analysis.ptrParams) == 0 && len(analysis.boxedVars) == 0 {
+		if len(analysis.ptrParams) == 0 && len(analysis.boxedVars) == 0 && len(analysis.ptrLocals) == 0 {
 			continue
 		}
 		v.rewriteFuncDecl(fd, analysis)
@@ -61,6 +73,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 	result := &ptrAnalysis{
 		ptrParams: make(map[string]types.Type),
 		boxedVars: make(map[string]types.Type),
+		ptrLocals: make(map[string]*ptrLocalInfo),
 	}
 
 	// Find pointer params
@@ -97,6 +110,38 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			if v.pkg != nil && v.pkg.TypesInfo != nil {
 				if obj := v.pkg.TypesInfo.Uses[ident]; obj != nil {
 					result.boxedVars[ident.Name] = obj.Type()
+				}
+			}
+			return true
+		})
+
+		// Find ptrLocals: p := &x where x is a boxed variable
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.DEFINE {
+				return true
+			}
+			for i, rhs := range assign.Rhs {
+				unary, ok := rhs.(*ast.UnaryExpr)
+				if !ok || unary.Op != token.AND {
+					continue
+				}
+				rhsIdent, ok := unary.X.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if elemType, isBoxed := result.boxedVars[rhsIdent.Name]; isBoxed {
+					if i < len(assign.Lhs) {
+						if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+							result.ptrLocals[lhsIdent.Name] = &ptrLocalInfo{
+								targetName: rhsIdent.Name,
+								elemType:   elemType,
+							}
+							PtrLocalComments[lhsIdent.Pos()] = fmt.Sprintf(
+								"// %s := &%s  (pointer alias to %s, eliminated)",
+								lhsIdent.Name, rhsIdent.Name, rhsIdent.Name)
+						}
+					}
 				}
 			}
 			return true
@@ -303,6 +348,9 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 			if elemType, isPtr := analysis.ptrParams[ident.Name]; isPtr {
 				v.registerType(indexExpr, elemType)
 				v.registerType(inner, types.NewSlice(elemType))
+			} else if info, isLocal := analysis.ptrLocals[ident.Name]; isLocal {
+				v.registerType(indexExpr, info.elemType)
+				v.registerType(inner, types.NewSlice(info.elemType))
 			}
 		}
 		return indexExpr
@@ -330,6 +378,16 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 				v.registerType(ident, types.NewSlice(elemType))
 				e.X = indexExpr
 				return e
+			} else if info, isLocal := analysis.ptrLocals[ident.Name]; isLocal {
+				// p.field -> target[0].field
+				targetIdent := &ast.Ident{Name: info.targetName}
+				zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
+				indexExpr := &ast.IndexExpr{X: targetIdent, Index: zeroLit}
+				v.registerType(zeroLit, types.Typ[types.Int])
+				v.registerType(indexExpr, info.elemType)
+				v.registerType(targetIdent, types.NewSlice(info.elemType))
+				e.X = indexExpr
+				return e
 			}
 		}
 		// General case: recurse into X (handles boxed vars via Ident case)
@@ -345,6 +403,12 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 			v.registerType(indexExpr, elemType)
 			v.registerType(e, types.NewSlice(elemType))
 			return indexExpr
+		}
+		// p -> target for ptrLocals (bare alias replacement, no [0])
+		if info, isLocal := analysis.ptrLocals[e.Name]; isLocal {
+			targetIdent := &ast.Ident{Name: info.targetName}
+			v.registerType(targetIdent, types.NewSlice(info.elemType))
+			return targetIdent
 		}
 		return e
 

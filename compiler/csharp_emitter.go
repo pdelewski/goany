@@ -2041,6 +2041,17 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 
 	ind := csIndent(indent / 2)
+
+	// Pointer alias elimination: emit comment instead of assignment
+	if len(node.Lhs) == 1 {
+		if lhsIdent, ok := node.Lhs[0].(*ast.Ident); ok {
+			if comment, ok := PtrLocalComments[lhsIdent.Pos()]; ok {
+				e.fs.PushCode(fmt.Sprintf("%s%s\n", ind, comment))
+				return
+			}
+		}
+	}
+
 	tokStr := node.Tok.String()
 
 	// Mixed index chain: nested map/slice assignments like m["outer"]["inner"] = v
