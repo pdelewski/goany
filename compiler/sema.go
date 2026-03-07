@@ -268,12 +268,17 @@ func (sema *SemaChecker) PreVisitGenStructFieldType(node ast.Expr, indent int) {
 
 // PreVisitUnaryExpr checks for unsupported unary operators
 func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	// Address-of (&x) is supported only for simple identifiers
+	// Address-of (&x) is supported for simple identifiers and index expressions
 	if node.Op == token.AND {
-		if _, ok := node.X.(*ast.Ident); !ok {
+		switch node.X.(type) {
+		case *ast.Ident:
+			// &x — allowed
+		case *ast.IndexExpr:
+			// &arr[i] — allowed
+		default:
 			sema.reportSemaError(node.Pos(),
 				"address-of complex expression is not supported",
-				"Only address-of simple identifiers (&x) is allowed.\n  Complex expressions like &arr[0] or &s.field are not supported.",
+				"Only address-of simple identifiers (&x) and index expressions (&arr[i]) are allowed.\n  Complex expressions like &s.field are not supported.",
 				[]string{
 					"Assign the expression to a variable first, then take its address.",
 				})
