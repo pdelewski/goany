@@ -1950,6 +1950,43 @@ func testVarPointerStruct() {
 	}
 }
 
+// Test pointer to slice element with int
+func testPtrIndexInt() {
+	arr := []int{10, 20, 30}
+	p := &arr[1]
+	*p = 99
+	if arr[1] == 99 {
+		fmt.Println("PASS: ptr index int")
+	} else {
+		panic("FAIL: ptr index int")
+	}
+}
+
+// Test pointer to slice element with struct
+func testPtrIndexStruct() {
+	people := []Person{Person{name: "Alice", age: 30}, Person{name: "Bob", age: 25}}
+	p := &people[0]
+	p.age = 35
+	if people[0].age == 35 {
+		fmt.Println("PASS: ptr index struct")
+	} else {
+		panic("FAIL: ptr index struct")
+	}
+}
+
+// Test pointer to slice element with variable index
+func testPtrIndexVariable() {
+	arr := []int{10, 20, 30}
+	idx := 2
+	p := &arr[idx]
+	*p = 77
+	if arr[2] == 77 {
+		fmt.Println("PASS: ptr index variable")
+	} else {
+		panic("FAIL: ptr index variable")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2009,6 +2046,9 @@ func main() {
 	testPtrLocalParam()
 	testVarPointerInt()
 	testVarPointerStruct()
+	testPtrIndexInt()
+	testPtrIndexStruct()
+	testPtrIndexVariable()
 
 	fmt.Println("=== Done ===")
 }
