@@ -1907,6 +1907,49 @@ func testPtrLocalMultiAlias() {
 	}
 }
 
+// Helper: pointer to value parameter
+func ptrLocalParamHelper(x int) int {
+	p := &x
+	*p = 42
+	return x
+}
+
+// Test pointer to value parameter
+func testPtrLocalParam() {
+	result := ptrLocalParamHelper(10)
+	if result == 42 {
+		fmt.Println("PASS: ptr local param")
+	} else {
+		panic("FAIL: ptr local param")
+	}
+}
+
+// Test var pointer int
+func testVarPointerInt() {
+	x := 10
+	var p *int
+	p = &x
+	*p = 42
+	if x == 42 {
+		fmt.Println("PASS: var pointer int")
+	} else {
+		panic("FAIL: var pointer int")
+	}
+}
+
+// Test var pointer struct
+func testVarPointerStruct() {
+	person := Person{name: "Alice", age: 30}
+	var p *Person
+	p = &person
+	p.age = 25
+	if person.age == 25 {
+		fmt.Println("PASS: var pointer struct")
+	} else {
+		panic("FAIL: var pointer struct")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1963,6 +2006,9 @@ func main() {
 	testPtrLocalInt()
 	testPtrLocalStruct()
 	testPtrLocalMultiAlias()
+	testPtrLocalParam()
+	testVarPointerInt()
+	testVarPointerStruct()
 
 	fmt.Println("=== Done ===")
 }

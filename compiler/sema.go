@@ -237,18 +237,9 @@ func (sema *SemaChecker) PreVisitStarExpr(node *ast.StarExpr, indent int) {
 	// PreVisitFuncTypeResult, and PreVisitGenStructFieldType.
 }
 
-// PreVisitDeclStmtValueSpecType blocks pointer types in local variable declarations (var p *int)
+// PreVisitDeclStmtValueSpecType allows pointer types in local variable declarations (var p *int)
+// These are transformed by the pointer transform pass (*T → []T).
 func (sema *SemaChecker) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	if node.Type != nil {
-		if _, ok := node.Type.(*ast.StarExpr); ok {
-			sema.reportSemaError(node.Type.Pos(),
-				"pointer type in local variable declaration is not supported",
-				"Local pointer variables (var p *int) are not allowed.\n  Only pointer parameters and address-of simple identifiers are supported.",
-				[]string{
-					"Use a value type instead, or pass pointers as function parameters.",
-				})
-		}
-	}
 }
 
 // PreVisitFuncTypeResult blocks pointer return types (func f() *int)
