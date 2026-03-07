@@ -1987,6 +1987,66 @@ func testPtrIndexVariable() {
 	}
 }
 
+// Linked list node with pointer field
+type ListNode struct {
+	value int
+	next  *ListNode
+}
+
+// Binary tree node with pointer fields
+type TreeNode struct {
+	value int
+	left  *TreeNode
+	right *TreeNode
+}
+
+// Test basic struct pointer field: single link
+func testStructPtrFieldBasic() {
+	n2 := ListNode{value: 20}
+	n1 := ListNode{value: 10, next: &n2}
+	if n1.next.value == 20 {
+		fmt.Println("PASS: struct ptr field basic")
+	} else {
+		panic("FAIL: struct ptr field basic")
+	}
+}
+
+// Test linked list: chain of 3 nodes
+func testLinkedList() {
+	n3 := ListNode{value: 30}
+	n2 := ListNode{value: 20, next: &n3}
+	n1 := ListNode{value: 10, next: &n2}
+	if n1.next.value == 20 && n1.next.next.value == 30 {
+		fmt.Println("PASS: linked list")
+	} else {
+		panic("FAIL: linked list")
+	}
+}
+
+// Test binary tree: root with two children
+func testBinaryTree() {
+	leaf1 := TreeNode{value: 1}
+	leaf2 := TreeNode{value: 3}
+	root := TreeNode{value: 2, left: &leaf1, right: &leaf2}
+	if root.left.value == 1 && root.right.value == 3 {
+		fmt.Println("PASS: binary tree")
+	} else {
+		panic("FAIL: binary tree")
+	}
+}
+
+// Test explicit deref of struct pointer field: *n.next
+func testStructPtrFieldDeref() {
+	n2 := ListNode{value: 42}
+	n1 := ListNode{value: 10, next: &n2}
+	derefed := *n1.next
+	if derefed.value == 42 {
+		fmt.Println("PASS: struct ptr field deref")
+	} else {
+		panic("FAIL: struct ptr field deref")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2049,6 +2109,10 @@ func main() {
 	testPtrIndexInt()
 	testPtrIndexStruct()
 	testPtrIndexVariable()
+	testStructPtrFieldBasic()
+	testLinkedList()
+	testBinaryTree()
+	testStructPtrFieldDeref()
 
 	fmt.Println("=== Done ===")
 }

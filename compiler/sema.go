@@ -254,16 +254,9 @@ func (sema *SemaChecker) PreVisitFuncTypeResult(node *ast.Field, index int, inde
 	}
 }
 
-// PreVisitGenStructFieldType blocks pointer types in struct fields (type S struct { p *int })
+// PreVisitGenStructFieldType checks pointer types in struct fields (type S struct { p *int })
+// Pointer fields are now supported via []T boxing (same approach as pointer params).
 func (sema *SemaChecker) PreVisitGenStructFieldType(node ast.Expr, indent int) {
-	if _, ok := node.(*ast.StarExpr); ok {
-		sema.reportSemaError(node.Pos(),
-			"pointer type in struct field is not supported",
-			"Struct fields cannot have pointer types (*T).\n  Pointer types in struct fields are not supported by the transpiler.",
-			[]string{
-				"Use a value type instead of a pointer for the struct field.",
-			})
-	}
 }
 
 // PreVisitUnaryExpr checks for unsupported unary operators
