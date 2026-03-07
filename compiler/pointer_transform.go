@@ -35,13 +35,17 @@ func (p *PointerTransformPass) PostVisit(visitor ast.Visitor, visited map[string
 
 // ptrTransformVisitor collects function declarations during AST walk
 type ptrTransformVisitor struct {
-	pkg   *packages.Package
-	funcs []*ast.FuncDecl
+	pkg      *packages.Package
+	funcs    []*ast.FuncDecl
+	genDecls []*ast.GenDecl
 }
 
 func (v *ptrTransformVisitor) Visit(node ast.Node) ast.Visitor {
 	if fd, ok := node.(*ast.FuncDecl); ok {
 		v.funcs = append(v.funcs, fd)
+	}
+	if gd, ok := node.(*ast.GenDecl); ok && gd.Tok == token.TYPE {
+		v.genDecls = append(v.genDecls, gd)
 	}
 	return v
 }
@@ -69,12 +73,43 @@ type ptrAnalysis struct {
 }
 
 func (v *ptrTransformVisitor) transform() {
+	// Rewrite struct types first: *T fields -> []T fields
+	v.rewriteStructTypes()
+
 	for _, fd := range v.funcs {
 		analysis := v.analyzeFuncDecl(fd)
 		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.boxedVars) == 0 && len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 {
 			continue
 		}
 		v.rewriteFuncDecl(fd, analysis)
+	}
+}
+
+// rewriteStructTypes rewrites pointer fields (*T) in struct type declarations to []T.
+func (v *ptrTransformVisitor) rewriteStructTypes() {
+	for _, gd := range v.genDecls {
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, field := range st.Fields.List {
+				if starExpr, ok := field.Type.(*ast.StarExpr); ok {
+					newType := &ast.ArrayType{Elt: starExpr.X}
+					field.Type = newType
+					// Register type info (same pattern as param rewriting)
+					if v.pkg != nil && v.pkg.TypesInfo != nil {
+						if elemTV, ok := v.pkg.TypesInfo.Types[starExpr.X]; ok {
+							v.registerType(newType, types.NewSlice(elemTV.Type))
+						}
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -629,6 +664,16 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 				v.registerType(indexExpr, elemType)
 				v.registerType(inner, types.NewSlice(elemType))
 			}
+		} else {
+			// Fallback for non-Ident X (e.g., *n.next where X is a SelectorExpr)
+			if v.pkg != nil && v.pkg.TypesInfo != nil {
+				if tv, ok := v.pkg.TypesInfo.Types[e.X]; ok {
+					if ptrType, isPtr := tv.Type.(*types.Pointer); isPtr {
+						v.registerType(indexExpr, ptrType.Elem())
+						v.registerType(inner, types.NewSlice(ptrType.Elem()))
+					}
+				}
+			}
 		}
 		return indexExpr
 
@@ -685,8 +730,28 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 				return e
 			}
 		}
+		// Save original type BEFORE rewriting (for auto-deref of pointer struct fields)
+		var xOrigType types.Type
+		if v.pkg != nil && v.pkg.TypesInfo != nil {
+			if tv, ok := v.pkg.TypesInfo.Types[e.X]; ok {
+				xOrigType = tv.Type
+			}
+		}
+
 		// General case: recurse into X (handles boxed vars via Ident case)
 		e.X = v.rewriteExpr(e.X, analysis)
+
+		// Auto-deref: if original X was *T (pointer), insert [0] index
+		// e.g., n.next.value where next is *Node -> n.next[0].value
+		if xOrigType != nil {
+			if ptrType, isPtr := xOrigType.(*types.Pointer); isPtr {
+				zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
+				indexExpr := &ast.IndexExpr{X: e.X, Index: zeroLit}
+				v.registerType(zeroLit, types.Typ[types.Int])
+				v.registerType(indexExpr, ptrType.Elem())
+				e.X = indexExpr
+			}
+		}
 		return e
 
 	case *ast.Ident:
