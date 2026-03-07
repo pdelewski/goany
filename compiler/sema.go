@@ -229,21 +229,64 @@ func (sema *SemaChecker) checkPackageLevelVars(pkg *packages.Package) {
 // SECTION 1: Unsupported Go Features
 // ============================================
 
-// PreVisitStarExpr checks for pointer types (*T) which are not supported
+// PreVisitStarExpr allows pointer types (*T) in supported contexts (params, dereference).
+// Context-specific checks below block unsupported pointer patterns.
 func (sema *SemaChecker) PreVisitStarExpr(node *ast.StarExpr, indent int) {
-	sema.reportSemaError(node.Pos(),
-		"pointer types are not supported",
-		"Pointer types (*T) and pointer dereferencing are not allowed.\n  goany targets languages with different memory models (Rust, C#, JS).",
-		[]string{"Use value types or slices instead."})
+	// Pointer types are supported via pointer-to-array transformation in allowed contexts.
+	// Unsupported contexts are caught by PreVisitDeclStmtValueSpecType,
+	// PreVisitFuncTypeResult, and PreVisitGenStructFieldType.
+}
+
+// PreVisitDeclStmtValueSpecType blocks pointer types in local variable declarations (var p *int)
+func (sema *SemaChecker) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
+	if node.Type != nil {
+		if _, ok := node.Type.(*ast.StarExpr); ok {
+			sema.reportSemaError(node.Type.Pos(),
+				"pointer type in local variable declaration is not supported",
+				"Local pointer variables (var p *int) are not allowed.\n  Only pointer parameters and address-of simple identifiers are supported.",
+				[]string{
+					"Use a value type instead, or pass pointers as function parameters.",
+				})
+		}
+	}
+}
+
+// PreVisitFuncTypeResult blocks pointer return types (func f() *int)
+func (sema *SemaChecker) PreVisitFuncTypeResult(node *ast.Field, index int, indent int) {
+	if _, ok := node.Type.(*ast.StarExpr); ok {
+		sema.reportSemaError(node.Type.Pos(),
+			"pointer return type is not supported",
+			"Functions cannot return pointer types (*T).\n  Pointer return types have no equivalent in the transpiler backends.",
+			[]string{
+				"Return the value directly instead of a pointer.",
+			})
+	}
+}
+
+// PreVisitGenStructFieldType blocks pointer types in struct fields (type S struct { p *int })
+func (sema *SemaChecker) PreVisitGenStructFieldType(node ast.Expr, indent int) {
+	if _, ok := node.(*ast.StarExpr); ok {
+		sema.reportSemaError(node.Pos(),
+			"pointer type in struct field is not supported",
+			"Struct fields cannot have pointer types (*T).\n  Pointer types in struct fields are not supported by the transpiler.",
+			[]string{
+				"Use a value type instead of a pointer for the struct field.",
+			})
+	}
 }
 
 // PreVisitUnaryExpr checks for unsupported unary operators
 func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
+	// Address-of (&x) is supported only for simple identifiers
 	if node.Op == token.AND {
-		sema.reportSemaError(node.Pos(),
-			"address-of operator is not supported",
-			"The address-of operator (&x) is not allowed.\n  goany targets languages with different memory models.",
-			[]string{"Use value types or redesign without pointers."})
+		if _, ok := node.X.(*ast.Ident); !ok {
+			sema.reportSemaError(node.Pos(),
+				"address-of complex expression is not supported",
+				"Only address-of simple identifiers (&x) is allowed.\n  Complex expressions like &arr[0] or &s.field are not supported.",
+				[]string{
+					"Assign the expression to a variable first, then take its address.",
+				})
+		}
 	}
 	if node.Op == token.ARROW {
 		sema.reportSemaError(node.Pos(),

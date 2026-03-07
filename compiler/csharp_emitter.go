@@ -2138,6 +2138,34 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		return
 	}
 
+	// C# struct value-type writeback: p[0].field = val
+	// C# List<T> indexer returns a copy for value types (structs), causing CS1612.
+	// Rewrite to: var __tmp = p[0]; __tmp.field = val; p[0] = __tmp;
+	if len(node.Lhs) == 1 && tokStr != ":=" {
+		if selExpr, ok := node.Lhs[0].(*ast.SelectorExpr); ok {
+			if _, ok := selExpr.X.(*ast.IndexExpr); ok {
+				elemType := e.getExprGoType(selExpr.X)
+				if elemType != nil {
+					if _, isStruct := elemType.Underlying().(*types.Struct); isStruct {
+						fieldName := selExpr.Sel.Name
+						// Compute index code from lhsStr by stripping ".fieldName"
+						suffix := "." + fieldName
+						indexCode := lhsStr
+						if strings.HasSuffix(lhsStr, suffix) {
+							indexCode = lhsStr[:len(lhsStr)-len(suffix)]
+						}
+						tmpVar := fmt.Sprintf("__struct_tmp_%d", e.nestedMapCounter)
+						e.nestedMapCounter++
+						e.fs.PushCode(fmt.Sprintf("%svar %s = %s;\n", ind, tmpVar, indexCode))
+						e.fs.PushCode(fmt.Sprintf("%s%s.%s %s %s;\n", ind, tmpVar, fieldName, tokStr, rhsStr))
+						e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, indexCode, tmpVar))
+						return
+					}
+				}
+			}
+		}
+	}
+
 	// Comma-ok map read: val, ok := m[key]
 	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
 		if indexExpr, ok := node.Rhs[0].(*ast.IndexExpr); ok {

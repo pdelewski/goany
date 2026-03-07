@@ -145,6 +145,10 @@ func main() {
 	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
 	passes = append(passes, sema)
 
+	// Pass 3: Pointer-to-array transformation
+	ptrTransform := &compiler.PointerTransformPass{}
+	passes = append(passes, ptrTransform)
+
 	// If check-sema mode, run passes and exit
 	if checkSema {
 		passManager := &compiler.PassManager{
