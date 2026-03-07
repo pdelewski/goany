@@ -55,6 +55,7 @@ type ptrLocalInfo struct {
 // ptrAnalysis holds analysis results for a single function
 type ptrAnalysis struct {
 	ptrParams map[string]types.Type    // param name -> element type (for *T params)
+	ptrVars   map[string]types.Type    // var p *T declarations -> element type
 	boxedVars map[string]types.Type    // local var name -> original type (vars whose address is taken)
 	ptrLocals map[string]*ptrLocalInfo // alias name -> target info (p := &x)
 }
@@ -62,7 +63,7 @@ type ptrAnalysis struct {
 func (v *ptrTransformVisitor) transform() {
 	for _, fd := range v.funcs {
 		analysis := v.analyzeFuncDecl(fd)
-		if len(analysis.ptrParams) == 0 && len(analysis.boxedVars) == 0 && len(analysis.ptrLocals) == 0 {
+		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.boxedVars) == 0 && len(analysis.ptrLocals) == 0 {
 			continue
 		}
 		v.rewriteFuncDecl(fd, analysis)
@@ -72,6 +73,7 @@ func (v *ptrTransformVisitor) transform() {
 func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 	result := &ptrAnalysis{
 		ptrParams: make(map[string]types.Type),
+		ptrVars:   make(map[string]types.Type),
 		boxedVars: make(map[string]types.Type),
 		ptrLocals: make(map[string]*ptrLocalInfo),
 	}
@@ -91,6 +93,38 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 		}
 	}
 
+	// Find ptrVars: var p *T declarations
+	if fd.Body != nil {
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			declStmt, ok := n.(*ast.DeclStmt)
+			if !ok {
+				return true
+			}
+			genDecl, ok := declStmt.Decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.VAR {
+				return true
+			}
+			for _, spec := range genDecl.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				starExpr, ok := valueSpec.Type.(*ast.StarExpr)
+				if !ok {
+					continue
+				}
+				if v.pkg != nil && v.pkg.TypesInfo != nil {
+					if tv, ok := v.pkg.TypesInfo.Types[starExpr.X]; ok {
+						for _, name := range valueSpec.Names {
+							result.ptrVars[name.Name] = tv.Type
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+
 	// Find boxed vars (locals whose address is taken via &)
 	if fd.Body != nil {
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
@@ -104,6 +138,10 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			}
 			// Skip pointer params (handled separately)
 			if _, isParam := result.ptrParams[ident.Name]; isParam {
+				return true
+			}
+			// Skip ptrVars (the target of &ptrVar is handled differently)
+			if _, isPtrVar := result.ptrVars[ident.Name]; isPtrVar {
 				return true
 			}
 			// Get the type of the variable
@@ -146,6 +184,39 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			}
 			return true
 		})
+
+		// Find ptrVar assignments: p = &x where p is a ptrVar and x is a boxed variable
+		// Convert these to ptrLocals (alias elimination) for cross-backend compatibility
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.ASSIGN {
+				return true
+			}
+			for i, rhs := range assign.Rhs {
+				unary, ok := rhs.(*ast.UnaryExpr)
+				if !ok || unary.Op != token.AND {
+					continue
+				}
+				rhsIdent, ok := unary.X.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if i < len(assign.Lhs) {
+					if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+						if elemType, isPtrVar := result.ptrVars[lhsIdent.Name]; isPtrVar {
+							// x (the target) must be boxed
+							if _, isBoxed := result.boxedVars[rhsIdent.Name]; isBoxed {
+								result.ptrLocals[lhsIdent.Name] = &ptrLocalInfo{
+									targetName: rhsIdent.Name,
+									elemType:   elemType,
+								}
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
 	}
 
 	return result
@@ -172,12 +243,93 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 	if fd.Body != nil {
 		v.rewriteBlockStmt(fd.Body, analysis)
 	}
+
+	// Parameter boxing: for non-pointer params whose address is taken (in boxedVars),
+	// rename param x -> __x and prepend boxing statement: x := []T{__x}
+	if fd.Type.Params != nil && fd.Body != nil {
+		var boxingStmts []ast.Stmt
+		for _, field := range fd.Type.Params.List {
+			for _, name := range field.Names {
+				if elemType, isBoxed := analysis.boxedVars[name.Name]; isBoxed {
+					origName := name.Name
+					prefixedName := "__" + origName
+
+					// Rename the parameter ident
+					name.Name = prefixedName
+
+					// Build boxing assignment: origName := []T{__origName}
+					typeExpr := v.typeToExpr(elemType)
+					arrType := &ast.ArrayType{Elt: typeExpr}
+					paramRef := &ast.Ident{Name: prefixedName}
+					compLit := &ast.CompositeLit{
+						Type: arrType,
+						Elts: []ast.Expr{paramRef},
+					}
+					sliceType := types.NewSlice(elemType)
+					v.registerType(arrType, sliceType)
+					v.registerType(compLit, sliceType)
+					v.registerType(paramRef, elemType)
+
+					boxingStmt := &ast.AssignStmt{
+						Lhs: []ast.Expr{&ast.Ident{Name: origName}},
+						Tok: token.DEFINE,
+						Rhs: []ast.Expr{compLit},
+					}
+					boxingStmts = append(boxingStmts, boxingStmt)
+				}
+			}
+		}
+		if len(boxingStmts) > 0 {
+			fd.Body.List = append(boxingStmts, fd.Body.List...)
+		}
+	}
 }
 
 func (v *ptrTransformVisitor) rewriteBlockStmt(block *ast.BlockStmt, analysis *ptrAnalysis) {
-	for i, stmt := range block.List {
-		block.List[i] = v.rewriteStmt(stmt, analysis)
+	var newList []ast.Stmt
+	for _, stmt := range block.List {
+		if v.isPtrVarEliminatedStmt(stmt, analysis) {
+			continue
+		}
+		newList = append(newList, v.rewriteStmt(stmt, analysis))
 	}
+	block.List = newList
+}
+
+// isPtrVarEliminatedStmt checks if a statement should be eliminated because it's
+// a ptrVar declaration or assignment that has been converted to a ptrLocal alias.
+func (v *ptrTransformVisitor) isPtrVarEliminatedStmt(stmt ast.Stmt, analysis *ptrAnalysis) bool {
+	switch s := stmt.(type) {
+	case *ast.DeclStmt:
+		// Eliminate: var p *int where p is in both ptrVars and ptrLocals
+		if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
+			for _, spec := range genDecl.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					for _, name := range vs.Names {
+						if _, isPtrVar := analysis.ptrVars[name.Name]; isPtrVar {
+							if _, isLocal := analysis.ptrLocals[name.Name]; isLocal {
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	case *ast.AssignStmt:
+		// Eliminate: p = &x where p is a ptrVar converted to ptrLocal
+		if s.Tok == token.ASSIGN && len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+			if lhsIdent, ok := s.Lhs[0].(*ast.Ident); ok {
+				if _, isPtrVar := analysis.ptrVars[lhsIdent.Name]; isPtrVar {
+					if _, isLocal := analysis.ptrLocals[lhsIdent.Name]; isLocal {
+						if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (v *ptrTransformVisitor) rewriteStmt(stmt ast.Stmt, analysis *ptrAnalysis) ast.Stmt {
@@ -324,6 +476,18 @@ func (v *ptrTransformVisitor) rewriteDeclStmt(s *ast.DeclStmt, analysis *ptrAnal
 						v.registerType(arrType, sliceType)
 						v.registerType(initArrType, sliceType)
 						v.registerType(compLit, sliceType)
+					} else if elemType, isPtrVar := analysis.ptrVars[name.Name]; isPtrVar {
+						// Skip ptrVars that were converted to ptrLocals (will be eliminated)
+						if _, isLocal := analysis.ptrLocals[name.Name]; !isLocal {
+							// Change type from *T (StarExpr) to []T (ArrayType)
+							typeExpr := v.typeToExpr(elemType)
+							arrType := &ast.ArrayType{Elt: typeExpr}
+							valueSpec.Type = arrType
+							// No zero-value init (nil slice = nil pointer)
+							// Register type info
+							sliceType := types.NewSlice(elemType)
+							v.registerType(arrType, sliceType)
+						}
 					}
 				}
 			}
@@ -351,6 +515,9 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 			} else if info, isLocal := analysis.ptrLocals[ident.Name]; isLocal {
 				v.registerType(indexExpr, info.elemType)
 				v.registerType(inner, types.NewSlice(info.elemType))
+			} else if elemType, isPtrVar := analysis.ptrVars[ident.Name]; isPtrVar {
+				v.registerType(indexExpr, elemType)
+				v.registerType(inner, types.NewSlice(elemType))
 			}
 		}
 		return indexExpr
@@ -386,6 +553,15 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 				v.registerType(zeroLit, types.Typ[types.Int])
 				v.registerType(indexExpr, info.elemType)
 				v.registerType(targetIdent, types.NewSlice(info.elemType))
+				e.X = indexExpr
+				return e
+			} else if elemType, isPtrVar := analysis.ptrVars[ident.Name]; isPtrVar {
+				// p.field -> p[0].field for pure ptrVars (not converted to ptrLocals)
+				zeroLit := &ast.BasicLit{Kind: token.INT, Value: "0"}
+				indexExpr := &ast.IndexExpr{X: ident, Index: zeroLit}
+				v.registerType(zeroLit, types.Typ[types.Int])
+				v.registerType(indexExpr, elemType)
+				v.registerType(ident, types.NewSlice(elemType))
 				e.X = indexExpr
 				return e
 			}
