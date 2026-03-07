@@ -1869,6 +1869,44 @@ func testPointerParamReadOnly() {
 	}
 }
 
+// Test local pointer variable with int (alias elimination)
+func testPtrLocalInt() {
+	x := 10
+	p := &x
+	*p = 42
+	if x == 42 {
+		fmt.Println("PASS: ptr local int")
+	} else {
+		panic("FAIL: ptr local int")
+	}
+}
+
+// Test local pointer variable with struct (alias elimination)
+func testPtrLocalStruct() {
+	person := Person{name: "Alice", age: 30}
+	p := &person
+	p.age = 25
+	if person.age == 25 {
+		fmt.Println("PASS: ptr local struct")
+	} else {
+		panic("FAIL: ptr local struct")
+	}
+}
+
+// Test multiple pointer aliases to the same variable
+func testPtrLocalMultiAlias() {
+	x := 10
+	p1 := &x
+	p2 := &x
+	*p1 = 20
+	*p2 = 30
+	if x == 30 {
+		fmt.Println("PASS: ptr local multi alias")
+	} else {
+		panic("FAIL: ptr local multi alias")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -1922,6 +1960,9 @@ func main() {
 	testPointerParamStruct()
 	testPointerParamMultiple()
 	testPointerParamReadOnly()
+	testPtrLocalInt()
+	testPtrLocalStruct()
+	testPtrLocalMultiAlias()
 
 	fmt.Println("=== Done ===")
 }
