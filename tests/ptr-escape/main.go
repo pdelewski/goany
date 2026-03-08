@@ -54,7 +54,7 @@ func testFieldEscapeModifyInt() {
 	if s.age == 99 {
 		fmt.Println("PASS: field escape modify int")
 	} else {
-		fmt.Println("FAIL: field escape modify int")
+		panic("FAIL: field escape modify int")
 	}
 }
 
@@ -65,7 +65,7 @@ func testFieldEscapeModifyString() {
 	if s.name == "modified" {
 		fmt.Println("PASS: field escape modify string")
 	} else {
-		fmt.Println("FAIL: field escape modify string")
+		panic("FAIL: field escape modify string")
 	}
 }
 
@@ -76,7 +76,7 @@ func testFieldEscapeAddToInt() {
 	if s.age == 40 {
 		fmt.Println("PASS: field escape add to int")
 	} else {
-		fmt.Println("FAIL: field escape add to int")
+		panic("FAIL: field escape add to int")
 	}
 }
 
@@ -87,7 +87,7 @@ func testFieldEscapeReadOnly() {
 	if val == 30 {
 		fmt.Println("PASS: field escape read only")
 	} else {
-		fmt.Println("FAIL: field escape read only")
+		panic("FAIL: field escape read only")
 	}
 }
 
@@ -99,7 +99,7 @@ func testFieldEscapeMultipleCalls() {
 	if s.age == 38 {
 		fmt.Println("PASS: field escape multiple calls")
 	} else {
-		fmt.Println("FAIL: field escape multiple calls")
+		panic("FAIL: field escape multiple calls")
 	}
 }
 
@@ -112,7 +112,7 @@ func testFieldEscapeTwoFields() {
 	if s.age == 99 && s.name == "modified" {
 		fmt.Println("PASS: field escape two fields")
 	} else {
-		fmt.Println("FAIL: field escape two fields")
+		panic("FAIL: field escape two fields")
 	}
 }
 
@@ -125,7 +125,7 @@ func testIndexEscapeModifyInt() {
 	if arr[1] == 99 {
 		fmt.Println("PASS: index escape modify int")
 	} else {
-		fmt.Println("FAIL: index escape modify int")
+		panic("FAIL: index escape modify int")
 	}
 }
 
@@ -137,7 +137,7 @@ func testIndexEscapeVariableIndex() {
 	if arr[2] == 99 {
 		fmt.Println("PASS: index escape variable index")
 	} else {
-		fmt.Println("FAIL: index escape variable index")
+		panic("FAIL: index escape variable index")
 	}
 }
 
@@ -148,7 +148,7 @@ func testIndexEscapeAddToInt() {
 	if arr[0] == 15 {
 		fmt.Println("PASS: index escape add to int")
 	} else {
-		fmt.Println("FAIL: index escape add to int")
+		panic("FAIL: index escape add to int")
 	}
 }
 
@@ -160,7 +160,7 @@ func testIndexEscapeMultipleCalls() {
 	if arr[1] == 23 {
 		fmt.Println("PASS: index escape multiple calls")
 	} else {
-		fmt.Println("FAIL: index escape multiple calls")
+		panic("FAIL: index escape multiple calls")
 	}
 }
 
@@ -172,7 +172,7 @@ func testIndexEscapeSwap() {
 	if arr[0] == 30 && arr[2] == 10 {
 		fmt.Println("PASS: index escape swap")
 	} else {
-		fmt.Println("FAIL: index escape swap")
+		panic("FAIL: index escape swap")
 	}
 }
 
@@ -185,7 +185,7 @@ func testFieldReturnPtr() {
 	if val == 30 {
 		fmt.Println("PASS: field return ptr")
 	} else {
-		fmt.Println("FAIL: field return ptr")
+		panic("FAIL: field return ptr")
 	}
 }
 
@@ -196,7 +196,7 @@ func testIndexReturnPtr() {
 	if val == 20 {
 		fmt.Println("PASS: index return ptr")
 	} else {
-		fmt.Println("FAIL: index return ptr")
+		panic("FAIL: index return ptr")
 	}
 }
 
@@ -209,7 +209,7 @@ func testFieldLocalMutate() {
 	if s.age == 25 {
 		fmt.Println("PASS: field local mutate")
 	} else {
-		fmt.Println("FAIL: field local mutate")
+		panic("FAIL: field local mutate")
 	}
 }
 
@@ -220,7 +220,7 @@ func testFieldLocalRead() {
 	if val == 30 {
 		fmt.Println("PASS: field local read")
 	} else {
-		fmt.Println("FAIL: field local read")
+		panic("FAIL: field local read")
 	}
 }
 
@@ -231,7 +231,7 @@ func testIndexLocalMutate() {
 	if arr[1] == 99 {
 		fmt.Println("PASS: index local mutate")
 	} else {
-		fmt.Println("FAIL: index local mutate")
+		panic("FAIL: index local mutate")
 	}
 }
 
@@ -242,7 +242,7 @@ func testIndexLocalRead() {
 	if val == 20 {
 		fmt.Println("PASS: index local read")
 	} else {
-		fmt.Println("FAIL: index local read")
+		panic("FAIL: index local read")
 	}
 }
 
@@ -257,7 +257,7 @@ func testMultiplePoolTypes() {
 	if s.age == 99 && s.name == "modified" {
 		fmt.Println("PASS: multiple pool types")
 	} else {
-		fmt.Println("FAIL: multiple pool types")
+		panic("FAIL: multiple pool types")
 	}
 }
 
@@ -271,7 +271,7 @@ func testMixedFieldAndIndex() {
 	if s.age == 99 && arr[0] == 99 {
 		fmt.Println("PASS: mixed field and index")
 	} else {
-		fmt.Println("FAIL: mixed field and index")
+		panic("FAIL: mixed field and index")
 	}
 }
 
@@ -287,7 +287,7 @@ func testFieldEscapeWithSimplePtr() {
 	if x == 99 && s.age == 99 {
 		fmt.Println("PASS: field escape with simple ptr")
 	} else {
-		fmt.Println("FAIL: field escape with simple ptr")
+		panic("FAIL: field escape with simple ptr")
 	}
 }
 
@@ -301,7 +301,7 @@ func testIndexEscapeWithSimplePtr() {
 	if x == 99 && arr[0] == 99 {
 		fmt.Println("PASS: index escape with simple ptr")
 	} else {
-		fmt.Println("FAIL: index escape with simple ptr")
+		panic("FAIL: index escape with simple ptr")
 	}
 }
 
@@ -316,7 +316,7 @@ func testTwoFieldsSameType() {
 	if r.w == 99 && r.h == 25 {
 		fmt.Println("PASS: two fields same type")
 	} else {
-		fmt.Println("FAIL: two fields same type")
+		panic("FAIL: two fields same type")
 	}
 }
 
