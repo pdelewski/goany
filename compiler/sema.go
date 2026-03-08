@@ -261,10 +261,12 @@ func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 			// &x — allowed
 		case *ast.IndexExpr:
 			// &arr[i] — allowed
+		case *ast.SelectorExpr:
+			// &s.field — allowed
 		default:
 			sema.reportSemaError(node.Pos(),
 				"address-of complex expression is not supported",
-				"Only address-of simple identifiers (&x) and index expressions (&arr[i]) are allowed.\n  Complex expressions like &s.field are not supported.",
+				"Only address-of simple identifiers (&x), index expressions (&arr[i]), and field selectors (&s.field) are allowed.",
 				[]string{
 					"Assign the expression to a variable first, then take its address.",
 				})

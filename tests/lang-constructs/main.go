@@ -2137,6 +2137,39 @@ func testTreeOperations() {
 	}
 }
 
+func testPtrFieldInt() {
+	s := Person{name: "Alice", age: 30}
+	p := &s.age
+	*p = 25
+	if s.age == 25 {
+		fmt.Println("PASS: ptr field int")
+	} else {
+		panic("FAIL: ptr field int")
+	}
+}
+
+func testPtrFieldRead() {
+	s := Person{name: "Alice", age: 30}
+	p := &s.age
+	val := *p
+	if val == 30 {
+		fmt.Println("PASS: ptr field read")
+	} else {
+		panic("FAIL: ptr field read")
+	}
+}
+
+func testPtrFieldString() {
+	s := Person{name: "Alice", age: 30}
+	p := &s.name
+	*p = "Bob"
+	if s.name == "Bob" {
+		fmt.Println("PASS: ptr field string")
+	} else {
+		panic("FAIL: ptr field string")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2205,6 +2238,9 @@ func main() {
 	testStructPtrFieldDeref()
 	testListOperations()
 	testTreeOperations()
+	testPtrFieldInt()
+	testPtrFieldRead()
+	testPtrFieldString()
 
 	fmt.Println("=== Done ===")
 }

@@ -65,6 +65,13 @@ type ptrIndexLocalInfo struct {
 	elemType  types.Type // element type of the indexed expression
 }
 
+// ptrFieldLocalInfo holds info about a local pointer alias to a struct field (p := &s.field)
+type ptrFieldLocalInfo struct {
+	baseExpr  ast.Expr   // e.g., ident "s"
+	fieldName string     // e.g., "age"
+	elemType  types.Type // type of the field
+}
+
 // ptrAnalysis holds analysis results for a single function
 type ptrAnalysis struct {
 	ptrParams       map[string]types.Type         // param name -> element type (for *T params)
@@ -72,6 +79,7 @@ type ptrAnalysis struct {
 	poolVars        map[string]types.Type         // all vars whose addr is taken (pool index vars)
 	ptrLocals       map[string]*ptrLocalInfo      // alias name -> target info (p := &x)
 	ptrIndexLocals  map[string]*ptrIndexLocalInfo // alias name -> target info (p := &arr[i])
+	ptrFieldLocals  map[string]*ptrFieldLocalInfo // alias name -> target info (p := &s.field)
 	ptrReturns      map[int]types.Type            // result index → element type (for *T returns)
 	callReturnPools map[string]types.Type         // pool types needed for calling ptr-returning funcs
 }
@@ -103,7 +111,7 @@ func (v *ptrTransformVisitor) transform() {
 	for _, fd := range v.funcs {
 		analysis := v.analyzeFuncDecl(fd)
 		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.poolVars) == 0 &&
-			len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 &&
+			len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 && len(analysis.ptrFieldLocals) == 0 &&
 			len(analysis.ptrReturns) == 0 && len(analysis.callReturnPools) == 0 {
 			continue
 		}
@@ -151,6 +159,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 		poolVars:        make(map[string]types.Type),
 		ptrLocals:       make(map[string]*ptrLocalInfo),
 		ptrIndexLocals:  make(map[string]*ptrIndexLocalInfo),
+		ptrFieldLocals:  make(map[string]*ptrFieldLocalInfo),
 		ptrReturns:      make(map[int]types.Type),
 		callReturnPools: make(map[string]types.Type),
 	}
@@ -367,6 +376,75 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 									result.ptrIndexLocals[lhsIdent.Name] = &ptrIndexLocalInfo{
 										sliceExpr: indexExpr.X,
 										indexExpr: indexExpr.Index,
+										elemType:  tv.Type,
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
+
+		// Find ptrFieldLocals: p := &s.field where s is a struct
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.DEFINE {
+				return true
+			}
+			for i, rhs := range assign.Rhs {
+				unary, ok := rhs.(*ast.UnaryExpr)
+				if !ok || unary.Op != token.AND {
+					continue
+				}
+				selExpr, ok := unary.X.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				if i < len(assign.Lhs) {
+					if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+						if v.pkg != nil && v.pkg.TypesInfo != nil {
+							if tv, ok := v.pkg.TypesInfo.Types[selExpr]; ok {
+								result.ptrFieldLocals[lhsIdent.Name] = &ptrFieldLocalInfo{
+									baseExpr:  selExpr.X,
+									fieldName: selExpr.Sel.Name,
+									elemType:  tv.Type,
+								}
+								PtrLocalComments[lhsIdent.Pos()] = fmt.Sprintf(
+									"// %s := &%s.%s  (pointer alias to struct field, eliminated)",
+									lhsIdent.Name, exprToString(selExpr.X), selExpr.Sel.Name)
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
+
+		// Find ptrVar assignments to field expressions: p = &s.field where p is a ptrVar
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.ASSIGN {
+				return true
+			}
+			for i, rhs := range assign.Rhs {
+				unary, ok := rhs.(*ast.UnaryExpr)
+				if !ok || unary.Op != token.AND {
+					continue
+				}
+				selExpr, ok := unary.X.(*ast.SelectorExpr)
+				if !ok {
+					continue
+				}
+				if i < len(assign.Lhs) {
+					if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+						if _, isPtrVar := result.ptrVars[lhsIdent.Name]; isPtrVar {
+							if v.pkg != nil && v.pkg.TypesInfo != nil {
+								if tv, ok := v.pkg.TypesInfo.Types[selExpr]; ok {
+									result.ptrFieldLocals[lhsIdent.Name] = &ptrFieldLocalInfo{
+										baseExpr:  selExpr.X,
+										fieldName: selExpr.Sel.Name,
 										elemType:  tv.Type,
 									}
 								}
@@ -1037,6 +1115,9 @@ func (v *ptrTransformVisitor) isPtrVarEliminatedStmt(stmt ast.Stmt, analysis *pt
 							if _, isIndexLocal := analysis.ptrIndexLocals[name.Name]; isIndexLocal {
 								return true
 							}
+							if _, isFieldLocal := analysis.ptrFieldLocals[name.Name]; isFieldLocal {
+								return true
+							}
 						}
 					}
 				}
@@ -1053,6 +1134,14 @@ func (v *ptrTransformVisitor) isPtrVarEliminatedStmt(stmt ast.Stmt, analysis *pt
 						}
 					}
 				}
+				// Eliminate: p := &s.field where p is a ptrFieldLocal
+				if _, isFieldLocal := analysis.ptrFieldLocals[lhsIdent.Name]; isFieldLocal {
+					if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+						if _, ok := unary.X.(*ast.SelectorExpr); ok {
+							return true
+						}
+					}
+				}
 			}
 		}
 		// Eliminate: p = &x where p is a ptrVar converted to ptrLocal
@@ -1065,6 +1154,11 @@ func (v *ptrTransformVisitor) isPtrVarEliminatedStmt(stmt ast.Stmt, analysis *pt
 						}
 					}
 					if _, isIndexLocal := analysis.ptrIndexLocals[lhsIdent.Name]; isIndexLocal {
+						if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+							return true
+						}
+					}
+					if _, isFieldLocal := analysis.ptrFieldLocals[lhsIdent.Name]; isFieldLocal {
 						if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
 							return true
 						}
@@ -1178,7 +1272,8 @@ func (v *ptrTransformVisitor) rewriteDeclStmt(s *ast.DeclStmt, analysis *ptrAnal
 					if _, isPtrVar := analysis.ptrVars[name.Name]; isPtrVar {
 						_, isLocal := analysis.ptrLocals[name.Name]
 						_, isIndexLocal := analysis.ptrIndexLocals[name.Name]
-						if !isLocal && !isIndexLocal {
+						_, isFieldLocal := analysis.ptrFieldLocals[name.Name]
+						if !isLocal && !isIndexLocal && !isFieldLocal {
 							// Change type from *T (StarExpr) to int (pool index)
 							newType := &ast.Ident{Name: "int"}
 							valueSpec.Type = newType
@@ -1204,6 +1299,15 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 				newIndexExpr := &ast.IndexExpr{X: info.sliceExpr, Index: info.indexExpr}
 				v.registerType(newIndexExpr, info.elemType)
 				return newIndexExpr
+			}
+		}
+
+		// *p -> s.field for ptrFieldLocals (alias to struct field)
+		if ident, ok := e.X.(*ast.Ident); ok {
+			if info, isFieldLocal := analysis.ptrFieldLocals[ident.Name]; isFieldLocal {
+				newSelExpr := &ast.SelectorExpr{X: info.baseExpr, Sel: &ast.Ident{Name: info.fieldName}}
+				v.registerType(newSelExpr, info.elemType)
+				return newSelExpr
 			}
 		}
 
@@ -1309,6 +1413,12 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		// p -> sliceExpr for ptrIndexLocals (bare alias, return the slice)
 		if info, isIndexLocal := analysis.ptrIndexLocals[e.Name]; isIndexLocal {
 			return info.sliceExpr
+		}
+		// p -> s.field for ptrFieldLocals (bare alias replacement)
+		if info, isFieldLocal := analysis.ptrFieldLocals[e.Name]; isFieldLocal {
+			newSelExpr := &ast.SelectorExpr{X: info.baseExpr, Sel: &ast.Ident{Name: info.fieldName}}
+			v.registerType(newSelExpr, info.elemType)
+			return newSelExpr
 		}
 		return e
 
