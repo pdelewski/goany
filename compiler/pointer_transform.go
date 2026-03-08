@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -93,6 +94,27 @@ func poolNameForType(t types.Type) string {
 		return "_pool_" + basic.Name()
 	}
 	return "_pool_unknown"
+}
+
+// reportPtrError reports a pointer transform error with source location and exits.
+func (v *ptrTransformVisitor) reportPtrError(pos token.Pos, title, description string, suggestions []string) {
+	if v.pkg != nil && v.pkg.Fset != nil && pos.IsValid() {
+		position := v.pkg.Fset.Position(pos)
+		fmt.Printf("\033[31m\033[1mSemantic error: %s\033[0m\n", title)
+		fmt.Printf("  \033[36m-->\033[0m %s:%d:%d\n", position.Filename, position.Line, position.Column)
+	} else {
+		fmt.Printf("\033[31m\033[1mSemantic error: %s\033[0m\n", title)
+	}
+	fmt.Printf("  %s\n", description)
+	if len(suggestions) > 0 {
+		fmt.Println()
+		fmt.Println("  \033[32mSuggestion:\033[0m")
+		for _, s := range suggestions {
+			fmt.Printf("    %s\n", s)
+		}
+	}
+	fmt.Println()
+	os.Exit(-1)
 }
 
 // poolIndexExpr creates _pool_T[index] with proper type registration
@@ -455,6 +477,62 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			}
 			return true
 		})
+
+		// Check ptrFieldLocals for escaping uses and report errors.
+		if len(result.ptrFieldLocals) > 0 {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok {
+					for _, arg := range call.Args {
+						if ident, ok := arg.(*ast.Ident); ok {
+							if info, isField := result.ptrFieldLocals[ident.Name]; isField {
+								v.reportPtrError(ident.Pos(),
+									"pointer to struct field passed as argument is not supported",
+									fmt.Sprintf("Variable '%s' holds a pointer to struct field '%s' and is passed as a function argument.\n  Pointers to struct fields cannot escape the local scope.",
+										ident.Name, info.fieldName),
+									[]string{"Dereference the pointer locally instead of passing it to a function."})
+							}
+						}
+					}
+				}
+				if ret, ok := n.(*ast.ReturnStmt); ok {
+					for _, r := range ret.Results {
+						if ident, ok := r.(*ast.Ident); ok {
+							if info, isField := result.ptrFieldLocals[ident.Name]; isField {
+								v.reportPtrError(ident.Pos(),
+									"pointer to struct field returned from function is not supported",
+									fmt.Sprintf("Variable '%s' holds a pointer to struct field '%s' and is returned from a function.\n  Pointers to struct fields cannot escape the local scope.",
+										ident.Name, info.fieldName),
+									[]string{"Dereference the pointer and return the value instead."})
+							}
+						}
+					}
+				}
+				// Check for assignment to another variable: q := p or q = p
+				if assign, ok := n.(*ast.AssignStmt); ok {
+					for i, rhs := range assign.Rhs {
+						if ident, ok := rhs.(*ast.Ident); ok {
+							if info, isField := result.ptrFieldLocals[ident.Name]; isField {
+								// Skip self-assignment (p = &s.field already handled)
+								// Skip blank identifier (_ = p is not an escape)
+								if i < len(assign.Lhs) {
+									if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+										if lhsIdent.Name == ident.Name || lhsIdent.Name == "_" {
+											continue
+										}
+									}
+								}
+								v.reportPtrError(ident.Pos(),
+									"pointer to struct field assigned to another variable is not supported",
+									fmt.Sprintf("Variable '%s' holds a pointer to struct field '%s' and is assigned to another variable.\n  Pointers to struct fields cannot escape the local scope.",
+										ident.Name, info.fieldName),
+									[]string{"Dereference the pointer locally: use *" + ident.Name + " instead."})
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
 	}
 
 	// Find calls to functions with *T returns (need pool declarations in caller)
