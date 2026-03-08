@@ -3135,6 +3135,10 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		genCast := func(goType types.Type, arrExpr string) string {
 			javaType := "Object"
 			if goType != nil {
+				// Pointer types are transformed to int pool indices by pointer transform
+				if _, isPtr := goType.(*types.Pointer); isPtr {
+					return fmt.Sprintf("((Number)%s).intValue()", arrExpr)
+				}
 				javaType = e.qualifiedJavaTypeName(goType)
 				if basic, ok := goType.Underlying().(*types.Basic); ok {
 					switch basic.Kind() {
@@ -3386,6 +3390,17 @@ func (e *JavaEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 					defaultVal = fmt.Sprintf("new %s()", typeStr)
 				} else {
 					defaultVal = e.javaDefaultForGoTypeQ(goType)
+				}
+			} else {
+				// goType is nil (e.g., synthetic var decls from pointer transform)
+				// Infer default from the Java type string
+				switch typeStr {
+				case "int", "long", "short", "byte", "float", "double":
+					defaultVal = "0"
+				case "boolean":
+					defaultVal = "false"
+				case "String":
+					defaultVal = `""`
 				}
 			}
 			if isCaptured {
