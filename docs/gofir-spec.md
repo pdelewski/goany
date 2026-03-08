@@ -44,13 +44,13 @@ This guarantee is achieved through a fixed constraint system that defines which 
 
 ### Origin: goany
 
-goany is the source language that GoFIR represents. It uses Go syntax but enforces additional restrictions (no pointers, no goroutines, no channels, etc.) that ensure universal translatability. The language definition is the constraint set itself.
+goany is the source language that GoFIR represents. It uses Go syntax but enforces restrictions (no goroutines, no channels, etc.) that ensure universal translatability. Some Go features (pointers, method receivers) are accepted by goany but **lowered** to common-denominator form before reaching GoFIR. The lowered form is what must satisfy the constraint set. The source language is thus a superset of what GoFIR directly represents.
 
 ---
 
 ## 2. Design Principles
 
-GoFIR is built on six core principles that together define its unique position among IRs.
+GoFIR is built on seven core principles that together define its unique position among IRs.
 
 ### 2.1 Universal Translatability
 
@@ -90,11 +90,25 @@ Round-trip fidelity is the quality metric that calibrates GoFIR's abstraction le
 
 The constraint set IS the language specification. It grows slowly and deliberately. Adding a backend never shrinks what source is accepted—new backends may add constraints, but the language only becomes more precisely defined. The constraint set is the intersection of all backend requirements.
 
+The source language may accept features beyond what GoFIR directly represents, provided each such feature has a defined **lowering** to common-denominator GoFIR. The constraint set applies to the lowered form—it is the lowered GoFIR that must satisfy all backend requirements.
+
 ### 2.6 Parametric Backend Polymorphism
 
 > The IR carries a parametric correctness guarantee: "this program is translatable to backends B₁..Bₙ."
 
 Like Haskell type classes, each backend provides its "instance" (constraints + annotations + emitter). The IR is the shared interface. Programs are polymorphic over backends—once validated against the constraint intersection, they compile to any backend without further checking.
+
+### 2.7 Semantic Lowering and Lifting
+
+> High-level constructs are lowered to common-denominator form; backends may lift them back to native constructs.
+
+**Lowering** (desugaring) is mandatory for every accepted high-level construct. Each such construct must have a lowering rule that produces valid common-denominator GoFIR. The lowered form is what the constraint set and universal translatability guarantee apply to.
+
+**Lifting** (re-sugaring) is optional and per-backend. If a backend has no lifting pass for a given lowered construct, the lowered form works correctly—it is already valid GoFIR. Lifting improves idiomaticity (e.g., C++ emitting real pointers instead of pool-based indexing) but is never required for correctness.
+
+**Annotations** bridge the gap between lowering and lifting. Metadata produced during lowering preserves the original intent (e.g., "this standalone function was a method receiver"), enabling backend lifting passes to reconstruct native constructs.
+
+**This is an evolving capability.** Features migrate from "blocked" to "lowered" as practical, semantics-preserving lowering strategies are found. Some features may remain blocked indefinitely if lowering proves impractical. The classification is not permanent—what is blocked today may become lowered tomorrow, and vice versa if a lowering turns out to be too lossy across backends.
 
 ---
 
@@ -113,13 +127,26 @@ Source Code (Go syntax, goany semantics)
               ▼
 ┌─────────────────────────────┐
 │  SemaChecker (Constraints)  │  Enforces goany language rules
-└─────────────┬───────────────┘  Rejects programs that violate
-              │                   any backend's requirements
+└─────────────┬───────────────┘  Rejects blocked features;
+              │                   passes lowerable features through
+              ▼
+┌─────────────────────────────┐
+│  Lowering Passes (desugar)  │  PointerTransformPass, etc.
+└─────────────┬───────────────┘  Converts high-level constructs
+              │                   to common-denominator GoFIR
+              ▼
+         GoFIR (common denominator — universally translatable)
+              │
               ▼
 ┌─────────────────────────────┐
 │  Analysis Passes            │  Read-only parameter detection,
 └─────────────┬───────────────┘  ownership analysis, last-use
               │
+              ▼
+┌─────────────────────────────┐
+│  Lifting Passes (re-sugar)  │  Per-backend, optional.
+└─────────────┬───────────────┘  Reconstructs native constructs
+              │                   from lowering annotations
               ▼
 ┌─────────────────────────────┐
 │  GoFIR Token Generation     │  Shift/reduce on AST nodes
@@ -170,7 +197,27 @@ PreVisitBinaryExpr(x + y)
 
 This allows each backend to intercept and transform any subtree during reduction—for example, wrapping map keys in `Rc::new()` for Rust or converting `fmt.Sprintf` to `string.Format` for C#.
 
-### 3.4 Proposed Standalone Architecture
+### 3.4 Lowering and Lifting Phases
+
+**Lowering passes** run after SemaChecker and before analysis passes. They transform high-level constructs that the source language accepts into common-denominator GoFIR that all backends can handle. The lowered GoFIR is the form that the universal translatability guarantee applies to.
+
+**Current lowering passes:**
+
+| Pass | Input | Output | Status |
+|------|-------|--------|--------|
+| `PointerTransformPass` | `*T`, `&x`, pointer fields | Pool-based indexing, `RefParam` annotations | Implemented |
+| `MethodReceiverLoweringPass` | `func (t T) Method()` | `func T_Method(t T)` + `DesugaredMethod` annotation | Planned |
+
+**Lifting passes** are per-backend and optional. They run after analysis passes, before token generation. A lifting pass consumes lowering annotations and rewrites the AST back toward native constructs for backends that support them. If no lifting pass is registered, the lowered form is emitted as-is—it is already valid GoFIR.
+
+**Example lifting behavior:**
+
+| Lowered Form | C++ (lifted) | C#/Java (lifted) | Rust (lifted) | JS (no lifting) |
+|-------------|-------------|------------------|--------------|-----------------|
+| Pool-based `arr[idx]` | Real pointer `*T` | Reference field | Pool-based (same) | Pool-based (same) |
+| `T_Method(t)` standalone fn | `void T::Method()` | `void Method()` in class | `impl T { fn method() }` | `T_Method(t)` (same) |
+
+### 3.5 Proposed Standalone Architecture
 
 The long-term architecture separates GoFIR from the Go toolchain entirely:
 
@@ -238,12 +285,12 @@ GoFIR defines its own type system, independent of `go/types`. The type system re
 
 ### 4.3 Type Constraints
 
-The following types are **not representable** in GoFIR:
+The following types are **not directly representable** in GoFIR:
 
-- **Pointer types** (`*T`) — Use `Slice(T)` + index or `RefParam` annotation
-- **Channel types** (`chan T`) — No concurrency model
-- **Non-empty interfaces** — Use `Any` with type assertions or concrete types
-- **Named return types** — Return values are positional only
+- **Pointer types** (`*T`) — Lowered to `Slice(T)` + index or `RefParam` annotation (see [Section 7.2a](#72a-feature-classification-work-in-progress))
+- **Channel types** (`chan T`) — No concurrency model (blocked)
+- **Non-empty interfaces** — Use `Any` with type assertions or concrete types (blocked)
+- **Named return types** — Return values are positional only (blocked)
 
 ### 4.4 Parameter Passing Modes
 
@@ -470,6 +517,29 @@ BiFunction<Integer, Integer, Integer> add = (a, b) -> {
 int result = add.apply(3, 4);
 ```
 
+### 6.5 Method Receiver Abstraction
+
+Method receivers are a planned lowering target. Go methods with receivers are desugared to standalone functions with an explicit first parameter. The lowering preserves the original intent via a `DesugaredMethod` annotation, enabling backends to re-sugar into native method syntax.
+
+**Lowering table:**
+
+| Source | Lowered GoFIR | Annotation |
+|--------|---------------|------------|
+| `func (c *Counter) Inc()` | `func Counter_Inc(c *Counter)` | `DesugaredMethod{Counter, Inc, true}` |
+| `func (c Counter) Value() int` | `func Counter_Value(c Counter) int` | `DesugaredMethod{Counter, Value, false}` |
+| `c.Inc()` | `Counter_Inc(&c)` | |
+| `c.Value()` | `Counter_Value(c)` | |
+
+**Backend re-sugaring:**
+
+| Backend | Re-sugared Output | Notes |
+|---------|-------------------|-------|
+| C++ | `void Counter::Inc()` | Member function |
+| C# | `void Inc()` inside `class Counter` | Instance method |
+| Java | `void inc()` inside `class Counter` | Instance method |
+| Rust | `impl Counter { fn inc(&mut self) }` | Impl block |
+| JS | `Counter_Inc(c)` (no lifting) | Keeps lowered form |
+
 ---
 
 ## 7. Constraint System
@@ -482,20 +552,17 @@ The constraint set IS the language specification. It is the intersection of what
 
 This inverts the usual relationship: instead of "what can the IR express?" the question is "what can ALL backends express?" The answer defines the language.
 
-### 7.2 Unsupported Go Features
+### 7.2 Blocked Go Features
 
-These Go features are rejected by the SemaChecker because at least one backend cannot handle them:
+These Go features are rejected by the SemaChecker because no practical lowering exists or at least one backend cannot handle them:
 
 | Feature | Rejected Because | Alternative |
 |---------|-----------------|-------------|
-| Pointers (`*T`, `&x`) | Memory model varies across targets | Value types, slices, `RefParam` |
 | Maps (`map[K]V` literal syntax) | Limited; use `make()` with operations | `make(map[K]V)` + get/set |
-| `defer` | No universal equivalent | Explicit cleanup |
 | Goroutines (`go`) | No concurrency model in targets | Redesign without concurrency |
 | Channels (`chan T`) | Depends on goroutines | N/A |
 | `select` | Depends on channels | N/A |
 | `goto` and labels | Limited support in targets | Structured control flow |
-| Method receivers | Methods must be standalone | `func TypeMethod(t Type)` |
 | Variadic functions (`...T`) | Semantic differences | Slice parameters |
 | Non-empty interfaces | No universal equivalent | `interface{}` or concrete types |
 | Struct embedding | Different semantics per target | Named fields |
@@ -504,6 +571,32 @@ These Go features are rejected by the SemaChecker because at least one backend c
 | `iota` | Not supported in transpiler | Explicit constant values |
 | `switch` (type switch) | Not universally supported | Type assertions |
 | Package-level `var` | Scoping issues across targets | Local variables |
+
+### 7.2a Feature Classification (Work in Progress)
+
+Features in goany fall into three tiers. This classification is a living document—features migrate between tiers as the system matures, practical experience is gained, and new backends are added.
+
+```
+┌─────────┐     practical lowering found     ┌─────────┐     backend supports natively     ┌────────┐
+│ Blocked │ ──────────────────────────────→  │ Lowered │ ──────────────────────────────→   │ Lifted │
+│         │ ←──────────────────────────────  │         │     (optional, per backend)       │        │
+└─────────┘     lowering proves impractical  └─────────┘                                   └────────┘
+```
+
+- **Blocked** — Feature is rejected by SemaChecker. No lowering exists, or lowering has proven impractical across all backends.
+- **Lowered** — Feature is accepted, desugared to common-denominator GoFIR, and optionally re-sugared per backend. The lowered form is universally translatable.
+- **Lifted** — A backend-specific pass reconstructs the native construct from the lowered form. Lifting is always optional; the lowered form works without it.
+
+| Feature | Current Tier | Lowered To | Status |
+|---------|-------------|-----------|--------|
+| Pointers (`*T`, `&x`) | Lowered | Pool-based indexing | Implemented |
+| Method receivers | Blocked | Standalone function (planned) | WIP |
+| Goroutines | Blocked | — | No practical lowering known |
+| Channels | Blocked | — | No practical lowering known |
+| `defer` | Blocked | — | Under investigation |
+| Interfaces (non-empty) | Blocked | — | Under investigation |
+
+**Note:** This table will evolve. Features move from Blocked to Lowered when a practical, semantics-preserving lowering is found. Features may also move back to Blocked if a lowering turns out to be too lossy or impractical across all backends.
 
 ### 7.3 Backend-Specific Constraints
 
@@ -650,23 +743,24 @@ items = append(items, toAdd...)
 | Same var multiple times in expression | Rust move semantics | Ownership |
 | Collection mutation during iteration | Rust borrow checker | Borrowing |
 | No nil comparisons | Multi-target (no universal null) | Type safety |
-| No pointers | Multi-target (memory models differ) | Memory |
 | No goroutines/channels | Multi-target (no universal concurrency) | Concurrency |
+| Pointers (`*T`, `&x`) | Multi-target (memory models differ) | Lowered (pool-based indexing) |
+| Method receivers | Multi-target (class models differ) | Blocked (lowering planned) |
 
 ### 7.5 Structural Enforcement
 
 In the standalone GoFIR design, many constraints are enforced structurally by making invalid programs **unrepresentable**:
 
-| Constraint | Current (SemaChecker) | Standalone GoFIR |
-|-----------|----------------------|------------------|
-| No pointers | Runtime check, error | No `PointerType` in type system |
-| No channels | Runtime check | No `ChanType` in type system |
-| No method receivers | Runtime check | `FuncDecl` has no `Recv` field |
-| No variadic params | Runtime check | `Param` has no `Ellipsis` flag |
-| No named returns | Runtime check | Results are `[]Type`, not named |
-| No struct embedding | Runtime check | `Field` requires `Name` |
-| No nil comparison | Runtime check | Requires validation pass |
-| No string reuse after `+` | Runtime check | Requires validation pass |
+| Constraint | Current (SemaChecker) | Standalone GoFIR | Tier |
+|-----------|----------------------|------------------|------|
+| Pointers (`*T`) | Lowering pass | Pool-based indexing in type system | Lowered |
+| No channels | Runtime check | No `ChanType` in type system | Blocked |
+| Method receivers | Runtime check (planned: lowering) | `FuncDecl` has no `Recv` field | Blocked (WIP) |
+| No variadic params | Runtime check | `Param` has no `Ellipsis` flag | Blocked |
+| No named returns | Runtime check | Results are `[]Type`, not named | Blocked |
+| No struct embedding | Runtime check | `Field` requires `Name` | Blocked |
+| No nil comparison | Runtime check | Requires validation pass | Blocked |
+| No string reuse after `+` | Runtime check | Requires validation pass | Blocked |
 
 ---
 
@@ -696,6 +790,26 @@ In the current implementation, each token carries an optional `OptMeta` structur
 | `FuncKey` | Qualified function key (`pkg.FuncName`) |
 | `IsInsideClosure` | Whether expression is inside a lambda |
 | `TypeStr` | Type string for signature modifications |
+
+### 8.2a Lowering Annotations
+
+Lowering passes attach annotations that preserve the original high-level intent. These annotations are consumed by optional lifting passes to reconstruct native constructs.
+
+**DesugaredPointer:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ElemType` | string | The pointed-to type (e.g., `Node`, `int`) |
+| `PoolName` | string | Name of the pool slice (e.g., `nodePool`) |
+| `Pattern` | enum | `ParamPtr` — pointer parameter, `LocalPtr` — local pointer variable, `FieldPtr` — struct field pointer, `IndexPtr` — pointer via index into pool |
+
+**DesugaredMethod:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ReceiverType` | string | The type the method was defined on (e.g., `Counter`) |
+| `MethodName` | string | The original method name (e.g., `Inc`) |
+| `IsPointerRecv` | bool | Whether the original receiver was a pointer (`*T`) |
 
 ### 8.3 Analysis Passes
 
@@ -1028,7 +1142,20 @@ Example analysis passes:
 - Escape analysis (determines heap vs stack allocation hints)
 - Dead code elimination (removes unreachable branches)
 
-### 12.4 Evolution Philosophy
+### 12.4 Adding a Lifting Pass
+
+Lifting passes are per-backend, optional transformations that reconstruct native constructs from lowered GoFIR. Adding a lifting pass follows this pattern:
+
+1. **Identify the lowering annotation to consume** — e.g., `DesugaredPointer` or `DesugaredMethod`. The annotation contains the original high-level intent.
+2. **Implement the AST rewrite** — transform the lowered GoFIR nodes back toward the native construct for the target language. For example, rewrite pool-based indexing back to real pointer dereferences for C++.
+3. **Register with the backend** — add the lifting pass to the backend's profile so it runs after analysis passes, before token generation.
+4. **Test with and without** — lifting improves idiomaticity but is never required for correctness. The lowered form must always produce valid output. Both paths (with and without lifting) must be tested.
+
+This architecture ensures that adding a lifting pass is always safe—it's a pure improvement in output quality, not a correctness requirement. If a lifting pass has a bug, disabling it produces correct (if less idiomatic) output.
+
+**Note:** As the lowering/lifting architecture matures, new lifting passes will be added for new backends and new lowered features. The set of lifting passes is expected to grow over time as more features move from Blocked to Lowered.
+
+### 12.5 Evolution Philosophy
 
 GoFIR evolves conservatively:
 
@@ -1065,3 +1192,9 @@ This ensures that code written to GoFIR today will continue to compile to all ba
 | **BackendProfile** | Declaration of a backend's constraints and annotation needs |
 | **Round-trip** | source → GoFIR → same-language backend → output |
 | **Structural distance** | Measure of how much structure changed in a round-trip |
+| **Lowering** | Transforming a high-level construct to common-denominator GoFIR (mandatory) |
+| **Lifting** | Reconstructing a native construct from lowered GoFIR for a specific backend (optional) |
+| **Desugar** | Synonym for lowering — removing syntactic sugar to reveal underlying form |
+| **Re-sugar** | Synonym for lifting — restoring syntactic sugar for a specific backend |
+| **DesugaredPointer** | Lowering annotation preserving pointer intent (ElemType, PoolName, Pattern) |
+| **DesugaredMethod** | Lowering annotation preserving method receiver intent (ReceiverType, MethodName, IsPointerRecv) |
