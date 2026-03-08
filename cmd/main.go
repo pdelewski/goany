@@ -145,7 +145,11 @@ func main() {
 	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
 	passes = append(passes, sema)
 
-	// Pass 3: Pointer-to-array transformation
+	// Pass 3: Method receiver lowering
+	methodLowering := &compiler.MethodReceiverLoweringPass{}
+	passes = append(passes, methodLowering)
+
+	// Pass 4: Pointer-to-array transformation
 	ptrTransform := &compiler.PointerTransformPass{}
 	passes = append(passes, ptrTransform)
 

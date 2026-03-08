@@ -430,17 +430,6 @@ func (sema *SemaChecker) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
 		}
 	}
 
-	// Check for method receivers
-	if node.Recv != nil && len(node.Recv.List) > 0 {
-		sema.reportSemaError(node.Pos(),
-			"method receivers are not supported",
-			fmt.Sprintf("Function '%s' has a receiver, making it a method.\n  Methods are not allowed; use standalone functions instead.", node.Name.Name),
-			[]string{
-				"Instead of: func (t *Type) Method() { ... }",
-				"Use: func TypeMethod(t Type) Type { ... }",
-			})
-	}
-
 	// Check for init functions
 	if node.Name.Name == "init" {
 		sema.reportSemaError(node.Pos(),
