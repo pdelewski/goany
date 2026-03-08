@@ -73,6 +73,8 @@ type SemaChecker struct {
 	insideClosureDepth int
 	// Track loop depth to allow mutations in loop patterns
 	insideLoopDepth int
+	// Track variables assigned &s.field (pointer to struct field)
+	ptrFieldVars map[string]token.Pos
 }
 
 // reportSemaError reports a semantic error with source code context, similar to syntax errors
@@ -252,6 +254,36 @@ func (sema *SemaChecker) PreVisitFuncTypeResult(node *ast.Field, index int, inde
 func (sema *SemaChecker) PreVisitGenStructFieldType(node ast.Expr, indent int) {
 }
 
+// PreVisitReturnStmt checks for pointers to struct fields being returned
+func (sema *SemaChecker) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
+	for _, result := range node.Results {
+		// Check for return &s.field
+		if unary, ok := result.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			if selExpr, ok := unary.X.(*ast.SelectorExpr); ok {
+				sema.reportSemaError(unary.Pos(),
+					"address-of struct field returned from function is not supported",
+					fmt.Sprintf("&%s.%s is returned from a function.\n  Pointers to struct fields cannot escape the local scope.",
+						exprToString(selExpr.X), selExpr.Sel.Name),
+					[]string{
+						"Return the field value instead, or restructure to avoid returning a pointer to a field.",
+					})
+			}
+		}
+		// Check for return p where p := &s.field
+		if ident, ok := result.(*ast.Ident); ok {
+			if _, isPtrField := sema.ptrFieldVars[ident.Name]; isPtrField {
+				sema.reportSemaError(ident.Pos(),
+					"pointer to struct field returned from function is not supported",
+					fmt.Sprintf("Variable '%s' holds a pointer to a struct field and is returned from a function.\n  Pointers to struct fields cannot escape the local scope.",
+						ident.Name),
+					[]string{
+						"Dereference the pointer and return the value instead.",
+					})
+			}
+		}
+	}
+}
+
 // PreVisitUnaryExpr checks for unsupported unary operators
 func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	// Address-of (&x) is supported for simple identifiers and index expressions
@@ -261,10 +293,12 @@ func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 			// &x — allowed
 		case *ast.IndexExpr:
 			// &arr[i] — allowed
+		case *ast.SelectorExpr:
+			// &s.field — allowed
 		default:
 			sema.reportSemaError(node.Pos(),
 				"address-of complex expression is not supported",
-				"Only address-of simple identifiers (&x) and index expressions (&arr[i]) are allowed.\n  Complex expressions like &s.field are not supported.",
+				"Only address-of simple identifiers (&x), index expressions (&arr[i]), and field selectors (&s.field) are allowed.",
 				[]string{
 					"Assign the expression to a variable first, then take its address.",
 				})
@@ -365,6 +399,8 @@ func (sema *SemaChecker) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	// Reset closure variables for each function to avoid false positives
 	// between closures in different functions
 	sema.closureVars = make(map[string]token.Pos)
+	// Reset ptr field vars for each function
+	sema.ptrFieldVars = make(map[string]token.Pos)
 	// Reset range targets for each function
 	sema.rangeTargets = make(map[string]token.Pos)
 	// Reset closure captures for each function
@@ -871,6 +907,17 @@ func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 
 	// Check for variable shadowing (C# does not allow shadowing within the same function)
 	sema.checkVariableShadowing(node)
+
+	// Track variables assigned &s.field (pointer to struct field)
+	if (node.Tok == token.DEFINE || node.Tok == token.ASSIGN) && len(node.Lhs) == 1 && len(node.Rhs) == 1 {
+		if lhsIdent, ok := node.Lhs[0].(*ast.Ident); ok {
+			if unary, ok := node.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+				if _, ok := unary.X.(*ast.SelectorExpr); ok {
+					sema.ptrFieldVars[lhsIdent.Name] = node.Pos()
+				}
+			}
+		}
+	}
 
 	// Check for slice self-assignment pattern
 	sema.checkSliceSelfAssignment(node)
@@ -1726,6 +1773,33 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 		if supportedBuiltins[ident.Name] {
 			return
+		}
+	}
+
+	// Check for &s.field passed as function argument (escaping pointer to struct field)
+	for _, arg := range node.Args {
+		if unary, ok := arg.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			if selExpr, ok := unary.X.(*ast.SelectorExpr); ok {
+				sema.reportSemaError(unary.Pos(),
+					"address-of struct field passed as argument is not supported",
+					fmt.Sprintf("&%s.%s is passed as a function argument.\n  Pointers to struct fields cannot escape the local scope.",
+						exprToString(selExpr.X), selExpr.Sel.Name),
+					[]string{
+						"Copy the field to a local variable and pass the variable instead.",
+					})
+			}
+		}
+		// Check for p passed as function argument where p := &s.field
+		if ident, ok := arg.(*ast.Ident); ok {
+			if _, isPtrField := sema.ptrFieldVars[ident.Name]; isPtrField {
+				sema.reportSemaError(ident.Pos(),
+					"pointer to struct field passed as argument is not supported",
+					fmt.Sprintf("Variable '%s' holds a pointer to a struct field and is passed as a function argument.\n  Pointers to struct fields cannot escape the local scope.",
+						ident.Name),
+					[]string{
+						"Dereference the pointer locally instead of passing it to a function.",
+					})
+			}
 		}
 	}
 

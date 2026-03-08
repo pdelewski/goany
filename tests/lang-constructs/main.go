@@ -1824,6 +1824,21 @@ func readPtr(p *int) int {
 	return *p
 }
 
+func increment(p *int) {
+	*p += 1
+}
+
+// Test pointer parameter increment (classic *p += 1 pattern)
+func testPointerParamIncrement() {
+	x := 5
+	increment(&x)
+	if x == 6 {
+		fmt.Println("PASS: pointer param increment")
+	} else {
+		panic("FAIL: pointer param increment")
+	}
+}
+
 // Test pointer parameter with int
 func testPointerParamInt() {
 	x := 10
@@ -2137,6 +2152,39 @@ func testTreeOperations() {
 	}
 }
 
+func testPtrFieldInt() {
+	s := Person{name: "Alice", age: 30}
+	p := &s.age
+	*p = 25
+	if s.age == 25 {
+		fmt.Println("PASS: ptr field int")
+	} else {
+		panic("FAIL: ptr field int")
+	}
+}
+
+func testPtrFieldRead() {
+	s := Person{name: "Alice", age: 30}
+	p := &s.age
+	val := *p
+	if val == 30 {
+		fmt.Println("PASS: ptr field read")
+	} else {
+		panic("FAIL: ptr field read")
+	}
+}
+
+func testPtrFieldString() {
+	s := Person{name: "Alice", age: 30}
+	p := &s.name
+	*p = "Bob"
+	if s.name == "Bob" {
+		fmt.Println("PASS: ptr field string")
+	} else {
+		panic("FAIL: ptr field string")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2186,6 +2234,7 @@ func main() {
 	testMultiVariablePatterns()
 	testStructMapKeys()
 	testNestedStructMapKeys()
+	testPointerParamIncrement()
 	testPointerParamInt()
 	testPointerParamStruct()
 	testPointerParamMultiple()
@@ -2205,6 +2254,9 @@ func main() {
 	testStructPtrFieldDeref()
 	testListOperations()
 	testTreeOperations()
+	testPtrFieldInt()
+	testPtrFieldRead()
+	testPtrFieldString()
 
 	fmt.Println("=== Done ===")
 }

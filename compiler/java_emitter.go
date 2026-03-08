@@ -2984,13 +2984,25 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				if sliceType, isSlice := xType.Underlying().(*types.Slice); isSlice {
 					xCode := e.lhsIndexXCode
 					idxCode := e.lhsIndexKeyCode
-					// Add byte/short narrowing for slice element type
+					// Handle compound assignment operators (+=, -=, *=, /=, %=)
 					valStr := rhsStr
+					if node.Tok == token.ADD_ASSIGN {
+						valStr = fmt.Sprintf("%s.get(%s) + %s", xCode, idxCode, rhsStr)
+					} else if node.Tok == token.SUB_ASSIGN {
+						valStr = fmt.Sprintf("%s.get(%s) - %s", xCode, idxCode, rhsStr)
+					} else if node.Tok == token.MUL_ASSIGN {
+						valStr = fmt.Sprintf("%s.get(%s) * %s", xCode, idxCode, rhsStr)
+					} else if node.Tok == token.QUO_ASSIGN {
+						valStr = fmt.Sprintf("%s.get(%s) / %s", xCode, idxCode, rhsStr)
+					} else if node.Tok == token.REM_ASSIGN {
+						valStr = fmt.Sprintf("%s.get(%s) %% %s", xCode, idxCode, rhsStr)
+					}
+					// Add byte/short narrowing for slice element type
 					if basic, ok := sliceType.Elem().Underlying().(*types.Basic); ok {
 						if basic.Kind() == types.Int8 || basic.Kind() == types.Uint8 {
-							valStr = "(byte)(" + rhsStr + ")"
+							valStr = "(byte)(" + valStr + ")"
 						} else if basic.Kind() == types.Int16 || basic.Kind() == types.Uint16 {
-							valStr = "(short)(" + rhsStr + ")"
+							valStr = "(short)(" + valStr + ")"
 						}
 					}
 					e.fs.PushCode(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, xCode, idxCode, valStr))
