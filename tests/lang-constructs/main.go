@@ -2047,6 +2047,96 @@ func testStructPtrFieldDeref() {
 	}
 }
 
+// Wrapper structs for pointer return tests
+type List struct {
+	head *ListNode
+}
+
+type Tree struct {
+	root *TreeNode
+}
+
+// List functions (pointer returns)
+func newListNode(val int) *ListNode {
+	n := ListNode{value: val}
+	return &n
+}
+
+func listPrepend(head *ListNode, val int) *ListNode {
+	n := ListNode{value: val, next: head}
+	return &n
+}
+
+func listLength(head *ListNode) int {
+	count := 0
+	curr := head
+	for curr != nil {
+		count = count + 1
+		curr = curr.next
+	}
+	return count
+}
+
+func listSum(head *ListNode) int {
+	sum := 0
+	curr := head
+	for curr != nil {
+		sum = sum + curr.value
+		curr = curr.next
+	}
+	return sum
+}
+
+// Tree functions (pointer returns)
+func newTreeNode(val int) *TreeNode {
+	n := TreeNode{value: val}
+	return &n
+}
+
+func treeInsert(root *TreeNode, val int) *TreeNode {
+	if root == nil {
+		return newTreeNode(val)
+	}
+	if val < root.value {
+		root.left = treeInsert(root.left, val)
+	} else {
+		root.right = treeInsert(root.right, val)
+	}
+	return root
+}
+
+func treeSum(root *TreeNode) int {
+	if root == nil {
+		return 0
+	}
+	return root.value + treeSum(root.left) + treeSum(root.right)
+}
+
+func testListOperations() {
+	list := List{}
+	list.head = newListNode(10)
+	list.head = listPrepend(list.head, 20)
+	list.head = listPrepend(list.head, 30)
+	if listLength(list.head) == 3 && listSum(list.head) == 60 {
+		fmt.Println("PASS: list operations")
+	} else {
+		panic("FAIL: list operations")
+	}
+}
+
+func testTreeOperations() {
+	tree := Tree{}
+	tree.root = treeInsert(tree.root, 5)
+	tree.root = treeInsert(tree.root, 3)
+	tree.root = treeInsert(tree.root, 7)
+	tree.root = treeInsert(tree.root, 1)
+	if treeSum(tree.root) == 16 && tree.root.value == 5 {
+		fmt.Println("PASS: tree operations")
+	} else {
+		panic("FAIL: tree operations")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2113,6 +2203,8 @@ func main() {
 	testLinkedList()
 	testBinaryTree()
 	testStructPtrFieldDeref()
+	testListOperations()
+	testTreeOperations()
 
 	fmt.Println("=== Done ===")
 }

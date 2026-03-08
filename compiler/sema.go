@@ -242,16 +242,9 @@ func (sema *SemaChecker) PreVisitStarExpr(node *ast.StarExpr, indent int) {
 func (sema *SemaChecker) PreVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
 }
 
-// PreVisitFuncTypeResult blocks pointer return types (func f() *int)
+// PreVisitFuncTypeResult allows pointer return types (func f() *T)
+// These are transformed by the pointer transform pass via pool-based indexing.
 func (sema *SemaChecker) PreVisitFuncTypeResult(node *ast.Field, index int, indent int) {
-	if _, ok := node.Type.(*ast.StarExpr); ok {
-		sema.reportSemaError(node.Type.Pos(),
-			"pointer return type is not supported",
-			"Functions cannot return pointer types (*T).\n  Pointer return types have no equivalent in the transpiler backends.",
-			[]string{
-				"Return the value directly instead of a pointer.",
-			})
-	}
 }
 
 // PreVisitGenStructFieldType checks pointer types in struct fields (type S struct { p *int })
@@ -743,10 +736,36 @@ func (sema *SemaChecker) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	// Check for == nil or != nil comparisons
 	if node.Op == token.EQL || node.Op == token.NEQ {
 		if isNilIdent(node.Y) || isNilIdent(node.X) {
-			sema.reportSemaError(node.Pos(),
-				"nil comparison is not allowed",
-				"Nil comparison (== nil or != nil) is not supported.",
-				[]string{"Use len() == 0 for slices, or redesign to avoid nil checks."})
+			// Allow nil comparisons for pointer types (*T) — transformed to == -1 / != -1
+			isPointerNil := false
+			if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+				var nonNilExpr ast.Expr
+				if isNilIdent(node.Y) {
+					nonNilExpr = node.X
+				} else {
+					nonNilExpr = node.Y
+				}
+				if tv, ok := sema.pkg.TypesInfo.Types[nonNilExpr]; ok && tv.Type != nil {
+					if _, isPtr := tv.Type.(*types.Pointer); isPtr {
+						isPointerNil = true
+					}
+				}
+				if !isPointerNil {
+					if ident, ok := nonNilExpr.(*ast.Ident); ok {
+						if obj := sema.pkg.TypesInfo.Uses[ident]; obj != nil {
+							if _, isPtr := obj.Type().(*types.Pointer); isPtr {
+								isPointerNil = true
+							}
+						}
+					}
+				}
+			}
+			if !isPointerNil {
+				sema.reportSemaError(node.Pos(),
+					"nil comparison is not allowed",
+					"Nil comparison (== nil or != nil) is not supported.",
+					[]string{"Use len() == 0 for slices, or redesign to avoid nil checks."})
+			}
 		}
 
 		// Check for map comparisons (maps can only be compared to nil in Go, not to each other)
