@@ -372,9 +372,6 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 									indexExpr: indexExpr.Index,
 									elemType:  tv.Type,
 								}
-								PtrLocalComments[lhsIdent.Pos()] = fmt.Sprintf(
-									"// %s := &%s[...]  (pointer alias to slice element, eliminated)",
-									lhsIdent.Name, exprToString(indexExpr.X))
 							}
 						}
 					}
@@ -441,9 +438,6 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 									fieldName: selExpr.Sel.Name,
 									elemType:  tv.Type,
 								}
-								PtrLocalComments[lhsIdent.Pos()] = fmt.Sprintf(
-									"// %s := &%s.%s  (pointer alias to struct field, eliminated)",
-									lhsIdent.Name, exprToString(selExpr.X), selExpr.Sel.Name)
 							}
 						}
 					}
@@ -486,117 +480,8 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			return true
 		})
 
-		// Check ptrIndexLocals for escaping uses and report errors.
-		if len(result.ptrIndexLocals) > 0 {
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok {
-					for _, arg := range call.Args {
-						if ident, ok := arg.(*ast.Ident); ok {
-							if info, isIndex := result.ptrIndexLocals[ident.Name]; isIndex {
-								v.reportPtrError(ident.Pos(),
-									"pointer to slice element passed as argument is not supported",
-									fmt.Sprintf("Variable '%s' holds a pointer to element of '%s' and is passed as a function argument.\n  Pointers to slice elements cannot escape the local scope.",
-										ident.Name, exprToString(info.sliceExpr)),
-									[]string{"Dereference the pointer locally instead of passing it to a function."})
-							}
-						}
-					}
-				}
-				if ret, ok := n.(*ast.ReturnStmt); ok {
-					for _, r := range ret.Results {
-						if ident, ok := r.(*ast.Ident); ok {
-							if info, isIndex := result.ptrIndexLocals[ident.Name]; isIndex {
-								v.reportPtrError(ident.Pos(),
-									"pointer to slice element returned from function is not supported",
-									fmt.Sprintf("Variable '%s' holds a pointer to element of '%s' and is returned from a function.\n  Pointers to slice elements cannot escape the local scope.",
-										ident.Name, exprToString(info.sliceExpr)),
-									[]string{"Dereference the pointer and return the value instead."})
-							}
-						}
-					}
-				}
-				// Check for assignment to another variable: q := p or q = p
-				if assign, ok := n.(*ast.AssignStmt); ok {
-					for i, rhs := range assign.Rhs {
-						if ident, ok := rhs.(*ast.Ident); ok {
-							if info, isIndex := result.ptrIndexLocals[ident.Name]; isIndex {
-								// Skip self-assignment (p = &arr[i] already handled)
-								// Skip blank identifier (_ = p is not an escape)
-								if i < len(assign.Lhs) {
-									if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
-										if lhsIdent.Name == ident.Name || lhsIdent.Name == "_" {
-											continue
-										}
-									}
-								}
-								v.reportPtrError(ident.Pos(),
-									"pointer to slice element assigned to another variable is not supported",
-									fmt.Sprintf("Variable '%s' holds a pointer to element of '%s' and is assigned to another variable.\n  Pointers to slice elements cannot escape the local scope.",
-										ident.Name, exprToString(info.sliceExpr)),
-									[]string{"Dereference the pointer locally: use *" + ident.Name + " instead."})
-							}
-						}
-					}
-				}
-				return true
-			})
-		}
-
-		// Check ptrFieldLocals for escaping uses and report errors.
-		if len(result.ptrFieldLocals) > 0 {
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				if call, ok := n.(*ast.CallExpr); ok {
-					for _, arg := range call.Args {
-						if ident, ok := arg.(*ast.Ident); ok {
-							if info, isField := result.ptrFieldLocals[ident.Name]; isField {
-								v.reportPtrError(ident.Pos(),
-									"pointer to struct field passed as argument is not supported",
-									fmt.Sprintf("Variable '%s' holds a pointer to struct field '%s' and is passed as a function argument.\n  Pointers to struct fields cannot escape the local scope.",
-										ident.Name, info.fieldName),
-									[]string{"Dereference the pointer locally instead of passing it to a function."})
-							}
-						}
-					}
-				}
-				if ret, ok := n.(*ast.ReturnStmt); ok {
-					for _, r := range ret.Results {
-						if ident, ok := r.(*ast.Ident); ok {
-							if info, isField := result.ptrFieldLocals[ident.Name]; isField {
-								v.reportPtrError(ident.Pos(),
-									"pointer to struct field returned from function is not supported",
-									fmt.Sprintf("Variable '%s' holds a pointer to struct field '%s' and is returned from a function.\n  Pointers to struct fields cannot escape the local scope.",
-										ident.Name, info.fieldName),
-									[]string{"Dereference the pointer and return the value instead."})
-							}
-						}
-					}
-				}
-				// Check for assignment to another variable: q := p or q = p
-				if assign, ok := n.(*ast.AssignStmt); ok {
-					for i, rhs := range assign.Rhs {
-						if ident, ok := rhs.(*ast.Ident); ok {
-							if info, isField := result.ptrFieldLocals[ident.Name]; isField {
-								// Skip self-assignment (p = &s.field already handled)
-								// Skip blank identifier (_ = p is not an escape)
-								if i < len(assign.Lhs) {
-									if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
-										if lhsIdent.Name == ident.Name || lhsIdent.Name == "_" {
-											continue
-										}
-									}
-								}
-								v.reportPtrError(ident.Pos(),
-									"pointer to struct field assigned to another variable is not supported",
-									fmt.Sprintf("Variable '%s' holds a pointer to struct field '%s' and is assigned to another variable.\n  Pointers to struct fields cannot escape the local scope.",
-										ident.Name, info.fieldName),
-									[]string{"Dereference the pointer locally: use *" + ident.Name + " instead."})
-							}
-						}
-					}
-				}
-				return true
-			})
-		}
+		// ptrFieldLocals and ptrIndexLocals now use pool-based indexing
+		// (copy-in at creation, copy-out after mutation) so escape is not a problem.
 	}
 
 	// Find calls to functions with *T returns (need pool declarations in caller)
@@ -778,12 +663,25 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 		var preamble []ast.Stmt
 
 		// 1. Pool declarations for types not provided via params
-		if len(analysis.poolVars) > 0 {
+		// Includes poolVars, ptrFieldLocals, and ptrIndexLocals element types
+		{
 			poolTypesNeeded := make(map[string]types.Type)
 			for _, elemType := range analysis.poolVars {
 				pn := poolNameForType(elemType)
 				if _, fromParam := poolParamTypes[pn]; !fromParam {
 					poolTypesNeeded[pn] = elemType
+				}
+			}
+			for _, info := range analysis.ptrFieldLocals {
+				pn := poolNameForType(info.elemType)
+				if _, fromParam := poolParamTypes[pn]; !fromParam {
+					poolTypesNeeded[pn] = info.elemType
+				}
+			}
+			for _, info := range analysis.ptrIndexLocals {
+				pn := poolNameForType(info.elemType)
+				if _, fromParam := poolParamTypes[pn]; !fromParam {
+					poolTypesNeeded[pn] = info.elemType
 				}
 			}
 			for poolName, elemType := range poolTypesNeeded {
@@ -814,6 +712,14 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 				if _, fromParam := poolParamTypes[pn]; !fromParam {
 					alreadyDeclared[pn] = true
 				}
+			}
+			for _, info := range analysis.ptrFieldLocals {
+				pn := poolNameForType(info.elemType)
+				alreadyDeclared[pn] = true
+			}
+			for _, info := range analysis.ptrIndexLocals {
+				pn := poolNameForType(info.elemType)
+				alreadyDeclared[pn] = true
 			}
 			for poolName, elemType := range analysis.callReturnPools {
 				if alreadyDeclared[poolName] {
@@ -908,10 +814,116 @@ func (v *ptrTransformVisitor) rewriteBlockStmt(block *ast.BlockStmt, analysis *p
 		if v.isPtrVarEliminatedStmt(stmt, analysis) {
 			continue
 		}
+		// Detect copy-out needs BEFORE rewriting (uses original AST expressions)
+		copyOutPtrs := v.detectCopyOutNeeds(stmt, analysis)
 		expanded := v.rewriteStmtExpand(stmt, analysis)
 		newList = append(newList, expanded...)
+		// Insert copy-out statements after the rewritten statements
+		for ptrName := range copyOutPtrs {
+			if coStmt := v.generateCopyOut(ptrName, analysis); coStmt != nil {
+				newList = append(newList, coStmt)
+			}
+		}
 	}
 	block.List = newList
+}
+
+// detectCopyOutNeeds checks a statement (before rewriting) for mutations through
+// ptrFieldLocals or ptrIndexLocals, returning the set of pointer names needing copy-out.
+func (v *ptrTransformVisitor) detectCopyOutNeeds(stmt ast.Stmt, analysis *ptrAnalysis) map[string]bool {
+	needed := make(map[string]bool)
+	if len(analysis.ptrFieldLocals) == 0 && len(analysis.ptrIndexLocals) == 0 {
+		return needed
+	}
+	switch s := stmt.(type) {
+	case *ast.AssignStmt:
+		// Check LHS for *p = val or *p += val
+		for _, lhs := range s.Lhs {
+			if star, ok := lhs.(*ast.StarExpr); ok {
+				if ident, ok := star.X.(*ast.Ident); ok {
+					if _, isField := analysis.ptrFieldLocals[ident.Name]; isField {
+						needed[ident.Name] = true
+					}
+					if _, isIndex := analysis.ptrIndexLocals[ident.Name]; isIndex {
+						needed[ident.Name] = true
+					}
+				}
+			}
+			// Check for p.field = val (SelectorExpr on ptrIndexLocal with struct elem)
+			if sel, ok := lhs.(*ast.SelectorExpr); ok {
+				if ident, ok := sel.X.(*ast.Ident); ok {
+					if _, isIndex := analysis.ptrIndexLocals[ident.Name]; isIndex {
+						needed[ident.Name] = true
+					}
+				}
+			}
+		}
+		// Check RHS for function calls with ptr field/index args
+		for _, rhs := range s.Rhs {
+			v.collectCopyOutFromExpr(rhs, analysis, needed)
+		}
+	case *ast.ExprStmt:
+		// Standalone function call: modifyInt(p)
+		v.collectCopyOutFromExpr(s.X, analysis, needed)
+	case *ast.IncDecStmt:
+		// (*p)++ or similar
+		if star, ok := s.X.(*ast.StarExpr); ok {
+			if ident, ok := star.X.(*ast.Ident); ok {
+				if _, isField := analysis.ptrFieldLocals[ident.Name]; isField {
+					needed[ident.Name] = true
+				}
+				if _, isIndex := analysis.ptrIndexLocals[ident.Name]; isIndex {
+					needed[ident.Name] = true
+				}
+			}
+		}
+	}
+	return needed
+}
+
+// collectCopyOutFromExpr scans an expression for function calls that pass
+// ptrFieldLocal or ptrIndexLocal pointers as arguments.
+func (v *ptrTransformVisitor) collectCopyOutFromExpr(expr ast.Expr, analysis *ptrAnalysis, needed map[string]bool) {
+	ast.Inspect(expr, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		for _, arg := range call.Args {
+			if ident, ok := arg.(*ast.Ident); ok {
+				if _, isField := analysis.ptrFieldLocals[ident.Name]; isField {
+					needed[ident.Name] = true
+				}
+				if _, isIndex := analysis.ptrIndexLocals[ident.Name]; isIndex {
+					needed[ident.Name] = true
+				}
+			}
+		}
+		return true
+	})
+}
+
+// generateCopyOut creates a copy-out statement: target = _pool_T[p]
+// For ptrFieldLocals: s.field = _pool_T[p]
+// For ptrIndexLocals: arr[i] = _pool_T[p]
+func (v *ptrTransformVisitor) generateCopyOut(ptrName string, analysis *ptrAnalysis) ast.Stmt {
+	if info, isField := analysis.ptrFieldLocals[ptrName]; isField {
+		lhs := &ast.SelectorExpr{X: info.baseExpr, Sel: &ast.Ident{Name: info.fieldName}}
+		v.registerType(lhs, info.elemType)
+		ptrIdent := &ast.Ident{Name: ptrName}
+		v.registerType(ptrIdent, types.Typ[types.Int])
+		rhs := v.poolIndexExpr(ptrIdent, info.elemType)
+		return &ast.AssignStmt{Lhs: []ast.Expr{lhs}, Tok: token.ASSIGN, Rhs: []ast.Expr{rhs}}
+	}
+	if info, isIndex := analysis.ptrIndexLocals[ptrName]; isIndex {
+		lhs := &ast.IndexExpr{X: info.sliceExpr, Index: info.indexExpr}
+		v.registerType(lhs, info.elemType)
+		ptrIdent := &ast.Ident{Name: ptrName}
+		v.registerType(ptrIdent, types.Typ[types.Int])
+		rhs := v.poolIndexExpr(ptrIdent, info.elemType)
+		return &ast.AssignStmt{Lhs: []ast.Expr{lhs}, Tok: token.ASSIGN, Rhs: []ast.Expr{rhs}}
+	}
+	return nil
 }
 
 // rewriteStmtExpand returns one or more statements. For pool var := assignments,
@@ -923,6 +935,37 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 			if lhsIdent, ok := assignStmt.Lhs[0].(*ast.Ident); ok {
 				if elemType, isPool := analysis.poolVars[lhsIdent.Name]; isPool {
 					return v.expandPoolVarAssign(lhsIdent.Name, assignStmt.Rhs[0], elemType, analysis)
+				}
+				// Handle p := &s.field → pool-based copy-in
+				if info, isFieldLocal := analysis.ptrFieldLocals[lhsIdent.Name]; isFieldLocal {
+					if unary, ok := assignStmt.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+						return v.expandPoolCopyIn(lhsIdent.Name, unary.X, info.elemType, token.DEFINE, analysis)
+					}
+				}
+				// Handle p := &arr[i] → pool-based copy-in
+				if info, isIndexLocal := analysis.ptrIndexLocals[lhsIdent.Name]; isIndexLocal {
+					if unary, ok := assignStmt.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+						return v.expandPoolCopyIn(lhsIdent.Name, unary.X, info.elemType, token.DEFINE, analysis)
+					}
+				}
+			}
+		}
+	}
+	// Handle p = &s.field or p = &arr[i] where p is a ptrVar (ASSIGN form)
+	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && assignStmt.Tok == token.ASSIGN {
+		if len(assignStmt.Lhs) == 1 && len(assignStmt.Rhs) == 1 {
+			if lhsIdent, ok := assignStmt.Lhs[0].(*ast.Ident); ok {
+				if _, isPtrVar := analysis.ptrVars[lhsIdent.Name]; isPtrVar {
+					if info, isFieldLocal := analysis.ptrFieldLocals[lhsIdent.Name]; isFieldLocal {
+						if unary, ok := assignStmt.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+							return v.expandPoolCopyIn(lhsIdent.Name, unary.X, info.elemType, token.ASSIGN, analysis)
+						}
+					}
+					if info, isIndexLocal := analysis.ptrIndexLocals[lhsIdent.Name]; isIndexLocal {
+						if unary, ok := assignStmt.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+							return v.expandPoolCopyIn(lhsIdent.Name, unary.X, info.elemType, token.ASSIGN, analysis)
+						}
+					}
 				}
 			}
 		}
@@ -1092,6 +1135,69 @@ func (v *ptrTransformVisitor) expandPoolVarAssign(varName string, rhs ast.Expr, 
 	return []ast.Stmt{appendStmt, indexStmt}
 }
 
+// expandPoolCopyIn expands p := &s.field or p := &arr[i] into pool-based copy-in:
+//   _pool_T = append(_pool_T, valueExpr)
+//   varName :=/= int(len(_pool_T) - 1)
+func (v *ptrTransformVisitor) expandPoolCopyIn(varName string, valueExpr ast.Expr, elemType types.Type, tok token.Token, analysis *ptrAnalysis) []ast.Stmt {
+	poolName := poolNameForType(elemType)
+
+	// Rewrite the value expression (handles nested pool vars, etc.)
+	rewrittenRHS := v.rewriteExpr(valueExpr, analysis)
+
+	// Statement 1: _pool_T = append(_pool_T, rewrittenRHS)
+	poolIdent1 := &ast.Ident{Name: poolName}
+	poolIdent2 := &ast.Ident{Name: poolName}
+	appendCall := &ast.CallExpr{
+		Fun:  &ast.Ident{Name: "append"},
+		Args: []ast.Expr{poolIdent1, rewrittenRHS},
+	}
+	sliceType := types.NewSlice(elemType)
+	v.registerType(poolIdent1, sliceType)
+	v.registerType(poolIdent2, sliceType)
+	v.registerType(appendCall, sliceType)
+	appendStmt := &ast.AssignStmt{
+		Lhs: []ast.Expr{poolIdent2},
+		Tok: token.ASSIGN,
+		Rhs: []ast.Expr{appendCall},
+	}
+
+	// Statement 2: varName :=/= int(len(_pool_T) - 1)
+	poolIdent3 := &ast.Ident{Name: poolName}
+	v.registerType(poolIdent3, sliceType)
+	lenCall := &ast.CallExpr{
+		Fun:  &ast.Ident{Name: "len"},
+		Args: []ast.Expr{poolIdent3},
+	}
+	v.registerType(lenCall, types.Typ[types.Int])
+	oneLit := &ast.BasicLit{Kind: token.INT, Value: "1"}
+	v.registerType(oneLit, types.Typ[types.Int])
+	lenMinus1 := &ast.BinaryExpr{
+		X:  lenCall,
+		Op: token.SUB,
+		Y:  oneLit,
+	}
+	v.registerType(lenMinus1, types.Typ[types.Int])
+	intIdent := &ast.Ident{Name: "int"}
+	intCast := &ast.CallExpr{
+		Fun:  intIdent,
+		Args: []ast.Expr{lenMinus1},
+	}
+	v.registerType(intCast, types.Typ[types.Int])
+	if v.pkg != nil && v.pkg.TypesInfo != nil {
+		intObj := types.Universe.Lookup("int")
+		if intObj != nil {
+			v.pkg.TypesInfo.Uses[intIdent] = intObj
+		}
+	}
+	indexStmt := &ast.AssignStmt{
+		Lhs: []ast.Expr{&ast.Ident{Name: varName}},
+		Tok: tok,
+		Rhs: []ast.Expr{intCast},
+	}
+
+	return []ast.Stmt{appendStmt, indexStmt}
+}
+
 // minusOneExpr creates the AST for -1 (sentinel for nil pointer)
 func (v *ptrTransformVisitor) minusOneExpr() ast.Expr {
 	oneLit := &ast.BasicLit{Kind: token.INT, Value: "1"}
@@ -1225,7 +1331,8 @@ func (v *ptrTransformVisitor) expandPtrReturn(ret *ast.ReturnStmt, analysis *ptr
 		}
 	}
 
-	// Handle &CompositeLit{...} at pointer return positions → expand to pool append
+	// Handle &X at pointer return positions → expand to pool append
+	// Covers &CompositeLit{...}, &s.field, &arr[i], and &localVar
 	for i, r := range ret.Results {
 		elemType, hasPtrReturn := analysis.ptrReturns[i]
 		if !hasPtrReturn {
@@ -1235,10 +1342,7 @@ func (v *ptrTransformVisitor) expandPtrReturn(ret *ast.ReturnStmt, analysis *ptr
 		if !ok || unary.Op != token.AND {
 			continue
 		}
-		if _, ok := unary.X.(*ast.CompositeLit); !ok {
-			continue
-		}
-		// Expand: return &T{...} → _pool_T = append(_pool_T, T{...}); return int(len(_pool_T)-1), _pool_T
+		// Expand: return &X → _pool_T = append(_pool_T, X); return int(len(_pool_T)-1), _pool_T
 		poolName := poolNameForType(elemType)
 		sliceType := types.NewSlice(elemType)
 
@@ -1490,7 +1594,10 @@ func (v *ptrTransformVisitor) expandPtrReturnCallAssign(assign *ast.AssignStmt, 
 func (v *ptrTransformVisitor) isPtrVarEliminatedStmt(stmt ast.Stmt, analysis *ptrAnalysis) bool {
 	switch s := stmt.(type) {
 	case *ast.DeclStmt:
-		// Eliminate: var p *int where p is in both ptrVars and ptrLocals (or ptrIndexLocals)
+		// Eliminate: var p *int where p is in both ptrVars and ptrLocals
+		// (ptrLocals use alias elimination, so the var decl is not needed)
+		// NOTE: ptrFieldLocals and ptrIndexLocals use pool-based indexing, so
+		// their var decls are KEPT (type rewritten from *T to int in rewriteDeclStmt)
 		if genDecl, ok := s.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
 			for _, spec := range genDecl.Specs {
 				if vs, ok := spec.(*ast.ValueSpec); ok {
@@ -1499,53 +1606,17 @@ func (v *ptrTransformVisitor) isPtrVarEliminatedStmt(stmt ast.Stmt, analysis *pt
 							if _, isLocal := analysis.ptrLocals[name.Name]; isLocal {
 								return true
 							}
-							if _, isIndexLocal := analysis.ptrIndexLocals[name.Name]; isIndexLocal {
-								return true
-							}
-							if _, isFieldLocal := analysis.ptrFieldLocals[name.Name]; isFieldLocal {
-								return true
-							}
 						}
 					}
 				}
 			}
 		}
 	case *ast.AssignStmt:
-		// Eliminate: p := &arr[i] where p is a ptrIndexLocal
-		if s.Tok == token.DEFINE && len(s.Lhs) == 1 && len(s.Rhs) == 1 {
-			if lhsIdent, ok := s.Lhs[0].(*ast.Ident); ok {
-				if _, isIndexLocal := analysis.ptrIndexLocals[lhsIdent.Name]; isIndexLocal {
-					if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
-						if _, ok := unary.X.(*ast.IndexExpr); ok {
-							return true
-						}
-					}
-				}
-				// Eliminate: p := &s.field where p is a ptrFieldLocal
-				if _, isFieldLocal := analysis.ptrFieldLocals[lhsIdent.Name]; isFieldLocal {
-					if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
-						if _, ok := unary.X.(*ast.SelectorExpr); ok {
-							return true
-						}
-					}
-				}
-			}
-		}
-		// Eliminate: p = &x where p is a ptrVar converted to ptrLocal
+		// Eliminate: p = &x where p is a ptrVar converted to ptrLocal (alias elimination)
 		if s.Tok == token.ASSIGN && len(s.Lhs) == 1 && len(s.Rhs) == 1 {
 			if lhsIdent, ok := s.Lhs[0].(*ast.Ident); ok {
 				if _, isPtrVar := analysis.ptrVars[lhsIdent.Name]; isPtrVar {
 					if _, isLocal := analysis.ptrLocals[lhsIdent.Name]; isLocal {
-						if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
-							return true
-						}
-					}
-					if _, isIndexLocal := analysis.ptrIndexLocals[lhsIdent.Name]; isIndexLocal {
-						if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
-							return true
-						}
-					}
-					if _, isFieldLocal := analysis.ptrFieldLocals[lhsIdent.Name]; isFieldLocal {
 						if unary, ok := s.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
 							return true
 						}
@@ -1655,12 +1726,11 @@ func (v *ptrTransformVisitor) rewriteDeclStmt(s *ast.DeclStmt, analysis *ptrAnal
 			if valueSpec, ok := spec.(*ast.ValueSpec); ok {
 				for _, name := range valueSpec.Names {
 					// poolVars: var x T → handled by rewriteStmtExpand (pool append)
-					// ptrVars that are ptrLocals/ptrIndexLocals: eliminated by isPtrVarEliminatedStmt
+					// ptrVars that are ptrLocals: eliminated by isPtrVarEliminatedStmt
+					// ptrVars that are ptrFieldLocals/ptrIndexLocals: keep decl, rewrite type
 					if _, isPtrVar := analysis.ptrVars[name.Name]; isPtrVar {
 						_, isLocal := analysis.ptrLocals[name.Name]
-						_, isIndexLocal := analysis.ptrIndexLocals[name.Name]
-						_, isFieldLocal := analysis.ptrFieldLocals[name.Name]
-						if !isLocal && !isIndexLocal && !isFieldLocal {
+						if !isLocal {
 							// Change type from *T (StarExpr) to int (pool index)
 							newType := &ast.Ident{Name: "int"}
 							valueSpec.Type = newType
@@ -1680,26 +1750,16 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 	}
 	switch e := expr.(type) {
 	case *ast.StarExpr:
-		// *p -> arr[i] for ptrIndexLocals (alias to slice element)
-		if ident, ok := e.X.(*ast.Ident); ok {
-			if info, isIndexLocal := analysis.ptrIndexLocals[ident.Name]; isIndexLocal {
-				newIndexExpr := &ast.IndexExpr{X: info.sliceExpr, Index: info.indexExpr}
-				v.registerType(newIndexExpr, info.elemType)
-				return newIndexExpr
-			}
-		}
-
-		// *p -> s.field for ptrFieldLocals (alias to struct field)
-		if ident, ok := e.X.(*ast.Ident); ok {
-			if info, isFieldLocal := analysis.ptrFieldLocals[ident.Name]; isFieldLocal {
-				newSelExpr := &ast.SelectorExpr{X: info.baseExpr, Sel: &ast.Ident{Name: info.fieldName}}
-				v.registerType(newSelExpr, info.elemType)
-				return newSelExpr
-			}
-		}
-
 		// All pointer derefs use pool indexing: *p -> _pool_T[p]
 		if ident, ok := e.X.(*ast.Ident); ok {
+			// ptrFieldLocals: *p -> _pool_T[p] (pool-based, not alias)
+			if info, isFieldLocal := analysis.ptrFieldLocals[ident.Name]; isFieldLocal {
+				return v.poolIndexExpr(ident, info.elemType)
+			}
+			// ptrIndexLocals: *p -> _pool_T[p] (pool-based, not alias)
+			if info, isIndexLocal := analysis.ptrIndexLocals[ident.Name]; isIndexLocal {
+				return v.poolIndexExpr(ident, info.elemType)
+			}
 			// ptrParams: *p -> _pool_T[p]
 			if elemType, isPtr := analysis.ptrParams[ident.Name]; isPtr {
 				return v.poolIndexExpr(ident, elemType)
@@ -1743,12 +1803,10 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		return e
 
 	case *ast.SelectorExpr:
-		// Handle p.field for ptrIndexLocals: p.field -> arr[i].field
+		// Handle p.field for ptrIndexLocals: p.field -> _pool_T[p].field (pool-based)
 		if ident, ok := e.X.(*ast.Ident); ok {
 			if info, isIndexLocal := analysis.ptrIndexLocals[ident.Name]; isIndexLocal {
-				newIndexExpr := &ast.IndexExpr{X: info.sliceExpr, Index: info.indexExpr}
-				v.registerType(newIndexExpr, info.elemType)
-				e.X = newIndexExpr
+				e.X = v.poolIndexExpr(ident, info.elemType)
 				return e
 			}
 		}
@@ -1797,16 +1855,8 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 			v.registerType(targetIdent, types.Typ[types.Int])
 			return targetIdent
 		}
-		// p -> sliceExpr for ptrIndexLocals (bare alias, return the slice)
-		if info, isIndexLocal := analysis.ptrIndexLocals[e.Name]; isIndexLocal {
-			return info.sliceExpr
-		}
-		// p -> s.field for ptrFieldLocals (bare alias replacement)
-		if info, isFieldLocal := analysis.ptrFieldLocals[e.Name]; isFieldLocal {
-			newSelExpr := &ast.SelectorExpr{X: info.baseExpr, Sel: &ast.Ident{Name: info.fieldName}}
-			v.registerType(newSelExpr, info.elemType)
-			return newSelExpr
-		}
+		// ptrFieldLocals and ptrIndexLocals: bare p stays as p (it's an int pool index)
+		// No alias replacement needed — pool-based indexing handles this.
 		return e
 
 	case *ast.BinaryExpr:

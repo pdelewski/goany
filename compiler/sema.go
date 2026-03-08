@@ -254,34 +254,9 @@ func (sema *SemaChecker) PreVisitFuncTypeResult(node *ast.Field, index int, inde
 func (sema *SemaChecker) PreVisitGenStructFieldType(node ast.Expr, indent int) {
 }
 
-// PreVisitReturnStmt checks for pointers to struct fields being returned
+// PreVisitReturnStmt checks return statements
+// Pointers to struct fields can now escape via pool-based indexing.
 func (sema *SemaChecker) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	for _, result := range node.Results {
-		// Check for return &s.field
-		if unary, ok := result.(*ast.UnaryExpr); ok && unary.Op == token.AND {
-			if selExpr, ok := unary.X.(*ast.SelectorExpr); ok {
-				sema.reportSemaError(unary.Pos(),
-					"address-of struct field returned from function is not supported",
-					fmt.Sprintf("&%s.%s is returned from a function.\n  Pointers to struct fields cannot escape the local scope.",
-						exprToString(selExpr.X), selExpr.Sel.Name),
-					[]string{
-						"Return the field value instead, or restructure to avoid returning a pointer to a field.",
-					})
-			}
-		}
-		// Check for return p where p := &s.field
-		if ident, ok := result.(*ast.Ident); ok {
-			if _, isPtrField := sema.ptrFieldVars[ident.Name]; isPtrField {
-				sema.reportSemaError(ident.Pos(),
-					"pointer to struct field returned from function is not supported",
-					fmt.Sprintf("Variable '%s' holds a pointer to a struct field and is returned from a function.\n  Pointers to struct fields cannot escape the local scope.",
-						ident.Name),
-					[]string{
-						"Dereference the pointer and return the value instead.",
-					})
-			}
-		}
-	}
 }
 
 // PreVisitUnaryExpr checks for unsupported unary operators
@@ -1762,33 +1737,6 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 		if supportedBuiltins[ident.Name] {
 			return
-		}
-	}
-
-	// Check for &s.field passed as function argument (escaping pointer to struct field)
-	for _, arg := range node.Args {
-		if unary, ok := arg.(*ast.UnaryExpr); ok && unary.Op == token.AND {
-			if selExpr, ok := unary.X.(*ast.SelectorExpr); ok {
-				sema.reportSemaError(unary.Pos(),
-					"address-of struct field passed as argument is not supported",
-					fmt.Sprintf("&%s.%s is passed as a function argument.\n  Pointers to struct fields cannot escape the local scope.",
-						exprToString(selExpr.X), selExpr.Sel.Name),
-					[]string{
-						"Copy the field to a local variable and pass the variable instead.",
-					})
-			}
-		}
-		// Check for p passed as function argument where p := &s.field
-		if ident, ok := arg.(*ast.Ident); ok {
-			if _, isPtrField := sema.ptrFieldVars[ident.Name]; isPtrField {
-				sema.reportSemaError(ident.Pos(),
-					"pointer to struct field passed as argument is not supported",
-					fmt.Sprintf("Variable '%s' holds a pointer to a struct field and is passed as a function argument.\n  Pointers to struct fields cannot escape the local scope.",
-						ident.Name),
-					[]string{
-						"Dereference the pointer locally instead of passing it to a function.",
-					})
-			}
 		}
 	}
 
