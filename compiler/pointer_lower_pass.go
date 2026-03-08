@@ -486,6 +486,62 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			return true
 		})
 
+		// Check ptrIndexLocals for escaping uses and report errors.
+		if len(result.ptrIndexLocals) > 0 {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok {
+					for _, arg := range call.Args {
+						if ident, ok := arg.(*ast.Ident); ok {
+							if info, isIndex := result.ptrIndexLocals[ident.Name]; isIndex {
+								v.reportPtrError(ident.Pos(),
+									"pointer to slice element passed as argument is not supported",
+									fmt.Sprintf("Variable '%s' holds a pointer to element of '%s' and is passed as a function argument.\n  Pointers to slice elements cannot escape the local scope.",
+										ident.Name, exprToString(info.sliceExpr)),
+									[]string{"Dereference the pointer locally instead of passing it to a function."})
+							}
+						}
+					}
+				}
+				if ret, ok := n.(*ast.ReturnStmt); ok {
+					for _, r := range ret.Results {
+						if ident, ok := r.(*ast.Ident); ok {
+							if info, isIndex := result.ptrIndexLocals[ident.Name]; isIndex {
+								v.reportPtrError(ident.Pos(),
+									"pointer to slice element returned from function is not supported",
+									fmt.Sprintf("Variable '%s' holds a pointer to element of '%s' and is returned from a function.\n  Pointers to slice elements cannot escape the local scope.",
+										ident.Name, exprToString(info.sliceExpr)),
+									[]string{"Dereference the pointer and return the value instead."})
+							}
+						}
+					}
+				}
+				// Check for assignment to another variable: q := p or q = p
+				if assign, ok := n.(*ast.AssignStmt); ok {
+					for i, rhs := range assign.Rhs {
+						if ident, ok := rhs.(*ast.Ident); ok {
+							if info, isIndex := result.ptrIndexLocals[ident.Name]; isIndex {
+								// Skip self-assignment (p = &arr[i] already handled)
+								// Skip blank identifier (_ = p is not an escape)
+								if i < len(assign.Lhs) {
+									if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+										if lhsIdent.Name == ident.Name || lhsIdent.Name == "_" {
+											continue
+										}
+									}
+								}
+								v.reportPtrError(ident.Pos(),
+									"pointer to slice element assigned to another variable is not supported",
+									fmt.Sprintf("Variable '%s' holds a pointer to element of '%s' and is assigned to another variable.\n  Pointers to slice elements cannot escape the local scope.",
+										ident.Name, exprToString(info.sliceExpr)),
+									[]string{"Dereference the pointer locally: use *" + ident.Name + " instead."})
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+
 		// Check ptrFieldLocals for escaping uses and report errors.
 		if len(result.ptrFieldLocals) > 0 {
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
