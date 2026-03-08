@@ -1824,6 +1824,21 @@ func readPtr(p *int) int {
 	return *p
 }
 
+func increment(p *int) {
+	*p += 1
+}
+
+// Test pointer parameter increment (classic *p += 1 pattern)
+func testPointerParamIncrement() {
+	x := 5
+	increment(&x)
+	if x == 6 {
+		fmt.Println("PASS: pointer param increment")
+	} else {
+		panic("FAIL: pointer param increment")
+	}
+}
+
 // Test pointer parameter with int
 func testPointerParamInt() {
 	x := 10
@@ -2219,6 +2234,7 @@ func main() {
 	testMultiVariablePatterns()
 	testStructMapKeys()
 	testNestedStructMapKeys()
+	testPointerParamIncrement()
 	testPointerParamInt()
 	testPointerParamStruct()
 	testPointerParamMultiple()
