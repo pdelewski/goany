@@ -1119,12 +1119,22 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 		return []ast.Stmt{forStmt}
 	}
 
-	// For assignment statements, rewrite first, then check for nested pool indexing
-	// in LHS and hoist inner indices to temp variables (Rust borrow checker safety).
+	// For assignment statements, rewrite first, then:
+	// 1. Hoist pool-returning calls from RHS binary expressions to temp variables
+	//    (C++ can't use tuple results directly in arithmetic: int + tuple<int,vec> fails)
+	// 2. Hoist nested pool indices from LHS to temp variables
+	//    (Rust borrow checker: nested pool indexing = simultaneous mut+immut borrow)
 	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && assignStmt.Tok == token.ASSIGN {
 		rewritten := v.rewriteAssignStmt(assignStmt, analysis)
 		if rewrittenAssign, isAssign := rewritten.(*ast.AssignStmt); isAssign {
-			preStmts := v.hoistNestedPoolIndicesInAssign(rewrittenAssign)
+			var preStmts []ast.Stmt
+			// Hoist pool-returning calls from RHS expressions
+			for i, rhs := range rewrittenAssign.Rhs {
+				rewrittenAssign.Rhs[i] = v.hoistPoolCalls(rhs, analysis, &preStmts)
+			}
+			// Hoist nested pool indices from LHS
+			nestedPreStmts := v.hoistNestedPoolIndicesInAssign(rewrittenAssign)
+			preStmts = append(preStmts, nestedPreStmts...)
 			if len(preStmts) > 0 {
 				return append(preStmts, rewrittenAssign)
 			}

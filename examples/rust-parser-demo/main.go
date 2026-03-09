@@ -53,8 +53,7 @@ func countNodes(n *PtrNode) int {
 	count := 1
 	child := n.FirstChild
 	for child != nil {
-		cc := countNodes(child)
-		count = count + cc
+		count = count + countNodes(child)
 		child = child.NextSib
 	}
 	return count
@@ -118,8 +117,7 @@ func countByType(n *PtrNode, nodeType int) int {
 	}
 	child := n.FirstChild
 	for child != nil {
-		cc := countByType(child, nodeType)
-		count = count + cc
+		count = count + countByType(child, nodeType)
 		child = child.NextSib
 	}
 	return count
