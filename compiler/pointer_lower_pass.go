@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -125,6 +126,58 @@ func (v *ptrTransformVisitor) poolIndexExpr(index ast.Expr, elemType types.Type)
 	indexExpr := &ast.IndexExpr{X: poolIdent, Index: index}
 	v.registerType(indexExpr, elemType)
 	return indexExpr
+}
+
+// hoistNestedPoolIndicesInAssign checks if an assignment LHS contains nested pool
+// indexing (e.g., _pool_T[_pool_T[x].F1].F2 = val) and hoists the inner pool
+// index to a temp variable. This is required for Rust borrow checker safety:
+// nested pool indexing creates simultaneous mutable+immutable borrows on the same vector.
+// Returns pre-statements (temp var declarations) and modifies LHS in place.
+func (v *ptrTransformVisitor) hoistNestedPoolIndicesInAssign(s *ast.AssignStmt) []ast.Stmt {
+	var preStmts []ast.Stmt
+	for i, lhs := range s.Lhs {
+		s.Lhs[i] = v.hoistNestedPoolIndex(lhs, &preStmts)
+	}
+	return preStmts
+}
+
+// hoistNestedPoolIndex walks an LHS expression. If it finds _pool_T[innerExpr]
+// where innerExpr contains another _pool_* access, it hoists innerExpr to a temp
+// variable and replaces the index with the temp variable reference.
+func (v *ptrTransformVisitor) hoistNestedPoolIndex(expr ast.Expr, preStmts *[]ast.Stmt) ast.Expr {
+	if expr == nil {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *ast.SelectorExpr:
+		// For _pool_T[innerExpr].Field, process the IndexExpr inside
+		e.X = v.hoistNestedPoolIndex(e.X, preStmts)
+		return e
+	case *ast.IndexExpr:
+		if ident, ok := e.X.(*ast.Ident); ok && strings.HasPrefix(ident.Name, "_pool_") {
+			// This is _pool_T[innerExpr]. Check if innerExpr contains pool access.
+			if containsPoolAccess(e.Index) {
+				// Hoist innerExpr to a temp variable
+				tmpName := fmt.Sprintf("__nested_idx_%d", v.tmpCounter)
+				v.tmpCounter++
+				tmpIdent := &ast.Ident{Name: tmpName}
+				v.registerType(tmpIdent, types.Typ[types.Int])
+
+				// Generate: __nested_idx_N := innerExpr
+				declStmt := &ast.AssignStmt{
+					Lhs: []ast.Expr{&ast.Ident{Name: tmpName}},
+					Tok: token.DEFINE,
+					Rhs: []ast.Expr{e.Index},
+				}
+				*preStmts = append(*preStmts, declStmt)
+
+				// Replace the index with the temp variable
+				e.Index = tmpIdent
+			}
+		}
+		return e
+	}
+	return expr
 }
 
 func (v *ptrTransformVisitor) transform() {
@@ -1066,6 +1119,19 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 		return []ast.Stmt{forStmt}
 	}
 
+	// For assignment statements, rewrite first, then check for nested pool indexing
+	// in LHS and hoist inner indices to temp variables (Rust borrow checker safety).
+	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && assignStmt.Tok == token.ASSIGN {
+		rewritten := v.rewriteAssignStmt(assignStmt, analysis)
+		if rewrittenAssign, isAssign := rewritten.(*ast.AssignStmt); isAssign {
+			preStmts := v.hoistNestedPoolIndicesInAssign(rewrittenAssign)
+			if len(preStmts) > 0 {
+				return append(preStmts, rewrittenAssign)
+			}
+		}
+		return []ast.Stmt{rewritten}
+	}
+
 	return []ast.Stmt{v.rewriteStmt(stmt, analysis)}
 }
 
@@ -1711,6 +1777,14 @@ func (v *ptrTransformVisitor) rewriteAssignStmt(s *ast.AssignStmt, analysis *ptr
 	}
 
 	// Regular assignment (=, +=, etc.)
+	// Replace nil RHS with -1 when LHS is a pointer-typed field
+	for i, rhs := range s.Rhs {
+		if isNilIdent(rhs) && i < len(s.Lhs) {
+			if v.isPointerTypedExpr(s.Lhs[i]) {
+				s.Rhs[i] = v.minusOneExpr()
+			}
+		}
+	}
 	for i, lhs := range s.Lhs {
 		s.Lhs[i] = v.rewriteExpr(lhs, analysis)
 	}
@@ -1901,15 +1975,30 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		for i, elt := range e.Elts {
 			e.Elts[i] = v.rewriteExpr(elt, analysis)
 		}
-		// Inject -1 defaults for missing pointer fields
+		// Handle pointer fields in struct literals
 		if typeIdent, ok := e.Type.(*ast.Ident); ok {
 			if ptrFields, hasPtrFields := v.ptrFieldMap[typeIdent.Name]; hasPtrFields {
-				// Find which pointer fields are already present
+				// Build set of pointer field names for quick lookup
+				ptrFieldSet := make(map[string]bool)
+				for _, fn := range ptrFields {
+					ptrFieldSet[fn] = true
+				}
+				// Find which pointer fields are already present and replace nil values with -1
 				present := make(map[string]bool)
 				for _, elt := range e.Elts {
 					if kv, ok := elt.(*ast.KeyValueExpr); ok {
 						if key, ok := kv.Key.(*ast.Ident); ok {
 							present[key.Name] = true
+							// Replace nil values with -1 for pointer fields
+							if ptrFieldSet[key.Name] && isNilIdent(kv.Value) {
+								minusOne := &ast.UnaryExpr{
+									Op: token.SUB,
+									X:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+								}
+								v.registerType(minusOne, types.Typ[types.Int])
+								v.registerType(minusOne.X.(*ast.BasicLit), types.Typ[types.Int])
+								kv.Value = minusOne
+							}
 						}
 					}
 				}
