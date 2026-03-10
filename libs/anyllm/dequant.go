@@ -76,7 +76,7 @@ func decodeF16(data []byte, offset int) float64 {
 // dequantQ2K dequantizes a Q2_K super-block (256 elements, 84 bytes)
 // Layout: scales[16] + qs[64] + d(f16,2B) + dmin(f16,2B)
 // Each byte in qs holds 4 x 2-bit values (at shifts 0,2,4,6)
-func dequantQ2K(data []byte, blockOffset int, output []float64, outOffset int) {
+func dequantQ2K(data []byte, blockOffset int, output []float64, outOffset int) []float64 {
 	dVal := decodeF16(data, blockOffset+80)
 	dminVal := decodeF16(data, blockOffset+82)
 
@@ -121,11 +121,12 @@ func dequantQ2K(data []byte, blockOffset int, output []float64, outOffset int) {
 		}
 		chunk = chunk + 1
 	}
+	return output
 }
 
 // dequantQ3K dequantizes a Q3_K super-block (256 elements, 110 bytes)
 // Layout: hmask[32] + qs[64] + scales[12] + d(f16,2B)
-func dequantQ3K(data []byte, blockOffset int, output []float64, outOffset int) {
+func dequantQ3K(data []byte, blockOffset int, output []float64, outOffset int) []float64 {
 	hmaskBase := blockOffset
 	qsStart := blockOffset + 32
 	scalesBase := blockOffset + 96
@@ -210,11 +211,12 @@ func dequantQ3K(data []byte, blockOffset int, output []float64, outOffset int) {
 		}
 		chunk = chunk + 1
 	}
+	return output
 }
 
 // dequantQ6K dequantizes a Q6_K super-block (256 elements, 210 bytes)
 // Layout: ql[128] + qh[64] + scales[16] + d(f16,2B)
-func dequantQ6K(data []byte, blockOffset int, output []float64, outOffset int) {
+func dequantQ6K(data []byte, blockOffset int, output []float64, outOffset int) []float64 {
 	qlBase := blockOffset
 	qhBase := blockOffset + 128
 	scBase := blockOffset + 192
@@ -274,4 +276,5 @@ func dequantQ6K(data []byte, blockOffset int, output []float64, outOffset int) {
 		scP = scP + 8
 		chunk = chunk + 1
 	}
+	return output
 }

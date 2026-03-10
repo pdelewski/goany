@@ -217,7 +217,7 @@ func VecDotOff(a []float64, aOff int, b []float64, bOff int, n int) float64 {
 }
 
 // SoftmaxInPlace applies softmax normalization in-place
-func SoftmaxInPlace(x []float64, n int) {
+func SoftmaxInPlace(x []float64, n int) []float64 {
 	maxVal := x[0]
 	i := 1
 	for i < n {
@@ -239,6 +239,7 @@ func SoftmaxInPlace(x []float64, n int) {
 		x[k] = x[k] * invSum
 		k = k + 1
 	}
+	return x
 }
 
 // ArgMax returns the index of the maximum value in a vector

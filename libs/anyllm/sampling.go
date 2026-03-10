@@ -30,19 +30,20 @@ func RandFloat(rng RNGState) (RNGState, float64) {
 }
 
 // ApplyTemperature scales logits by temperature in-place
-func ApplyTemperature(logits []float64, n int, temperature float64) {
+func ApplyTemperature(logits []float64, n int, temperature float64) []float64 {
 	i := 0
 	for i < n {
 		logits[i] = logits[i] / temperature
 		i = i + 1
 	}
+	return logits
 }
 
 // SampleTopP samples from the top-p (nucleus) of the probability distribution
 // Uses iterative max-extraction approach (no sorting needed)
-func SampleTopP(logits []float64, n int, topP float64, rng RNGState) (int, RNGState) {
+func SampleTopP(logits []float64, n int, topP float64, rng RNGState) ([]float64, int, RNGState) {
 	// First apply softmax to get probabilities
-	SoftmaxInPlace(logits, n)
+	logits = SoftmaxInPlace(logits, n)
 
 	// Iteratively extract the highest-probability tokens until cumulative >= topP
 	// Track which indices have been "used" by setting them to -1.0
@@ -74,7 +75,7 @@ func SampleTopP(logits []float64, n int, topP float64, rng RNGState) (int, RNGSt
 	}
 
 	if selectedCount == 0 {
-		return 0, rng
+		return logits, 0, rng
 	}
 
 	// Renormalize selected probabilities
@@ -93,12 +94,12 @@ func SampleTopP(logits []float64, n int, topP float64, rng RNGState) (int, RNGSt
 	for si < selectedCount {
 		cumul = cumul + selectedProb[si]
 		if cumul > r {
-			return selectedIdx[si], rng2
+			return logits, selectedIdx[si], rng2
 		}
 		si = si + 1
 	}
 	// Fallback to last selected token
-	return selectedIdx[selectedCount-1], rng2
+	return logits, selectedIdx[selectedCount-1], rng2
 }
 
 // SampleToken samples a token from logits using temperature and top-p
@@ -108,7 +109,7 @@ func SampleToken(logits []float64, n int, temperature float64, topP float64, rng
 		idx := ArgMax(logits, n)
 		return idx, rng
 	}
-	ApplyTemperature(logits, n, temperature)
-	token, rng2 := SampleTopP(logits, n, topP, rng)
+	logits = ApplyTemperature(logits, n, temperature)
+	_, token, rng2 := SampleTopP(logits, n, topP, rng)
 	return token, rng2
 }

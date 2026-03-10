@@ -6,7 +6,7 @@ func TransformerBlock(x []float64, cfg ModelConfig, layer int, cache KVCache, po
 
 	// Load attention norm weights
 	attnNormIdx := FindTensorByName(file, layerTensorName(layer, "attn_norm.weight"))
-	attnNormW := ReadTensorCached(file, attnNormIdx, tCache)
+	attnNormW, _ := ReadTensorCached(file, attnNormIdx, tCache)
 
 	// Pre-attention RMS norm
 	xnorm := RMSNorm(x, attnNormW, dim, cfg.RMSNormEps)
@@ -19,7 +19,7 @@ func TransformerBlock(x []float64, cfg ModelConfig, layer int, cache KVCache, po
 
 	// Load FFN norm weights
 	ffnNormIdx := FindTensorByName(file, layerTensorName(layer, "ffn_norm.weight"))
-	ffnNormW := ReadTensorCached(file, ffnNormIdx, tCache)
+	ffnNormW, _ := ReadTensorCached(file, ffnNormIdx, tCache)
 
 	// Pre-FFN RMS norm
 	hnorm := RMSNorm(h, ffnNormW, dim, cfg.RMSNormEps)
@@ -43,7 +43,7 @@ func Forward(file GGUFFile, cfg ModelConfig, cache KVCache, tCache TensorCache, 
 
 	// Token embedding lookup
 	embIdx := FindTensorByName(file, "token_embd.weight")
-	embWeights := ReadTensorCached(file, embIdx, tCache)
+	embWeights, _ := ReadTensorCached(file, embIdx, tCache)
 	x := make([]float64, dim)
 	offset := tokenID * dim
 	i := 0
@@ -61,7 +61,7 @@ func Forward(file GGUFFile, cfg ModelConfig, cache KVCache, tCache TensorCache, 
 
 	// Final RMS norm
 	normIdx := FindTensorByName(file, "output_norm.weight")
-	normW := ReadTensorCached(file, normIdx, tCache)
+	normW, _ := ReadTensorCached(file, normIdx, tCache)
 	x = RMSNorm(x, normW, dim, cfg.RMSNormEps)
 
 	// Output projection to logits

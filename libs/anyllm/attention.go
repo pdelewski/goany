@@ -1,7 +1,7 @@
 package anyllm
 
 // ApplyRoPEVec applies Rotary Position Embedding to a single vector in-place
-func ApplyRoPEVec(vec []float64, headDim int, pos int, freqBase float64) {
+func ApplyRoPEVec(vec []float64, headDim int, pos int, freqBase float64) []float64 {
 	halfDim := headDim / 2
 	i := 0
 	for i < halfDim {
@@ -17,10 +17,11 @@ func ApplyRoPEVec(vec []float64, headDim int, pos int, freqBase float64) {
 
 		i = i + 1
 	}
+	return vec
 }
 
 // ApplyRoPEVecOff applies Rotary Position Embedding in-place at an offset
-func ApplyRoPEVecOff(vec []float64, off int, headDim int, pos int, freqBase float64) {
+func ApplyRoPEVecOff(vec []float64, off int, headDim int, pos int, freqBase float64) []float64 {
 	halfDim := headDim / 2
 	i := 0
 	for i < halfDim {
@@ -36,6 +37,7 @@ func ApplyRoPEVecOff(vec []float64, off int, headDim int, pos int, freqBase floa
 
 		i = i + 1
 	}
+	return vec
 }
 
 // AttentionSingleHead computes attention for a single head using offsets
@@ -49,7 +51,7 @@ func AttentionSingleHead(q []float64, qOff int, cacheK []float64, cacheV []float
 		si = si + 1
 	}
 
-	SoftmaxInPlace(scores, seqLen)
+	scores = SoftmaxInPlace(scores, seqLen)
 
 	result := make([]float64, headDim)
 	vi := 0
@@ -91,19 +93,19 @@ func MultiHeadAttention(xnorm []float64, cfg ModelConfig, layer int, cache KVCac
 	// Apply RoPE to Q heads in-place (no copy)
 	hi := 0
 	for hi < cfg.HeadCount {
-		ApplyRoPEVecOff(qProj, hi*headDim, headDim, pos, cfg.RopeFreqBase)
+		qProj = ApplyRoPEVecOff(qProj, hi*headDim, headDim, pos, cfg.RopeFreqBase)
 		hi = hi + 1
 	}
 
 	// Apply RoPE to K heads in-place (no copy)
 	ki := 0
 	for ki < kvHeads {
-		ApplyRoPEVecOff(kProj, ki*headDim, headDim, pos, cfg.RopeFreqBase)
+		kProj = ApplyRoPEVecOff(kProj, ki*headDim, headDim, pos, cfg.RopeFreqBase)
 		ki = ki + 1
 	}
 
 	// Store K and V in cache
-	SetKV(cache, layer, pos, kProj, vProj)
+	cache = SetKV(cache, layer, pos, kProj, vProj)
 
 	// Compute attention for each head (pass qProj+offset, no headQ copy)
 	attnOut := make([]float64, dim)

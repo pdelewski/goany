@@ -27,7 +27,7 @@ func kvOffset(cache KVCache, layer int, pos int) int {
 }
 
 // SetKV stores key and value vectors for a given layer and position
-func SetKV(cache KVCache, layer int, pos int, key []float64, val []float64) {
+func SetKV(cache KVCache, layer int, pos int, key []float64, val []float64) KVCache {
 	off := kvOffset(cache, layer, pos)
 	i := 0
 	for i < cache.KVDim {
@@ -35,6 +35,7 @@ func SetKV(cache KVCache, layer int, pos int, key []float64, val []float64) {
 		cache.V[off+i] = val[i]
 		i = i + 1
 	}
+	return cache
 }
 
 // GetK returns the key vector for a given layer and position

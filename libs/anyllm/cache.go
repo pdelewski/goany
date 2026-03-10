@@ -132,10 +132,10 @@ func CacheOffset(tc TensorCache, tensorIdx int) int {
 }
 
 // ReadTensorCached reads a tensor, returning cached data if available
-func ReadTensorCached(file GGUFFile, tensorIdx int, tc TensorCache) []float64 {
+func ReadTensorCached(file GGUFFile, tensorIdx int, tc TensorCache) ([]float64, TensorCache) {
 	noData := []float64{}
 	if tensorIdx < 0 || tensorIdx >= len(tc.Offsets) {
-		return noData
+		return noData, tc
 	}
 
 	off := tc.Offsets[tensorIdx]
@@ -149,13 +149,13 @@ func ReadTensorCached(file GGUFFile, tensorIdx int, tc TensorCache) []float64 {
 			cached[ri] = tc.Entries[off+ri]
 			ri = ri + 1
 		}
-		return cached
+		return cached, tc
 	}
 
 	// Read from disk
 	freshData := ReadTensor(file, tensorIdx)
 	if len(freshData) == 0 {
-		return freshData
+		return freshData, tc
 	}
 
 	// Store in cache if there is room
@@ -170,27 +170,27 @@ func ReadTensorCached(file GGUFFile, tensorIdx int, tc TensorCache) []float64 {
 		tc.UsedArr[0] = used + count
 	}
 
-	return freshData
+	return freshData, tc
 }
 
 // PrewarmCache loads all non-expert tensors into cache before generation
-func PrewarmCache(file GGUFFile, cfg ModelConfig, tc TensorCache) {
+func PrewarmCache(file GGUFFile, cfg ModelConfig, tc TensorCache) TensorCache {
 	// Cache embedding
 	embIdx := FindTensorByName(file, "token_embd.weight")
 	if embIdx >= 0 {
-		ReadTensorCached(file, embIdx, tc)
+		_, tc = ReadTensorCached(file, embIdx, tc)
 	}
 
 	// Cache output norm
 	normIdx := FindTensorByName(file, "output_norm.weight")
 	if normIdx >= 0 {
-		ReadTensorCached(file, normIdx, tc)
+		_, tc = ReadTensorCached(file, normIdx, tc)
 	}
 
 	// Cache output weights
 	outIdx := FindTensorByName(file, "output.weight")
 	if outIdx >= 0 {
-		ReadTensorCached(file, outIdx, tc)
+		_, tc = ReadTensorCached(file, outIdx, tc)
 	}
 
 	// Cache per-layer tensors
@@ -199,47 +199,48 @@ func PrewarmCache(file GGUFFile, cfg ModelConfig, tc TensorCache) {
 		// Attention norm
 		anIdx := FindTensorByName(file, layerTensorName(layer, "attn_norm.weight"))
 		if anIdx >= 0 {
-			ReadTensorCached(file, anIdx, tc)
+			_, tc = ReadTensorCached(file, anIdx, tc)
 		}
 
 		// FFN norm
 		fnIdx := FindTensorByName(file, layerTensorName(layer, "ffn_norm.weight"))
 		if fnIdx >= 0 {
-			ReadTensorCached(file, fnIdx, tc)
+			_, tc = ReadTensorCached(file, fnIdx, tc)
 		}
 
 		// Attention Q
 		qIdx := FindTensorByName(file, layerTensorName(layer, "attn_q.weight"))
 		if qIdx >= 0 {
-			ReadTensorCached(file, qIdx, tc)
+			_, tc = ReadTensorCached(file, qIdx, tc)
 		}
 
 		// Attention K
 		kIdx := FindTensorByName(file, layerTensorName(layer, "attn_k.weight"))
 		if kIdx >= 0 {
-			ReadTensorCached(file, kIdx, tc)
+			_, tc = ReadTensorCached(file, kIdx, tc)
 		}
 
 		// Attention V
 		vIdx := FindTensorByName(file, layerTensorName(layer, "attn_v.weight"))
 		if vIdx >= 0 {
-			ReadTensorCached(file, vIdx, tc)
+			_, tc = ReadTensorCached(file, vIdx, tc)
 		}
 
 		// Attention output
 		oIdx := FindTensorByName(file, layerTensorName(layer, "attn_output.weight"))
 		if oIdx >= 0 {
-			ReadTensorCached(file, oIdx, tc)
+			_, tc = ReadTensorCached(file, oIdx, tc)
 		}
 
 		// Routing gate (MoE)
 		if cfg.ExpertCount > 0 {
 			rIdx := FindTensorByName(file, layerTensorName(layer, "ffn_gate_inp.weight"))
 			if rIdx >= 0 {
-				ReadTensorCached(file, rIdx, tc)
+				_, tc = ReadTensorCached(file, rIdx, tc)
 			}
 		}
 
 		layer = layer + 1
 	}
+	return tc
 }

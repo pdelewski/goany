@@ -507,6 +507,7 @@ func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 func (e *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	e.indent = indent
 	e.Opt.returnTempReplacements = nil
+	e.Opt.returnTempPreamble = ""
 
 	// Return temp extraction: when the first return result is an identifier and
 	// later results reference it, extract those later results into temp variables
@@ -516,6 +517,7 @@ func (e *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 			ind := rustIndent(indent / 2)
 			replacements := make(map[int]string)
 			tempIdx := 0
+			var preamble strings.Builder
 			for i := 1; i < len(node.Results); i++ {
 				if !ExprContainsIdent(node.Results[i], ident.Name) {
 					continue
@@ -536,11 +538,12 @@ func (e *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 				tempName := fmt.Sprintf("__mv%d", tempIdx)
 				tempIdx++
 				rustType := e.Opt.goTypeToRust(basic.Name())
-				e.fs.PushCode(fmt.Sprintf("%slet %s: %s = %s;\n", ind, tempName, rustType, exprStr))
+				preamble.WriteString(fmt.Sprintf("%slet %s: %s = %s;\n", ind, tempName, rustType, exprStr))
 				replacements[i] = tempName
 			}
 			if len(replacements) > 0 {
 				e.Opt.returnTempReplacements = replacements
+				e.Opt.returnTempPreamble = preamble.String()
 			}
 		}
 	}
@@ -582,7 +585,9 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 		// Return temp extraction: try to extract later results that reference the first
 		// into temp variables so the first result can be moved instead of cloned.
 		returnTempReplacements := e.Opt.returnTempReplacements
+		returnTempPreamble := e.Opt.returnTempPreamble
 		e.Opt.returnTempReplacements = nil
+		e.Opt.returnTempPreamble = ""
 
 		for i, t := range tokens {
 			val := t.Content
@@ -651,6 +656,10 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 				}
 			}
 			vals = append(vals, val)
+		}
+		// Emit temp bindings before the return statement (e.g., let __mv0 = expr;)
+		if returnTempPreamble != "" {
+			e.fs.PushCode(returnTempPreamble)
 		}
 		e.fs.PushCode(fmt.Sprintf("%sreturn (%s);\n", ind, strings.Join(vals, ", ")))
 	}

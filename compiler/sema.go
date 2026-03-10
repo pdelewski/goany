@@ -397,6 +397,89 @@ func (sema *SemaChecker) isComparableKeyType(t types.Type, visited map[string]bo
 	return false
 }
 
+// containsMutableReference checks if a type contains a slice or map (directly or nested in structs).
+// Such types have different pass-by-value semantics across backends.
+func (sema *SemaChecker) containsMutableReference(t types.Type, visited map[string]bool) bool {
+	if named, ok := t.(*types.Named); ok {
+		typeName := named.Obj().Pkg().Path() + "." + named.Obj().Name()
+		if visited[typeName] {
+			return false
+		}
+		visited[typeName] = true
+		return sema.containsMutableReference(named.Underlying(), visited)
+	}
+	if _, ok := t.(*types.Slice); ok {
+		return true
+	}
+	if _, ok := t.(*types.Map); ok {
+		return true
+	}
+	if st, ok := t.(*types.Struct); ok {
+		for i := 0; i < st.NumFields(); i++ {
+			if sema.containsMutableReference(st.Field(i).Type(), visited) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// functionBodyMutatesParam checks if the function body contains any direct mutations
+// of a parameter (index assignments like param[i] = x, or param.field[i] = x).
+// This is used to avoid flagging read-only functions that take slice/map parameters.
+func functionBodyMutatesParam(body *ast.BlockStmt, paramName string) bool {
+	if body == nil {
+		return false
+	}
+	mutates := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if mutates {
+			return false
+		}
+		switch stmt := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range stmt.Lhs {
+				if indexExprReferencesIdent(lhs, paramName) {
+					mutates = true
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if indexExprReferencesIdent(stmt.X, paramName) {
+				mutates = true
+				return false
+			}
+		}
+		return true
+	})
+	return mutates
+}
+
+// indexExprReferencesIdent checks if an expression is an index expression
+// whose base references the given identifier name.
+// Handles patterns like: param[i], param.field[i], param[i].field[j]
+func indexExprReferencesIdent(expr ast.Expr, name string) bool {
+	switch e := expr.(type) {
+	case *ast.IndexExpr:
+		return baseExprReferencesIdent(e.X, name)
+	}
+	return false
+}
+
+// baseExprReferencesIdent checks if an expression ultimately references
+// the given identifier name through selector or index chains.
+func baseExprReferencesIdent(expr ast.Expr, name string) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == name
+	case *ast.SelectorExpr:
+		return baseExprReferencesIdent(e.X, name)
+	case *ast.IndexExpr:
+		return baseExprReferencesIdent(e.X, name)
+	}
+	return false
+}
+
 // Note: Structural checks for DeferStmt, GoStmt, ChanType, SelectStmt, LabeledStmt
 // are handled by the SyntaxChecker (handwritten rules in syntax_checker.go).
 
@@ -477,6 +560,60 @@ func (sema *SemaChecker) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
 						"Instead of: func foo() (result int) { ... }",
 						"Use: func foo() int { ... }",
 					})
+			}
+		}
+	}
+
+	// Check for mutable reference parameters (slice/map) not returned
+	// Skip runtime files — they're internal transpiler infrastructure with hardcoded calling conventions
+	isRuntimeFile := false
+	if sema.pkg != nil && sema.pkg.Fset != nil && node.Pos().IsValid() {
+		fname := sema.pkg.Fset.Position(node.Pos()).Filename
+		if strings.Contains(fname, "goany-runtime") {
+			isRuntimeFile = true
+		}
+	}
+	if !isRuntimeFile && node.Type != nil && node.Type.Params != nil && sema.pkg != nil && sema.pkg.TypesInfo != nil {
+		var returnTypes []types.Type
+		if node.Type.Results != nil {
+			for _, field := range node.Type.Results.List {
+				if tv, ok := sema.pkg.TypesInfo.Types[field.Type]; ok {
+					returnTypes = append(returnTypes, tv.Type)
+				}
+			}
+		}
+		for _, field := range node.Type.Params.List {
+			if tv, ok := sema.pkg.TypesInfo.Types[field.Type]; ok {
+				paramType := tv.Type
+				// Skip pointer params — handled by pointer lowering
+				if _, isPtr := paramType.(*types.Pointer); isPtr {
+					continue
+				}
+				if sema.containsMutableReference(paramType, make(map[string]bool)) {
+					found := false
+					for _, rt := range returnTypes {
+						if types.Identical(paramType, rt) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						for _, name := range field.Names {
+							// Only flag if the function body actually mutates the parameter
+							// (index assignments like param[i] = x). Read-only access is safe
+							// across all backends since reading a copy gives the same result.
+							if functionBodyMutatesParam(node.Body, name.Name) {
+								sema.reportSemaError(name.Pos(),
+									"mutable reference parameter not returned",
+									fmt.Sprintf("Parameter '%s' of function '%s' contains a slice or map.\n  Mutations to slice/map elements inside the function behave differently across backends\n  (C++/Rust copy the container, C#/Java/JS pass by reference).", name.Name, node.Name.Name),
+									[]string{
+										"Return the parameter so the caller reassigns it: items = foo(items)",
+										fmt.Sprintf("Change signature to: func %s(%s %s) %s", node.Name.Name, name.Name, tv.Type.String(), tv.Type.String()),
+									})
+							}
+						}
+					}
+				}
 			}
 		}
 	}
