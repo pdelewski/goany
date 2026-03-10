@@ -2347,6 +2347,104 @@ func testMakeSliceOfPtr() {
 	}
 }
 
+// Struct with []*T field for testing slice-of-pointer in struct
+type ParentNode struct {
+	name     string
+	children []*ListNode
+}
+
+// Helper: returns *ListNode — used to test *T function return
+func createNode(val int) *ListNode {
+	n := ListNode{value: val}
+	return &n
+}
+
+// Helper: finds first node with given value, returns *ListNode or nil
+func findNodeByValue(head *ListNode, target int) *ListNode {
+	current := head
+	for current != nil {
+		if current.value == target {
+			return current
+		}
+		current = current.next
+	}
+	return nil
+}
+
+// Test *T function return
+func testPtrReturn() {
+	p := createNode(55)
+	if p.value == 55 {
+		fmt.Println("PASS: ptr return basic")
+	} else {
+		panic("FAIL: ptr return basic")
+	}
+	p2 := createNode(66)
+	if p2.value == 66 {
+		fmt.Println("PASS: ptr return second call")
+	} else {
+		panic("FAIL: ptr return second call")
+	}
+	// Test nil return from findNodeByValue
+	n3 := ListNode{value: 10}
+	n2 := ListNode{value: 20, next: &n3}
+	n1 := ListNode{value: 30, next: &n2}
+	found := findNodeByValue(&n1, 20)
+	if found != nil {
+		if found.value == 20 {
+			fmt.Println("PASS: ptr return find existing")
+		} else {
+			panic("FAIL: ptr return find existing")
+		}
+	} else {
+		panic("FAIL: ptr return find existing nil")
+	}
+	notFound := findNodeByValue(&n1, 99)
+	if notFound == nil {
+		fmt.Println("PASS: ptr return find missing")
+	} else {
+		panic("FAIL: ptr return find missing")
+	}
+}
+
+// Test []*T as struct field
+func testSliceOfPtrStructField() {
+	c1 := ListNode{value: 1}
+	c2 := ListNode{value: 2}
+	c3 := ListNode{value: 3}
+	parent := ParentNode{name: "root", children: []*ListNode{&c1, &c2, &c3}}
+	if len(parent.children) == 3 {
+		fmt.Println("PASS: slice of ptr field len")
+	} else {
+		panic("FAIL: slice of ptr field len")
+	}
+	if parent.children[0].value == 1 {
+		fmt.Println("PASS: slice of ptr field elem 0")
+	} else {
+		panic("FAIL: slice of ptr field elem 0")
+	}
+	if parent.children[2].value == 3 {
+		fmt.Println("PASS: slice of ptr field elem 2")
+	} else {
+		panic("FAIL: slice of ptr field elem 2")
+	}
+	// Mutate through slice field
+	parent.children[1].value = 99
+	if parent.children[1].value == 99 {
+		fmt.Println("PASS: slice of ptr field mutate")
+	} else {
+		panic("FAIL: slice of ptr field mutate")
+	}
+	// Append to slice field
+	c4 := ListNode{value: 4}
+	parent.children = append(parent.children, &c4)
+	if len(parent.children) == 4 {
+		fmt.Println("PASS: slice of ptr field append")
+	} else {
+		panic("FAIL: slice of ptr field append")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2426,6 +2524,8 @@ func main() {
 	testSliceOfPtrParam()
 	testSliceOfPtrReturn()
 	testMakeSliceOfPtr()
+	testPtrReturn()
+	testSliceOfPtrStructField()
 
 	fmt.Println("=== Done ===")
 }
