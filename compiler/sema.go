@@ -1704,7 +1704,6 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		unsupportedBuiltins := map[string]string{
 			"cap":     "Use len() instead for slice length, or track capacity separately if needed.",
 			"copy":    "Use manual element-by-element copy or slice assignment instead.",
-			"new":     "Use composite literal with address-of operator: &Type{} instead of new(Type).",
 			"close":   "Channel operations are not supported in transpiled code.",
 			"recover": "Panic recovery is not supported in transpiled code. Use explicit error handling.",
 			"complex": "Complex numbers are not supported in transpiled code.",

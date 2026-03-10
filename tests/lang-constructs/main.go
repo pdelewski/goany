@@ -2185,6 +2185,73 @@ func testPtrFieldString() {
 	}
 }
 
+// Test new(T) builtin
+func testNewBuiltin() {
+	p := new(ListNode)
+	p.value = 42
+	if p.value == 42 {
+		fmt.Println("PASS: new builtin")
+	} else {
+		panic("FAIL: new builtin")
+	}
+}
+
+// Test nested &CompositeLit in composite literals
+func testNestedAddrOfComposite() {
+	root := &TreeNode{value: 1, left: &TreeNode{value: 2}, right: &TreeNode{value: 3}}
+	if root.left.value == 2 && root.right.value == 3 {
+		fmt.Println("PASS: nested addr of composite")
+	} else {
+		panic("FAIL: nested addr of composite")
+	}
+	deep := &TreeNode{left: &TreeNode{left: &TreeNode{value: 4}}}
+	if deep.left.left.value == 4 {
+		fmt.Println("PASS: deep nested addr of composite")
+	} else {
+		panic("FAIL: deep nested addr of composite")
+	}
+}
+
+// Test slice of pointers
+func testSliceOfPointers() {
+	n1 := ListNode{value: 10}
+	n2 := ListNode{value: 20}
+	n3 := ListNode{value: 30}
+	items := []*ListNode{&n1, &n2, &n3}
+	if len(items) == 3 {
+		fmt.Println("PASS: slice of pointers len")
+	} else {
+		panic("FAIL: slice of pointers len")
+	}
+	if items[0].value == 10 {
+		fmt.Println("PASS: slice of pointers access")
+	} else {
+		panic("FAIL: slice of pointers access")
+	}
+	items[0].value = 99
+	if items[0].value == 99 {
+		fmt.Println("PASS: slice of pointers mutate")
+	} else {
+		panic("FAIL: slice of pointers mutate")
+	}
+	n4 := ListNode{value: 40}
+	items = append(items, &n4)
+	if len(items) == 4 {
+		fmt.Println("PASS: slice of pointers append")
+	} else {
+		panic("FAIL: slice of pointers append")
+	}
+	sum := 0
+	for i := 0; i < len(items); i++ {
+		sum = sum + items[i].value
+	}
+	if sum == 189 {
+		fmt.Println("PASS: slice of pointers sum")
+	} else {
+		panic("FAIL: slice of pointers sum")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2257,6 +2324,9 @@ func main() {
 	testPtrFieldInt()
 	testPtrFieldRead()
 	testPtrFieldString()
+	testNewBuiltin()
+	testNestedAddrOfComposite()
+	testSliceOfPointers()
 
 	fmt.Println("=== Done ===")
 }
