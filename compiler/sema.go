@@ -234,9 +234,14 @@ func (sema *SemaChecker) checkPackageLevelVars(pkg *packages.Package) {
 // PreVisitStarExpr allows pointer types (*T) in supported contexts (params, dereference).
 // Context-specific checks below block unsupported pointer patterns.
 func (sema *SemaChecker) PreVisitStarExpr(node *ast.StarExpr, indent int) {
-	// Pointer types are supported via pointer-to-array transformation in allowed contexts.
-	// Unsupported contexts are caught by PreVisitDeclStmtValueSpecType,
-	// PreVisitFuncTypeResult, and PreVisitGenStructFieldType.
+	// Reject multi-level pointers (**T, ***T, etc.) — only single-level *T is supported
+	if _, ok := node.X.(*ast.StarExpr); ok {
+		sema.reportSemaError(node.Pos(),
+			"multi-level pointer types are not supported",
+			"The transpiler only supports single-level pointers (*T). Multi-level pointers (**T, ***T, etc.) are not supported.",
+			[]string{"Use a single-level pointer *T instead, or restructure your data to avoid pointer-to-pointer."})
+		return
+	}
 }
 
 // PreVisitDeclStmtValueSpecType allows pointer types in local variable declarations (var p *int)
@@ -263,6 +268,29 @@ func (sema *SemaChecker) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	// Address-of (&x) is supported for simple identifiers and index expressions
 	if node.Op == token.AND {
+		// Reject &x where x has a pointer type (would create **T)
+		if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+			if tv, ok := sema.pkg.TypesInfo.Types[node.X]; ok {
+				if _, isPtr := tv.Type.(*types.Pointer); isPtr {
+					sema.reportSemaError(node.Pos(),
+						"multi-level pointer types are not supported",
+						"Taking the address of a pointer variable creates **T, which is not supported by the transpiler.",
+						[]string{"Use a single-level pointer *T instead, or restructure your data to avoid pointer-to-pointer."})
+					return
+				}
+			}
+			if ident, ok := node.X.(*ast.Ident); ok {
+				if obj := sema.pkg.TypesInfo.Uses[ident]; obj != nil {
+					if _, isPtr := obj.Type().(*types.Pointer); isPtr {
+						sema.reportSemaError(node.Pos(),
+							"multi-level pointer types are not supported",
+							"Taking the address of a pointer variable creates **T, which is not supported by the transpiler.",
+							[]string{"Use a single-level pointer *T instead, or restructure your data to avoid pointer-to-pointer."})
+						return
+					}
+				}
+			}
+		}
 		switch node.X.(type) {
 		case *ast.Ident:
 			// &x — allowed
