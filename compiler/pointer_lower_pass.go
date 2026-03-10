@@ -76,15 +76,16 @@ type ptrFieldLocalInfo struct {
 
 // ptrAnalysis holds analysis results for a single function
 type ptrAnalysis struct {
-	ptrParams       map[string]types.Type         // param name -> element type (for *T params)
-	ptrVars         map[string]types.Type         // var p *T declarations -> element type
-	poolVars        map[string]types.Type         // all vars whose addr is taken (pool index vars)
-	ptrLocals       map[string]*ptrLocalInfo      // alias name -> target info (p := &x)
-	ptrIndexLocals  map[string]*ptrIndexLocalInfo // alias name -> target info (p := &arr[i])
-	ptrFieldLocals  map[string]*ptrFieldLocalInfo // alias name -> target info (p := &s.field)
-	ptrReturns      map[int]types.Type            // result index → element type (for *T returns)
-	ptrParamPools   map[string]types.Type         // pool name → elem type (from *T params)
-	callReturnPools map[string]types.Type         // pool types needed for calling ptr-returning funcs
+	ptrParams          map[string]types.Type         // param name -> element type (for *T params)
+	ptrVars            map[string]types.Type         // var p *T declarations -> element type
+	poolVars           map[string]types.Type         // all vars whose addr is taken (pool index vars)
+	ptrLocals          map[string]*ptrLocalInfo      // alias name -> target info (p := &x)
+	ptrIndexLocals     map[string]*ptrIndexLocalInfo // alias name -> target info (p := &arr[i])
+	ptrFieldLocals     map[string]*ptrFieldLocalInfo // alias name -> target info (p := &s.field)
+	ptrCompositeLits   map[string]types.Type         // var name -> elem type (p := &Type{...})
+	ptrReturns         map[int]types.Type            // result index → element type (for *T returns)
+	ptrParamPools      map[string]types.Type         // pool name → elem type (from *T params)
+	callReturnPools    map[string]types.Type         // pool types needed for calling ptr-returning funcs
 }
 
 // poolNameForType returns the pool variable name for a given element type
@@ -188,7 +189,7 @@ func (v *ptrTransformVisitor) transform() {
 		analysis := v.analyzeFuncDecl(fd)
 		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.poolVars) == 0 &&
 			len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 && len(analysis.ptrFieldLocals) == 0 &&
-			len(analysis.ptrReturns) == 0 && len(analysis.callReturnPools) == 0 {
+			len(analysis.ptrCompositeLits) == 0 && len(analysis.ptrReturns) == 0 && len(analysis.callReturnPools) == 0 {
 			continue
 		}
 		v.rewriteFuncDecl(fd, analysis)
@@ -230,15 +231,16 @@ func (v *ptrTransformVisitor) rewriteStructTypes() {
 
 func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 	result := &ptrAnalysis{
-		ptrParams:       make(map[string]types.Type),
-		ptrVars:         make(map[string]types.Type),
-		poolVars:        make(map[string]types.Type),
-		ptrLocals:       make(map[string]*ptrLocalInfo),
-		ptrIndexLocals:  make(map[string]*ptrIndexLocalInfo),
-		ptrFieldLocals:  make(map[string]*ptrFieldLocalInfo),
-		ptrReturns:      make(map[int]types.Type),
-		ptrParamPools:   make(map[string]types.Type),
-		callReturnPools: make(map[string]types.Type),
+		ptrParams:        make(map[string]types.Type),
+		ptrVars:          make(map[string]types.Type),
+		poolVars:         make(map[string]types.Type),
+		ptrLocals:        make(map[string]*ptrLocalInfo),
+		ptrIndexLocals:   make(map[string]*ptrIndexLocalInfo),
+		ptrFieldLocals:   make(map[string]*ptrFieldLocalInfo),
+		ptrCompositeLits: make(map[string]types.Type),
+		ptrReturns:       make(map[int]types.Type),
+		ptrParamPools:    make(map[string]types.Type),
+		callReturnPools:  make(map[string]types.Type),
 	}
 
 	// Find pointer returns
@@ -360,6 +362,44 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 							PtrLocalComments[lhsIdent.Pos()] = fmt.Sprintf(
 								"// %s := &%s  (pointer alias to %s, eliminated)",
 								lhsIdent.Name, rhsIdent.Name, rhsIdent.Name)
+						}
+					}
+				}
+			}
+			return true
+		})
+
+		// Find address-of composite literals: p := &Type{...}
+		// These are direct pool allocations without an intermediate variable
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.DEFINE {
+				return true
+			}
+			for i, rhs := range assign.Rhs {
+				unary, ok := rhs.(*ast.UnaryExpr)
+				if !ok || unary.Op != token.AND {
+					continue
+				}
+				if _, ok := unary.X.(*ast.CompositeLit); !ok {
+					continue
+				}
+				if i < len(assign.Lhs) {
+					if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+						// Get the element type from the type info
+						if v.pkg != nil && v.pkg.TypesInfo != nil {
+							if tv, ok := v.pkg.TypesInfo.Types[unary]; ok {
+								// tv.Type is *T, get T
+								if ptr, ok := tv.Type.(*types.Pointer); ok {
+									elemType := ptr.Elem()
+									result.ptrCompositeLits[lhsIdent.Name] = elemType
+									// Also register the pool for this type
+									pn := poolNameForType(elemType)
+									if _, exists := result.callReturnPools[pn]; !exists {
+										result.callReturnPools[pn] = elemType
+									}
+								}
+							}
 						}
 					}
 				}
@@ -737,6 +777,12 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 					poolTypesNeeded[pn] = info.elemType
 				}
 			}
+			for _, elemType := range analysis.ptrCompositeLits {
+				pn := poolNameForType(elemType)
+				if _, fromParam := poolParamTypes[pn]; !fromParam {
+					poolTypesNeeded[pn] = elemType
+				}
+			}
 			for poolName, elemType := range poolTypesNeeded {
 				typeExpr := v.typeToExpr(elemType)
 				arrType := &ast.ArrayType{Elt: typeExpr}
@@ -772,6 +818,10 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 			}
 			for _, info := range analysis.ptrIndexLocals {
 				pn := poolNameForType(info.elemType)
+				alreadyDeclared[pn] = true
+			}
+			for _, elemType := range analysis.ptrCompositeLits {
+				pn := poolNameForType(elemType)
 				alreadyDeclared[pn] = true
 			}
 			for poolName, elemType := range analysis.callReturnPools {
@@ -999,6 +1049,12 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 				if info, isIndexLocal := analysis.ptrIndexLocals[lhsIdent.Name]; isIndexLocal {
 					if unary, ok := assignStmt.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
 						return v.expandPoolCopyIn(lhsIdent.Name, unary.X, info.elemType, token.DEFINE, analysis)
+					}
+				}
+				// Handle p := &Type{...} → direct pool allocation
+				if elemType, isCompLit := analysis.ptrCompositeLits[lhsIdent.Name]; isCompLit {
+					if unary, ok := assignStmt.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+						return v.expandPoolVarAssign(lhsIdent.Name, unary.X, elemType, analysis)
 					}
 				}
 			}
@@ -1844,6 +1900,10 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 			if info, isIndexLocal := analysis.ptrIndexLocals[ident.Name]; isIndexLocal {
 				return v.poolIndexExpr(ident, info.elemType)
 			}
+			// ptrCompositeLits: *p -> _pool_T[p] (direct pool allocation)
+			if elemType, isCompLit := analysis.ptrCompositeLits[ident.Name]; isCompLit {
+				return v.poolIndexExpr(ident, elemType)
+			}
 			// ptrParams: *p -> _pool_T[p]
 			if elemType, isPtr := analysis.ptrParams[ident.Name]; isPtr {
 				return v.poolIndexExpr(ident, elemType)
@@ -1891,6 +1951,13 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		if ident, ok := e.X.(*ast.Ident); ok {
 			if info, isIndexLocal := analysis.ptrIndexLocals[ident.Name]; isIndexLocal {
 				e.X = v.poolIndexExpr(ident, info.elemType)
+				return e
+			}
+		}
+		// Handle p.field for ptrCompositeLits: p.field -> _pool_T[p].field
+		if ident, ok := e.X.(*ast.Ident); ok {
+			if elemType, isCompLit := analysis.ptrCompositeLits[ident.Name]; isCompLit {
+				e.X = v.poolIndexExpr(ident, elemType)
 				return e
 			}
 		}

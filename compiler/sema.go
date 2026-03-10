@@ -270,6 +270,8 @@ func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 			// &arr[i] — allowed
 		case *ast.SelectorExpr:
 			// &s.field — allowed
+		case *ast.CompositeLit:
+			// &Type{...} — allowed
 		default:
 			sema.reportSemaError(node.Pos(),
 				"address-of complex expression is not supported",

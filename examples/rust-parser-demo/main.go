@@ -19,7 +19,7 @@ type PtrNode struct {
 
 // convertNode converts a slice-based rustparser.Node to a pointer-based PtrNode tree.
 func convertNode(n rustparser.Node) *PtrNode {
-	tmp := PtrNode{
+	pn := &PtrNode{
 		Type:       n.Type,
 		Name:       n.Name,
 		Value:      n.Value,
@@ -28,7 +28,6 @@ func convertNode(n rustparser.Node) *PtrNode {
 		NextSib:    nil,
 		Line:       n.Line,
 	}
-	pn := &tmp
 	if len(n.Children) == 0 {
 		return pn
 	}
