@@ -288,8 +288,15 @@ func (e *JavaEmitter) javaDefaultForGoTypeQ(t types.Type) string {
 			return "0"
 		}
 	case *types.Slice:
+		// After pointer lowering, []*T fields become []int but types.Struct still has []*T
+		if _, isPtr := u.Elem().(*types.Pointer); isPtr {
+			return "new ArrayList<Integer>()"
+		}
 		elemType := e.qualifiedJavaTypeName(u.Elem())
 		return fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType))
+	case *types.Pointer:
+		// After pointer lowering, *T fields become int with -1 sentinel for nil
+		return "-1"
 	case *types.Map:
 		return "null"
 	case *types.Struct:
