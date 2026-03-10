@@ -3151,6 +3151,12 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				if _, isPtr := goType.(*types.Pointer); isPtr {
 					return fmt.Sprintf("((Number)%s).intValue()", arrExpr)
 				}
+				// []*T types are transformed to []int (ArrayList<Integer>) by pointer transform
+				if sliceType, isSlice := goType.(*types.Slice); isSlice {
+					if _, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+						return fmt.Sprintf("(ArrayList<Integer>)%s", arrExpr)
+					}
+				}
 				javaType = e.qualifiedJavaTypeName(goType)
 				if basic, ok := goType.Underlying().(*types.Basic); ok {
 					switch basic.Kind() {

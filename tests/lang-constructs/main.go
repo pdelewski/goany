@@ -2252,6 +2252,101 @@ func testSliceOfPointers() {
 	}
 }
 
+// Helper: takes *ListNode param — used to test &CompositeLit as function arg
+func getNodeValue(n *ListNode) int {
+	return n.value
+}
+
+// Helper: takes []*ListNode param — used to test []*T as function parameter
+func sumSliceOfPtrNodes(nodes []*ListNode) int {
+	total := 0
+	for i := 0; i < len(nodes); i++ {
+		total = total + nodes[i].value
+	}
+	return total
+}
+
+// Helper: returns []*ListNode — used to test []*T as function return
+func makeNodeSlice() []*ListNode {
+	n1 := ListNode{value: 100}
+	n2 := ListNode{value: 200}
+	n3 := ListNode{value: 300}
+	result := []*ListNode{&n1, &n2, &n3}
+	return result
+}
+
+// Test &CompositeLit{} as direct function argument
+func testAddrOfCompositeLitArg() {
+	val := getNodeValue(&ListNode{value: 77})
+	if val == 77 {
+		fmt.Println("PASS: addr of composite lit arg")
+	} else {
+		panic("FAIL: addr of composite lit arg")
+	}
+	val2 := getNodeValue(&ListNode{value: 88})
+	if val2 == 88 {
+		fmt.Println("PASS: addr of composite lit arg 2")
+	} else {
+		panic("FAIL: addr of composite lit arg 2")
+	}
+}
+
+// Test []*T as function parameter
+func testSliceOfPtrParam() {
+	n1 := ListNode{value: 5}
+	n2 := ListNode{value: 10}
+	n3 := ListNode{value: 15}
+	items := []*ListNode{&n1, &n2, &n3}
+	total := sumSliceOfPtrNodes(items)
+	if total == 30 {
+		fmt.Println("PASS: slice of ptr param")
+	} else {
+		panic("FAIL: slice of ptr param")
+	}
+}
+
+// Test []*T as function return
+func testSliceOfPtrReturn() {
+	nodes := makeNodeSlice()
+	if len(nodes) == 3 {
+		fmt.Println("PASS: slice of ptr return len")
+	} else {
+		panic("FAIL: slice of ptr return len")
+	}
+	if nodes[0].value == 100 {
+		fmt.Println("PASS: slice of ptr return elem 0")
+	} else {
+		panic("FAIL: slice of ptr return elem 0")
+	}
+	if nodes[1].value == 200 {
+		fmt.Println("PASS: slice of ptr return elem 1")
+	} else {
+		panic("FAIL: slice of ptr return elem 1")
+	}
+	if nodes[2].value == 300 {
+		fmt.Println("PASS: slice of ptr return elem 2")
+	} else {
+		panic("FAIL: slice of ptr return elem 2")
+	}
+}
+
+// Test make([]*T, n) expression
+func testMakeSliceOfPtr() {
+	nodes := make([]*ListNode, 0)
+	n1 := ListNode{value: 42}
+	nodes = append(nodes, &n1)
+	if len(nodes) == 1 {
+		fmt.Println("PASS: make slice of ptr len")
+	} else {
+		panic("FAIL: make slice of ptr len")
+	}
+	if nodes[0].value == 42 {
+		fmt.Println("PASS: make slice of ptr elem")
+	} else {
+		panic("FAIL: make slice of ptr elem")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2327,6 +2422,10 @@ func main() {
 	testNewBuiltin()
 	testNestedAddrOfComposite()
 	testSliceOfPointers()
+	testAddrOfCompositeLitArg()
+	testSliceOfPtrParam()
+	testSliceOfPtrReturn()
+	testMakeSliceOfPtr()
 
 	fmt.Println("=== Done ===")
 }
