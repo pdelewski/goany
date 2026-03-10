@@ -2038,15 +2038,9 @@ func (v *ptrTransformVisitor) expandPtrReturnCallAssign(assign *ast.AssignStmt, 
 	}
 
 	if hasPoolAccessLHS || assign.Tok == token.DEFINE {
-		// Use temp var approach to avoid:
-		// - pool access on LHS (safety concern with pool reallocation)
-		// - re-declaring pool vars with := (C++ structured binding issue)
-		// var __ptr_ret TYPE; __ptr_ret, _pool_T = f(args, _pool_T); result := __ptr_ret
 		var stmts []ast.Stmt
-		tmpName := fmt.Sprintf("__ptr_ret_%d", v.tmpCounter)
-		v.tmpCounter++
 
-		// Determine the correct type for the temp var
+		// Determine the correct type for the var declaration
 		// For *T returns → int, for []*T returns → []int, otherwise use original type
 		var tmpTypeExpr ast.Expr
 		tmpTypeExpr = &ast.Ident{Name: "int"}
@@ -2088,37 +2082,64 @@ func (v *ptrTransformVisitor) expandPtrReturnCallAssign(assign *ast.AssignStmt, 
 			}
 		}
 
-		// Declare temp var
-		decl := &ast.DeclStmt{Decl: &ast.GenDecl{
-			Tok: token.VAR,
-			Specs: []ast.Spec{&ast.ValueSpec{
-				Names: []*ast.Ident{{Name: tmpName}},
-				Type:  tmpTypeExpr,
-			}},
-		}}
-		stmts = append(stmts, decl)
+		if hasPoolAccessLHS {
+			// Use temp var to avoid pool access on LHS (safety concern with pool reallocation)
+			// var __ptr_ret TYPE; __ptr_ret, _pool_T = f(args, _pool_T); originalLHS = __ptr_ret
+			tmpName := fmt.Sprintf("__ptr_ret_%d", v.tmpCounter)
+			v.tmpCounter++
 
-		// Build multi-assign: __ptr_ret, _pool_T = f(args, _pool_T)
-		newLhs := []ast.Expr{&ast.Ident{Name: tmpName}}
-		for poolName, elemType := range returnPools {
-			poolIdent := &ast.Ident{Name: poolName}
-			v.registerType(poolIdent, types.NewSlice(elemType))
-			newLhs = append(newLhs, poolIdent)
-		}
-		callAssign := &ast.AssignStmt{
-			Lhs: newLhs,
-			Tok: token.ASSIGN,
-			Rhs: assign.Rhs,
-		}
-		stmts = append(stmts, callAssign)
+			decl := &ast.DeclStmt{Decl: &ast.GenDecl{
+				Tok: token.VAR,
+				Specs: []ast.Spec{&ast.ValueSpec{
+					Names: []*ast.Ident{{Name: tmpName}},
+					Type:  tmpTypeExpr,
+				}},
+			}}
+			stmts = append(stmts, decl)
 
-		// Assign temp to original LHS, preserving original token (:= or =)
-		origAssign := &ast.AssignStmt{
-			Lhs: assign.Lhs,
-			Tok: assign.Tok,
-			Rhs: []ast.Expr{&ast.Ident{Name: tmpName}},
+			newLhs := []ast.Expr{&ast.Ident{Name: tmpName}}
+			for poolName, elemType := range returnPools {
+				poolIdent := &ast.Ident{Name: poolName}
+				v.registerType(poolIdent, types.NewSlice(elemType))
+				newLhs = append(newLhs, poolIdent)
+			}
+			stmts = append(stmts, &ast.AssignStmt{
+				Lhs: newLhs,
+				Tok: token.ASSIGN,
+				Rhs: assign.Rhs,
+			})
+
+			stmts = append(stmts, &ast.AssignStmt{
+				Lhs: assign.Lhs,
+				Tok: assign.Tok,
+				Rhs: []ast.Expr{&ast.Ident{Name: tmpName}},
+			})
+		} else {
+			// := case: declare variable directly, no temp needed
+			// var n1 TYPE; n1, _pool_T = f(args, _pool_T)
+			lhsIdent := assign.Lhs[0].(*ast.Ident)
+
+			decl := &ast.DeclStmt{Decl: &ast.GenDecl{
+				Tok: token.VAR,
+				Specs: []ast.Spec{&ast.ValueSpec{
+					Names: []*ast.Ident{{Name: lhsIdent.Name}},
+					Type:  tmpTypeExpr,
+				}},
+			}}
+			stmts = append(stmts, decl)
+
+			newLhs := []ast.Expr{lhsIdent}
+			for poolName, elemType := range returnPools {
+				poolIdent := &ast.Ident{Name: poolName}
+				v.registerType(poolIdent, types.NewSlice(elemType))
+				newLhs = append(newLhs, poolIdent)
+			}
+			stmts = append(stmts, &ast.AssignStmt{
+				Lhs: newLhs,
+				Tok: token.ASSIGN,
+				Rhs: assign.Rhs,
+			})
 		}
-		stmts = append(stmts, origAssign)
 		return stmts
 	}
 
