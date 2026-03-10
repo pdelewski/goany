@@ -140,7 +140,7 @@ func main() {
 	syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
 	passes = append(passes, syntaxPass)
 
-	// Pass 2: Semantic analysis
+	// Pass 2: Semantic analysis (first run - on original AST)
 	semaChecker := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
 	passes = append(passes, sema)
@@ -149,9 +149,19 @@ func main() {
 	methodLowering := &compiler.MethodReceiverLoweringPass{}
 	passes = append(passes, methodLowering)
 
-	// Pass 4: Pointer-to-array transformation
+	// Pass 4: Semantic analysis (after method receiver lowering)
+	semaChecker2 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
+	sema2 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker2}
+	passes = append(passes, sema2)
+
+	// Pass 5: Pointer-to-array transformation
 	ptrTransform := &compiler.PointerTransformPass{}
 	passes = append(passes, ptrTransform)
+
+	// Pass 6: Semantic analysis (after pointer transform)
+	semaChecker3 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
+	sema3 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker3}
+	passes = append(passes, sema3)
 
 	// If check-sema mode, run passes and exit
 	if checkSema {
