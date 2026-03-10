@@ -24,7 +24,7 @@ func GenerateWithParams(file GGUFFile, cfg ModelConfig, tok Tokenizer, prompt st
 
 	// Create tensor cache and prewarm with non-expert weights
 	tCache := NewTensorCache(file, cfg)
-	PrewarmCache(file, cfg, tCache)
+	tCache = PrewarmCache(file, cfg, tCache)
 
 	// Initialize RNG
 	rng := NewRNG(gparams.Seed)

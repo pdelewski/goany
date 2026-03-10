@@ -234,9 +234,14 @@ func (sema *SemaChecker) checkPackageLevelVars(pkg *packages.Package) {
 // PreVisitStarExpr allows pointer types (*T) in supported contexts (params, dereference).
 // Context-specific checks below block unsupported pointer patterns.
 func (sema *SemaChecker) PreVisitStarExpr(node *ast.StarExpr, indent int) {
-	// Pointer types are supported via pointer-to-array transformation in allowed contexts.
-	// Unsupported contexts are caught by PreVisitDeclStmtValueSpecType,
-	// PreVisitFuncTypeResult, and PreVisitGenStructFieldType.
+	// Reject multi-level pointers (**T, ***T, etc.) — only single-level *T is supported
+	if _, ok := node.X.(*ast.StarExpr); ok {
+		sema.reportSemaError(node.Pos(),
+			"multi-level pointer types are not supported",
+			"The transpiler only supports single-level pointers (*T). Multi-level pointers (**T, ***T, etc.) are not supported.",
+			[]string{"Use a single-level pointer *T instead, or restructure your data to avoid pointer-to-pointer."})
+		return
+	}
 }
 
 // PreVisitDeclStmtValueSpecType allows pointer types in local variable declarations (var p *int)
@@ -263,6 +268,29 @@ func (sema *SemaChecker) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	// Address-of (&x) is supported for simple identifiers and index expressions
 	if node.Op == token.AND {
+		// Reject &x where x has a pointer type (would create **T)
+		if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+			if tv, ok := sema.pkg.TypesInfo.Types[node.X]; ok {
+				if _, isPtr := tv.Type.(*types.Pointer); isPtr {
+					sema.reportSemaError(node.Pos(),
+						"multi-level pointer types are not supported",
+						"Taking the address of a pointer variable creates **T, which is not supported by the transpiler.",
+						[]string{"Use a single-level pointer *T instead, or restructure your data to avoid pointer-to-pointer."})
+					return
+				}
+			}
+			if ident, ok := node.X.(*ast.Ident); ok {
+				if obj := sema.pkg.TypesInfo.Uses[ident]; obj != nil {
+					if _, isPtr := obj.Type().(*types.Pointer); isPtr {
+						sema.reportSemaError(node.Pos(),
+							"multi-level pointer types are not supported",
+							"Taking the address of a pointer variable creates **T, which is not supported by the transpiler.",
+							[]string{"Use a single-level pointer *T instead, or restructure your data to avoid pointer-to-pointer."})
+						return
+					}
+				}
+			}
+		}
 		switch node.X.(type) {
 		case *ast.Ident:
 			// &x — allowed
@@ -270,6 +298,8 @@ func (sema *SemaChecker) PreVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 			// &arr[i] — allowed
 		case *ast.SelectorExpr:
 			// &s.field — allowed
+		case *ast.CompositeLit:
+			// &Type{...} — allowed
 		default:
 			sema.reportSemaError(node.Pos(),
 				"address-of complex expression is not supported",
@@ -306,13 +336,24 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 	// Check for unsupported key types
 	if tv, ok := sema.pkg.TypesInfo.Types[node.Key]; ok && tv.Type != nil {
 		if sema.isComparableKeyType(tv.Type, make(map[string]bool)) {
-			return // supported key type
+			// supported key type — continue to value check
+		} else {
+			// If not a supported key type, error
+			sema.reportSemaError(node.Pos(),
+				"unsupported map key type",
+				fmt.Sprintf("Map key type '%s' is not supported.\n  Supported key types: primitives (string, int, bool, floats) or structs with only primitive fields.", tv.Type.String()),
+				[]string{"Use a supported primitive type or a simple struct as the key."})
 		}
-		// If not a supported key type, error
-		sema.reportSemaError(node.Pos(),
-			"unsupported map key type",
-			fmt.Sprintf("Map key type '%s' is not supported.\n  Supported key types: primitives (string, int, bool, floats) or structs with only primitive fields.", tv.Type.String()),
-			[]string{"Use a supported primitive type or a simple struct as the key."})
+	}
+
+	// Check for pointer values in maps: map[K]*T is not supported
+	if tv, ok := sema.pkg.TypesInfo.Types[node.Value]; ok && tv.Type != nil {
+		if _, isPtr := tv.Type.(*types.Pointer); isPtr {
+			sema.reportSemaError(node.Pos(),
+				"pointer values in maps are not supported",
+				fmt.Sprintf("Map value type '%s' is not supported.\n  The transpiler cannot manage pointer lifetimes in map values.", tv.Type.String()),
+				[]string{"Use non-pointer struct values in maps instead of pointers."})
+		}
 	}
 }
 
@@ -353,6 +394,89 @@ func (sema *SemaChecker) isComparableKeyType(t types.Type, visited map[string]bo
 	}
 
 	// Other types (slices, maps, channels, functions, interfaces) are not comparable
+	return false
+}
+
+// containsMutableReference checks if a type contains a slice or map (directly or nested in structs).
+// Such types have different pass-by-value semantics across backends.
+func (sema *SemaChecker) containsMutableReference(t types.Type, visited map[string]bool) bool {
+	if named, ok := t.(*types.Named); ok {
+		typeName := named.Obj().Pkg().Path() + "." + named.Obj().Name()
+		if visited[typeName] {
+			return false
+		}
+		visited[typeName] = true
+		return sema.containsMutableReference(named.Underlying(), visited)
+	}
+	if _, ok := t.(*types.Slice); ok {
+		return true
+	}
+	if _, ok := t.(*types.Map); ok {
+		return true
+	}
+	if st, ok := t.(*types.Struct); ok {
+		for i := 0; i < st.NumFields(); i++ {
+			if sema.containsMutableReference(st.Field(i).Type(), visited) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// functionBodyMutatesParam checks if the function body contains any direct mutations
+// of a parameter (index assignments like param[i] = x, or param.field[i] = x).
+// This is used to avoid flagging read-only functions that take slice/map parameters.
+func functionBodyMutatesParam(body *ast.BlockStmt, paramName string) bool {
+	if body == nil {
+		return false
+	}
+	mutates := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if mutates {
+			return false
+		}
+		switch stmt := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range stmt.Lhs {
+				if indexExprReferencesIdent(lhs, paramName) {
+					mutates = true
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if indexExprReferencesIdent(stmt.X, paramName) {
+				mutates = true
+				return false
+			}
+		}
+		return true
+	})
+	return mutates
+}
+
+// indexExprReferencesIdent checks if an expression is an index expression
+// whose base references the given identifier name.
+// Handles patterns like: param[i], param.field[i], param[i].field[j]
+func indexExprReferencesIdent(expr ast.Expr, name string) bool {
+	switch e := expr.(type) {
+	case *ast.IndexExpr:
+		return baseExprReferencesIdent(e.X, name)
+	}
+	return false
+}
+
+// baseExprReferencesIdent checks if an expression ultimately references
+// the given identifier name through selector or index chains.
+func baseExprReferencesIdent(expr ast.Expr, name string) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == name
+	case *ast.SelectorExpr:
+		return baseExprReferencesIdent(e.X, name)
+	case *ast.IndexExpr:
+		return baseExprReferencesIdent(e.X, name)
+	}
 	return false
 }
 
@@ -436,6 +560,60 @@ func (sema *SemaChecker) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
 						"Instead of: func foo() (result int) { ... }",
 						"Use: func foo() int { ... }",
 					})
+			}
+		}
+	}
+
+	// Check for mutable reference parameters (slice/map) not returned
+	// Skip runtime files — they're internal transpiler infrastructure with hardcoded calling conventions
+	isRuntimeFile := false
+	if sema.pkg != nil && sema.pkg.Fset != nil && node.Pos().IsValid() {
+		fname := sema.pkg.Fset.Position(node.Pos()).Filename
+		if strings.Contains(fname, "goany-runtime") {
+			isRuntimeFile = true
+		}
+	}
+	if !isRuntimeFile && node.Type != nil && node.Type.Params != nil && sema.pkg != nil && sema.pkg.TypesInfo != nil {
+		var returnTypes []types.Type
+		if node.Type.Results != nil {
+			for _, field := range node.Type.Results.List {
+				if tv, ok := sema.pkg.TypesInfo.Types[field.Type]; ok {
+					returnTypes = append(returnTypes, tv.Type)
+				}
+			}
+		}
+		for _, field := range node.Type.Params.List {
+			if tv, ok := sema.pkg.TypesInfo.Types[field.Type]; ok {
+				paramType := tv.Type
+				// Skip pointer params — handled by pointer lowering
+				if _, isPtr := paramType.(*types.Pointer); isPtr {
+					continue
+				}
+				if sema.containsMutableReference(paramType, make(map[string]bool)) {
+					found := false
+					for _, rt := range returnTypes {
+						if types.Identical(paramType, rt) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						for _, name := range field.Names {
+							// Only flag if the function body actually mutates the parameter
+							// (index assignments like param[i] = x). Read-only access is safe
+							// across all backends since reading a copy gives the same result.
+							if functionBodyMutatesParam(node.Body, name.Name) {
+								sema.reportSemaError(name.Pos(),
+									"mutable reference parameter not returned",
+									fmt.Sprintf("Parameter '%s' of function '%s' contains a slice or map.\n  Mutations to slice/map elements inside the function behave differently across backends\n  (C++/Rust copy the container, C#/Java/JS pass by reference).", name.Name, node.Name.Name),
+									[]string{
+										"Return the parameter so the caller reassigns it: items = foo(items)",
+										fmt.Sprintf("Change signature to: func %s(%s %s) %s", node.Name.Name, name.Name, tv.Type.String(), tv.Type.String()),
+									})
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1702,7 +1880,6 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		unsupportedBuiltins := map[string]string{
 			"cap":     "Use len() instead for slice length, or track capacity separately if needed.",
 			"copy":    "Use manual element-by-element copy or slice assignment instead.",
-			"new":     "Use composite literal with address-of operator: &Type{} instead of new(Type).",
 			"close":   "Channel operations are not supported in transpiled code.",
 			"recover": "Panic recovery is not supported in transpiled code. Use explicit error handling.",
 			"complex": "Complex numbers are not supported in transpiled code.",

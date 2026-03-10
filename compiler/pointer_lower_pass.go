@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -75,15 +76,17 @@ type ptrFieldLocalInfo struct {
 
 // ptrAnalysis holds analysis results for a single function
 type ptrAnalysis struct {
-	ptrParams       map[string]types.Type         // param name -> element type (for *T params)
-	ptrVars         map[string]types.Type         // var p *T declarations -> element type
-	poolVars        map[string]types.Type         // all vars whose addr is taken (pool index vars)
-	ptrLocals       map[string]*ptrLocalInfo      // alias name -> target info (p := &x)
-	ptrIndexLocals  map[string]*ptrIndexLocalInfo // alias name -> target info (p := &arr[i])
-	ptrFieldLocals  map[string]*ptrFieldLocalInfo // alias name -> target info (p := &s.field)
-	ptrReturns      map[int]types.Type            // result index → element type (for *T returns)
-	ptrParamPools   map[string]types.Type         // pool name → elem type (from *T params)
-	callReturnPools map[string]types.Type         // pool types needed for calling ptr-returning funcs
+	ptrParams          map[string]types.Type         // param name -> element type (for *T params)
+	ptrVars            map[string]types.Type         // var p *T declarations -> element type
+	poolVars           map[string]types.Type         // all vars whose addr is taken (pool index vars)
+	ptrLocals          map[string]*ptrLocalInfo      // alias name -> target info (p := &x)
+	ptrIndexLocals     map[string]*ptrIndexLocalInfo // alias name -> target info (p := &arr[i])
+	ptrFieldLocals     map[string]*ptrFieldLocalInfo // alias name -> target info (p := &s.field)
+	ptrCompositeLits   map[string]types.Type         // var name -> elem type (p := &Type{...})
+	ptrReturns         map[int]types.Type            // result index → element type (for *T returns)
+	ptrParamPools      map[string]types.Type         // pool name → elem type (from *T params)
+	callReturnPools    map[string]types.Type         // pool types needed for calling ptr-returning funcs
+	sliceOfPtrVars     map[string]types.Type         // var name -> elem type (for []*T vars)
 }
 
 // poolNameForType returns the pool variable name for a given element type
@@ -127,6 +130,58 @@ func (v *ptrTransformVisitor) poolIndexExpr(index ast.Expr, elemType types.Type)
 	return indexExpr
 }
 
+// hoistNestedPoolIndicesInAssign checks if an assignment LHS contains nested pool
+// indexing (e.g., _pool_T[_pool_T[x].F1].F2 = val) and hoists the inner pool
+// index to a temp variable. This is required for Rust borrow checker safety:
+// nested pool indexing creates simultaneous mutable+immutable borrows on the same vector.
+// Returns pre-statements (temp var declarations) and modifies LHS in place.
+func (v *ptrTransformVisitor) hoistNestedPoolIndicesInAssign(s *ast.AssignStmt) []ast.Stmt {
+	var preStmts []ast.Stmt
+	for i, lhs := range s.Lhs {
+		s.Lhs[i] = v.hoistNestedPoolIndex(lhs, &preStmts)
+	}
+	return preStmts
+}
+
+// hoistNestedPoolIndex walks an LHS expression. If it finds _pool_T[innerExpr]
+// where innerExpr contains another _pool_* access, it hoists innerExpr to a temp
+// variable and replaces the index with the temp variable reference.
+func (v *ptrTransformVisitor) hoistNestedPoolIndex(expr ast.Expr, preStmts *[]ast.Stmt) ast.Expr {
+	if expr == nil {
+		return nil
+	}
+	switch e := expr.(type) {
+	case *ast.SelectorExpr:
+		// For _pool_T[innerExpr].Field, process the IndexExpr inside
+		e.X = v.hoistNestedPoolIndex(e.X, preStmts)
+		return e
+	case *ast.IndexExpr:
+		if ident, ok := e.X.(*ast.Ident); ok && strings.HasPrefix(ident.Name, "_pool_") {
+			// This is _pool_T[innerExpr]. Check if innerExpr contains pool access.
+			if containsPoolAccess(e.Index) {
+				// Hoist innerExpr to a temp variable
+				tmpName := fmt.Sprintf("__nested_idx_%d", v.tmpCounter)
+				v.tmpCounter++
+				tmpIdent := &ast.Ident{Name: tmpName}
+				v.registerType(tmpIdent, types.Typ[types.Int])
+
+				// Generate: __nested_idx_N := innerExpr
+				declStmt := &ast.AssignStmt{
+					Lhs: []ast.Expr{&ast.Ident{Name: tmpName}},
+					Tok: token.DEFINE,
+					Rhs: []ast.Expr{e.Index},
+				}
+				*preStmts = append(*preStmts, declStmt)
+
+				// Replace the index with the temp variable
+				e.Index = tmpIdent
+			}
+		}
+		return e
+	}
+	return expr
+}
+
 func (v *ptrTransformVisitor) transform() {
 	// Rewrite struct types first: *T fields -> []T fields
 	v.rewriteStructTypes()
@@ -135,7 +190,8 @@ func (v *ptrTransformVisitor) transform() {
 		analysis := v.analyzeFuncDecl(fd)
 		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.poolVars) == 0 &&
 			len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 && len(analysis.ptrFieldLocals) == 0 &&
-			len(analysis.ptrReturns) == 0 && len(analysis.callReturnPools) == 0 {
+			len(analysis.ptrCompositeLits) == 0 && len(analysis.ptrReturns) == 0 && len(analysis.callReturnPools) == 0 &&
+			len(analysis.sliceOfPtrVars) == 0 && len(analysis.ptrParamPools) == 0 {
 			continue
 		}
 		v.rewriteFuncDecl(fd, analysis)
@@ -170,6 +226,19 @@ func (v *ptrTransformVisitor) rewriteStructTypes() {
 					field.Type = newType
 					v.registerType(newType, types.Typ[types.Int])
 				}
+				// Rewrite []*T → []int in struct fields
+				if arrType, ok := field.Type.(*ast.ArrayType); ok {
+					if starExpr, ok := arrType.Elt.(*ast.StarExpr); ok {
+						if ident, ok := starExpr.X.(*ast.Ident); ok {
+							v.poolTypes[ident.Name] = true
+						}
+						newElt := &ast.Ident{Name: "int"}
+						arrType.Elt = newElt
+						sliceOfInt := types.NewSlice(types.Typ[types.Int])
+						v.registerType(newElt, types.Typ[types.Int])
+						v.registerType(arrType, sliceOfInt)
+					}
+				}
 			}
 		}
 	}
@@ -177,15 +246,17 @@ func (v *ptrTransformVisitor) rewriteStructTypes() {
 
 func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 	result := &ptrAnalysis{
-		ptrParams:       make(map[string]types.Type),
-		ptrVars:         make(map[string]types.Type),
-		poolVars:        make(map[string]types.Type),
-		ptrLocals:       make(map[string]*ptrLocalInfo),
-		ptrIndexLocals:  make(map[string]*ptrIndexLocalInfo),
-		ptrFieldLocals:  make(map[string]*ptrFieldLocalInfo),
-		ptrReturns:      make(map[int]types.Type),
-		ptrParamPools:   make(map[string]types.Type),
-		callReturnPools: make(map[string]types.Type),
+		ptrParams:        make(map[string]types.Type),
+		ptrVars:          make(map[string]types.Type),
+		poolVars:         make(map[string]types.Type),
+		ptrLocals:        make(map[string]*ptrLocalInfo),
+		ptrIndexLocals:   make(map[string]*ptrIndexLocalInfo),
+		ptrFieldLocals:   make(map[string]*ptrFieldLocalInfo),
+		ptrCompositeLits: make(map[string]types.Type),
+		ptrReturns:       make(map[int]types.Type),
+		ptrParamPools:    make(map[string]types.Type),
+		callReturnPools:  make(map[string]types.Type),
+		sliceOfPtrVars:   make(map[string]types.Type),
 	}
 
 	// Find pointer returns
@@ -195,6 +266,24 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 				if v.pkg != nil && v.pkg.TypesInfo != nil {
 					if tv, ok := v.pkg.TypesInfo.Types[starExpr.X]; ok {
 						result.ptrReturns[i] = tv.Type
+					}
+				}
+			}
+			// []*T returns need pool types registered for return handling
+			if arrType, ok := field.Type.(*ast.ArrayType); ok {
+				if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+					if v.pkg != nil && v.pkg.TypesInfo != nil {
+						if tv, ok := v.pkg.TypesInfo.Types[field.Type]; ok {
+							if sliceType, ok := tv.Type.(*types.Slice); ok {
+								if ptrType, ok := sliceType.Elem().(*types.Pointer); ok {
+									elemType := ptrType.Elem()
+									pn := poolNameForType(elemType)
+									result.callReturnPools[pn] = elemType
+									// Also add to ptrParamPools so expandPtrReturn appends pool to returns
+									result.ptrParamPools[pn] = elemType
+								}
+							}
+						}
 					}
 				}
 			}
@@ -209,6 +298,27 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 					if tv, ok := v.pkg.TypesInfo.Types[starExpr.X]; ok {
 						for _, name := range field.Names {
 							result.ptrParams[name.Name] = tv.Type
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Find []*T params — slice of pointers as function parameters
+	if fd.Type.Params != nil {
+		for _, field := range fd.Type.Params.List {
+			if arrType, ok := field.Type.(*ast.ArrayType); ok {
+				if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+					if v.pkg != nil && v.pkg.TypesInfo != nil {
+						if tv, ok := v.pkg.TypesInfo.Types[field.Type]; ok {
+							if sliceType, ok := tv.Type.(*types.Slice); ok {
+								if ptrType, ok := sliceType.Elem().(*types.Pointer); ok {
+									elemType := ptrType.Elem()
+									pn := poolNameForType(elemType)
+									result.ptrParamPools[pn] = elemType
+								}
+							}
 						}
 					}
 				}
@@ -313,6 +423,139 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			}
 			return true
 		})
+
+		// Find address-of composite literals: p := &Type{...}
+		// These are direct pool allocations without an intermediate variable
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.DEFINE {
+				return true
+			}
+			for i, rhs := range assign.Rhs {
+				unary, ok := rhs.(*ast.UnaryExpr)
+				if !ok || unary.Op != token.AND {
+					continue
+				}
+				if _, ok := unary.X.(*ast.CompositeLit); !ok {
+					continue
+				}
+				if i < len(assign.Lhs) {
+					if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+						// Get the element type from the type info
+						if v.pkg != nil && v.pkg.TypesInfo != nil {
+							if tv, ok := v.pkg.TypesInfo.Types[unary]; ok {
+								// tv.Type is *T, get T
+								if ptr, ok := tv.Type.(*types.Pointer); ok {
+									elemType := ptr.Elem()
+									result.ptrCompositeLits[lhsIdent.Name] = elemType
+									// Also register the pool for this type
+									pn := poolNameForType(elemType)
+									if _, exists := result.callReturnPools[pn]; !exists {
+										result.callReturnPools[pn] = elemType
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
+
+		// Scan for nested &CompositeLit inside composite literal fields
+		// e.g., &TreeNode{left: &TreeNode{value: 2}} — register inner types for pool allocation
+		v.findNestedAddrOfCompositeLits(fd.Body, result)
+
+		// Find new(T) calls: p := new(T) — treat as &T{} for pool allocation
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok || assign.Tok != token.DEFINE {
+				return true
+			}
+			for i, rhs := range assign.Rhs {
+				callExpr, ok := rhs.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				funIdent, ok := callExpr.Fun.(*ast.Ident)
+				if !ok || funIdent.Name != "new" {
+					continue
+				}
+				if i < len(assign.Lhs) {
+					if lhsIdent, ok := assign.Lhs[i].(*ast.Ident); ok {
+						if v.pkg != nil && v.pkg.TypesInfo != nil {
+							if tv, ok := v.pkg.TypesInfo.Types[callExpr]; ok {
+								// tv.Type is *T, get T
+								if ptr, ok := tv.Type.(*types.Pointer); ok {
+									elemType := ptr.Elem()
+									result.ptrCompositeLits[lhsIdent.Name] = elemType
+									pn := poolNameForType(elemType)
+									if _, exists := result.callReturnPools[pn]; !exists {
+										result.callReturnPools[pn] = elemType
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
+
+		// Find []*T variables: items := []*T{...} or var items []*T
+		if v.pkg != nil && v.pkg.TypesInfo != nil {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				// Handle short variable declarations: items := []*T{...}
+				if assign, ok := n.(*ast.AssignStmt); ok && assign.Tok == token.DEFINE {
+					for i, lhs := range assign.Lhs {
+						if lhsIdent, ok := lhs.(*ast.Ident); ok {
+							if i < len(assign.Rhs) {
+								if tv, ok := v.pkg.TypesInfo.Types[assign.Rhs[i]]; ok {
+									if sliceType, ok := tv.Type.(*types.Slice); ok {
+										if ptrType, ok := sliceType.Elem().(*types.Pointer); ok {
+											elemType := ptrType.Elem()
+											result.sliceOfPtrVars[lhsIdent.Name] = elemType
+											pn := poolNameForType(elemType)
+											if _, exists := result.callReturnPools[pn]; !exists {
+												result.callReturnPools[pn] = elemType
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				// Handle var declarations: var items []*T
+				if declStmt, ok := n.(*ast.DeclStmt); ok {
+					if genDecl, ok := declStmt.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
+						for _, spec := range genDecl.Specs {
+							if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+								if arrType, ok := valueSpec.Type.(*ast.ArrayType); ok {
+									if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+										for _, name := range valueSpec.Names {
+											if obj := v.pkg.TypesInfo.Defs[name]; obj != nil {
+												if sliceType, ok := obj.Type().(*types.Slice); ok {
+													if ptrType, ok := sliceType.Elem().(*types.Pointer); ok {
+														elemType := ptrType.Elem()
+														result.sliceOfPtrVars[name.Name] = elemType
+														pn := poolNameForType(elemType)
+														if _, exists := result.callReturnPools[pn]; !exists {
+															result.callReturnPools[pn] = elemType
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
 
 		// Find ptrVar assignments: p = &x where p is a ptrVar and x is a boxed variable
 		// Convert these to ptrLocals (alias elimination) for cross-backend compatibility
@@ -505,18 +748,34 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 			}
 			results := fnType.Results()
 			for i := 0; i < results.Len(); i++ {
-				if ptrType, isPtr := results.At(i).Type().(*types.Pointer); isPtr {
+				resultType := results.At(i).Type()
+				if ptrType, isPtr := resultType.(*types.Pointer); isPtr {
 					elemType := ptrType.Elem()
 					pn := poolNameForType(elemType)
 					result.callReturnPools[pn] = elemType
 				}
+				if sliceType, isSlice := resultType.(*types.Slice); isSlice {
+					if ptrType, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+						elemType := ptrType.Elem()
+						pn := poolNameForType(elemType)
+						result.callReturnPools[pn] = elemType
+					}
+				}
 			}
 			params := fnType.Params()
 			for i := 0; i < params.Len(); i++ {
-				if ptrType, isPtr := params.At(i).Type().(*types.Pointer); isPtr {
+				paramType := params.At(i).Type()
+				if ptrType, isPtr := paramType.(*types.Pointer); isPtr {
 					elemType := ptrType.Elem()
 					pn := poolNameForType(elemType)
 					result.callReturnPools[pn] = elemType
+				}
+				if sliceType, isSlice := paramType.(*types.Slice); isSlice {
+					if ptrType, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+						elemType := ptrType.Elem()
+						pn := poolNameForType(elemType)
+						result.callReturnPools[pn] = elemType
+					}
 				}
 			}
 			return true
@@ -551,6 +810,31 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 					poolParamTypes[pn] = elemType
 				}
 			}
+			// Rewrite []*T → []int for slice-of-pointer params
+			if arrType, ok := field.Type.(*ast.ArrayType); ok {
+				if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+					var elemType types.Type
+					if v.pkg != nil && v.pkg.TypesInfo != nil {
+						if tv, ok := v.pkg.TypesInfo.Types[field.Type]; ok {
+							if sliceType, ok := tv.Type.(*types.Slice); ok {
+								if ptrType, ok := sliceType.Elem().(*types.Pointer); ok {
+									elemType = ptrType.Elem()
+								}
+							}
+						}
+					}
+					// []*T → []int
+					newElt := &ast.Ident{Name: "int"}
+					arrType.Elt = newElt
+					sliceOfInt := types.NewSlice(types.Typ[types.Int])
+					v.registerType(newElt, types.Typ[types.Int])
+					v.registerType(arrType, sliceOfInt)
+					if elemType != nil {
+						pn := poolNameForType(elemType)
+						poolParamTypes[pn] = elemType
+					}
+				}
+			}
 		}
 		// Append _pool_T []T params at end for each unique pool type from pointer params
 		for poolName, elemType := range poolParamTypes {
@@ -562,6 +846,49 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 				Names: []*ast.Ident{{Name: poolName}},
 				Type:  arrType,
 			})
+		}
+	}
+
+	// Rewrite []*T return types → []int and add pool params/returns
+	if fd.Type.Results != nil {
+		for _, field := range fd.Type.Results.List {
+			if arrType, ok := field.Type.(*ast.ArrayType); ok {
+				if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+					var elemType types.Type
+					if v.pkg != nil && v.pkg.TypesInfo != nil {
+						if tv, ok := v.pkg.TypesInfo.Types[field.Type]; ok {
+							if sliceType, ok := tv.Type.(*types.Slice); ok {
+								if ptrType, ok := sliceType.Elem().(*types.Pointer); ok {
+									elemType = ptrType.Elem()
+								}
+							}
+						}
+					}
+					newElt := &ast.Ident{Name: "int"}
+					arrType.Elt = newElt
+					sliceOfInt := types.NewSlice(types.Typ[types.Int])
+					v.registerType(newElt, types.Typ[types.Int])
+					v.registerType(arrType, sliceOfInt)
+					if elemType != nil {
+						pn := poolNameForType(elemType)
+						if _, fromParam := poolParamTypes[pn]; !fromParam {
+							// Add pool param for []*T return type
+							typeExpr := v.typeToExpr(elemType)
+							pArrType := &ast.ArrayType{Elt: typeExpr}
+							pSliceType := types.NewSlice(elemType)
+							v.registerType(pArrType, pSliceType)
+							if fd.Type.Params == nil {
+								fd.Type.Params = &ast.FieldList{}
+							}
+							fd.Type.Params.List = append(fd.Type.Params.List, &ast.Field{
+								Names: []*ast.Ident{{Name: pn}},
+								Type:  pArrType,
+							})
+							poolParamTypes[pn] = elemType
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -684,6 +1011,18 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 					poolTypesNeeded[pn] = info.elemType
 				}
 			}
+			for _, elemType := range analysis.ptrCompositeLits {
+				pn := poolNameForType(elemType)
+				if _, fromParam := poolParamTypes[pn]; !fromParam {
+					poolTypesNeeded[pn] = elemType
+				}
+			}
+			for _, elemType := range analysis.sliceOfPtrVars {
+				pn := poolNameForType(elemType)
+				if _, fromParam := poolParamTypes[pn]; !fromParam {
+					poolTypesNeeded[pn] = elemType
+				}
+			}
 			for poolName, elemType := range poolTypesNeeded {
 				typeExpr := v.typeToExpr(elemType)
 				arrType := &ast.ArrayType{Elt: typeExpr}
@@ -719,6 +1058,14 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 			}
 			for _, info := range analysis.ptrIndexLocals {
 				pn := poolNameForType(info.elemType)
+				alreadyDeclared[pn] = true
+			}
+			for _, elemType := range analysis.ptrCompositeLits {
+				pn := poolNameForType(elemType)
+				alreadyDeclared[pn] = true
+			}
+			for _, elemType := range analysis.sliceOfPtrVars {
+				pn := poolNameForType(elemType)
 				alreadyDeclared[pn] = true
 			}
 			for poolName, elemType := range analysis.callReturnPools {
@@ -948,6 +1295,21 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 						return v.expandPoolCopyIn(lhsIdent.Name, unary.X, info.elemType, token.DEFINE, analysis)
 					}
 				}
+				// Handle p := new(T) → direct pool allocation with zero-value struct
+				if elemType, isCompLit := analysis.ptrCompositeLits[lhsIdent.Name]; isCompLit {
+					if callExpr, ok := assignStmt.Rhs[0].(*ast.CallExpr); ok {
+						if funIdent, ok := callExpr.Fun.(*ast.Ident); ok && funIdent.Name == "new" {
+							zeroVal := v.zeroValueExpr(elemType)
+							return v.expandPoolVarAssign(lhsIdent.Name, zeroVal, elemType, analysis)
+						}
+					}
+				}
+				// Handle p := &Type{...} → direct pool allocation
+				if elemType, isCompLit := analysis.ptrCompositeLits[lhsIdent.Name]; isCompLit {
+					if unary, ok := assignStmt.Rhs[0].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+						return v.expandPoolVarAssign(lhsIdent.Name, unary.X, elemType, analysis)
+					}
+				}
 			}
 		}
 	}
@@ -986,9 +1348,47 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 		}
 	}
 
+	// Handle append to []*T slices: items = append(items, &CompositeLit{...})
+	// Hoist &CompositeLit args to pool allocations before the append
+	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && (assignStmt.Tok == token.ASSIGN || assignStmt.Tok == token.DEFINE) {
+		if len(assignStmt.Rhs) == 1 {
+			if callExpr, ok := assignStmt.Rhs[0].(*ast.CallExpr); ok {
+				if funIdent, ok := callExpr.Fun.(*ast.Ident); ok && funIdent.Name == "append" {
+					if len(callExpr.Args) >= 2 {
+						// Check if target is a sliceOfPtrVars
+						isSliceOfPtr := false
+						if len(assignStmt.Lhs) == 1 {
+							if lhsIdent, ok := assignStmt.Lhs[0].(*ast.Ident); ok {
+								if _, ok := analysis.sliceOfPtrVars[lhsIdent.Name]; ok {
+									isSliceOfPtr = true
+								}
+							}
+						}
+						if isSliceOfPtr {
+							var preStmts []ast.Stmt
+							for i := 1; i < len(callExpr.Args); i++ {
+								callExpr.Args[i] = v.hoistAddrOfCompositeLit(callExpr.Args[i], analysis, &preStmts)
+							}
+							// Rewrite the statement normally
+							rewritten := v.rewriteStmt(stmt, analysis)
+							return append(preStmts, rewritten)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Handle &CompositeLit{} as function arguments in any call expression
+	// Hoist &CompositeLit args to pool allocations before the call
+	// The hoisted pre-statements are collected and the rest of the function continues
+	var addrOfCompLitPreStmts []ast.Stmt
+	v.hoistAddrOfCompositeLitInCallArgs(stmt, analysis, &addrOfCompLitPreStmts)
+
 	// Handle return statements in functions with pointer returns or param pools
 	if retStmt, ok := stmt.(*ast.ReturnStmt); ok && (len(analysis.ptrReturns) > 0 || len(analysis.ptrParamPools) > 0) {
-		return v.expandPtrReturn(retStmt, analysis)
+		result := v.expandPtrReturn(retStmt, analysis)
+		return append(addrOfCompLitPreStmts, result...)
 	}
 
 	// Handle standalone call expressions that return pools (e.g., increment(&x))
@@ -1007,7 +1407,8 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 					v.registerType(poolIdent, types.NewSlice(elemType))
 					lhs = append(lhs, poolIdent)
 				}
-				return []ast.Stmt{&ast.AssignStmt{Lhs: lhs, Tok: token.ASSIGN, Rhs: []ast.Expr{rewrittenCall}}}
+				result := []ast.Stmt{&ast.AssignStmt{Lhs: lhs, Tok: token.ASSIGN, Rhs: []ast.Expr{rewrittenCall}}}
+				return append(addrOfCompLitPreStmts, result...)
 			}
 		}
 	}
@@ -1017,7 +1418,8 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 		if len(assignStmt.Rhs) == 1 {
 			if callExpr, ok := assignStmt.Rhs[0].(*ast.CallExpr); ok {
 				if pools := v.getCallReturnPools(callExpr); len(pools) > 0 {
-					return v.expandPtrReturnCallAssign(assignStmt, pools, analysis)
+					result := v.expandPtrReturnCallAssign(assignStmt, pools, analysis)
+					return append(addrOfCompLitPreStmts, result...)
 				}
 			}
 		}
@@ -1035,8 +1437,9 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 		if ifStmt.Else != nil {
 			ifStmt.Else = v.rewriteStmt(ifStmt.Else, analysis)
 		}
-		if len(hoistStmts) > 0 {
-			return append(hoistStmts, ifStmt)
+		allHoist := append(addrOfCompLitPreStmts, hoistStmts...)
+		if len(allHoist) > 0 {
+			return append(allHoist, ifStmt)
 		}
 		return []ast.Stmt{ifStmt}
 	}
@@ -1066,7 +1469,33 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 		return []ast.Stmt{forStmt}
 	}
 
-	return []ast.Stmt{v.rewriteStmt(stmt, analysis)}
+	// For assignment statements, rewrite first, then:
+	// 1. Hoist pool-returning calls from RHS binary expressions to temp variables
+	//    (C++ can't use tuple results directly in arithmetic: int + tuple<int,vec> fails)
+	// 2. Hoist nested pool indices from LHS to temp variables
+	//    (Rust borrow checker: nested pool indexing = simultaneous mut+immut borrow)
+	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && assignStmt.Tok == token.ASSIGN {
+		rewritten := v.rewriteAssignStmt(assignStmt, analysis)
+		if rewrittenAssign, isAssign := rewritten.(*ast.AssignStmt); isAssign {
+			var preStmts []ast.Stmt
+			// Hoist pool-returning calls from RHS expressions
+			for i, rhs := range rewrittenAssign.Rhs {
+				rewrittenAssign.Rhs[i] = v.hoistPoolCalls(rhs, analysis, &preStmts)
+			}
+			// Hoist nested pool indices from LHS
+			nestedPreStmts := v.hoistNestedPoolIndicesInAssign(rewrittenAssign)
+			preStmts = append(preStmts, nestedPreStmts...)
+			allPreStmts := append(addrOfCompLitPreStmts, preStmts...)
+			if len(allPreStmts) > 0 {
+				return append(allPreStmts, rewrittenAssign)
+			}
+		}
+		result := []ast.Stmt{rewritten}
+		return append(addrOfCompLitPreStmts, result...)
+	}
+
+	result := []ast.Stmt{v.rewriteStmt(stmt, analysis)}
+	return append(addrOfCompLitPreStmts, result...)
 }
 
 // expandPoolVarAssign expands: varName := CompositeLit{...}
@@ -1075,6 +1504,10 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 //   varName := len(_pool_T) - 1
 func (v *ptrTransformVisitor) expandPoolVarAssign(varName string, rhs ast.Expr, elemType types.Type, analysis *ptrAnalysis) []ast.Stmt {
 	poolName := poolNameForType(elemType)
+
+	// Hoist nested &CompositeLit{...} in composite literal fields before rewriting
+	var nestedPreStmts []ast.Stmt
+	rhs = v.hoistAddrOfCompositeLit(rhs, analysis, &nestedPreStmts)
 
 	// Rewrite the RHS (handles nested &x → x, injects -1 defaults, etc.)
 	rewrittenRHS := v.rewriteExpr(rhs, analysis)
@@ -1132,7 +1565,8 @@ func (v *ptrTransformVisitor) expandPoolVarAssign(varName string, rhs ast.Expr, 
 		Rhs: []ast.Expr{intCast},
 	}
 
-	return []ast.Stmt{appendStmt, indexStmt}
+	result := append(nestedPreStmts, appendStmt, indexStmt)
+	return result
 }
 
 // expandPoolCopyIn expands p := &s.field or p := &arr[i] into pool-based copy-in:
@@ -1228,18 +1662,34 @@ func (v *ptrTransformVisitor) getCallReturnPools(call *ast.CallExpr) map[string]
 	}
 	results := fnType.Results()
 	for i := 0; i < results.Len(); i++ {
-		if ptrType, isPtr := results.At(i).Type().(*types.Pointer); isPtr {
+		resultType := results.At(i).Type()
+		if ptrType, isPtr := resultType.(*types.Pointer); isPtr {
 			elemType := ptrType.Elem()
 			pn := poolNameForType(elemType)
 			pools[pn] = elemType
 		}
+		if sliceType, isSlice := resultType.(*types.Slice); isSlice {
+			if ptrType, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+				elemType := ptrType.Elem()
+				pn := poolNameForType(elemType)
+				pools[pn] = elemType
+			}
+		}
 	}
 	params := fnType.Params()
 	for i := 0; i < params.Len(); i++ {
-		if ptrType, isPtr := params.At(i).Type().(*types.Pointer); isPtr {
+		paramType := params.At(i).Type()
+		if ptrType, isPtr := paramType.(*types.Pointer); isPtr {
 			elemType := ptrType.Elem()
 			pn := poolNameForType(elemType)
 			pools[pn] = elemType
+		}
+		if sliceType, isSlice := paramType.(*types.Slice); isSlice {
+			if ptrType, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+				elemType := ptrType.Elem()
+				pn := poolNameForType(elemType)
+				pools[pn] = elemType
+			}
 		}
 	}
 	return pools
@@ -1288,14 +1738,23 @@ func (v *ptrTransformVisitor) isPointerTypedExpr(expr ast.Expr) bool {
 // expandPtrReturn handles return statements in functions with pointer returns.
 // It rewrites return values and appends pool variables.
 func (v *ptrTransformVisitor) expandPtrReturn(ret *ast.ReturnStmt, analysis *ptrAnalysis) []ast.Stmt {
-	// First, rewrite all result expressions
+	// Hoist nested &CompositeLit before rewriting
+	var hoistStmts []ast.Stmt
+	for i, r := range ret.Results {
+		if unary, ok := r.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			if _, ok := unary.X.(*ast.CompositeLit); ok {
+				var nestedPreStmts []ast.Stmt
+				unary.X = v.hoistAddrOfCompositeLit(unary.X, analysis, &nestedPreStmts)
+				hoistStmts = append(hoistStmts, nestedPreStmts...)
+				ret.Results[i] = unary
+			}
+		}
+	}
+
+	// Rewrite all result expressions
 	for i, r := range ret.Results {
 		ret.Results[i] = v.rewriteExpr(r, analysis)
 	}
-
-	// Hoist expression-position calls that need pool capture
-	// (e.g., return a + f(x) where f returns pools)
-	var hoistStmts []ast.Stmt
 	for i, r := range ret.Results {
 		ret.Results[i] = v.hoistPoolCalls(r, analysis, &hoistStmts)
 	}
@@ -1350,7 +1809,7 @@ func (v *ptrTransformVisitor) expandPtrReturn(ret *ast.ReturnStmt, analysis *ptr
 		poolIdent2 := &ast.Ident{Name: poolName}
 		appendCall := &ast.CallExpr{
 			Fun:  &ast.Ident{Name: "append"},
-			Args: []ast.Expr{poolIdent1, unary.X}, // unary.X is the composite lit
+			Args: []ast.Expr{poolIdent1, unary.X}, // unary.X already rewritten by rewriteExpr above
 		}
 		v.registerType(poolIdent1, sliceType)
 		v.registerType(poolIdent2, sliceType)
@@ -1541,17 +2000,47 @@ func (v *ptrTransformVisitor) expandPtrReturnCallAssign(assign *ast.AssignStmt, 
 		// Use temp var approach to avoid:
 		// - pool access on LHS (safety concern with pool reallocation)
 		// - re-declaring pool vars with := (C++ structured binding issue)
-		// var __ptr_ret int; __ptr_ret, _pool_T = f(args, _pool_T); result := __ptr_ret
+		// var __ptr_ret TYPE; __ptr_ret, _pool_T = f(args, _pool_T); result := __ptr_ret
 		var stmts []ast.Stmt
 		tmpName := fmt.Sprintf("__ptr_ret_%d", v.tmpCounter)
 		v.tmpCounter++
+
+		// Determine the correct type for the temp var
+		// For *T returns → int, for []*T returns → []int, otherwise use original type
+		var tmpTypeExpr ast.Expr
+		tmpTypeExpr = &ast.Ident{Name: "int"}
+		v.registerType(tmpTypeExpr, types.Typ[types.Int])
+		if callExpr, ok := assign.Rhs[0].(*ast.CallExpr); ok {
+			if funIdent, ok := callExpr.Fun.(*ast.Ident); ok {
+				if v.pkg != nil && v.pkg.TypesInfo != nil {
+					if obj := v.pkg.TypesInfo.Uses[funIdent]; obj != nil {
+						if fnType, ok := obj.Type().(*types.Signature); ok {
+							if fnType.Results().Len() > 0 {
+								firstResult := fnType.Results().At(0).Type()
+								if sliceType, isSlice := firstResult.(*types.Slice); isSlice {
+									if _, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+										// []*T return → []int
+										intIdent := &ast.Ident{Name: "int"}
+										arrType := &ast.ArrayType{Elt: intIdent}
+										sliceOfInt := types.NewSlice(types.Typ[types.Int])
+										v.registerType(intIdent, types.Typ[types.Int])
+										v.registerType(arrType, sliceOfInt)
+										tmpTypeExpr = arrType
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 
 		// Declare temp var
 		decl := &ast.DeclStmt{Decl: &ast.GenDecl{
 			Tok: token.VAR,
 			Specs: []ast.Spec{&ast.ValueSpec{
 				Names: []*ast.Ident{{Name: tmpName}},
-				Type:  &ast.Ident{Name: "int"},
+				Type:  tmpTypeExpr,
 			}},
 		}}
 		stmts = append(stmts, decl)
@@ -1711,6 +2200,14 @@ func (v *ptrTransformVisitor) rewriteAssignStmt(s *ast.AssignStmt, analysis *ptr
 	}
 
 	// Regular assignment (=, +=, etc.)
+	// Replace nil RHS with -1 when LHS is a pointer-typed field
+	for i, rhs := range s.Rhs {
+		if isNilIdent(rhs) && i < len(s.Lhs) {
+			if v.isPointerTypedExpr(s.Lhs[i]) {
+				s.Rhs[i] = v.minusOneExpr()
+			}
+		}
+	}
 	for i, lhs := range s.Lhs {
 		s.Lhs[i] = v.rewriteExpr(lhs, analysis)
 	}
@@ -1738,6 +2235,16 @@ func (v *ptrTransformVisitor) rewriteDeclStmt(s *ast.DeclStmt, analysis *ptrAnal
 						}
 					}
 				}
+				// Rewrite var items []*T → var items []int
+				if arrType, ok := valueSpec.Type.(*ast.ArrayType); ok {
+					if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+						newElt := &ast.Ident{Name: "int"}
+						arrType.Elt = newElt
+						sliceOfInt := types.NewSlice(types.Typ[types.Int])
+						v.registerType(newElt, types.Typ[types.Int])
+						v.registerType(arrType, sliceOfInt)
+					}
+				}
 			}
 		}
 	}
@@ -1759,6 +2266,10 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 			// ptrIndexLocals: *p -> _pool_T[p] (pool-based, not alias)
 			if info, isIndexLocal := analysis.ptrIndexLocals[ident.Name]; isIndexLocal {
 				return v.poolIndexExpr(ident, info.elemType)
+			}
+			// ptrCompositeLits: *p -> _pool_T[p] (direct pool allocation)
+			if elemType, isCompLit := analysis.ptrCompositeLits[ident.Name]; isCompLit {
+				return v.poolIndexExpr(ident, elemType)
 			}
 			// ptrParams: *p -> _pool_T[p]
 			if elemType, isPtr := analysis.ptrParams[ident.Name]; isPtr {
@@ -1807,6 +2318,13 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		if ident, ok := e.X.(*ast.Ident); ok {
 			if info, isIndexLocal := analysis.ptrIndexLocals[ident.Name]; isIndexLocal {
 				e.X = v.poolIndexExpr(ident, info.elemType)
+				return e
+			}
+		}
+		// Handle p.field for ptrCompositeLits: p.field -> _pool_T[p].field
+		if ident, ok := e.X.(*ast.Ident); ok {
+			if elemType, isCompLit := analysis.ptrCompositeLits[ident.Name]; isCompLit {
+				e.X = v.poolIndexExpr(ident, elemType)
 				return e
 			}
 		}
@@ -1879,6 +2397,34 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		return e
 
 	case *ast.CallExpr:
+		// Handle new(T) → convert to &T{} (UnaryExpr wrapping zero-value CompositeLit)
+		if funIdent, ok := e.Fun.(*ast.Ident); ok && funIdent.Name == "new" && len(e.Args) == 1 {
+			if v.pkg != nil && v.pkg.TypesInfo != nil {
+				if tv, ok := v.pkg.TypesInfo.Types[e]; ok {
+					if ptr, ok := tv.Type.(*types.Pointer); ok {
+						elemType := ptr.Elem()
+						zeroLit := &ast.CompositeLit{Type: v.typeToExpr(elemType)}
+						addrOf := &ast.UnaryExpr{Op: token.AND, X: zeroLit}
+						v.registerType(addrOf, tv.Type)
+						v.registerType(zeroLit, elemType)
+						return v.rewriteExpr(addrOf, analysis)
+					}
+				}
+			}
+		}
+		// Handle make([]*T, n) → make([]int, n)
+		if funIdent, ok := e.Fun.(*ast.Ident); ok && funIdent.Name == "make" && len(e.Args) >= 1 {
+			if arrType, ok := e.Args[0].(*ast.ArrayType); ok {
+				if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+					newElt := &ast.Ident{Name: "int"}
+					arrType.Elt = newElt
+					sliceOfInt := types.NewSlice(types.Typ[types.Int])
+					v.registerType(newElt, types.Typ[types.Int])
+					v.registerType(arrType, sliceOfInt)
+					v.registerType(e, sliceOfInt)
+				}
+			}
+		}
 		// Don't rewrite Fun (function/method name)
 		for i, arg := range e.Args {
 			e.Args[i] = v.rewriteExpr(arg, analysis)
@@ -1897,19 +2443,45 @@ func (v *ptrTransformVisitor) rewriteExpr(expr ast.Expr, analysis *ptrAnalysis) 
 		return e
 
 	case *ast.CompositeLit:
+		// Handle []*T composite literals: rewrite type to []int
+		if arrType, ok := e.Type.(*ast.ArrayType); ok {
+			if _, ok := arrType.Elt.(*ast.StarExpr); ok {
+				newElt := &ast.Ident{Name: "int"}
+				arrType.Elt = newElt
+				sliceOfInt := types.NewSlice(types.Typ[types.Int])
+				v.registerType(newElt, types.Typ[types.Int])
+				v.registerType(arrType, sliceOfInt)
+				v.registerType(e, sliceOfInt)
+			}
+		}
 		// Rewrite elements first
 		for i, elt := range e.Elts {
 			e.Elts[i] = v.rewriteExpr(elt, analysis)
 		}
-		// Inject -1 defaults for missing pointer fields
+		// Handle pointer fields in struct literals
 		if typeIdent, ok := e.Type.(*ast.Ident); ok {
 			if ptrFields, hasPtrFields := v.ptrFieldMap[typeIdent.Name]; hasPtrFields {
-				// Find which pointer fields are already present
+				// Build set of pointer field names for quick lookup
+				ptrFieldSet := make(map[string]bool)
+				for _, fn := range ptrFields {
+					ptrFieldSet[fn] = true
+				}
+				// Find which pointer fields are already present and replace nil values with -1
 				present := make(map[string]bool)
 				for _, elt := range e.Elts {
 					if kv, ok := elt.(*ast.KeyValueExpr); ok {
 						if key, ok := kv.Key.(*ast.Ident); ok {
 							present[key.Name] = true
+							// Replace nil values with -1 for pointer fields
+							if ptrFieldSet[key.Name] && isNilIdent(kv.Value) {
+								minusOne := &ast.UnaryExpr{
+									Op: token.SUB,
+									X:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+								}
+								v.registerType(minusOne, types.Typ[types.Int])
+								v.registerType(minusOne.X.(*ast.BasicLit), types.Typ[types.Int])
+								kv.Value = minusOne
+							}
 						}
 					}
 				}
@@ -1988,7 +2560,7 @@ func (v *ptrTransformVisitor) injectPoolArgs(call *ast.CallExpr) {
 	if !ok {
 		return
 	}
-	// Check params for *T types and collect unique pool names
+	// Check params for *T and []*T types and collect unique pool names
 	poolsNeeded := make(map[string]types.Type) // poolName → elemType (dedup)
 	params := fnType.Params()
 	for i := 0; i < params.Len(); i++ {
@@ -1998,8 +2570,16 @@ func (v *ptrTransformVisitor) injectPoolArgs(call *ast.CallExpr) {
 			pn := poolNameForType(elemType)
 			poolsNeeded[pn] = elemType
 		}
+		// []*T params also need pool args
+		if sliceType, isSlice := paramType.(*types.Slice); isSlice {
+			if ptrType, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+				elemType := ptrType.Elem()
+				pn := poolNameForType(elemType)
+				poolsNeeded[pn] = elemType
+			}
+		}
 	}
-	// Also check return types for *T (functions returning pointers also need pool args)
+	// Also check return types for *T and []*T (functions returning pointers also need pool args)
 	results := fnType.Results()
 	for i := 0; i < results.Len(); i++ {
 		resultType := results.At(i).Type()
@@ -2007,6 +2587,14 @@ func (v *ptrTransformVisitor) injectPoolArgs(call *ast.CallExpr) {
 			elemType := ptrType.Elem()
 			pn := poolNameForType(elemType)
 			poolsNeeded[pn] = elemType
+		}
+		// []*T returns also need pool args
+		if sliceType, isSlice := resultType.(*types.Slice); isSlice {
+			if ptrType, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+				elemType := ptrType.Elem()
+				pn := poolNameForType(elemType)
+				poolsNeeded[pn] = elemType
+			}
 		}
 	}
 	// Append pool idents as extra args
@@ -2065,7 +2653,208 @@ func (v *ptrTransformVisitor) zeroValueExpr(t types.Type) ast.Expr {
 			return &ast.BasicLit{Kind: token.STRING, Value: `""`}
 		}
 	case *types.Named:
-		return &ast.CompositeLit{Type: v.typeToExpr(t)}
+		lit := &ast.CompositeLit{Type: v.typeToExpr(t)}
+		v.registerType(lit, t)
+		return lit
 	}
 	return &ast.BasicLit{Kind: token.INT, Value: "0"}
+}
+
+// findNestedAddrOfCompositeLits scans the function body for nested &CompositeLit
+// inside composite literal fields (e.g., &TreeNode{left: &TreeNode{value: 2}})
+// and registers the inner types in callReturnPools so pool declarations are created.
+func (v *ptrTransformVisitor) findNestedAddrOfCompositeLits(body *ast.BlockStmt, analysis *ptrAnalysis) {
+	if body == nil || v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		compLit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		for _, elt := range compLit.Elts {
+			v.scanForNestedAddrOf(elt, analysis)
+		}
+		return true
+	})
+}
+
+// scanForNestedAddrOf recursively scans an expression for &CompositeLit{...}
+// and registers the element type in callReturnPools.
+func (v *ptrTransformVisitor) scanForNestedAddrOf(expr ast.Expr, analysis *ptrAnalysis) {
+	if expr == nil {
+		return
+	}
+	if kv, ok := expr.(*ast.KeyValueExpr); ok {
+		v.scanForNestedAddrOf(kv.Value, analysis)
+		return
+	}
+	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		if innerLit, ok := unary.X.(*ast.CompositeLit); ok {
+			// Register this type for pool allocation
+			if tv, ok := v.pkg.TypesInfo.Types[unary]; ok {
+				if ptr, ok := tv.Type.(*types.Pointer); ok {
+					elemType := ptr.Elem()
+					pn := poolNameForType(elemType)
+					if _, exists := analysis.callReturnPools[pn]; !exists {
+						analysis.callReturnPools[pn] = elemType
+					}
+				}
+			}
+			// Recurse into the inner composite literal's elements
+			for _, elt := range innerLit.Elts {
+				v.scanForNestedAddrOf(elt, analysis)
+			}
+		}
+	}
+}
+
+// hoistAddrOfCompositeLit walks an expression tree and replaces nested &CompositeLit{...}
+// with pool-allocated temp variables. For each &CompositeLit found:
+// 1. Recursively hoist deeper nesting first
+// 2. Rewrite the CompositeLit
+// 3. Generate: _pool_T = append(_pool_T, rewrittenLit)
+// 4. Generate: __nested_lit_N := int(len(_pool_T) - 1)
+// 5. Return the __nested_lit_N ident
+func (v *ptrTransformVisitor) hoistAddrOfCompositeLit(expr ast.Expr, analysis *ptrAnalysis, preStmts *[]ast.Stmt) ast.Expr {
+	if expr == nil {
+		return nil
+	}
+	if kv, ok := expr.(*ast.KeyValueExpr); ok {
+		kv.Value = v.hoistAddrOfCompositeLit(kv.Value, analysis, preStmts)
+		return kv
+	}
+	if unary, ok := expr.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		if compLit, ok := unary.X.(*ast.CompositeLit); ok {
+			// First, recursively hoist any nested &CompositeLit in this literal's fields
+			for i, elt := range compLit.Elts {
+				compLit.Elts[i] = v.hoistAddrOfCompositeLit(elt, analysis, preStmts)
+			}
+
+			// Get the element type
+			var elemType types.Type
+			if v.pkg != nil && v.pkg.TypesInfo != nil {
+				if tv, ok := v.pkg.TypesInfo.Types[unary]; ok {
+					if ptr, ok := tv.Type.(*types.Pointer); ok {
+						elemType = ptr.Elem()
+					}
+				}
+			}
+			if elemType == nil {
+				return expr
+			}
+
+			// Rewrite the composite literal (handles -1 defaults for pointer fields, etc.)
+			rewrittenLit := v.rewriteExpr(compLit, analysis)
+
+			// Generate pool append and index assignment
+			poolName := poolNameForType(elemType)
+			sliceType := types.NewSlice(elemType)
+
+			// _pool_T = append(_pool_T, rewrittenLit)
+			poolIdent1 := &ast.Ident{Name: poolName}
+			poolIdent2 := &ast.Ident{Name: poolName}
+			appendCall := &ast.CallExpr{
+				Fun:  &ast.Ident{Name: "append"},
+				Args: []ast.Expr{poolIdent1, rewrittenLit},
+			}
+			v.registerType(poolIdent1, sliceType)
+			v.registerType(poolIdent2, sliceType)
+			v.registerType(appendCall, sliceType)
+			*preStmts = append(*preStmts, &ast.AssignStmt{
+				Lhs: []ast.Expr{poolIdent2},
+				Tok: token.ASSIGN,
+				Rhs: []ast.Expr{appendCall},
+			})
+
+			// __nested_lit_N := int(len(_pool_T) - 1)
+			tmpName := fmt.Sprintf("__nested_lit_%d", v.tmpCounter)
+			v.tmpCounter++
+			poolIdent3 := &ast.Ident{Name: poolName}
+			v.registerType(poolIdent3, sliceType)
+			lenCall := &ast.CallExpr{
+				Fun:  &ast.Ident{Name: "len"},
+				Args: []ast.Expr{poolIdent3},
+			}
+			v.registerType(lenCall, types.Typ[types.Int])
+			oneLit := &ast.BasicLit{Kind: token.INT, Value: "1"}
+			v.registerType(oneLit, types.Typ[types.Int])
+			lenMinus1 := &ast.BinaryExpr{X: lenCall, Op: token.SUB, Y: oneLit}
+			v.registerType(lenMinus1, types.Typ[types.Int])
+			intIdent := &ast.Ident{Name: "int"}
+			intCast := &ast.CallExpr{Fun: intIdent, Args: []ast.Expr{lenMinus1}}
+			v.registerType(intCast, types.Typ[types.Int])
+			if v.pkg != nil && v.pkg.TypesInfo != nil {
+				intObj := types.Universe.Lookup("int")
+				if intObj != nil {
+					v.pkg.TypesInfo.Uses[intIdent] = intObj
+				}
+			}
+			tmpIdent := &ast.Ident{Name: tmpName}
+			v.registerType(tmpIdent, types.Typ[types.Int])
+			*preStmts = append(*preStmts, &ast.AssignStmt{
+				Lhs: []ast.Expr{tmpIdent},
+				Tok: token.DEFINE,
+				Rhs: []ast.Expr{intCast},
+			})
+
+			// Return the temp variable ident
+			retIdent := &ast.Ident{Name: tmpName}
+			v.registerType(retIdent, types.Typ[types.Int])
+			return retIdent
+		}
+	}
+	if compLit, ok := expr.(*ast.CompositeLit); ok {
+		for i, elt := range compLit.Elts {
+			compLit.Elts[i] = v.hoistAddrOfCompositeLit(elt, analysis, preStmts)
+		}
+		return compLit
+	}
+	return expr
+}
+
+// hoistAddrOfCompositeLitInCallArgs scans a statement for call expressions whose arguments
+// contain &CompositeLit{...} and hoists them to pool allocations. Pre-statements are
+// appended to the provided slice.
+func (v *ptrTransformVisitor) hoistAddrOfCompositeLitInCallArgs(stmt ast.Stmt, analysis *ptrAnalysis, preStmts *[]ast.Stmt) {
+	var callExpr *ast.CallExpr
+
+	// Extract CallExpr from different statement types
+	if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
+		if ce, ok := exprStmt.X.(*ast.CallExpr); ok {
+			callExpr = ce
+		}
+	}
+	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && len(assignStmt.Rhs) == 1 {
+		if ce, ok := assignStmt.Rhs[0].(*ast.CallExpr); ok {
+			// Don't handle append to []*T — that's handled separately above
+			if funIdent, ok := ce.Fun.(*ast.Ident); ok && funIdent.Name == "append" {
+				return
+			}
+			callExpr = ce
+		}
+	}
+
+	if callExpr == nil {
+		return
+	}
+
+	// Check if any arg is &CompositeLit{}
+	hasAddrOfCompLit := false
+	for _, arg := range callExpr.Args {
+		if unary, ok := arg.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			if _, ok := unary.X.(*ast.CompositeLit); ok {
+				hasAddrOfCompLit = true
+				break
+			}
+		}
+	}
+	if !hasAddrOfCompLit {
+		return
+	}
+
+	// Hoist &CompositeLit args
+	for i, arg := range callExpr.Args {
+		callExpr.Args[i] = v.hoistAddrOfCompositeLit(arg, analysis, preStmts)
+	}
 }

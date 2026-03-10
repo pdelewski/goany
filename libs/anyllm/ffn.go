@@ -29,10 +29,10 @@ func FFNSingleExpert(xnorm []float64, cfg ModelConfig, layer int, expertIdx int,
 	downName += ".weight"
 	downIdx := FindTensorByName(file, downName)
 
-	gateWeights := ReadTensorCached(file, gateIdx, tCache)
+	gateWeights, _ := ReadTensorCached(file, gateIdx, tCache)
 	gateOut := MatVecMul(gateWeights, xnorm, ffnDim, dim)
 
-	upWeights := ReadTensorCached(file, upIdx, tCache)
+	upWeights, _ := ReadTensorCached(file, upIdx, tCache)
 	upOut := MatVecMul(upWeights, xnorm, ffnDim, dim)
 
 	hidden := make([]float64, ffnDim)
@@ -42,7 +42,7 @@ func FFNSingleExpert(xnorm []float64, cfg ModelConfig, layer int, expertIdx int,
 		i = i + 1
 	}
 
-	downWeights := ReadTensorCached(file, downIdx, tCache)
+	downWeights, _ := ReadTensorCached(file, downIdx, tCache)
 	result := MatVecMul(downWeights, hidden, dim, ffnDim)
 	return result
 }
@@ -56,10 +56,10 @@ func FFN(xnorm []float64, cfg ModelConfig, layer int, file GGUFFile, tCache Tens
 	upIdx := FindTensorByName(file, layerTensorName(layer, "ffn_up.weight"))
 	downIdx := FindTensorByName(file, layerTensorName(layer, "ffn_down.weight"))
 
-	TensorCacheLoadFFN(tCache, file, gateIdx, tCache.FFNSlot1)
+	tCache = TensorCacheLoadFFN(tCache, file, gateIdx, tCache.FFNSlot1)
 	gateOut := MatVecMulOff(tCache.Entries, tCache.FFNSlot1, xnorm, ffnDim, dim)
 
-	TensorCacheLoadFFN(tCache, file, upIdx, tCache.FFNSlot2)
+	tCache = TensorCacheLoadFFN(tCache, file, upIdx, tCache.FFNSlot2)
 	upOut := MatVecMulOff(tCache.Entries, tCache.FFNSlot2, xnorm, ffnDim, dim)
 
 	hidden := make([]float64, ffnDim)
@@ -69,7 +69,7 @@ func FFN(xnorm []float64, cfg ModelConfig, layer int, file GGUFFile, tCache Tens
 		i = i + 1
 	}
 
-	TensorCacheLoadFFN(tCache, file, downIdx, tCache.FFNSlot3)
+	tCache = TensorCacheLoadFFN(tCache, file, downIdx, tCache.FFNSlot3)
 	result := MatVecMulOff(tCache.Entries, tCache.FFNSlot3, hidden, dim, ffnDim)
 	return result
 }
@@ -83,7 +83,7 @@ func MoEFFN(xnorm []float64, cfg ModelConfig, layer int, file GGUFFile, tCache T
 
 	// Load routing gate
 	routeIdx := FindTensorByName(file, layerTensorName(layer, "ffn_gate_inp.weight"))
-	routeWeights := ReadTensorCached(file, routeIdx, tCache)
+	routeWeights, _ := ReadTensorCached(file, routeIdx, tCache)
 	expertScores := MatVecMul(routeWeights, xnorm, numExperts, dim)
 
 	// Softmax over expert scores

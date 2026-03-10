@@ -54,6 +54,7 @@ var e2eTestCases = []TestCase{
 	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true},
 	{"method-receiver", "../tests/method-receiver", true, true, true, true, true, true, true, true},
 	{"ptr-escape", "../tests/ptr-escape", true, true, true, true, true, true, true, true},
+	{"rust-parser-demo", "../examples/rust-parser-demo", true, true, true, true, true, true, true, true},
 }
 
 func TestE2E(t *testing.T) {

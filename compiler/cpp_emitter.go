@@ -29,6 +29,7 @@ type CppEmitter struct {
 	OptimizeRefs    bool
 	MoveOptCount    int
 	RefOptCount     int
+	blankCounter    int
 	file            *os.File
 	Emitter
 	pkg            *packages.Package
@@ -1840,17 +1841,26 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Multi-value return: a, b := func() → auto [a, b] = func()
 	if len(node.Lhs) > 1 && len(node.Rhs) == 1 {
 		lhsParts := make([]string, len(node.Lhs))
+		tieParts := make([]string, len(node.Lhs))
 		for i, lhs := range node.Lhs {
 			if ident, ok := lhs.(*ast.Ident); ok {
-				lhsParts[i] = ident.Name
+				if ident.Name == "_" {
+					lhsParts[i] = fmt.Sprintf("__blank_%d", e.blankCounter)
+					e.blankCounter = e.blankCounter + 1
+					tieParts[i] = "std::ignore"
+				} else {
+					lhsParts[i] = ident.Name
+					tieParts[i] = ident.Name
+				}
 			} else {
 				lhsParts[i] = exprToString(lhs)
+				tieParts[i] = exprToString(lhs)
 			}
 		}
 		if tokStr == ":=" {
 			e.fs.PushCode(fmt.Sprintf("%sauto [%s] = %s;\n", ind, strings.Join(lhsParts, ", "), rhsStr))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("%sstd::tie(%s) = %s;\n", ind, strings.Join(lhsParts, ", "), rhsStr))
+			e.fs.PushCode(fmt.Sprintf("%sstd::tie(%s) = %s;\n", ind, strings.Join(tieParts, ", "), rhsStr))
 		}
 		return
 	}

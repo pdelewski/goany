@@ -41,7 +41,7 @@ func main() {
 	if c.Value() == 3 {
 		fmt.Println("PASS: Inc and Value")
 	} else {
-		fmt.Println("FAIL: Inc and Value")
+		panic("FAIL: Inc and Value")
 	}
 
 	// Test method with parameter
@@ -49,7 +49,7 @@ func main() {
 	if c.Value() == 10 {
 		fmt.Println("PASS: Add")
 	} else {
-		fmt.Println("FAIL: Add")
+		panic("FAIL: Add")
 	}
 
 	// Test method calling another method (self-call)
@@ -57,7 +57,7 @@ func main() {
 	if c.Value() == 1 {
 		fmt.Println("PASS: ResetAndInc")
 	} else {
-		fmt.Println("FAIL: ResetAndInc")
+		panic("FAIL: ResetAndInc")
 	}
 
 	// Test multiple calls to same method
@@ -70,6 +70,6 @@ func main() {
 	if c.Value() == 5 {
 		fmt.Println("PASS: Multiple calls")
 	} else {
-		fmt.Println("FAIL: Multiple calls")
+		panic("FAIL: Multiple calls")
 	}
 }

@@ -147,7 +147,7 @@ func ReadTensorQ2K(file GGUFFile, tensorIdx int) []float64 {
 	result := make([]float64, elements)
 	bi := 0
 	for bi < numBlocks {
-		dequantQ2K(data, bi*Q2K_BlockSize, result, bi*QK_K)
+		result = dequantQ2K(data, bi*Q2K_BlockSize, result, bi*QK_K)
 		bi = bi + 1
 	}
 	return result
@@ -166,7 +166,7 @@ func ReadTensorQ3K(file GGUFFile, tensorIdx int) []float64 {
 	result := make([]float64, elements)
 	bi := 0
 	for bi < numBlocks {
-		dequantQ3K(data, bi*Q3K_BlockSize, result, bi*QK_K)
+		result = dequantQ3K(data, bi*Q3K_BlockSize, result, bi*QK_K)
 		bi = bi + 1
 	}
 	return result
@@ -185,22 +185,22 @@ func ReadTensorQ6K(file GGUFFile, tensorIdx int) []float64 {
 	result := make([]float64, elements)
 	bi := 0
 	for bi < numBlocks {
-		dequantQ6K(data, bi*Q6K_BlockSize, result, bi*QK_K)
+		result = dequantQ6K(data, bi*Q6K_BlockSize, result, bi*QK_K)
 		bi = bi + 1
 	}
 	return result
 }
 
 // ReadTensorInto reads any supported tensor type into an existing buffer
-func ReadTensorInto(file GGUFFile, tensorIdx int, result []float64) {
+func ReadTensorInto(file GGUFFile, tensorIdx int, result []float64) []float64 {
 	if tensorIdx < 0 || tensorIdx >= len(file.Tensors) {
-		return
+		return result
 	}
 	tensor := file.Tensors[tensorIdx]
 	elements := int(TensorElementCount(tensor))
 	data := ReadTensorRaw(file, tensorIdx)
 	if len(data) == 0 {
-		return
+		return result
 	}
 	if tensor.DType == GGMLTypeF32 {
 		i := 0
@@ -238,37 +238,38 @@ func ReadTensorInto(file GGUFFile, tensorIdx int, result []float64) {
 		numBlocks := elements / QK_K
 		bi := 0
 		for bi < numBlocks {
-			dequantQ2K(data, bi*Q2K_BlockSize, result, bi*QK_K)
+			result = dequantQ2K(data, bi*Q2K_BlockSize, result, bi*QK_K)
 			bi = bi + 1
 		}
 	} else if tensor.DType == GGMLTypeQ3K {
 		numBlocks := elements / QK_K
 		bi := 0
 		for bi < numBlocks {
-			dequantQ3K(data, bi*Q3K_BlockSize, result, bi*QK_K)
+			result = dequantQ3K(data, bi*Q3K_BlockSize, result, bi*QK_K)
 			bi = bi + 1
 		}
 	} else if tensor.DType == GGMLTypeQ6K {
 		numBlocks := elements / QK_K
 		bi := 0
 		for bi < numBlocks {
-			dequantQ6K(data, bi*Q6K_BlockSize, result, bi*QK_K)
+			result = dequantQ6K(data, bi*Q6K_BlockSize, result, bi*QK_K)
 			bi = bi + 1
 		}
 	}
+	return result
 }
 
 // TensorCacheLoadFFN dequantizes a tensor directly into tc.Entries at slotOff
 // This avoids allocating a new float64 slice per FFN weight read
-func TensorCacheLoadFFN(tc TensorCache, file GGUFFile, tensorIdx int, slotOff int) {
+func TensorCacheLoadFFN(tc TensorCache, file GGUFFile, tensorIdx int, slotOff int) TensorCache {
 	if tensorIdx < 0 || tensorIdx >= len(file.Tensors) {
-		return
+		return tc
 	}
 	tensor := file.Tensors[tensorIdx]
 	elements := int(TensorElementCount(tensor))
 	data := ReadTensorRaw(file, tensorIdx)
 	if len(data) == 0 {
-		return
+		return tc
 	}
 	if tensor.DType == GGMLTypeF32 {
 		i := 0
@@ -307,7 +308,7 @@ func TensorCacheLoadFFN(tc TensorCache, file GGUFFile, tensorIdx int, slotOff in
 		tmpBlock := make([]float64, QK_K)
 		bi := 0
 		for bi < numBlocks {
-			dequantQ2K(data, bi*Q2K_BlockSize, tmpBlock, 0)
+			tmpBlock = dequantQ2K(data, bi*Q2K_BlockSize, tmpBlock, 0)
 			j := 0
 			for j < QK_K {
 				tc.Entries[slotOff+bi*QK_K+j] = tmpBlock[j]
@@ -320,7 +321,7 @@ func TensorCacheLoadFFN(tc TensorCache, file GGUFFile, tensorIdx int, slotOff in
 		tmpBlock := make([]float64, QK_K)
 		bi := 0
 		for bi < numBlocks {
-			dequantQ3K(data, bi*Q3K_BlockSize, tmpBlock, 0)
+			tmpBlock = dequantQ3K(data, bi*Q3K_BlockSize, tmpBlock, 0)
 			j := 0
 			for j < QK_K {
 				tc.Entries[slotOff+bi*QK_K+j] = tmpBlock[j]
@@ -333,7 +334,7 @@ func TensorCacheLoadFFN(tc TensorCache, file GGUFFile, tensorIdx int, slotOff in
 		tmpBlock := make([]float64, QK_K)
 		bi := 0
 		for bi < numBlocks {
-			dequantQ6K(data, bi*Q6K_BlockSize, tmpBlock, 0)
+			tmpBlock = dequantQ6K(data, bi*Q6K_BlockSize, tmpBlock, 0)
 			j := 0
 			for j < QK_K {
 				tc.Entries[slotOff+bi*QK_K+j] = tmpBlock[j]
@@ -342,6 +343,7 @@ func TensorCacheLoadFFN(tc TensorCache, file GGUFFile, tensorIdx int, slotOff in
 			bi = bi + 1
 		}
 	}
+	return tc
 }
 
 // ReadTensor reads any supported tensor type and returns float64 values
