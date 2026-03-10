@@ -1907,12 +1907,53 @@ func (v *ptrTransformVisitor) hoistPoolCalls(expr ast.Expr, analysis *ptrAnalysi
 			tmpName := fmt.Sprintf("__call_ret_%d", v.tmpCounter)
 			v.tmpCounter++
 
+			// Determine the correct type for the temp var
+			var tmpType types.Type = types.Typ[types.Int]
+			var tmpTypeExpr ast.Expr = &ast.Ident{Name: "int"}
+			if funIdent, ok := e.Fun.(*ast.Ident); ok {
+				if v.pkg != nil && v.pkg.TypesInfo != nil {
+					if obj := v.pkg.TypesInfo.Uses[funIdent]; obj != nil {
+						if fnType, ok := obj.Type().(*types.Signature); ok {
+							if fnType.Results().Len() > 0 {
+								firstResult := fnType.Results().At(0).Type()
+								if sliceType, isSlice := firstResult.(*types.Slice); isSlice {
+									if _, isPtr := sliceType.Elem().(*types.Pointer); isPtr {
+										// []*T return → []int
+										intIdent := &ast.Ident{Name: "int"}
+										arrType := &ast.ArrayType{Elt: intIdent}
+										sliceOfInt := types.NewSlice(types.Typ[types.Int])
+										v.registerType(intIdent, types.Typ[types.Int])
+										v.registerType(arrType, sliceOfInt)
+										tmpTypeExpr = arrType
+										tmpType = sliceOfInt
+									} else {
+										// []T return (non-pointer slice) → keep original []T type
+										elemExpr := v.typeToExpr(sliceType.Elem())
+										arrType := &ast.ArrayType{Elt: elemExpr}
+										v.registerType(elemExpr, sliceType.Elem())
+										v.registerType(arrType, firstResult)
+										tmpTypeExpr = arrType
+										tmpType = firstResult
+									}
+								} else if _, isPtr := firstResult.(*types.Pointer); !isPtr {
+									// Non-pointer, non-slice return (bool, string, etc.) → keep original type
+									tmpTypeExpr = v.typeToExpr(firstResult)
+									tmpType = firstResult
+									v.registerType(tmpTypeExpr, firstResult)
+								}
+								// else: *T return → int (the default)
+							}
+						}
+					}
+				}
+			}
+
 			// Declare temp var
 			decl := &ast.DeclStmt{Decl: &ast.GenDecl{
 				Tok: token.VAR,
 				Specs: []ast.Spec{&ast.ValueSpec{
 					Names: []*ast.Ident{{Name: tmpName}},
-					Type:  &ast.Ident{Name: "int"},
+					Type:  tmpTypeExpr,
 				}},
 			}}
 			*preStmts = append(*preStmts, decl)
@@ -1921,7 +1962,7 @@ func (v *ptrTransformVisitor) hoistPoolCalls(expr ast.Expr, analysis *ptrAnalysi
 			numOrigReturns := v.getOriginalReturnCount(e)
 			var lhs []ast.Expr
 			tmpIdent := &ast.Ident{Name: tmpName}
-			v.registerType(tmpIdent, types.Typ[types.Int])
+			v.registerType(tmpIdent, tmpType)
 			lhs = append(lhs, tmpIdent)
 			for i := 1; i < numOrigReturns; i++ {
 				lhs = append(lhs, &ast.Ident{Name: "_"})
@@ -1938,7 +1979,7 @@ func (v *ptrTransformVisitor) hoistPoolCalls(expr ast.Expr, analysis *ptrAnalysi
 			})
 
 			retIdent := &ast.Ident{Name: tmpName}
-			v.registerType(retIdent, types.Typ[types.Int])
+			v.registerType(retIdent, tmpType)
 			return retIdent
 		}
 		return e
@@ -2026,8 +2067,20 @@ func (v *ptrTransformVisitor) expandPtrReturnCallAssign(assign *ast.AssignStmt, 
 										v.registerType(intIdent, types.Typ[types.Int])
 										v.registerType(arrType, sliceOfInt)
 										tmpTypeExpr = arrType
+									} else {
+										// []T return (non-pointer slice) → keep original []T type
+										elemExpr := v.typeToExpr(sliceType.Elem())
+										arrType := &ast.ArrayType{Elt: elemExpr}
+										v.registerType(elemExpr, sliceType.Elem())
+										v.registerType(arrType, firstResult)
+										tmpTypeExpr = arrType
 									}
+								} else if _, isPtr := firstResult.(*types.Pointer); !isPtr {
+									// Non-pointer, non-slice return (bool, string, etc.) → keep original type
+									tmpTypeExpr = v.typeToExpr(firstResult)
+									v.registerType(tmpTypeExpr, firstResult)
 								}
+								// else: *T return → int (the default)
 							}
 						}
 					}
