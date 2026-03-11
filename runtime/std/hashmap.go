@@ -312,3 +312,17 @@ func hashMapContains(m HashMap, key interface{}) bool {
 func hashMapLen(m HashMap) int {
 	return m.Size
 }
+
+func hashMapKeys(m HashMap) []interface{} {
+	result := make([]interface{}, m.Size)
+	idx := 0
+	i := 0
+	for i < m.Capacity {
+		if m.Occupied[i] {
+			result[idx] = m.Keys[i]
+			idx = idx + 1
+		}
+		i = i + 1
+	}
+	return result
+}

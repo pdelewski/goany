@@ -1078,11 +1078,13 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		keyCast := ""
 		keyIsStr := false
 		valType := "Rc<dyn Any>"
+		keyType := "Rc<dyn Any>"
 		if mapGoType != nil {
 			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
 				keyCast = getRustKeyCast(mapUnderlying.Key())
 				keyIsStr = isRustStringKey(mapUnderlying.Key())
 				valType = e.qualifiedRustTypeName(mapUnderlying.Elem())
+				keyType = e.qualifiedRustTypeName(mapUnderlying.Key())
 			}
 		}
 		_ = keyCast
@@ -1096,6 +1098,11 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			castExpr = fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType)
 		}
 
+		keyCastExpr := ""
+		if keyType != "Rc<dyn Any>" {
+			keyCastExpr = fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", keyType)
+		}
+
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("%s{\n", ind))
 		mapKeysRef := xCode + ".clone()"
@@ -1107,7 +1114,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		sb.WriteString(fmt.Sprintf("%s    let mut %s: i32 = 0;\n", ind, loopIdx))
 		sb.WriteString(fmt.Sprintf("%s    while (%s as usize) < %s.len() {\n", ind, loopIdx, keysVar))
 		if keyCode != "_" && keyCode != "" {
-			sb.WriteString(fmt.Sprintf("%s        let mut %s = %s[%s as usize].clone();\n", ind, keyCode, keysVar, loopIdx))
+			sb.WriteString(fmt.Sprintf("%s        let mut %s = %s[%s as usize].clone()%s;\n", ind, keyCode, keysVar, loopIdx, keyCastExpr))
 		}
 		if valCode != "_" && valCode != "" {
 			sb.WriteString(fmt.Sprintf("%s        let mut %s = hmap::hashMapGet(&%s, %s[%s as usize].clone())%s;\n",
