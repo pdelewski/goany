@@ -2216,6 +2216,55 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		keyCode = "_"
 	}
 
+	// Check if ranging over a map
+	isMap := false
+	if node.X != nil {
+		isMap = e.isMapTypeExpr(node.X)
+	}
+
+	if isMap {
+		// Map range: iterate using hashMapKeys
+		mapGoType := e.getExprGoType(node.X)
+		valueCppType := "std::any"
+		keyCppType := "std::any"
+		if mapGoType != nil {
+			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
+				valueCppType = getCppTypeName(mapUnderlying.Elem())
+				keyCppType = getCppTypeName(mapUnderlying.Key())
+			}
+		}
+		keysVar := fmt.Sprintf("_keys%d", e.rangeVarCounter)
+		loopIdx := fmt.Sprintf("_mi%d", e.rangeVarCounter)
+		e.rangeVarCounter++
+		if valCode != "" && valCode != "_" {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%s{\n", ind))
+			sb.WriteString(fmt.Sprintf("%s    auto %s = hmap::hashMapKeys(%s);\n", ind, keysVar, xCode))
+			sb.WriteString(fmt.Sprintf("%s    for (size_t %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			if keyCode != "_" {
+				sb.WriteString(fmt.Sprintf("%s        auto %s = std::any_cast<%s>(%s[%s]);\n", ind, keyCode, keyCppType, keysVar, loopIdx))
+			}
+			sb.WriteString(fmt.Sprintf("%s        auto %s = std::any_cast<%s>(hmap::hashMapGet(%s, %s[%s]));\n", ind, valCode, valueCppType, xCode, keysVar, loopIdx))
+			sb.WriteString(fmt.Sprintf("%s        %s\n", ind, bodyCode))
+			sb.WriteString(fmt.Sprintf("%s    }\n", ind))
+			sb.WriteString(fmt.Sprintf("%s}\n", ind))
+			e.fs.PushCode(sb.String())
+		} else {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("%s{\n", ind))
+			sb.WriteString(fmt.Sprintf("%s    auto %s = hmap::hashMapKeys(%s);\n", ind, keysVar, xCode))
+			sb.WriteString(fmt.Sprintf("%s    for (size_t %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			if keyCode != "_" {
+				sb.WriteString(fmt.Sprintf("%s        auto %s = std::any_cast<%s>(%s[%s]);\n", ind, keyCode, keyCppType, keysVar, loopIdx))
+			}
+			sb.WriteString(fmt.Sprintf("%s        %s\n", ind, bodyCode))
+			sb.WriteString(fmt.Sprintf("%s    }\n", ind))
+			sb.WriteString(fmt.Sprintf("%s}\n", ind))
+			e.fs.PushCode(sb.String())
+		}
+		return
+	}
+
 	// If range expression is an inline composite literal, emit a temp variable
 	if _, isCompLit := node.X.(*ast.CompositeLit); isCompLit {
 		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)

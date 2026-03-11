@@ -817,22 +817,6 @@ func (sema *SemaChecker) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	// Track loop depth for closure capture mutation check
 	sema.insideLoopDepth++
 
-	// Check for range over maps - not supported
-	if sema.pkg != nil && sema.pkg.TypesInfo != nil {
-		if tv, ok := sema.pkg.TypesInfo.Types[node.X]; ok && tv.Type != nil {
-			if _, isMap := tv.Type.Underlying().(*types.Map); isMap {
-				sema.reportSemaError(node.Pos(),
-					"range over maps is not supported",
-					"Iterating over maps with 'for k, v := range m' is not allowed.\n  Map iteration order is undefined and implementation varies across languages.",
-					[]string{
-						"Maintain a separate slice of keys if iteration order matters:",
-						"  keys := []KeyType{...}",
-						"  for _, k := range keys { v := m[k]; // use k, v }",
-					})
-			}
-		}
-	}
-
 	// Handle for _, v := range (value-only): set Key to nil so emitters work correctly
 	// for i, v := range (key-value) is now allowed and handled by emitters
 	// for i := range (index-only) is allowed (Value is nil)

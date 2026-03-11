@@ -2651,10 +2651,12 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		pfx := ""
 		sfx := ""
 		valType := "object"
+		keyType := "object"
 		if mapGoType != nil {
 			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
 				pfx, sfx = getCsKeyCast(mapUnderlying.Key())
 				valType = e.qualifiedCsTypeName(mapUnderlying.Elem())
+				keyType = e.qualifiedCsTypeName(mapUnderlying.Key())
 			}
 		}
 		_ = pfx
@@ -2668,7 +2670,7 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			sb.WriteString(fmt.Sprintf("%s  var %s = hmap.hashMapKeys(%s);\n", ind, keysVar, xCode))
 			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s.Count; %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
 			if keyCode != "_" {
-				sb.WriteString(fmt.Sprintf("%s    var %s = %s[%s];\n", ind, keyCode, keysVar, loopIdx))
+				sb.WriteString(fmt.Sprintf("%s    var %s = (%s)%s[%s];\n", ind, keyCode, keyType, keysVar, loopIdx))
 			}
 			sb.WriteString(fmt.Sprintf("%s    var %s = (%s)hmap.hashMapGet(%s, %s[%s]);\n", ind, valCode, valType, xCode, keysVar, loopIdx))
 			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
@@ -2681,7 +2683,7 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			sb.WriteString(fmt.Sprintf("%s  var %s = hmap.hashMapKeys(%s);\n", ind, keysVar, xCode))
 			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s.Count; %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
 			if keyCode != "_" {
-				sb.WriteString(fmt.Sprintf("%s    var %s = %s[%s];\n", ind, keyCode, keysVar, loopIdx))
+				sb.WriteString(fmt.Sprintf("%s    var %s = (%s)%s[%s];\n", ind, keyCode, keyType, keysVar, loopIdx))
 			}
 			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
 			sb.WriteString(fmt.Sprintf("%s  }\n", ind))

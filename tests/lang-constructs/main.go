@@ -1027,6 +1027,36 @@ func testMapOperations() {
 	}
 }
 
+func testMapRange() {
+	// Value-only range over map: sum all values (order-independent)
+	m := make(map[string]int)
+	m["a"] = 10
+	m["b"] = 20
+	m["c"] = 30
+	valSum := 0
+	for _, v := range m {
+		valSum += v
+	}
+	if valSum == 60 {
+		fmt.Println("PASS: map range value-only")
+	} else {
+		panic("FAIL: map range value-only")
+	}
+
+	// Key-only range over map: count keys (order-independent)
+	keyCount := 0
+	for k := range m {
+		if k == "a" || k == "b" || k == "c" {
+			keyCount += 1
+		}
+	}
+	if keyCount == 3 {
+		fmt.Println("PASS: map range key-only")
+	} else {
+		panic("FAIL: map range key-only")
+	}
+}
+
 func testNilMap() {
 	var m map[string]int
 	if len(m) == 0 {
@@ -2226,6 +2256,7 @@ func main() {
 	testNestedWhileLoops()
 	testInlineCompositeLitArg()
 	testMapOperations()
+	testMapRange()
 	testMapAsParameter()
 	testNilMap()
 	testMapKeyTypes()
