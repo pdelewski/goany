@@ -346,15 +346,6 @@ func (sema *SemaChecker) PreVisitMapType(node *ast.MapType, indent int) {
 		}
 	}
 
-	// Check for pointer values in maps: map[K]*T is not supported
-	if tv, ok := sema.pkg.TypesInfo.Types[node.Value]; ok && tv.Type != nil {
-		if _, isPtr := tv.Type.(*types.Pointer); isPtr {
-			sema.reportSemaError(node.Pos(),
-				"pointer values in maps are not supported",
-				fmt.Sprintf("Map value type '%s' is not supported.\n  The transpiler cannot manage pointer lifetimes in map values.", tv.Type.String()),
-				[]string{"Use non-pointer struct values in maps instead of pointers."})
-		}
-	}
 }
 
 // isComparableKeyType checks if a type can be used as a map key

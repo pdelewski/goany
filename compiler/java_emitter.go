@@ -348,7 +348,7 @@ func getJavaPrimTypeName(t types.Type) string {
 	case *types.Map:
 		return "hmap.HashMap"
 	case *types.Pointer:
-		return getJavaPrimTypeName(ut.Elem())
+		return "int"
 	case *types.Signature:
 		return javaSignatureTypeName(ut)
 	case *types.Interface:
