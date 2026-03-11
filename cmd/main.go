@@ -279,15 +279,13 @@ func main() {
 			}
 		}
 		if useJava {
-			// Compute sanitized Java output path (matching java_emitter sanitization)
-			javaOutputName := strings.ReplaceAll(outputName, "-", "_")
-			if strings.HasSuffix(javaOutputName, ".java") {
-				javaOutputName = strings.TrimSuffix(javaOutputName, ".java")
-			}
-			filePath := filepath.Join(outputDir, javaOutputName+".java")
-			err = compiler.FormatFile(filePath, astyleOptions)
-			if err != nil {
-				log.Fatalf("Failed to format %s: %v", filePath, err)
+			// Format all generated .java files (main + package files)
+			javaFiles, _ := filepath.Glob(filepath.Join(outputDir, "*.java"))
+			for _, filePath := range javaFiles {
+				err = compiler.FormatFile(filePath, astyleOptions)
+				if err != nil {
+					log.Fatalf("Failed to format %s: %v", filePath, err)
+				}
 			}
 		}
 	}
