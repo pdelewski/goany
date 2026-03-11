@@ -17,10 +17,7 @@ package main
 // 4. fmt.Sprintf - String formatting
 //    Rust backend has type mismatch issues with string_format2
 //
-// 5. for _, x := range []int{1,2,3} - Range over inline slice literal
-//    Rust backend generates malformed code
-//
-// 6. []interface{} - Slice of empty interface (any type)
+// 5. []interface{} - Slice of empty interface (any type)
 //    Not supported across backends
 //
 // SUPPORTED WITH LIMITATIONS:
@@ -144,6 +141,17 @@ func testLoopConstructs() {
 		fmt.Println("PASS: continue statement")
 	} else {
 		panic("FAIL: continue statement")
+	}
+
+	// Range over inline composite literal
+	inlineSum := 0
+	for _, x := range []int{10, 20, 30} {
+		inlineSum += x
+	}
+	if inlineSum == 60 {
+		fmt.Println("PASS: inline composite literal range")
+	} else {
+		panic("FAIL: inline composite literal range")
 	}
 
 	// Index-only range loop

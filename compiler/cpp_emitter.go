@@ -43,6 +43,7 @@ type CppEmitter struct {
 	mapAssignVar     string
 	mapAssignKey     string
 	structKeyTypes   map[string]string
+	rangeVarCounter  int
 	// For loop components (stacks for nesting support)
 	forInitStack []string
 	forCondStack []string
@@ -2213,6 +2214,37 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 
 	if node.Key == nil && valCode != "" {
 		keyCode = "_"
+	}
+
+	// If range expression is an inline composite literal, emit a temp variable
+	if _, isCompLit := node.X.(*ast.CompositeLit); isCompLit {
+		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)
+		e.rangeVarCounter++
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%s{\n", ind))
+		sb.WriteString(fmt.Sprintf("%s    auto %s = %s;\n", ind, tmpVar, xCode))
+		xCode = tmpVar
+		// Generate the loop inside the block
+		if valCode != "" && valCode != "_" {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = "_i"
+			}
+			valDecl := fmt.Sprintf("%s        auto %s = %s[%s];\n", ind, valCode, xCode, loopVar)
+			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+			sb.WriteString(fmt.Sprintf("%s    for (size_t %s = 0; %s < %s.size(); %s++)\n%s\n",
+				ind, loopVar, loopVar, xCode, loopVar, bodyWithDecl))
+		} else {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = "_i"
+			}
+			sb.WriteString(fmt.Sprintf("%s    for (auto %s : %s)\n%s\n",
+				ind, loopVar, xCode, bodyCode))
+		}
+		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+		e.fs.PushCode(sb.String())
+		return
 	}
 
 	// Key-value range

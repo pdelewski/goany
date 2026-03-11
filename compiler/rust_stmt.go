@@ -1122,6 +1122,44 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		return
 	}
 
+	// If range expression is an inline composite literal, emit a temp variable
+	if _, isCompLit := node.X.(*ast.CompositeLit); isCompLit {
+		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)
+		e.rangeVarCounter++
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%s{\n", ind))
+		sb.WriteString(fmt.Sprintf("%s    let %s = %s;\n", ind, tmpVar, xCode))
+		xCode = tmpVar
+		lenExpr := fmt.Sprintf("%s.len() as i32", xCode)
+		if valCode != "" && valCode != "_" {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
+				e.rangeVarCounter++
+			}
+			var valDecl string
+			if isString {
+				valDecl = fmt.Sprintf("%s        let mut %s = %s.as_bytes()[%s as usize] as i8;\n", ind, valCode, xCode, loopVar)
+			} else {
+				valDecl = fmt.Sprintf("%s        let mut %s = %s[%s as usize].clone();\n", ind, valCode, xCode, loopVar)
+			}
+			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+			sb.WriteString(fmt.Sprintf("%s    for %s in 0..%s %s\n",
+				ind, loopVar, lenExpr, bodyWithDecl))
+		} else {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
+				e.rangeVarCounter++
+			}
+			sb.WriteString(fmt.Sprintf("%s    for %s in 0..%s %s\n",
+				ind, loopVar, lenExpr, bodyCode))
+		}
+		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+		e.fs.PushCode(sb.String())
+		return
+	}
+
 	// Slice/string range with key and value — use for..in pattern for correct continue semantics
 	if valCode != "" && valCode != "_" {
 		loopVar := keyCode
