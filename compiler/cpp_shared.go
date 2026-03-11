@@ -97,6 +97,10 @@ func getCppTypeName(t types.Type) string {
 			return name
 		}
 	}
+	// Handle pointer types (after pointer lowering, stored as int pool index)
+	if _, ok := t.(*types.Pointer); ok {
+		return "int"
+	}
 	// Handle function types → std::function<ret(params)>
 	if sig, ok := t.Underlying().(*types.Signature); ok {
 		var params []string

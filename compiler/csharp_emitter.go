@@ -98,6 +98,10 @@ func getCsTypeName(t types.Type) string {
 	if _, ok := t.Underlying().(*types.Map); ok {
 		return "hmap.HashMap"
 	}
+	// Handle pointer types (after pointer lowering, stored as int pool index)
+	if _, ok := t.(*types.Pointer); ok {
+		return "int"
+	}
 	if named, ok := t.(*types.Named); ok {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()

@@ -2223,6 +2223,57 @@ func testPtrFieldString() {
 	}
 }
 
+func testMapPtrValue() {
+	fmt.Println("=== Map Pointer Value ===")
+
+	// Test 1: make map with pointer values, store &Struct{}, read back
+	m := make(map[string]*Person)
+	m["alice"] = &Person{name: "Alice", age: 30}
+	m["bob"] = &Person{name: "Bob", age: 25}
+
+	a := m["alice"]
+	if a.name == "Alice" && a.age == 30 {
+		fmt.Println("PASS: map ptr value read alice")
+	} else {
+		panic("FAIL: map ptr value read alice")
+	}
+
+	b := m["bob"]
+	if b.name == "Bob" && b.age == 25 {
+		fmt.Println("PASS: map ptr value read bob")
+	} else {
+		panic("FAIL: map ptr value read bob")
+	}
+
+	// Test 2: range over map with pointer values (order-independent sum)
+	ageSum := 0
+	for _, v := range m {
+		ageSum += v.age
+	}
+	if ageSum == 55 {
+		fmt.Println("PASS: map ptr value range sum")
+	} else {
+		panic("FAIL: map ptr value range sum")
+	}
+
+	// Test 3: len of map with pointer values
+	if len(m) == 2 {
+		fmt.Println("PASS: map ptr value len")
+	} else {
+		panic("FAIL: map ptr value len")
+	}
+
+	// Test 4: delete from map with pointer values
+	delete(m, "bob")
+	if len(m) == 1 {
+		fmt.Println("PASS: map ptr value delete")
+	} else {
+		panic("FAIL: map ptr value delete")
+	}
+
+	fmt.Println("All map pointer value tests passed!")
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2296,6 +2347,7 @@ func main() {
 	testPtrFieldInt()
 	testPtrFieldRead()
 	testPtrFieldString()
+	testMapPtrValue()
 
 	fmt.Println("=== Done ===")
 }

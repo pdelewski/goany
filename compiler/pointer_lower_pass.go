@@ -87,6 +87,7 @@ type ptrAnalysis struct {
 	ptrParamPools      map[string]types.Type         // pool name → elem type (from *T params)
 	callReturnPools    map[string]types.Type         // pool types needed for calling ptr-returning funcs
 	sliceOfPtrVars     map[string]types.Type         // var name -> elem type (for []*T vars)
+	mapOfPtrVars       map[string]types.Type         // var name -> elem type (for map[K]*T vars)
 }
 
 // poolNameForType returns the pool variable name for a given element type
@@ -191,7 +192,7 @@ func (v *ptrTransformVisitor) transform() {
 		if len(analysis.ptrParams) == 0 && len(analysis.ptrVars) == 0 && len(analysis.poolVars) == 0 &&
 			len(analysis.ptrLocals) == 0 && len(analysis.ptrIndexLocals) == 0 && len(analysis.ptrFieldLocals) == 0 &&
 			len(analysis.ptrCompositeLits) == 0 && len(analysis.ptrReturns) == 0 && len(analysis.callReturnPools) == 0 &&
-			len(analysis.sliceOfPtrVars) == 0 && len(analysis.ptrParamPools) == 0 {
+			len(analysis.sliceOfPtrVars) == 0 && len(analysis.mapOfPtrVars) == 0 && len(analysis.ptrParamPools) == 0 {
 			continue
 		}
 		v.rewriteFuncDecl(fd, analysis)
@@ -257,6 +258,7 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 		ptrParamPools:    make(map[string]types.Type),
 		callReturnPools:  make(map[string]types.Type),
 		sliceOfPtrVars:   make(map[string]types.Type),
+		mapOfPtrVars:     make(map[string]types.Type),
 	}
 
 	// Find pointer returns
@@ -556,6 +558,59 @@ func (v *ptrTransformVisitor) analyzeFuncDecl(fd *ast.FuncDecl) *ptrAnalysis {
 				return true
 			})
 		}
+
+		// Find map[K]*T variables: m := make(map[K]*T) or var m map[K]*T
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			// Handle short variable declarations: m := make(map[K]*T)
+			if assign, ok := n.(*ast.AssignStmt); ok && assign.Tok == token.DEFINE {
+				for i, lhs := range assign.Lhs {
+					if lhsIdent, ok := lhs.(*ast.Ident); ok {
+						if i < len(assign.Rhs) {
+							if tv, ok := v.pkg.TypesInfo.Types[assign.Rhs[i]]; ok {
+								if mapType, ok := tv.Type.(*types.Map); ok {
+									if ptrType, ok := mapType.Elem().(*types.Pointer); ok {
+										elemType := ptrType.Elem()
+										result.mapOfPtrVars[lhsIdent.Name] = elemType
+										pn := poolNameForType(elemType)
+										if _, exists := result.callReturnPools[pn]; !exists {
+											result.callReturnPools[pn] = elemType
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			// Handle var declarations: var m map[K]*T
+			if declStmt, ok := n.(*ast.DeclStmt); ok {
+				if genDecl, ok := declStmt.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
+					for _, spec := range genDecl.Specs {
+						if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+							if mapType, ok := valueSpec.Type.(*ast.MapType); ok {
+								if _, ok := mapType.Value.(*ast.StarExpr); ok {
+									for _, name := range valueSpec.Names {
+										if obj := v.pkg.TypesInfo.Defs[name]; obj != nil {
+											if mt, ok := obj.Type().(*types.Map); ok {
+												if ptrType, ok := mt.Elem().(*types.Pointer); ok {
+													elemType := ptrType.Elem()
+													result.mapOfPtrVars[name.Name] = elemType
+													pn := poolNameForType(elemType)
+													if _, exists := result.callReturnPools[pn]; !exists {
+														result.callReturnPools[pn] = elemType
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
 
 		// Find ptrVar assignments: p = &x where p is a ptrVar and x is a boxed variable
 		// Convert these to ptrLocals (alias elimination) for cross-backend compatibility
@@ -1023,6 +1078,12 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 					poolTypesNeeded[pn] = elemType
 				}
 			}
+			for _, elemType := range analysis.mapOfPtrVars {
+				pn := poolNameForType(elemType)
+				if _, fromParam := poolParamTypes[pn]; !fromParam {
+					poolTypesNeeded[pn] = elemType
+				}
+			}
 			for poolName, elemType := range poolTypesNeeded {
 				typeExpr := v.typeToExpr(elemType)
 				arrType := &ast.ArrayType{Elt: typeExpr}
@@ -1065,6 +1126,10 @@ func (v *ptrTransformVisitor) rewriteFuncDecl(fd *ast.FuncDecl, analysis *ptrAna
 				alreadyDeclared[pn] = true
 			}
 			for _, elemType := range analysis.sliceOfPtrVars {
+				pn := poolNameForType(elemType)
+				alreadyDeclared[pn] = true
+			}
+			for _, elemType := range analysis.mapOfPtrVars {
 				pn := poolNameForType(elemType)
 				alreadyDeclared[pn] = true
 			}
@@ -1373,6 +1438,23 @@ func (v *ptrTransformVisitor) rewriteStmtExpand(stmt ast.Stmt, analysis *ptrAnal
 							rewritten := v.rewriteStmt(stmt, analysis)
 							return append(preStmts, rewritten)
 						}
+					}
+				}
+			}
+		}
+	}
+
+	// Handle map[K]*T assignment: m[key] = &Struct{...}
+	// Hoist &CompositeLit to pool allocation before the assignment
+	if assignStmt, ok := stmt.(*ast.AssignStmt); ok && assignStmt.Tok == token.ASSIGN {
+		if len(assignStmt.Lhs) == 1 && len(assignStmt.Rhs) == 1 {
+			if indexExpr, ok := assignStmt.Lhs[0].(*ast.IndexExpr); ok {
+				if ident, ok := indexExpr.X.(*ast.Ident); ok {
+					if _, ok := analysis.mapOfPtrVars[ident.Name]; ok {
+						var preStmts []ast.Stmt
+						assignStmt.Rhs[0] = v.hoistAddrOfCompositeLit(assignStmt.Rhs[0], analysis, &preStmts)
+						rewritten := v.rewriteStmt(stmt, analysis)
+						return append(preStmts, rewritten)
 					}
 				}
 			}
