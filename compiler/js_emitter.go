@@ -33,6 +33,7 @@ type JSEmitter struct {
 	inNamespace    bool
 	indent         int
 	numFuncResults int
+	rangeVarCounter  int
 	// Minimal state for map assignment detection
 	lastIndexXCode   string
 	lastIndexKeyCode string
@@ -1981,6 +1982,36 @@ func (e *JSEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			sb.WriteString(fmt.Sprintf("%s}\n", ind))
 			e.fs.PushCode(sb.String())
 		}
+		return
+	}
+
+	// If range expression is an inline composite literal, emit a temp variable
+	if _, isCompLit := node.X.(*ast.CompositeLit); isCompLit {
+		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)
+		e.rangeVarCounter++
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%s{\n", ind))
+		sb.WriteString(fmt.Sprintf("%s  let %s = %s;\n", ind, tmpVar, xCode))
+		xCode = tmpVar
+		if valCode != "" && valCode != "_" {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = "_i"
+			}
+			valDecl := fmt.Sprintf("%s      let %s = %s[%s];\n", ind, valCode, xCode, loopVar)
+			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+			sb.WriteString(fmt.Sprintf("%s  for (let %s = 0; %s < %s.length; %s++) %s\n",
+				ind, loopVar, loopVar, xCode, loopVar, bodyWithDecl))
+		} else {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = "_i"
+			}
+			sb.WriteString(fmt.Sprintf("%s  for (let %s = 0; %s < %s.length; %s++) %s\n",
+				ind, loopVar, loopVar, xCode, loopVar, bodyCode))
+		}
+		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+		e.fs.PushCode(sb.String())
 		return
 	}
 

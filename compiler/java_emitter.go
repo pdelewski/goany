@@ -3735,6 +3735,44 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		}
 	}
 
+	// If range expression is an inline composite literal, emit a temp variable
+	if _, isCompLit := node.X.(*ast.CompositeLit); isCompLit {
+		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)
+		e.rangeVarCounter++
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("%s{\n", ind))
+		sb.WriteString(fmt.Sprintf("%s  var %s = %s;\n", ind, tmpVar, xCode))
+		xCode = tmpVar
+		lenExpr = xCode + ".size()"
+		if valCode != "" && valCode != "_" {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
+				e.rangeVarCounter++
+			}
+			var valDecl string
+			if isString {
+				valDecl = fmt.Sprintf("%s      var %s = (int)%s.charAt(%s);\n", ind, valCode, xCode, loopVar)
+			} else {
+				valDecl = fmt.Sprintf("%s      var %s = %s.get(%s);\n", ind, valCode, xCode, loopVar)
+			}
+			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s; %s++) %s\n",
+				ind, loopVar, loopVar, lenExpr, loopVar, bodyWithDecl))
+		} else {
+			loopVar := keyCode
+			if loopVar == "_" || loopVar == "" {
+				loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
+				e.rangeVarCounter++
+			}
+			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s; %s++) %s\n",
+				ind, loopVar, loopVar, lenExpr, loopVar, bodyCode))
+		}
+		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+		e.fs.PushCode(sb.String())
+		return
+	}
+
 	// Slice/string range
 	if valCode != "" && valCode != "_" {
 		loopVar := keyCode

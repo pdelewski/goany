@@ -32,18 +32,6 @@ func main() {
 		ExpectedError: "iota is not allowed",
 	},
 	{
-		Name: "range_over_inline_literal",
-		Code: `package main
-
-func main() {
-	for _, x := range []int{1, 2, 3} {
-		_ = x
-	}
-}
-`,
-		ExpectedError: "range over inline slice literal",
-	},
-	{
 		Name: "nil_comparison_eq",
 		Code: `package main
 

@@ -844,13 +844,6 @@ func (sema *SemaChecker) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		// Otherwise, keep both Key and Value for key-value range loops
 	}
 
-	// Check for range over inline composite literal (e.g., for _, x := range []int{1,2,3})
-	if _, ok := node.X.(*ast.CompositeLit); ok {
-		sema.reportSemaError(node.Pos(),
-			"range over inline slice literal is not allowed",
-			"Range over inline composite literal (e.g., for _, x := range []int{1,2,3}) is not supported.",
-			[]string{"Assign the literal to a variable first: arr := []int{1,2,3}; for _, x := range arr { ... }"})
-	}
 
 	// Track range target for mutation detection
 	if ident, ok := node.X.(*ast.Ident); ok {
