@@ -3,6 +3,7 @@ package compiler
 import (
 	"go/ast"
 	"go/types"
+	"strings"
 )
 
 // TokenType represents different types of tokens in the code generation
@@ -136,11 +137,54 @@ type OptMeta struct {
 
 // Token represents a single token with its type and content
 type Token struct {
-	Type    TokenType
-	Content string
-	GoType  types.Type // Go type info for shift/reduce backends, nil if N/A
-	Tag     int        // Fragment tag (TagExpr, TagStmt, etc.), 0 if unset
-	OptMeta *OptMeta   // nil when no optimization metadata
+	Type     TokenType
+	Content  string
+	GoType   types.Type // Go type info for shift/reduce backends, nil if N/A
+	Tag      int        // Fragment tag (TagExpr, TagStmt, etc.), 0 if unset
+	OptMeta  *OptMeta   // nil when no optimization metadata
+	Children []Token    // child tokens for tree structure; nil for leaf tokens
+}
+
+// Serialize returns the string representation of this token.
+// For leaf tokens (no children), it returns Content directly.
+// For tree tokens, it recursively serializes all children.
+func (t Token) Serialize() string {
+	if len(t.Children) == 0 {
+		return t.Content
+	}
+	var sb strings.Builder
+	for _, child := range t.Children {
+		sb.WriteString(child.Serialize())
+	}
+	return sb.String()
+}
+
+// TokenTree builds a parent token with children and eagerly sets Content = Serialize().
+func TokenTree(tokenType TokenType, tag int, children ...Token) Token {
+	t := Token{
+		Type:     tokenType,
+		Tag:      tag,
+		Children: children,
+	}
+	t.Content = t.Serialize()
+	return t
+}
+
+// Leaf creates an atomic token with no children.
+func Leaf(tokenType TokenType, content string) Token {
+	return Token{
+		Type:    tokenType,
+		Content: content,
+	}
+}
+
+// LeafTag creates an atomic token with a tag and no children.
+func LeafTag(tokenType TokenType, content string, tag int) Token {
+	return Token{
+		Type:    tokenType,
+		Content: content,
+		Tag:     tag,
+	}
 }
 
 // TokenTypeNames provides string representations for token types

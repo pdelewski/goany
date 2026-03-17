@@ -82,14 +82,35 @@ func (fs *FragmentStack) Reduce(visitMethod string) []Token {
 	return result
 }
 
-// ReduceToCode performs Reduce and concatenates all token Content fields.
+// ReduceToCode performs Reduce and concatenates all token Serialize() outputs.
 func (fs *FragmentStack) ReduceToCode(visitMethod string) string {
 	tokens := fs.Reduce(visitMethod)
 	var sb strings.Builder
 	for _, t := range tokens {
-		sb.WriteString(t.Content)
+		sb.WriteString(t.Serialize())
 	}
 	return sb.String()
+}
+
+// PushTree pushes a tree token onto the stack (auto-computes Content for backward compat).
+func (fs *FragmentStack) PushTree(token Token) {
+	// Ensure Content is populated for backward compatibility
+	if len(token.Children) > 0 && token.Content == "" {
+		token.Content = token.Serialize()
+	}
+	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
+}
+
+// PushLeaf pushes an atomic leaf token onto the stack.
+func (fs *FragmentStack) PushLeaf(tokenType TokenType, content string, tag int) {
+	token := LeafTag(tokenType, content, tag)
+	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
+}
+
+// ReduceToTree reduces tokens from the marker and wraps them as children of a new parent token.
+func (fs *FragmentStack) ReduceToTree(visitMethod string, tokenType TokenType, tag int) Token {
+	children := fs.Reduce(visitMethod)
+	return TokenTree(tokenType, tag, children...)
 }
 
 // Pop removes and returns the last token from the tokenSlice.

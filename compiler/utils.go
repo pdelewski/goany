@@ -195,7 +195,7 @@ func ExtractTokens(position int, tokenSlice []Token) ([]string, error) {
 	}
 	result := make([]string, len(tokenSlice)-position)
 	for i, token := range tokenSlice[position:] {
-		result[i] = token.Content
+		result[i] = token.Serialize()
 	}
 	return result, nil
 }
@@ -329,7 +329,7 @@ func emitToFile(file *os.File, fileBuffer string) error {
 
 func emitTokensToFile(file *os.File, tokenSlice []Token) error {
 	for _, token := range tokenSlice {
-		_, err := file.WriteString(token.Content)
+		_, err := file.WriteString(token.Serialize())
 		if err != nil {
 			fmt.Println("Error writing to file:", err)
 			return err
