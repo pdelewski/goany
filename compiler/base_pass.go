@@ -1058,7 +1058,6 @@ func (v *BasePass) ProLog() {
 	namespaces = make(map[string]struct{})
 	v.Emitter.GetForestBuilder().AddVisitMarker(PreVisitProgram)
 	v.Emitter.PreVisitProgram(0)
-	v.file = v.Emitter.GetFile()
 }
 
 func (v *BasePass) EpiLog() {

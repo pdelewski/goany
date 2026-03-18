@@ -33,6 +33,10 @@ type Emitter interface {
 	GetFile() *os.File
 	// GetForestBuilder returns the IRForestBuilder instance.
 	GetForestBuilder() *IRForestBuilder
+	// GetOutputEntries returns collected output files with IR trees.
+	GetOutputEntries() []OutputEntry
+	// PostFileEmit runs post-processing after files are written.
+	PostFileEmit()
 
 	// PreVisitProgram is called before visiting the program node.
 	PreVisitProgram(indent int)

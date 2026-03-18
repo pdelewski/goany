@@ -168,6 +168,8 @@ type BaseEmitter struct{
 			fmt.Fprintf(output, "%s { return nil }\n", method)
 		} else if strings.Contains(method, ") *IRForestBuilder") {
 			fmt.Fprintf(output, "%s {\n\tif v.fb == nil {\n\t\tv.fb = NewIRForestBuilder()\n\t}\n\treturn v.fb\n}\n", method)
+		} else if strings.Contains(method, ") []OutputEntry") {
+			fmt.Fprintf(output, "%s { return nil }\n", method)
 		} else {
 			fmt.Fprintf(output, "%s {}\n", method)
 		}

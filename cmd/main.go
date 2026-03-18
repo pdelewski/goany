@@ -132,42 +132,42 @@ func main() {
 	useJs := backendSet["js"]             // JS is opt-in, not included in "all"
 	useJava := backendSet["java"] // Java is opt-in, not included in "all"
 
-	// Build passes list
-	var passes []compiler.Pass
+	// Build shared frontend passes
+	var frontendPasses []compiler.FrontendPass
 
 	// Pass 1: Syntax checking (rejects unsupported Go constructs)
 	syntaxChecker := &compiler.SyntaxChecker{Emitter: &compiler.BaseEmitter{}}
 	syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
-	passes = append(passes, syntaxPass)
+	frontendPasses = append(frontendPasses, syntaxPass)
 
 	// Pass 2: Semantic analysis (first run - on original AST)
 	semaChecker := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
-	passes = append(passes, sema)
+	frontendPasses = append(frontendPasses, sema)
 
 	// Pass 3: Method receiver lowering
 	methodLowering := &compiler.MethodReceiverLoweringPass{}
-	passes = append(passes, methodLowering)
+	frontendPasses = append(frontendPasses, methodLowering)
 
 	// Pass 4: Semantic analysis (after method receiver lowering)
 	semaChecker2 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema2 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker2}
-	passes = append(passes, sema2)
+	frontendPasses = append(frontendPasses, sema2)
 
 	// Pass 5: Pointer-to-array transformation
 	ptrTransform := &compiler.PointerTransformPass{}
-	passes = append(passes, ptrTransform)
+	frontendPasses = append(frontendPasses, ptrTransform)
 
 	// Pass 6: Semantic analysis (after pointer transform)
 	semaChecker3 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema3 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker3}
-	passes = append(passes, sema3)
+	frontendPasses = append(frontendPasses, sema3)
 
 	// If check-sema mode, run passes and exit
 	if checkSema {
 		passManager := &compiler.PassManager{
-			Pkgs:   allPkgs,
-			Passes: passes,
+			Pkgs:           allPkgs,
+			FrontendPasses: frontendPasses,
 		}
 		passManager.RunPasses()
 
@@ -181,78 +181,86 @@ func main() {
 		return
 	}
 
+	// Build backend pipelines
+	var backendPipelines []compiler.BackendPipeline
 	var programFiles []string
 
 	if useCpp {
-		cppBackend := &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CppEmitter{
-			Emitter:         &compiler.BaseEmitter{},
-			Output:          output + ".cpp",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-			OptimizeMoves:   optimizeMoves,
-			OptimizeRefs:    optimizeRefs,
-		}}
-		passes = append(passes, cppBackend)
+		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
+			CodeGen: &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CppEmitter{
+				Emitter:         &compiler.BaseEmitter{},
+				Output:          output + ".cpp",
+				LinkRuntime:     linkRuntime,
+				RuntimePackages: runtimePackages,
+				OutputDir:       outputDir,
+				OutputName:      outputName,
+				OptimizeMoves:   optimizeMoves,
+				OptimizeRefs:    optimizeRefs,
+			}},
+		})
 		programFiles = append(programFiles, "cpp")
 	}
 	if useCs {
-		csBackend := &compiler.BasePass{PassName: "CsGen", Emitter: &compiler.CSharpEmitter{
-			Emitter:         &compiler.BaseEmitter{},
-			Output:          output + ".cs",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-			OptimizeRefs:    optimizeRefs,
-		}}
-		passes = append(passes, csBackend)
+		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
+			CodeGen: &compiler.BasePass{PassName: "CsGen", Emitter: &compiler.CSharpEmitter{
+				Emitter:         &compiler.BaseEmitter{},
+				Output:          output + ".cs",
+				LinkRuntime:     linkRuntime,
+				RuntimePackages: runtimePackages,
+				OutputDir:       outputDir,
+				OutputName:      outputName,
+				OptimizeRefs:    optimizeRefs,
+			}},
+		})
 		programFiles = append(programFiles, "cs")
 	}
 	if useRust {
-		rustBackend := &compiler.BasePass{PassName: "RustGen", Emitter: &compiler.RustEmitter{
-			Emitter:         &compiler.BaseEmitter{},
-			Output:          output + ".rs",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-			Opt: compiler.RustOptState{
-				OptimizeMoves: optimizeMoves,
-				OptimizeRefs:  optimizeRefs,
-			},
-		}}
-		passes = append(passes, rustBackend)
+		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
+			CodeGen: &compiler.BasePass{PassName: "RustGen", Emitter: &compiler.RustEmitter{
+				Emitter:         &compiler.BaseEmitter{},
+				Output:          output + ".rs",
+				LinkRuntime:     linkRuntime,
+				RuntimePackages: runtimePackages,
+				OutputDir:       outputDir,
+				OutputName:      outputName,
+				Opt: compiler.RustOptState{
+					OptimizeMoves: optimizeMoves,
+					OptimizeRefs:  optimizeRefs,
+				},
+			}},
+		})
 		programFiles = append(programFiles, "rs")
 	}
 	if useJs {
-		jsBackend := &compiler.BasePass{PassName: "JsGen", Emitter: &compiler.JSEmitter{
-			Emitter:         &compiler.BaseEmitter{},
-			Output:          output + ".js",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-		}}
-		passes = append(passes, jsBackend)
+		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
+			CodeGen: &compiler.BasePass{PassName: "JsGen", Emitter: &compiler.JSEmitter{
+				Emitter:         &compiler.BaseEmitter{},
+				Output:          output + ".js",
+				LinkRuntime:     linkRuntime,
+				RuntimePackages: runtimePackages,
+				OutputDir:       outputDir,
+				OutputName:      outputName,
+			}},
+		})
 		programFiles = append(programFiles, "js")
 	}
 	if useJava {
-		javaBackend := &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
-			Emitter:         &compiler.BaseEmitter{},
-			Output:          output + ".java",
-			LinkRuntime:     linkRuntime,
-			RuntimePackages: runtimePackages,
-			OutputDir:       outputDir,
-			OutputName:      outputName,
-		}}
-		passes = append(passes, javaBackend)
+		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
+			CodeGen: &compiler.BasePass{PassName: "JavaGen", Emitter: &compiler.JavaEmitter{
+				Emitter:         &compiler.BaseEmitter{},
+				Output:          output + ".java",
+				LinkRuntime:     linkRuntime,
+				RuntimePackages: runtimePackages,
+				OutputDir:       outputDir,
+				OutputName:      outputName,
+			}},
+		})
 		programFiles = append(programFiles, "java")
 	}
 	passManager := &compiler.PassManager{
-		Pkgs:   allPkgs,
-		Passes: passes,
+		Pkgs:           allPkgs,
+		FrontendPasses: frontendPasses,
+		Backends:       backendPipelines,
 	}
 
 	passManager.RunPasses()

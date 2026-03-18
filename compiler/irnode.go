@@ -172,6 +172,7 @@ const (
 	StructTypeNode
 	ChanTypeNode
 	ScopeNode  // auto-collected scope wrapper
+	Preamble   // header/boilerplate content (includes, runtime, helpers)
 )
 
 // OptKind identifies what kind of optimizable construct a token represents.
@@ -373,6 +374,7 @@ var IRNodeTypeNames = map[IRNodeType]string{
 	StructTypeNode:    "StructTypeNode",
 	ChanTypeNode:      "ChanTypeNode",
 	ScopeNode:         "ScopeNode",
+	Preamble:          "Preamble",
 }
 
 // String returns the string representation of a IRNodeType

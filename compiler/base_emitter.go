@@ -261,6 +261,8 @@ func (v *BaseEmitter) GetForestBuilder() *IRForestBuilder {
 	}
 	return v.fb
 }
+func (v *BaseEmitter) GetOutputEntries() []OutputEntry { return nil }
+func (v *BaseEmitter) PostFileEmit() {}
 func (v *BaseEmitter) PreVisitProgram(indent int) {}
 func (v *BaseEmitter) PostVisitProgram(indent int) {}
 func (v *BaseEmitter) PreVisitPackage(pkg *packages.Package, indent int) {}
