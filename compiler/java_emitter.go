@@ -28,7 +28,7 @@ type JavaEmitter struct {
 	LinkRuntime     string
 	RuntimePackages map[string]string
 	file            *os.File
-	Emitter // interface embedding (provides GetGoFIR via BaseEmitter)
+	Emitter // interface embedding (provides GetForestBuilder via BaseEmitter)
 	pkg            *packages.Package
 	currentPackage string
 	indent         int
@@ -748,7 +748,7 @@ func (e *JavaEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	e.fs = NewIRForestBuilder(e.GetGoFIR())
+	e.fs = e.GetForestBuilder()
 	e.typeAliasMap = make(map[string]string)
 	e.aliases = make(map[string]Alias)
 	e.structKeyTypes = make(map[string]string)

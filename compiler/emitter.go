@@ -31,8 +31,8 @@ type Emitter interface {
 	SetFile(file *os.File)
 	// GetFile returns the current output file.
 	GetFile() *os.File
-	// GetGoFIR returns the GoFIR instance for emitting to file buffer.
-	GetGoFIR() *GoFIR
+	// GetForestBuilder returns the IRForestBuilder instance.
+	GetForestBuilder() *IRForestBuilder
 
 	// PreVisitProgram is called before visiting the program node.
 	PreVisitProgram(indent int)

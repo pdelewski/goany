@@ -376,7 +376,7 @@ func (e *JSEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	e.fs = NewIRForestBuilder(e.GetGoFIR())
+	e.fs = e.GetForestBuilder()
 
 	// Write JS header with runtime helpers
 	e.file.WriteString(`// Generated JavaScript code

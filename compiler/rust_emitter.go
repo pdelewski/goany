@@ -888,7 +888,7 @@ func (e *RustEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	e.fs = NewIRForestBuilder(e.GetGoFIR())
+	e.fs = e.GetForestBuilder()
 
 	// Write Rust preamble
 	builtin := `use std::fmt;

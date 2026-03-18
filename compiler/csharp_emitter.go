@@ -663,7 +663,7 @@ func (e *CSharpEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	e.fs = NewIRForestBuilder(e.GetGoFIR())
+	e.fs = e.GetForestBuilder()
 	e.typeAliasMap = make(map[string]string)
 	e.aliases = make(map[string]Alias)
 

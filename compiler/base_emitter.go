@@ -250,12 +250,17 @@ const (
 )
 
 type BaseEmitter struct{
-	gir GoFIR
+	fb *IRForestBuilder
 }
 
 func (v *BaseEmitter) SetFile(file *os.File) {}
 func (v *BaseEmitter) GetFile() *os.File { return nil }
-func (v *BaseEmitter) GetGoFIR() *GoFIR { return &v.gir }
+func (v *BaseEmitter) GetForestBuilder() *IRForestBuilder {
+	if v.fb == nil {
+		v.fb = NewIRForestBuilder()
+	}
+	return v.fb
+}
 func (v *BaseEmitter) PreVisitProgram(indent int) {}
 func (v *BaseEmitter) PostVisitProgram(indent int) {}
 func (v *BaseEmitter) PreVisitPackage(pkg *packages.Package, indent int) {}

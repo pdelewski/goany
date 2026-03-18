@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"strings"
 	"unicode"
 )
 
@@ -118,113 +117,6 @@ func SliceToMap(slice []string) map[string]int {
 	return result
 }
 
-func mergeStackElements(marker string, stack []string) []string {
-	var merged strings.Builder
-
-	// Process the stack in reverse until we find a marker
-	for len(stack) > 0 {
-		top := stack[len(stack)-1]
-		stack = stack[:len(stack)-1] // Pop element
-
-		// Stop merging when we find a marker
-		if strings.HasPrefix(top, marker) {
-			stack = append(stack, merged.String()) // Push merged string
-			return stack
-		}
-
-		// Prepend the element to the merged string (reverse order)
-		mergedString := top + merged.String() // Prepend instead of append
-		merged.Reset()
-		merged.WriteString(mergedString)
-	}
-	return stack
-}
-
-func SearchPointerIndexReverse(target VisitMethod, pointerAndIndexVec []PointerAndIndex) *PointerAndIndex {
-	for i := len(pointerAndIndexVec) - 1; i >= 0; i-- {
-		if pointerAndIndexVec[i].Pointer == string(target) {
-			return &pointerAndIndexVec[i]
-		}
-	}
-	return nil // Return nil if the pointer is not found
-}
-
-// SearchPointerIndexReverseString provides string-based search for custom markers and dynamic values
-func SearchPointerIndexReverseString(target string, pointerAndIndexVec []PointerAndIndex) *PointerAndIndex {
-	for i := len(pointerAndIndexVec) - 1; i >= 0; i-- {
-		if pointerAndIndexVec[i].Pointer == target {
-			return &pointerAndIndexVec[i]
-		}
-	}
-	return nil // Return nil if the pointer is not found
-}
-
-// RemovePointerEntryReverse removes the last entry matching the target and returns the new slice
-func RemovePointerEntryReverse(pointerAndIndexVec []PointerAndIndex, target VisitMethod) []PointerAndIndex {
-	for i := len(pointerAndIndexVec) - 1; i >= 0; i-- {
-		if pointerAndIndexVec[i].Pointer == string(target) {
-			return append(pointerAndIndexVec[:i], pointerAndIndexVec[i+1:]...)
-		}
-	}
-	return pointerAndIndexVec
-}
-
-// RemovePointerEntryReverseString removes the last entry matching the target string and returns the new slice
-func RemovePointerEntryReverseString(pointerAndIndexVec []PointerAndIndex, target string) []PointerAndIndex {
-	for i := len(pointerAndIndexVec) - 1; i >= 0; i-- {
-		if pointerAndIndexVec[i].Pointer == target {
-			return append(pointerAndIndexVec[:i], pointerAndIndexVec[i+1:]...)
-		}
-	}
-	return pointerAndIndexVec
-}
-
-type PointerAndIndex struct {
-	Pointer string // Pointer to the visit method type (keeping as string for flexibility)
-	Index   int
-}
-
-func (gir *GoFIR) emitTokenToFileBufferString(
-	token IRNode, pointer string) error {
-	gir.pointerAndIndexVec = append(gir.pointerAndIndexVec, PointerAndIndex{
-		Pointer: pointer,
-		Index:   len(gir.tokenSlice),
-	})
-	if token.Content != "" {
-		gir.tokenSlice = append(gir.tokenSlice, token)
-	}
-	return nil
-}
-
-// Backward compatibility - keep old string-based methods
-func (gir *GoFIR) emitToFileBuffer(
-	s string, pointer VisitMethod) error {
-	gir.pointerAndIndexVec = append(gir.pointerAndIndexVec, PointerAndIndex{
-		Pointer: string(pointer),
-		Index:   len(gir.tokenSlice),
-	})
-	if s != "" {
-		// Convert string to token for storage
-		token := CreateIRNode(Identifier, s) // Default token type
-		gir.tokenSlice = append(gir.tokenSlice, token)
-	}
-	return nil
-}
-
-// emitToFileBufferString provides backward compatibility for string pointers
-func (gir *GoFIR) emitToFileBufferString(
-	s string, pointer string) error {
-	gir.pointerAndIndexVec = append(gir.pointerAndIndexVec, PointerAndIndex{
-		Pointer: pointer,
-		Index:   len(gir.tokenSlice),
-	})
-	if s != "" {
-		// Convert string to token for storage
-		token := CreateIRNode(Identifier, s) // Default token type
-		gir.tokenSlice = append(gir.tokenSlice, token)
-	}
-	return nil
-}
 
 func RebuildNestedType(reprs []AliasRepr) string {
 	if len(reprs) == 0 {
@@ -255,8 +147,4 @@ func containsWhitespace(s string) bool {
 	return false
 }
 
-type GoFIR struct {
-	tokenSlice         []IRNode
-	pointerAndIndexVec []PointerAndIndex
-}
 

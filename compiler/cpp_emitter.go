@@ -353,7 +353,7 @@ func (e *CppEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	e.fs = NewIRForestBuilder(e.GetGoFIR())
+	e.fs = e.GetForestBuilder()
 
 	// Write C++ header
 	e.file.WriteString("#include <vector>\n" +
