@@ -537,7 +537,7 @@ func (e *CppEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 func (e *CppEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 	if pkg.Name != "main" {
-		e.fs.PushTree(IRTree(Keyword, TagExpr,
+		e.fs.PushTree(IRTree(PackageDeclaration, KindDecl,
 			Leaf(RightBrace, "}"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LineComment, "// namespace "+pkg.Name),
@@ -633,7 +633,7 @@ func (e *CppEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		right = tokens[1].Serialize()
 	}
 	op := node.Op.String()
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+	e.fs.PushTree(IRTree(BinaryExpression, KindExpr,
 		Leaf(Identifier, left),
 		Leaf(WhiteSpace, " "),
 		Leaf(BinaryOperator, op),
@@ -707,14 +707,14 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	case "len":
 		// len(m) on maps → hmap::hashMapLen(m)
 		if len(node.Args) > 0 && e.isMapTypeExpr(node.Args[0]) {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, "hmap::hashMapLen"),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, argsStr),
 				Leaf(RightParen, ")"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, "std::size"),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, argsStr),
@@ -723,7 +723,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 		return
 	case "append":
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(CallExpression, KindExpr,
 			Leaf(Identifier, "append"),
 			Leaf(LeftParen, "("),
 			Leaf(Identifier, argsStr),
@@ -752,7 +752,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 			if castPfx != "" {
 				keyStr = castPfx + keyStr + castSfx
 			}
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, mapName),
 				Leaf(WhiteSpace, " "),
 				Leaf(Assignment, "="),
@@ -765,7 +765,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				Leaf(RightParen, ")"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, "delete"),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, argsStr),
@@ -777,7 +777,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		if len(node.Args) >= 1 {
 			if mapType, ok := node.Args[0].(*ast.MapType); ok {
 				keyTypeConst := e.getMapKeyTypeConst(mapType)
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(CallExpression, KindExpr,
 					Leaf(Identifier, "hmap::newHashMap"),
 					Leaf(LeftParen, "("),
 					Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
@@ -798,7 +798,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				}
 				parts := strings.SplitN(argsStr, ", ", 2)
 				if len(parts) >= 2 {
-					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(CallExpression, KindExpr,
 						Leaf(Identifier, cppType),
 						Leaf(LeftParen, "("),
 						Leaf(Identifier, parts[1]),
@@ -810,7 +810,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				return
 			}
 		}
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(CallExpression, KindExpr,
 			Leaf(Identifier, "make"),
 			Leaf(LeftParen, "("),
 			Leaf(Identifier, argsStr),
@@ -818,7 +818,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		))
 		return
 	case "goany_panic":
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(CallExpression, KindExpr,
 			Leaf(Identifier, "goany_panic"),
 			Leaf(LeftParen, "("),
 			Leaf(Identifier, argsStr),
@@ -833,7 +833,7 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		funName = lowered
 	}
 
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+	e.fs.PushTree(IRTree(CallExpression, KindExpr,
 		Leaf(Identifier, funName),
 		Leaf(LeftParen, "("),
 		Leaf(Identifier, argsStr),
@@ -867,7 +867,7 @@ func (e *CppEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
 	}
 
 	if xCode == "os" && selCode == "Args" {
-		e.fs.PushCode("goany_os_args")
+		e.fs.PushTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, "goany_os_args")))
 		return
 	}
 
@@ -876,14 +876,14 @@ func (e *CppEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
 
 	if loweredX == "" {
 		// Package selector like fmt is suppressed
-		e.fs.PushCode(loweredSel)
+		e.fs.PushTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, loweredSel)))
 	} else {
 		// Use :: for namespaces, . for struct fields
 		scopeOp := "."
 		if _, found := namespaces[xCode]; found {
 			scopeOp = "::"
 		}
-		e.fs.PushCode(loweredX + scopeOp + loweredSel)
+		e.fs.PushTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, loweredX+scopeOp+loweredSel)))
 	}
 }
 
@@ -929,7 +929,7 @@ func (e *CppEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		if castPfx != "" {
 			keyStr = castPfx + idxCode + castSfx
 		}
-		tree := IRTree(TypeKeyword, TagExpr,
+		tree := IRTree(IndexExpression, KindExpr,
 			Leaf(Identifier, "std::any_cast"),
 			Leaf(LeftAngle, "<"),
 			Leaf(Identifier, valueCppType),
@@ -946,7 +946,7 @@ func (e *CppEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		tree.GoType = e.getExprGoType(node)
 		e.fs.PushTree(tree)
 	} else {
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(IndexExpression, KindExpr,
 			Leaf(Identifier, xCode),
 			Leaf(LeftBracket, "["),
 			Leaf(Identifier, idxCode),
@@ -963,9 +963,9 @@ func (e *CppEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitUnaryExpr))
 	op := node.Op.String()
 	if op == "^" {
-		e.fs.PushCode("~" + xCode)
+		e.fs.PushTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, "~"+xCode)))
 	} else {
-		e.fs.PushCode("(" + op + xCode + ")")
+		e.fs.PushTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, "("+op+xCode+")")))
 	}
 }
 
@@ -975,7 +975,7 @@ func (e *CppEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 
 func (e *CppEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
 	inner := e.fs.ReduceToCode(string(PreVisitParenExpr))
-	e.fs.PushCode("(" + inner + ")")
+	e.fs.PushTree(IRTree(ParenExpression, KindExpr, Leaf(Identifier, "("+inner+")")))
 }
 
 // ============================================================
@@ -1036,7 +1036,7 @@ func (e *CppEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 	} else {
 		endExpr = xCode + ".begin() + " + highCode
 	}
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+	e.fs.PushTree(IRTree(SliceExpression, KindExpr,
 		Leaf(Identifier, "std::vector<std::remove_const<std::remove_reference<decltype("+xCode+"[0])>::type>::type>"),
 		Leaf(LeftParen, "("),
 		Leaf(Identifier, beginExpr),
@@ -1086,14 +1086,14 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 			typeName = strings.ReplaceAll(typeName, ".", "::")
 		}
 		if typeName != "" {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 				Leaf(Identifier, typeName),
 				Leaf(LeftBrace, "{"),
 				Leaf(Identifier, strings.Join(elts, ", ")),
 				Leaf(RightBrace, "}"),
 			))
 		} else {
-			e.fs.PushCode("{" + strings.Join(elts, ", ") + "}")
+			e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr, Leaf(Identifier, "{"+strings.Join(elts, ", ")+"}")))
 		}
 		return
 	}
@@ -1130,7 +1130,7 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 						args = append(args, "{}")
 					}
 				}
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 					Leaf(Identifier, typeName),
 					Leaf(LeftBrace, "{"),
 					Leaf(Identifier, strings.Join(args, ", ")),
@@ -1139,7 +1139,7 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 				return
 			}
 		}
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 			Leaf(Identifier, typeName),
 			Leaf(LeftBrace, "{"),
 			Leaf(Identifier, strings.Join(elts, ", ")),
@@ -1148,7 +1148,7 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 
 	case *types.Slice:
 		elemCppType := getCppTypeName(u.Elem())
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 			Leaf(Identifier, "std::vector<"+elemCppType+">"),
 			Leaf(LeftBrace, "{"),
 			Leaf(Identifier, strings.Join(elts, ", ")),
@@ -1161,7 +1161,7 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 			keyTypeConst = e.getMapKeyTypeConst(node.Type.(*ast.MapType))
 		}
 		if len(elts) == 0 {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 				Leaf(Identifier, "hmap::newHashMap"),
 				Leaf(LeftParen, "("),
 				Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
@@ -1235,11 +1235,11 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 				Leaf(LeftParen, "("),
 				Leaf(RightParen, ")"),
 			)
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+			e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr, children...))
 		}
 
 	default:
-		e.fs.PushCode("{" + strings.Join(elts, ", ") + "}")
+		e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr, Leaf(Identifier, "{"+strings.Join(elts, ", ")+"}")))
 	}
 }
 
@@ -1268,7 +1268,7 @@ func (e *CppEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
 		valCode = tokens[1].Serialize()
 	}
 	// C++ designated initializer style: .Key = Value
-	e.fs.PushCode("." + keyCode + " = " + valCode)
+	e.fs.PushTree(IRTree(KeyValueExpression, KindExpr, Leaf(Identifier, "."+keyCode+" = "+valCode)))
 }
 
 // ============================================================
@@ -1283,7 +1283,7 @@ func (e *CppEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	children := []IRNode{Leaf(Identifier, "std::vector"), Leaf(LeftAngle, "<")}
 	children = append(children, typeTokens...)
 	children = append(children, Leaf(RightAngle, ">"))
-	e.fs.PushTree(IRTree(TypeKeyword, TagType, children...))
+	e.fs.PushTree(IRTree(ArrayTypeNode, KindType, children...))
 }
 
 // ============================================================
@@ -1300,7 +1300,7 @@ func (e *CppEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
 
 func (e *CppEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 	e.fs.Reduce(string(PreVisitMapType))
-	e.fs.Push("hmap::HashMap", TagType, nil)
+	e.fs.PushTree(IRTree(MapTypeNode, KindType, Leaf(Identifier, "hmap::HashMap")))
 }
 
 // ============================================================
@@ -1364,7 +1364,7 @@ func (e *CppEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
 		Leaf(RightParen, ")"),
 		Leaf(RightAngle, ">"),
 	}
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(FuncTypeExpression, KindType, children...))
 }
 
 // ============================================================
@@ -1410,7 +1410,7 @@ func (e *CppEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent in
 		}
 	}
 	if needsAnyWrap {
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeAssertExpression, KindExpr,
 			Leaf(Identifier, "std::any_cast"),
 			Leaf(LeftAngle, "<"),
 			Leaf(Identifier, typeCode),
@@ -1423,7 +1423,7 @@ func (e *CppEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent in
 			Leaf(RightParen, ")"),
 		))
 	} else {
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeAssertExpression, KindExpr,
 			Leaf(Identifier, "std::any_cast"),
 			Leaf(LeftAngle, "<"),
 			Leaf(Identifier, typeCode),
@@ -1462,7 +1462,7 @@ func (e *CppEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int)
 	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParams))
 	var paramStrs []string
 	for _, t := range tokens {
-		if t.Tag == TagIdent && t.Serialize() != "" {
+		if t.Kind == TagIdent && t.Serialize() != "" {
 			paramStrs = append(paramStrs, t.Serialize())
 		}
 	}
@@ -1519,7 +1519,7 @@ func (e *CppEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 	if len(tokens) >= 3 {
 		bodyCode = tokens[2].Serialize()
 	}
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+	e.fs.PushTree(IRTree(FuncLitExpression, KindExpr,
 		Leaf(LeftBracket, "["),
 		Leaf(Identifier, "&"),
 		Leaf(RightBracket, "]"),
@@ -1596,9 +1596,9 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, i
 	typeStr := ""
 	var names []string
 	for _, t := range tokens {
-		if t.Tag == TagExpr && typeStr == "" {
+		if t.Kind == TagExpr && typeStr == "" {
 			typeStr = t.Serialize()
-		} else if t.Tag == TagIdent {
+		} else if t.Kind == TagIdent {
 			names = append(names, t.Serialize())
 		}
 	}
@@ -1640,7 +1640,7 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, in
 	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
 	var params []string
 	for _, t := range tokens {
-		if t.Tag == TagExpr && t.Serialize() != "" {
+		if t.Kind == TagExpr && t.Serialize() != "" {
 			params = append(params, t.Serialize())
 		}
 	}
@@ -1654,9 +1654,9 @@ func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) 
 	funcName := ""
 	paramsStr := ""
 	for _, t := range tokens {
-		if t.Tag == TagIdent && funcName == "" {
+		if t.Kind == TagIdent && funcName == "" {
 			funcName = t.Serialize()
-		} else if t.Tag == TagExpr {
+		} else if t.Kind == TagExpr {
 			if resultType == "" {
 				resultType = t.Serialize()
 			} else {
@@ -1732,7 +1732,7 @@ func (e *CppEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
 		bodyCode = "{\n" + cppIndent(1) + "std::vector<std::string> goany_os_args(argv, argv + argc);\n" + bodyCode[2:]
 	}
-	e.fs.PushCode(sigCode + "\n" + bodyCode + "\n\n")
+	e.fs.PushTree(IRTree(FuncDeclaration, KindDecl, Leaf(Identifier, sigCode+"\n"+bodyCode+"\n\n")))
 }
 
 // Forward Declaration Signatures
@@ -1769,7 +1769,7 @@ func (e *CppEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 		}
 	}
 	children = append(children, Leaf(WhiteSpace, cppIndent(indent)), Leaf(RightBrace, "}"))
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(BlockStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -1792,7 +1792,7 @@ func (e *CppEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
 		code = tokens[0].Serialize()
 	}
 	ind := cppIndent(indent)
-	e.fs.PushCode(ind + code + ";\n")
+	e.fs.PushTree(IRTree(ExprStatement, KindStmt, Leaf(Identifier, ind+code+";\n")))
 }
 
 // ============================================================
@@ -1871,7 +1871,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if len(node.Lhs) == 1 {
 		if lhsIdent, ok := node.Lhs[0].(*ast.Ident); ok {
 			if comment, ok := PtrLocalComments[lhsIdent.Pos()]; ok {
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(LineComment, comment),
 					Leaf(NewLine, "\n"),
@@ -1940,7 +1940,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						if op.keyCastPfx != "" {
 							key = op.keyCastPfx + key + op.keyCastSfx
 						}
-						e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+						e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 							Leaf(WhiteSpace, ind),
 							LeafTag(Keyword, "auto", TagCpp),
 							Leaf(WhiteSpace, " "),
@@ -1974,7 +1974,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if lastOp.keyCastPfx != "" {
 						key = lastOp.keyCastPfx + key + lastOp.keyCastSfx
 					}
-					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, lastOp.mapVarExpr),
 						Leaf(WhiteSpace, " "),
@@ -1993,7 +1993,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					))
 				} else {
 					// Last op is slice: assign to slice element
-					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, currentVar),
 						Leaf(WhiteSpace, " "),
@@ -2013,7 +2013,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						if op.keyCastPfx != "" {
 							key = op.keyCastPfx + key + op.keyCastSfx
 						}
-						e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+						e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 							Leaf(WhiteSpace, ind),
 							Leaf(Identifier, op.mapVarExpr),
 							Leaf(WhiteSpace, " "),
@@ -2072,7 +2072,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 				tempVar := fmt.Sprintf("__nested_inner_%d", e.nestedMapCounter)
 				e.nestedMapCounter++
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					LeafTag(Keyword, "auto", TagCpp),
 					Leaf(WhiteSpace, " "),
@@ -2095,7 +2095,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, tempVar),
 					Leaf(WhiteSpace, " "),
@@ -2112,7 +2112,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, outerVar),
 					Leaf(WhiteSpace, " "),
@@ -2135,7 +2135,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(Identifier, mapVar),
 			Leaf(WhiteSpace, " "),
@@ -2180,7 +2180,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				if tokStr == ":=" {
 					decl = "auto "
 				}
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, decl+okName),
 					Leaf(WhiteSpace, " "),
@@ -2195,7 +2195,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, decl+valName),
 					Leaf(WhiteSpace, " "),
@@ -2248,7 +2248,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			if tokStr == ":=" {
 				decl = "auto "
 			}
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, decl+okName),
 				Leaf(WhiteSpace, " "),
@@ -2274,7 +2274,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
 			))
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, decl+valName),
 				Leaf(WhiteSpace, " "),
@@ -2327,7 +2327,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 		}
 		if tokStr == ":=" {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "auto", TagCpp),
 				Leaf(WhiteSpace, " "),
@@ -2342,7 +2342,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(NewLine, "\n"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, "std::tie"),
 				Leaf(LeftParen, "("),
@@ -2383,7 +2383,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		// Check if RHS is a string literal → use std::string instead of auto
 		if len(node.Rhs) == 1 {
 			if lit, ok := node.Rhs[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, "std::string"),
 					Leaf(WhiteSpace, " "),
@@ -2396,7 +2396,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(NewLine, "\n"),
 				))
 			} else {
-				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					LeafTag(Keyword, "auto", TagCpp),
 					Leaf(WhiteSpace, " "),
@@ -2410,7 +2410,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				))
 			}
 		} else {
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "auto", TagCpp),
 				Leaf(WhiteSpace, " "),
@@ -2424,7 +2424,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			))
 		}
 	case "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=":
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(Identifier, lhsStr),
 			Leaf(WhiteSpace, " "),
@@ -2435,7 +2435,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			Leaf(NewLine, "\n"),
 		))
 	default:
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(Identifier, lhsStr),
 			Leaf(WhiteSpace, " "),
@@ -2493,16 +2493,16 @@ func (e *CppEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		valueStr := ""
 		var goType types.Type
 
-		if i < len(tokens) && tokens[i].Tag == TagType {
+		if i < len(tokens) && tokens[i].Kind == TagType {
 			typeStr = tokens[i].Serialize()
 			goType = tokens[i].GoType
 			i++
 		}
-		if i < len(tokens) && tokens[i].Tag == TagIdent {
+		if i < len(tokens) && tokens[i].Kind == TagIdent {
 			nameStr = tokens[i].Serialize()
 			i++
 		}
-		if i < len(tokens) && tokens[i].Tag == TagExpr {
+		if i < len(tokens) && tokens[i].Kind == TagExpr {
 			valueStr = tokens[i].Serialize()
 			i++
 		}
@@ -2569,7 +2569,7 @@ func (e *CppEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		}
 	}
 	if len(children) > 0 {
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+		e.fs.PushTree(IRTree(DeclStatement, KindStmt, children...))
 	}
 }
 
@@ -2608,9 +2608,14 @@ func (e *CppEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	ind := cppIndent(indent)
 
 	if len(tokens) == 0 {
-		e.fs.PushCode(ind + "return;\n")
+		e.fs.PushTree(IRTree(ReturnStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(ReturnKeyword, "return"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
 	} else if len(tokens) == 1 {
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ReturnStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ReturnKeyword, "return"),
 			Leaf(WhiteSpace, " "),
@@ -2623,7 +2628,7 @@ func (e *CppEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 		for _, t := range tokens {
 			vals = append(vals, t.Serialize())
 		}
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ReturnStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ReturnKeyword, "return"),
 			Leaf(WhiteSpace, " "),
@@ -2733,7 +2738,7 @@ func (e *CppEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 			Leaf(NewLine, "\n"),
 		)
 	}
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(IfStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -2778,7 +2783,7 @@ func (e *CppEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	e.forPostStack = e.forPostStack[:n-1]
 
 	if node.Init == nil && node.Cond == nil && node.Post == nil {
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ForStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
@@ -2793,7 +2798,7 @@ func (e *CppEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 		return
 	}
 	if node.Init == nil && node.Post == nil && node.Cond != nil {
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ForStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
@@ -2808,7 +2813,7 @@ func (e *CppEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 		))
 		return
 	}
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+	e.fs.PushTree(IRTree(ForStatement, KindStmt,
 		Leaf(WhiteSpace, ind),
 		Leaf(ForKeyword, "for"),
 		Leaf(WhiteSpace, " "),
@@ -2859,13 +2864,13 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 
 	idx := 0
 	if node.Key != nil {
-		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+		if idx < len(tokens) && tokens[idx].Kind == TagIdent {
 			keyCode = tokens[idx].Serialize()
 			idx++
 		}
 	}
 	if node.Value != nil {
-		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+		if idx < len(tokens) && tokens[idx].Kind == TagIdent {
 			valCode = tokens[idx].Serialize()
 			idx++
 		}
@@ -3008,7 +3013,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 				Leaf(RightBrace, "}"),
 				Leaf(NewLine, "\n"),
 			)
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+			e.fs.PushTree(IRTree(RangeStatement, KindStmt, children...))
 		} else {
 			var children []IRNode
 			children = append(children,
@@ -3091,7 +3096,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 				Leaf(RightBrace, "}"),
 				Leaf(NewLine, "\n"),
 			)
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+			e.fs.PushTree(IRTree(RangeStatement, KindStmt, children...))
 		}
 		return
 	}
@@ -3110,7 +3115,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			}
 			valDecl := fmt.Sprintf("%s        auto %s = %s[%s];\n", ind, valCode, xCode, loopVar)
 			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(RangeStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(LeftBrace, "{"),
 				Leaf(NewLine, "\n"),
@@ -3161,7 +3166,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			if loopVar == "_" || loopVar == "" {
 				loopVar = "_i"
 			}
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(RangeStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(LeftBrace, "{"),
 				Leaf(NewLine, "\n"),
@@ -3208,7 +3213,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		valDecl := fmt.Sprintf("%s    auto %s = %s[%s];\n", ind, valCode, xCode, loopVar)
 		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
 
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(RangeStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
@@ -3244,7 +3249,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		if loopVar == "_" || loopVar == "" {
 			loopVar = "_i"
 		}
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(RangeStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
@@ -3308,7 +3313,7 @@ func (e *CppEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 		Leaf(RightBrace, "}"),
 		Leaf(NewLine, "\n"),
 	)
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(SwitchStatement, KindStmt, children...))
 }
 
 func (e *CppEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
@@ -3374,7 +3379,7 @@ func (e *CppEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 		Leaf(Semicolon, ";"),
 		Leaf(NewLine, "\n"),
 	)
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(CaseClauseStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -3384,7 +3389,7 @@ func (e *CppEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 func (e *CppEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
 	ind := cppIndent(indent)
-	e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
+	e.fs.PushTree(IRTree(CaseClauseStatement, KindStmt,
 		Leaf(WhiteSpace, ind),
 		Leaf(Identifier, xCode),
 		Leaf(UnaryOperator, node.Tok.String()),
@@ -3401,9 +3406,9 @@ func (e *CppEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 	ind := cppIndent(indent)
 	switch node.Tok {
 	case token.BREAK:
-		e.fs.PushCode(ind + "break;\n")
+		e.fs.PushTree(IRTree(BranchStatement, KindStmt, Leaf(Identifier, ind+"break;\n")))
 	case token.CONTINUE:
-		e.fs.PushCode(ind + "continue;\n")
+		e.fs.PushTree(IRTree(BranchStatement, KindStmt, Leaf(Identifier, ind+"continue;\n")))
 	}
 }
 
@@ -3443,11 +3448,11 @@ func (e *CppEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	for i < len(tokens) {
 		typeStr := ""
 		nameStr := ""
-		if i < len(tokens) && tokens[i].Tag == TagExpr {
+		if i < len(tokens) && tokens[i].Kind == TagExpr {
 			typeStr = tokens[i].Serialize()
 			i++
 		}
-		if i < len(tokens) && tokens[i].Tag == TagIdent {
+		if i < len(tokens) && tokens[i].Kind == TagIdent {
 			nameStr = tokens[i].Serialize()
 			i++
 		}
@@ -3903,7 +3908,7 @@ func (e *CppEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
 	nameCode := ""
 	typeCode := ""
 	for _, t := range tokens {
-		if t.Tag == TagIdent && nameCode == "" {
+		if t.Kind == TagIdent && nameCode == "" {
 			nameCode = t.Serialize()
 		} else if t.Serialize() != "" {
 			typeCode += t.Serialize()

@@ -5,14 +5,18 @@ import (
 	"strings"
 )
 
-// Fragment tags — what produced this fragment
+// Fragment tag for markers (non-semantic)
 const (
-	TagMarker  int = 0
-	TagExpr    int = 1
-	TagStmt    int = 2
-	TagType    int = 3
-	TagIdent   int = 4
-	TagLiteral int = 5
+	TagMarker int = 0
+)
+
+// Aliases: map old semantic tag names to NodeKind for migration.
+var (
+	TagExpr    = KindExpr
+	TagStmt    = KindStmt
+	TagType    = KindType
+	TagIdent   = KindIdent
+	TagLiteral = KindLiteral
 )
 
 // FragmentStack provides a clean Push/Pop/Reduce API on top of GoFIR's storage.
@@ -30,26 +34,20 @@ func (fs *FragmentStack) PushMarker(name string) {
 	fs.gir.emitToFileBufferString("", name)
 }
 
-// Push adds a token to the GoFIR's tokenSlice with the given code, tag, and Go type.
-func (fs *FragmentStack) Push(code string, tag int, goType types.Type) {
-	token := IRNode{Content: code, Tag: tag, GoType: goType}
+// Push adds a token to the GoFIR's tokenSlice with the given code, kind, and Go type.
+func (fs *FragmentStack) Push(code string, kind NodeKind, goType types.Type) {
+	token := IRNode{Content: code, Kind: kind, GoType: goType}
 	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
 }
 
-// PushCode is a convenience method that pushes code with TagExpr and nil GoType.
+// PushCode is a convenience method that pushes code with KindExpr and nil GoType.
 func (fs *FragmentStack) PushCode(code string) {
-	fs.Push(code, TagExpr, nil)
+	fs.Push(code, KindExpr, nil)
 }
 
-// PushCodeWithType is a convenience method that pushes code with TagExpr and a Go type.
+// PushCodeWithType is a convenience method that pushes code with KindExpr and a Go type.
 func (fs *FragmentStack) PushCodeWithType(code string, t types.Type) {
-	fs.Push(code, TagExpr, t)
-}
-
-// PushWithMeta adds a token with optimization metadata to the stack.
-func (fs *FragmentStack) PushWithMeta(code string, tag int, meta *OptMeta) {
-	token := IRNode{Content: code, Tag: tag, OptMeta: meta}
-	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
+	fs.Push(code, KindExpr, t)
 }
 
 // Reduce finds the last marker matching the given visitMethod string, extracts all tokens
@@ -101,37 +99,3 @@ func (fs *FragmentStack) PushTree(token IRNode) {
 	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
 }
 
-// PushLeaf pushes an atomic leaf token onto the stack.
-func (fs *FragmentStack) PushLeaf(tokenType IRNodeType, content string, tag int) {
-	token := LeafTag(tokenType, content, tag)
-	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
-}
-
-// ReduceToTree reduces tokens from the marker and wraps them as children of a new parent token.
-func (fs *FragmentStack) ReduceToTree(visitMethod string, tokenType IRNodeType, tag int) IRNode {
-	children := fs.Reduce(visitMethod)
-	return IRTree(tokenType, tag, children...)
-}
-
-// Pop removes and returns the last token from the tokenSlice.
-func (fs *FragmentStack) Pop() IRNode {
-	if len(fs.gir.tokenSlice) == 0 {
-		return IRNode{}
-	}
-	last := fs.gir.tokenSlice[len(fs.gir.tokenSlice)-1]
-	fs.gir.tokenSlice = fs.gir.tokenSlice[:len(fs.gir.tokenSlice)-1]
-	return last
-}
-
-// Peek returns the last token without removing it.
-func (fs *FragmentStack) Peek() IRNode {
-	if len(fs.gir.tokenSlice) == 0 {
-		return IRNode{}
-	}
-	return fs.gir.tokenSlice[len(fs.gir.tokenSlice)-1]
-}
-
-// Len returns the current number of tokens in the stack.
-func (fs *FragmentStack) Len() int {
-	return len(fs.gir.tokenSlice)
-}

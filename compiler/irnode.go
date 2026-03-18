@@ -9,6 +9,19 @@ import (
 // IRNodeType represents different types of tokens in the code generation
 type IRNodeType int
 
+// NodeKind provides semantic classification for IR nodes.
+type NodeKind int
+
+const (
+	KindNone    NodeKind = iota
+	KindExpr             // expression
+	KindStmt             // statement
+	KindDecl             // declaration
+	KindType             // type annotation
+	KindIdent            // identifier
+	KindLiteral          // literal value
+)
+
 // Language tag constants for Keyword token type
 const (
 	TagRust   = 100
@@ -109,6 +122,55 @@ const (
 	MethodKeyword
 	ParameterList
 	ReturnType
+
+	// AST-level expression node types
+	BinaryExpression
+	UnaryExpression
+	CallExpression
+	SelectorExpression
+	IndexExpression
+	SliceExpression
+	ParenExpression
+	CompositeLitExpression
+	FuncLitExpression
+	TypeAssertExpression
+	StarExpression
+	KeyValueExpression
+	BasicLitExpression
+	IdentExpression
+	EllipsisExpression
+	FuncTypeExpression
+
+	// AST-level statement node types
+	AssignStatement
+	BlockStatement
+	ReturnStatement
+	IfStatement
+	ForStatement
+	SwitchStatement
+	CaseClauseStatement
+	IncDecStatement
+	ExprStatement
+	BranchStatement
+	DeferStatement
+	GoStatement
+	RangeStatement
+	DeclStatement
+	LabeledStatement
+	SelectStatement
+	SendStatement
+	TypeSwitchStatement
+
+	// AST-level declaration node types
+	FuncDeclaration
+	PackageDeclaration
+
+	// AST-level type node types
+	ArrayTypeNode
+	MapTypeNode
+	InterfaceTypeNode
+	StructTypeNode
+	ChanTypeNode
 )
 
 // OptKind identifies what kind of optimizable construct a token represents.
@@ -147,11 +209,12 @@ type OptMeta struct {
 // IRNode represents a single token with its type and content
 type IRNode struct {
 	Type     IRNodeType
+	Kind     NodeKind   // semantic classification (KindExpr, KindStmt, etc.)
 	Content  string
 	GoType   types.Type // Go type info for shift/reduce backends, nil if N/A
-	Tag      int        // Fragment tag (TagExpr, TagStmt, etc.), 0 if unset
+	Tag      int        // language tag (TagRust, TagCpp, etc.) only
 	OptMeta  *OptMeta   // nil when no optimization metadata
-	Children []IRNode    // child tokens for tree structure; nil for leaf tokens
+	Children []IRNode   // child tokens for tree structure; nil for leaf tokens
 }
 
 // Serialize returns the string representation of this token.
@@ -169,10 +232,10 @@ func (t IRNode) Serialize() string {
 }
 
 // IRTree builds a parent token with children and eagerly sets Content = Serialize().
-func IRTree(tokenType IRNodeType, tag int, children ...IRNode) IRNode {
+func IRTree(tokenType IRNodeType, kind NodeKind, children ...IRNode) IRNode {
 	t := IRNode{
 		Type:     tokenType,
-		Tag:      tag,
+		Kind:     kind,
 		Children: children,
 	}
 	t.Content = t.Serialize()
@@ -259,6 +322,55 @@ var IRNodeTypeNames = map[IRNodeType]string{
 	MethodKeyword:      "MethodKeyword",
 	ParameterList:      "ParameterList",
 	ReturnType:         "ReturnType",
+
+	// AST-level expression node types
+	BinaryExpression:       "BinaryExpression",
+	UnaryExpression:        "UnaryExpression",
+	CallExpression:         "CallExpression",
+	SelectorExpression:     "SelectorExpression",
+	IndexExpression:        "IndexExpression",
+	SliceExpression:        "SliceExpression",
+	ParenExpression:        "ParenExpression",
+	CompositeLitExpression: "CompositeLitExpression",
+	FuncLitExpression:      "FuncLitExpression",
+	TypeAssertExpression:   "TypeAssertExpression",
+	StarExpression:         "StarExpression",
+	KeyValueExpression:     "KeyValueExpression",
+	BasicLitExpression:     "BasicLitExpression",
+	IdentExpression:        "IdentExpression",
+	EllipsisExpression:     "EllipsisExpression",
+	FuncTypeExpression:     "FuncTypeExpression",
+
+	// AST-level statement node types
+	AssignStatement:     "AssignStatement",
+	BlockStatement:      "BlockStatement",
+	ReturnStatement:     "ReturnStatement",
+	IfStatement:         "IfStatement",
+	ForStatement:        "ForStatement",
+	SwitchStatement:     "SwitchStatement",
+	CaseClauseStatement: "CaseClauseStatement",
+	IncDecStatement:     "IncDecStatement",
+	ExprStatement:       "ExprStatement",
+	BranchStatement:     "BranchStatement",
+	DeferStatement:      "DeferStatement",
+	GoStatement:         "GoStatement",
+	RangeStatement:      "RangeStatement",
+	DeclStatement:       "DeclStatement",
+	LabeledStatement:    "LabeledStatement",
+	SelectStatement:     "SelectStatement",
+	SendStatement:       "SendStatement",
+	TypeSwitchStatement: "TypeSwitchStatement",
+
+	// AST-level declaration node types
+	FuncDeclaration:    "FuncDeclaration",
+	PackageDeclaration: "PackageDeclaration",
+
+	// AST-level type node types
+	ArrayTypeNode:     "ArrayTypeNode",
+	MapTypeNode:       "MapTypeNode",
+	InterfaceTypeNode: "InterfaceTypeNode",
+	StructTypeNode:    "StructTypeNode",
+	ChanTypeNode:      "ChanTypeNode",
 }
 
 // String returns the string representation of a IRNodeType

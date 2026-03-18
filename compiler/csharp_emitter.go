@@ -922,7 +922,7 @@ func (e *CSharpEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 			}
 		}
 	}
-	e.fs.PushTree(IRTree(Keyword, TagStmt,
+	e.fs.PushTree(IRTree(PackageDeclaration, KindDecl,
 		LeafTag(Keyword, "public static class ", TagCSharp),
 		Leaf(Identifier, e.currentPackage),
 		Leaf(WhiteSpace, " {\n\n"),
@@ -930,7 +930,7 @@ func (e *CSharpEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 }
 
 func (e *CSharpEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
-	e.fs.PushCode("}\n")
+	e.fs.PushTree(IRTree(PackageDeclaration, KindDecl, Leaf(Identifier, "}\n")))
 }
 
 // ============================================================
@@ -1048,7 +1048,7 @@ func (e *CSharpEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 			}
 		}
 	}
-	e.fs.PushCode(expr)
+	e.fs.PushTree(IRTree(BinaryExpression, KindExpr, Leaf(Identifier, expr)))
 }
 
 // ============================================================
@@ -1130,14 +1130,14 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	case "len", "SliceBuiltins.Length":
 		// len(x) — for maps use hmap.hashMapLen(x), otherwise SliceBuiltins.Length(x)
 		if len(node.Args) > 0 && e.isMapTypeExpr(node.Args[0]) {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, "hmap.hashMapLen"),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, argsStr),
 				Leaf(RightParen, ")"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, "SliceBuiltins.Length"),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, argsStr),
@@ -1146,7 +1146,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 		return
 	case "append", "SliceBuiltins.Append":
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(CallExpression, KindExpr,
 			Leaf(Identifier, "SliceBuiltins.Append"),
 			Leaf(LeftParen, "("),
 			Leaf(Identifier, argsStr),
@@ -1157,7 +1157,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		// delete(m, k) -> m = hmap.hashMapDelete(m, k)
 		if len(node.Args) >= 2 {
 			mapName := exprToCsString(node.Args[0])
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, mapName),
 				Leaf(Assignment, " = "),
 				Leaf(Identifier, "hmap.hashMapDelete"),
@@ -1166,7 +1166,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				Leaf(RightParen, ")"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(CallExpression, KindExpr,
 				Leaf(Identifier, "hmap.hashMapDelete"),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, argsStr),
@@ -1178,7 +1178,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		if len(node.Args) >= 1 {
 			if mapType, ok := node.Args[0].(*ast.MapType); ok {
 				keyTypeConst := e.getMapKeyTypeConst(mapType)
-				e.fs.PushTree(IRTree(Identifier, TagExpr,
+				e.fs.PushTree(IRTree(CallExpression, KindExpr,
 					Leaf(Identifier, "hmap.newHashMap"),
 					Leaf(LeftParen, "("),
 					Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
@@ -1199,7 +1199,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				}
 				parts := strings.SplitN(argsStr, ", ", 2)
 				if len(parts) >= 2 {
-					e.fs.PushTree(IRTree(Identifier, TagExpr,
+					e.fs.PushTree(IRTree(CallExpression, KindExpr,
 						LeafTag(Keyword, "new ", TagCSharp),
 						Leaf(Identifier, "List"),
 						Leaf(LeftAngle, "<"),
@@ -1214,7 +1214,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 						Leaf(RightParen, ")"),
 					))
 				} else {
-					e.fs.PushTree(IRTree(Identifier, TagExpr,
+					e.fs.PushTree(IRTree(CallExpression, KindExpr,
 						LeafTag(Keyword, "new ", TagCSharp),
 						Leaf(Identifier, "List"),
 						Leaf(LeftAngle, "<"),
@@ -1227,7 +1227,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				return
 			}
 		}
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(CallExpression, KindExpr,
 			Leaf(Identifier, "make"),
 			Leaf(LeftParen, "("),
 			Leaf(Identifier, argsStr),
@@ -1243,14 +1243,14 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				if _, isTypeName := obj.(*types.TypeName); isTypeName {
 					csType := e.qualifiedCsTypeName(obj.Type())
 					if csType == "string" {
-						e.fs.PushTree(IRTree(Identifier, TagExpr,
+						e.fs.PushTree(IRTree(CallExpression, KindExpr,
 							Leaf(Identifier, "Convert.ToString"),
 							Leaf(LeftParen, "("),
 							Leaf(Identifier, argsStr),
 							Leaf(RightParen, ")"),
 						))
 					} else {
-						e.fs.PushTree(IRTree(Identifier, TagExpr,
+						e.fs.PushTree(IRTree(CallExpression, KindExpr,
 							Leaf(LeftParen, "("),
 							Leaf(Identifier, csType),
 							Leaf(RightParen, ")"),
@@ -1271,7 +1271,7 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		funName = lowered
 	}
 
-	e.fs.PushTree(IRTree(Identifier, TagExpr,
+	e.fs.PushTree(IRTree(CallExpression, KindExpr,
 		Leaf(Identifier, funName),
 		Leaf(LeftParen, "("),
 		Leaf(Identifier, argsStr),
@@ -1305,13 +1305,13 @@ func (e *CSharpEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int
 	}
 
 	if xCode == "os" && selCode == "Args" {
-		e.fs.PushCode("goany_os_args")
+		e.fs.PushTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, "goany_os_args")))
 		return
 	}
 
 	// Check if selector is a type alias
 	if _, isAlias := e.typeAliasMap[selCode]; isAlias {
-		e.fs.PushCode(e.typeAliasMap[selCode])
+		e.fs.PushTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, e.typeAliasMap[selCode])))
 		return
 	}
 
@@ -1320,9 +1320,9 @@ func (e *CSharpEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int
 	loweredSel := csLowerBuiltin(selCode)
 
 	if loweredX == "" {
-		e.fs.PushCode(loweredSel)
+		e.fs.PushTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, loweredSel)))
 	} else {
-		e.fs.PushCode(loweredX + "." + loweredSel)
+		e.fs.PushTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, loweredX+"."+loweredSel)))
 	}
 }
 
@@ -1364,7 +1364,7 @@ func (e *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 				pfx, sfx = getCsKeyCast(mapUnderlying.Key())
 			}
 		}
-		tree := IRTree(Identifier, TagExpr,
+		tree := IRTree(IndexExpression, KindExpr,
 			Leaf(LeftParen, "("),
 			Leaf(LeftParen, "("),
 			Leaf(Identifier, valType),
@@ -1384,7 +1384,7 @@ func (e *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		xType := e.getExprGoType(node.X)
 		if xType != nil {
 			if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
-				e.fs.PushTree(IRTree(Identifier, TagExpr,
+				e.fs.PushTree(IRTree(IndexExpression, KindExpr,
 					Leaf(LeftParen, "("),
 					Leaf(Identifier, "int"),
 					Leaf(RightParen, ")"),
@@ -1396,7 +1396,7 @@ func (e *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 				return
 			}
 		}
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(IndexExpression, KindExpr,
 			Leaf(Identifier, xCode),
 			Leaf(LeftBracket, "["),
 			Leaf(Identifier, idxCode),
@@ -1413,9 +1413,9 @@ func (e *CSharpEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitUnaryExpr))
 	op := node.Op.String()
 	if op == "^" {
-		e.fs.PushCode("~" + xCode)
+		e.fs.PushTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, "~"+xCode)))
 	} else {
-		e.fs.PushCode(op + xCode)
+		e.fs.PushTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, op+xCode)))
 	}
 }
 
@@ -1425,7 +1425,7 @@ func (e *CSharpEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 
 func (e *CSharpEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
 	inner := e.fs.ReduceToCode(string(PreVisitParenExpr))
-	e.fs.PushCode("(" + inner + ")")
+	e.fs.PushTree(IRTree(ParenExpression, KindExpr, Leaf(Identifier, "("+inner+")")))
 }
 
 // ============================================================
@@ -1462,7 +1462,7 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 
 	litType := e.getExprGoType(node)
 	if litType == nil {
-		e.fs.PushCode("new List<object> {" + eltsStr + "}")
+		e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr, Leaf(Identifier, "new List<object> {"+eltsStr+"}")))
 		return
 	}
 
@@ -1509,7 +1509,7 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 				}
 				children = append(children, Leaf(WhiteSpace, " "))
 				children = append(children, Leaf(RightBrace, "}"))
-				e.fs.PushTree(IRTree(Identifier, TagExpr, children...))
+				e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr, children...))
 				return
 			}
 		}
@@ -1531,10 +1531,10 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 		}
 		children = append(children, Leaf(WhiteSpace, " "))
 		children = append(children, Leaf(RightBrace, "}"))
-		e.fs.PushTree(IRTree(Identifier, TagExpr, children...))
+		e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr, children...))
 	case *types.Slice:
 		elemType := e.qualifiedCsTypeName(u.Elem())
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 			LeafTag(Keyword, "new ", TagCSharp),
 			Leaf(Identifier, "List"),
 			Leaf(LeftAngle, "<"),
@@ -1556,7 +1556,7 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 			}
 		}
 		if len(elts) == 0 {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 				Leaf(Identifier, "hmap.newHashMap"),
 				Leaf(LeftParen, "("),
 				Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
@@ -1603,14 +1603,14 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 			children = append(children, Leaf(RightParen, ")"))
 			children = append(children, Leaf(LeftParen, "("))
 			children = append(children, Leaf(RightParen, ")"))
-			e.fs.PushTree(IRTree(Identifier, TagExpr, children...))
+			e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr, children...))
 		}
 	default:
 		elemType := "object"
 		if slice, ok := litType.(*types.Slice); ok {
 			elemType = e.qualifiedCsTypeName(slice.Elem())
 		}
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(CompositeLitExpression, KindExpr,
 			LeafTag(Keyword, "new ", TagCSharp),
 			Leaf(Identifier, "List"),
 			Leaf(LeftAngle, "<"),
@@ -1648,7 +1648,7 @@ func (e *CSharpEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int
 	if len(tokens) >= 2 {
 		valCode = tokens[1].Serialize()
 	}
-	e.fs.PushCode(keyCode + ": " + valCode)
+	e.fs.PushTree(IRTree(KeyValueExpression, KindExpr, Leaf(Identifier, keyCode+": "+valCode)))
 }
 
 // ============================================================
@@ -1712,7 +1712,7 @@ func (e *CSharpEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 
 	if isString {
 		if highCode == "" {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(SliceExpression, KindExpr,
 				Leaf(Identifier, xCode),
 				Leaf(Dot, "."),
 				Leaf(Identifier, "Substring"),
@@ -1721,7 +1721,7 @@ func (e *CSharpEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 				Leaf(RightParen, ")"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(SliceExpression, KindExpr,
 				Leaf(Identifier, xCode),
 				Leaf(Dot, "."),
 				Leaf(Identifier, "Substring"),
@@ -1736,7 +1736,7 @@ func (e *CSharpEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 		}
 	} else {
 		if highCode == "" {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(SliceExpression, KindExpr,
 				Leaf(Identifier, xCode),
 				Leaf(Dot, "."),
 				Leaf(Identifier, "GetRange"),
@@ -1753,7 +1753,7 @@ func (e *CSharpEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 				Leaf(RightParen, ")"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(SliceExpression, KindExpr,
 				Leaf(Identifier, xCode),
 				Leaf(Dot, "."),
 				Leaf(Identifier, "GetRange"),
@@ -1785,7 +1785,7 @@ func (e *CSharpEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 	children := []IRNode{Leaf(Identifier, "List"), Leaf(LeftAngle, "<")}
 	children = append(children, typeTokens...)
 	children = append(children, Leaf(RightAngle, ">"))
-	e.fs.PushTree(IRTree(TypeKeyword, TagType, children...))
+	e.fs.PushTree(IRTree(ArrayTypeNode, KindType, children...))
 }
 
 // ============================================================
@@ -1802,7 +1802,7 @@ func (e *CSharpEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
 
 func (e *CSharpEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 	e.fs.Reduce(string(PreVisitMapType))
-	e.fs.Push("hmap.HashMap", TagType, nil)
+	e.fs.PushTree(IRTree(MapTypeNode, KindType, Leaf(Identifier, "hmap.HashMap")))
 }
 
 // ============================================================
@@ -1874,7 +1874,7 @@ func (e *CSharpEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
 				Leaf(RightAngle, ">"),
 			}
 		}
-		e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+		e.fs.PushTree(IRTree(FuncTypeExpression, KindType, children...))
 	} else {
 		if len(tokens) >= 1 {
 			paramTypes = tokens[0].Serialize()
@@ -1887,7 +1887,7 @@ func (e *CSharpEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
 				Leaf(Identifier, paramTypes),
 				Leaf(RightAngle, ">"),
 			}
-			e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
+			e.fs.PushTree(IRTree(FuncTypeExpression, KindType, children...))
 		} else {
 			e.fs.PushCode("Action")
 		}
@@ -1921,7 +1921,7 @@ func (e *CSharpEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent i
 	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParams))
 	var paramNames []string
 	for _, t := range tokens {
-		if t.Tag == TagIdent && t.Serialize() != "" {
+		if t.Kind == TagIdent && t.Serialize() != "" {
 			paramNames = append(paramNames, t.Serialize())
 		}
 	}
@@ -1951,7 +1951,7 @@ func (e *CSharpEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 	if len(tokens) >= 2 {
 		bodyCode = tokens[1].Serialize()
 	}
-	e.fs.PushTree(IRTree(Identifier, TagExpr,
+	e.fs.PushTree(IRTree(FuncLitExpression, KindExpr,
 		Leaf(LeftParen, "("),
 		Leaf(Identifier, paramsCode),
 		Leaf(RightParen, ")"),
@@ -1987,7 +1987,7 @@ func (e *CSharpEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent
 	}
 	// C# type assertion: (Type)x
 	if typeCode != "" {
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(TypeAssertExpression, KindExpr,
 			Leaf(LeftParen, "("),
 			Leaf(Identifier, typeCode),
 			Leaf(RightParen, ")"),
@@ -2004,7 +2004,7 @@ func (e *CSharpEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent
 
 func (e *CSharpEmitter) PostVisitStarExpr(node *ast.StarExpr, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitStarExpr))
-	e.fs.PushCode(xCode)
+	e.fs.PushTree(IRTree(StarExpression, KindExpr, Leaf(Identifier, xCode)))
 }
 
 // ============================================================
@@ -2013,7 +2013,7 @@ func (e *CSharpEmitter) PostVisitStarExpr(node *ast.StarExpr, indent int) {
 
 func (e *CSharpEmitter) PostVisitInterfaceType(node *ast.InterfaceType, indent int) {
 	e.fs.Reduce(string(PreVisitInterfaceType))
-	e.fs.Push("object", TagType, nil)
+	e.fs.PushTree(IRTree(InterfaceTypeNode, KindType, Leaf(Identifier, "object")))
 }
 
 // ============================================================
@@ -2086,9 +2086,9 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field
 	typeStr := ""
 	var names []string
 	for _, t := range tokens {
-		if t.Tag == TagExpr && typeStr == "" {
+		if t.Kind == TagExpr && typeStr == "" {
 			typeStr = t.Serialize()
-		} else if t.Tag == TagIdent {
+		} else if t.Kind == TagIdent {
 			names = append(names, t.Serialize())
 		}
 	}
@@ -2144,7 +2144,7 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl,
 	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
 	var paramDecls []string
 	for _, t := range tokens {
-		if t.Tag == TagIdent {
+		if t.Kind == TagIdent {
 			paramDecls = append(paramDecls, t.Serialize())
 		}
 	}
@@ -2157,11 +2157,11 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent in
 	funcName := ""
 	paramsStr := ""
 	for _, t := range tokens {
-		if t.Tag == TagType && returnType == "void" {
+		if t.Kind == TagType && returnType == "void" {
 			returnType = t.Serialize()
-		} else if t.Tag == TagIdent && funcName == "" {
+		} else if t.Kind == TagIdent && funcName == "" {
 			funcName = t.Serialize()
-		} else if t.Tag == TagExpr {
+		} else if t.Kind == TagExpr {
 			paramsStr = t.Serialize()
 		}
 	}
@@ -2193,7 +2193,7 @@ func (e *CSharpEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
 		bodyCode = "{\n" + csIndent(2) + "List<string> goany_os_args = new List<string>();\n" + csIndent(2) + "goany_os_args.Add(\"program\");\n" + csIndent(2) + "goany_os_args.AddRange(args);\n" + bodyCode[2:]
 	}
-	e.fs.PushCode(sigCode + " " + bodyCode + "\n")
+	e.fs.PushTree(IRTree(FuncDeclaration, KindDecl, Leaf(Identifier, sigCode+" "+bodyCode+"\n")))
 }
 
 // ============================================================
@@ -2233,7 +2233,7 @@ func (e *CSharpEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 	}
 	children = append(children, Leaf(Identifier, csIndent(indent/2)))
 	children = append(children, Leaf(RightBrace, "}"))
-	e.fs.PushTree(IRTree(Identifier, TagExpr, children...))
+	e.fs.PushTree(IRTree(BlockStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -2304,7 +2304,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if len(node.Lhs) == 1 {
 		if lhsIdent, ok := node.Lhs[0].(*ast.Ident); ok {
 			if comment, ok := PtrLocalComments[lhsIdent.Pos()]; ok {
-				e.fs.PushTree(IRTree(LineComment, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(LineComment, comment),
 					Leaf(NewLine, "\n"),
@@ -2436,7 +2436,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						)
 					}
 				}
-				e.fs.PushTree(IRTree(Identifier, TagExpr, children...))
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt, children...))
 				e.mapAssignVar = ""
 				e.mapAssignKey = ""
 				return
@@ -2454,7 +2454,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				pfx, sfx = getCsKeyCast(mapUnderlying.Key())
 			}
 		}
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(Identifier, e.mapAssignVar),
 			Leaf(Assignment, " = "),
@@ -2492,7 +2492,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						}
 						tmpVar := fmt.Sprintf("__struct_tmp_%d", e.nestedMapCounter)
 						e.nestedMapCounter++
-						e.fs.PushTree(IRTree(Keyword, TagExpr,
+						e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 							Leaf(WhiteSpace, ind),
 							LeafTag(Keyword, "var ", TagCSharp),
 							Leaf(Identifier, tmpVar),
@@ -2501,7 +2501,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 							Leaf(Semicolon, ";"),
 							Leaf(NewLine, "\n"),
 						))
-						e.fs.PushTree(IRTree(Identifier, TagExpr,
+						e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 							Leaf(WhiteSpace, ind),
 							Leaf(Identifier, tmpVar),
 							Leaf(Dot, "."),
@@ -2513,7 +2513,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 							Leaf(Semicolon, ";"),
 							Leaf(NewLine, "\n"),
 						))
-						e.fs.PushTree(IRTree(Identifier, TagExpr,
+						e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 							Leaf(WhiteSpace, ind),
 							Leaf(Identifier, indexCode),
 							Leaf(Assignment, " = "),
@@ -2550,7 +2550,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					}
 				}
 				if tokStr == ":=" {
-					e.fs.PushTree(IRTree(Keyword, TagExpr,
+					e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						LeafTag(Keyword, "var ", TagCSharp),
 						Leaf(Identifier, okName),
@@ -2564,7 +2564,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
 					))
-					e.fs.PushTree(IRTree(Keyword, TagExpr,
+					e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						LeafTag(Keyword, "var ", TagCSharp),
 						Leaf(Identifier, valName),
@@ -2586,7 +2586,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(NewLine, "\n"),
 					))
 				} else {
-					e.fs.PushTree(IRTree(Identifier, TagExpr,
+					e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, okName),
 						Leaf(Assignment, " = "),
@@ -2599,7 +2599,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
 					))
-					e.fs.PushTree(IRTree(Identifier, TagExpr,
+					e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, valName),
 						Leaf(Assignment, " = "),
@@ -2639,7 +2639,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			}
 			xExpr := exprToString(typeAssert.X)
 			if tokStr == ":=" {
-				e.fs.PushTree(IRTree(Keyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					LeafTag(Keyword, "var ", TagCSharp),
 					Leaf(Identifier, okName),
@@ -2650,7 +2650,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.PushTree(IRTree(Keyword, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					LeafTag(Keyword, "var ", TagCSharp),
 					Leaf(Identifier, valName),
@@ -2670,7 +2670,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(NewLine, "\n"),
 				))
 			} else {
-				e.fs.PushTree(IRTree(Identifier, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, okName),
 					Leaf(Assignment, " = "),
@@ -2680,7 +2680,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.PushTree(IRTree(Identifier, TagExpr,
+				e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, valName),
 					Leaf(Assignment, " = "),
@@ -2719,7 +2719,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 		destructured := "(" + strings.Join(lhsParts, ", ") + ")"
 		if tokStr == ":=" {
-			e.fs.PushTree(IRTree(Keyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "var ", TagCSharp),
 				Leaf(Identifier, destructured),
@@ -2729,7 +2729,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(NewLine, "\n"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, destructured),
 				Leaf(Assignment, " = "),
@@ -2763,7 +2763,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	switch tokStr {
 	case ":=":
 		if narrowCast != "" {
-			e.fs.PushTree(IRTree(Keyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "var ", TagCSharp),
 				Leaf(Identifier, lhsStr),
@@ -2776,7 +2776,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(NewLine, "\n"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(Keyword, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "var ", TagCSharp),
 				Leaf(Identifier, lhsStr),
@@ -2787,7 +2787,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			))
 		}
 	case "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=":
-		e.fs.PushTree(IRTree(Identifier, TagExpr,
+		e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(Identifier, lhsStr),
 			Leaf(WhiteSpace, " "),
@@ -2799,7 +2799,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		))
 	default:
 		if narrowCast != "" {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, lhsStr),
 				Leaf(Assignment, " = "),
@@ -2811,7 +2811,7 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(NewLine, "\n"),
 			))
 		} else {
-			e.fs.PushTree(IRTree(Identifier, TagExpr,
+			e.fs.PushTree(IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, lhsStr),
 				Leaf(Assignment, " = "),
@@ -2868,16 +2868,16 @@ func (e *CSharpEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		nameStr := ""
 		valueStr := ""
 
-		if i < len(tokens) && tokens[i].Tag == TagType {
+		if i < len(tokens) && tokens[i].Kind == TagType {
 			typeStr = tokens[i].Serialize()
 			goType = tokens[i].GoType
 			i++
 		}
-		if i < len(tokens) && tokens[i].Tag == TagIdent {
+		if i < len(tokens) && tokens[i].Kind == TagIdent {
 			nameStr = tokens[i].Serialize()
 			i++
 		}
-		if i < len(tokens) && tokens[i].Tag == TagExpr {
+		if i < len(tokens) && tokens[i].Kind == TagExpr {
 			valueStr = tokens[i].Serialize()
 			i++
 		}
@@ -2933,7 +2933,7 @@ func (e *CSharpEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 			)
 		}
 	}
-	e.fs.PushTree(IRTree(Identifier, TagExpr, children...))
+	e.fs.PushTree(IRTree(DeclStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -2954,7 +2954,7 @@ func (e *CSharpEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	ind := csIndent(indent / 2)
 
 	if len(tokens) == 0 {
-		e.fs.PushCode(ind + "return;\n")
+		e.fs.PushTree(IRTree(ReturnStatement, KindStmt, Leaf(Identifier, ind+"return;\n")))
 	} else if len(tokens) == 1 {
 		retExpr := tokens[0].Serialize()
 		// Add narrowing cast if return type is narrower than int
@@ -2972,7 +2972,7 @@ func (e *CSharpEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 				}
 			}
 		}
-		e.fs.PushTree(IRTree(ReturnKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ReturnStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ReturnKeyword, "return "),
 			Leaf(Identifier, retExpr),
@@ -2985,7 +2985,7 @@ func (e *CSharpEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 		for _, t := range tokens {
 			vals = append(vals, t.Serialize())
 		}
-		e.fs.PushTree(IRTree(ReturnKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ReturnStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ReturnKeyword, "return "),
 			Leaf(LeftParen, "("),
@@ -3017,7 +3017,7 @@ func (e *CSharpEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
 		code = tokens[0].Serialize()
 	}
 	ind := csIndent(indent / 2)
-	e.fs.PushCode(ind + code + ";\n")
+	e.fs.PushTree(IRTree(ExprStatement, KindStmt, Leaf(Identifier, ind+code+";\n")))
 }
 
 // ============================================================
@@ -3099,7 +3099,7 @@ func (e *CSharpEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 			Leaf(RightBrace, "}\n"),
 		)
 	}
-	e.fs.PushTree(IRTree(IfKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(IfStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -3144,7 +3144,7 @@ func (e *CSharpEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	e.forPostStack = e.forPostStack[:n-1]
 
 	if node.Init == nil && node.Cond == nil && node.Post == nil {
-		e.fs.PushTree(IRTree(WhileKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ForStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(WhileKeyword, "while "),
 			Leaf(LeftParen, "("),
@@ -3157,7 +3157,7 @@ func (e *CSharpEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	}
 
 	if node.Init == nil && node.Post == nil && node.Cond != nil {
-		e.fs.PushTree(IRTree(WhileKeyword, TagExpr,
+		e.fs.PushTree(IRTree(ForStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(WhileKeyword, "while "),
 			Leaf(LeftParen, "("),
@@ -3169,7 +3169,7 @@ func (e *CSharpEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 		return
 	}
 
-	e.fs.PushTree(IRTree(ForKeyword, TagExpr,
+	e.fs.PushTree(IRTree(ForStatement, KindStmt,
 		Leaf(WhiteSpace, ind),
 		Leaf(ForKeyword, "for "),
 		Leaf(LeftParen, "("),
@@ -3218,13 +3218,13 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 
 	idx := 0
 	if node.Key != nil {
-		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+		if idx < len(tokens) && tokens[idx].Kind == TagIdent {
 			keyCode = tokens[idx].Serialize()
 			idx++
 		}
 	}
 	if node.Value != nil {
-		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
+		if idx < len(tokens) && tokens[idx].Kind == TagIdent {
 			valCode = tokens[idx].Serialize()
 			idx++
 		}
@@ -3343,7 +3343,7 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			)
 			children = append(children, Leaf(WhiteSpace, ind+"  "), Leaf(RightBrace, "}\n"))
 			children = append(children, Leaf(WhiteSpace, ind), Leaf(RightBrace, "}\n"))
-			e.fs.PushTree(IRTree(ForKeyword, TagExpr, children...))
+			e.fs.PushTree(IRTree(RangeStatement, KindStmt, children...))
 		} else {
 			var children []IRNode
 			children = append(children, Leaf(WhiteSpace, ind), Leaf(LeftBrace, "{\n"))
@@ -3403,7 +3403,7 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			)
 			children = append(children, Leaf(WhiteSpace, ind+"  "), Leaf(RightBrace, "}\n"))
 			children = append(children, Leaf(WhiteSpace, ind), Leaf(RightBrace, "}\n"))
-			e.fs.PushTree(IRTree(ForKeyword, TagExpr, children...))
+			e.fs.PushTree(IRTree(RangeStatement, KindStmt, children...))
 		}
 		return
 	}
@@ -3488,7 +3488,7 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			)
 		}
 		children = append(children, Leaf(WhiteSpace, ind), Leaf(RightBrace, "}\n"))
-		e.fs.PushTree(IRTree(ForKeyword, TagExpr, children...))
+		e.fs.PushTree(IRTree(RangeStatement, KindStmt, children...))
 		return
 	}
 
@@ -3503,7 +3503,7 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		valDecl := fmt.Sprintf("%s    var %s = %s[%s];\n", ind, valCode, xCode, loopVar)
 		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
 
-		e.fs.PushTree(IRTree(ForKeyword, TagExpr,
+		e.fs.PushTree(IRTree(RangeStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for "),
 			Leaf(LeftParen, "("),
@@ -3528,7 +3528,7 @@ func (e *CSharpEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
 			e.rangeVarCounter++
 		}
-		e.fs.PushTree(IRTree(ForKeyword, TagExpr,
+		e.fs.PushTree(IRTree(RangeStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for "),
 			Leaf(LeftParen, "("),
@@ -3587,7 +3587,7 @@ func (e *CSharpEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 		children = append(children, tokens[i])
 	}
 	children = append(children, Leaf(WhiteSpace, ind), Leaf(RightBrace, "}\n"))
-	e.fs.PushTree(IRTree(SwitchKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(SwitchStatement, KindStmt, children...))
 }
 
 func (e *CSharpEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
@@ -3641,7 +3641,7 @@ func (e *CSharpEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 	for i := idx; i < len(tokens); i++ {
 		children = append(children, tokens[i])
 	}
-	bodyStr := IRTree(CaseKeyword, TagExpr, children...).Serialize()
+	bodyStr := IRTree(CaseClauseStatement, KindStmt, children...).Serialize()
 	if !strings.Contains(bodyStr, "return ") && !strings.Contains(bodyStr, "break;") {
 		children = append(children,
 			Leaf(WhiteSpace, ind+"  "),
@@ -3650,7 +3650,7 @@ func (e *CSharpEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 			Leaf(NewLine, "\n"),
 		)
 	}
-	e.fs.PushTree(IRTree(CaseKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(CaseClauseStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -3660,7 +3660,7 @@ func (e *CSharpEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 func (e *CSharpEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
 	ind := csIndent(indent / 2)
-	e.fs.PushTree(IRTree(Identifier, TagExpr,
+	e.fs.PushTree(IRTree(IncDecStatement, KindStmt,
 		Leaf(WhiteSpace, ind),
 		Leaf(Identifier, xCode),
 		Leaf(UnaryOperator, node.Tok.String()),
@@ -3677,9 +3677,9 @@ func (e *CSharpEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 	ind := csIndent(indent / 2)
 	switch node.Tok {
 	case token.BREAK:
-		e.fs.PushCode(ind + "break;\n")
+		e.fs.PushTree(IRTree(BranchStatement, KindStmt, Leaf(Identifier, ind+"break;\n")))
 	case token.CONTINUE:
-		e.fs.PushCode(ind + "continue;\n")
+		e.fs.PushTree(IRTree(BranchStatement, KindStmt, Leaf(Identifier, ind+"continue;\n")))
 	}
 }
 
@@ -3712,15 +3712,15 @@ func (e *CSharpEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	var fields []fieldInfo
 	i := 0
 	for i < len(tokens) {
-		if tokens[i].Tag == TagExpr {
+		if tokens[i].Kind == TagExpr {
 			fi := fieldInfo{typeName: tokens[i].Serialize()}
 			i++
-			if i < len(tokens) && tokens[i].Tag == TagIdent {
+			if i < len(tokens) && tokens[i].Kind == TagIdent {
 				fi.name = tokens[i].Serialize()
 				i++
 			}
 			fields = append(fields, fi)
-		} else if tokens[i].Tag == TagIdent {
+		} else if tokens[i].Kind == TagIdent {
 			// Field name without explicit type token
 			fields = append(fields, fieldInfo{typeName: "object", name: tokens[i].Serialize()})
 			i++
@@ -3781,7 +3781,7 @@ func (e *CSharpEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 		}
 	}
 	children = append(children, Leaf(RightBrace, "}\n"), Leaf(NewLine, "\n"))
-	e.fs.PushTree(IRTree(StructKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(StructTypeNode, KindType, children...))
 }
 
 func (e *CSharpEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
