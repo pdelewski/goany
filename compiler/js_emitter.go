@@ -49,6 +49,7 @@ type JSEmitter struct {
 	ifCondStack []string
 	ifBodyStack []string
 	ifElseStack []string
+	outputs     []OutputEntry
 }
 
 func (e *JSEmitter) SetFile(file *os.File) { e.file = file }
@@ -369,17 +370,10 @@ const graphics = {
 // ============================================================
 
 func (e *JSEmitter) PreVisitProgram(indent int) {
-	var err error
-	e.file, err = os.Create(e.Output)
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
-	}
-
 	e.fs = e.GetForestBuilder()
 
 	// Write JS header with runtime helpers
-	e.file.WriteString(`// Generated JavaScript code
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: `// Generated JavaScript code
 "use strict";
 
 // Runtime helpers
@@ -463,15 +457,15 @@ function float64(v) { return v; }
 function string(v) { return String(v); }
 function bool(v) { return Boolean(v); }
 
-`)
+`})
 	// Include panic runtime
-	e.file.WriteString("// GoAny panic runtime\n")
-	e.file.WriteString(goanyrt.PanicJsSource)
-	e.file.WriteString("\n")
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "// GoAny panic runtime\n"})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: goanyrt.PanicJsSource})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n"})
 
 	// Include graphics runtime if graphics package is used
 	if _, hasGraphics := e.RuntimePackages["graphics"]; hasGraphics {
-		e.file.WriteString(jsGraphicsRuntime)
+		e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: jsGraphicsRuntime})
 	}
 
 	// Include runtime packages from files (convention: X/js/X_runtime.js)
@@ -486,35 +480,33 @@ function bool(v) { return Boolean(v); }
 				DebugLogPrintf("Skipping JsPrim runtime for %s: %v", name, err)
 				continue
 			}
-			e.file.WriteString(fmt.Sprintf("// %s runtime\n", name))
-			e.file.Write(content)
-			e.file.WriteString("\n")
+			e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: fmt.Sprintf("// %s runtime\n", name)})
+			e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: string(content)})
+			e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n"})
 		}
 	}
 }
 
 func (e *JSEmitter) PostVisitProgram(indent int) {
+	// Add main() call trailer as IR node
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n// Run main\nmain();\n"})
+
 	// Reduce everything from program marker
 	tokens := e.fs.CollectForest(string(PreVisitProgram))
-	// Write all accumulated code
-	for _, t := range tokens {
-		e.file.WriteString(t.Serialize())
-	}
-	// Add main() call at the end
-	e.file.WriteString("\n// Run main\nmain();\n")
-	e.file.Close()
+	root := IRNode{Type: ScopeNode, Kind: KindDecl, Children: tokens}
+	root.Content = root.Serialize()
+	e.outputs = []OutputEntry{{Path: e.Output, Root: root}}
+}
 
-	// Replace placeholder struct key functions with working implementations
+func (e *JSEmitter) GetOutputEntries() []OutputEntry { return e.outputs }
+
+func (e *JSEmitter) PostFileEmit() {
 	if len(e.structKeyTypes) > 0 {
 		e.replaceStructKeyFunctions()
 	}
-
-	// Create HTML wrapper if graphics runtime is enabled
 	if _, hasGraphics := e.RuntimePackages["graphics"]; hasGraphics {
 		e.createHTMLWrapper()
 	}
-
-	// Auto-install npm dependencies if needed
 	e.ensureNpmDependencies()
 }
 

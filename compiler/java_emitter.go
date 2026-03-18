@@ -67,6 +67,9 @@ type JavaEmitter struct {
 	closureCapturedMutVars map[string]bool   // mutable variables needing Object[] wrapping
 	closureCapturedVarType map[string]string // captured variable types
 	lambdaParamRenames     map[string]string // current FuncLit param renames (original → renamed)
+	outputs                []OutputEntry
+	mainTokens             []IRNode
+	preambleTokens         []IRNode
 }
 
 // Java type mapping - note Java has no unsigned types
@@ -726,27 +729,19 @@ func splitJavaArgs(argsStr string) []string {
 
 // writeJavaBoilerplate writes the standard Java imports, GoanyPanic, SliceBuiltins, and Formatter
 // classes to the given file. Used for both the main file and when renaming due to naming conflicts.
-func writeJavaBoilerplate(f *os.File) {
-	f.WriteString("import java.util.*;\nimport java.util.function.*;\n\n")
-	f.WriteString("// GoAny panic runtime\n")
-	f.WriteString(goanyrt.PanicJavaSource)
-	f.WriteString("\n")
-	writeJavaHelperClasses(f)
+func javaBoilerplateString() string {
+	return "import java.util.*;\nimport java.util.function.*;\n\n" +
+		"// GoAny panic runtime\n" +
+		goanyrt.PanicJavaSource +
+		"\n" +
+		javaHelperClassesString()
 }
 
 func (e *JavaEmitter) PreVisitProgram(indent int) {
-	var err error
-
 	// Sanitize output name for Java
 	e.OutputName = sanitizeJavaIdentifier(e.OutputName)
 	// Rebuild the output path with sanitized name
 	e.Output = filepath.Join(e.OutputDir, e.OutputName+".java")
-
-	e.file, err = os.Create(e.Output)
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
-	}
 
 	e.fs = e.GetForestBuilder()
 	e.typeAliasMap = make(map[string]string)
@@ -758,18 +753,16 @@ func (e *JavaEmitter) PreVisitProgram(indent int) {
 		namespaces[pkgName] = struct{}{}
 	}
 
-	// Write Java header imports and runtime
-	e.file.WriteString("import java.util.*;\nimport java.util.function.*;\n\n")
-	e.file.WriteString("// GoAny panic runtime\n")
-	e.file.WriteString(goanyrt.PanicJavaSource)
-	e.file.WriteString("\n")
+	// Write Java header imports, runtime, and helper classes as preamble
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: javaBoilerplateString()})
 
-	// Write SliceBuiltins and Formatter helper classes
-	writeJavaHelperClasses(e.file)
+	// Save preamble tokens and re-add program marker
+	e.preambleTokens = e.fs.CollectForest(string(PreVisitProgram))
+	e.fs.AddMarker(string(PreVisitProgram))
 }
 
-func writeJavaHelperClasses(f *os.File) {
-	f.WriteString(`class SliceBuiltins {
+func javaHelperClassesString() string {
+	return `class SliceBuiltins {
     public static <T> ArrayList<T> Append(ArrayList<T> list, T element) {
         if (list == null) list = new ArrayList<T>();
         list.add(element);
@@ -911,24 +904,31 @@ class Formatter {
     }
 }
 
-`)
+`
 }
 
 func (e *JavaEmitter) PostVisitProgram(indent int) {
-	// Reduce everything from program marker
+	// Collect remaining tokens and append to mainTokens
 	tokens := e.fs.CollectForest(string(PreVisitProgram))
-	// Write all accumulated code
-	for _, t := range tokens {
-		e.file.WriteString(t.Serialize())
-	}
-	e.file.Close()
+	e.mainTokens = append(e.mainTokens, tokens...)
 
-	// Replace placeholder struct key functions with working implementations
+	// Build main file OutputEntry: preamble + mainTokens
+	allTokens := make([]IRNode, 0, len(e.preambleTokens)+len(e.mainTokens))
+	allTokens = append(allTokens, e.preambleTokens...)
+	allTokens = append(allTokens, e.mainTokens...)
+	root := IRNode{Type: ScopeNode, Kind: KindDecl, Children: allTokens}
+	root.Content = root.Serialize()
+
+	// Prepend main file entry (main file first)
+	e.outputs = append([]OutputEntry{{Path: e.Output, Root: root}}, e.outputs...)
+}
+
+func (e *JavaEmitter) GetOutputEntries() []OutputEntry { return e.outputs }
+
+func (e *JavaEmitter) PostFileEmit() {
 	if len(e.structKeyTypes) > 0 {
 		replaceStructKeyFunctionsJ(e.Output)
 	}
-
-	// Generate build files if link-runtime is enabled
 	if e.LinkRuntime != "" {
 		if err := GeneratePomXmlJ(e.OutputDir, e.OutputName, e.LinkRuntime); err != nil {
 			log.Printf("Warning: %v", err)
@@ -1184,47 +1184,19 @@ func (e *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 		// Check for naming conflict with main output file
 		if name == e.OutputName {
-			// Naming conflict - rename main output to avoid collision
-			oldOutput := e.Output
-			e.file.Close()
-			os.Remove(oldOutput)
-
 			e.OutputName = e.OutputName + "_main"
 			e.Output = filepath.Join(e.OutputDir, e.OutputName+".java")
-			var err error
-			e.file, err = os.Create(e.Output)
-			if err != nil {
-				fmt.Println("Error creating renamed main file:", err)
-				return
-			}
-			// Re-write imports and helpers to the new main file
-			writeJavaBoilerplate(e.file)
 		}
 
-		// Flush current tokens to main file before switching
+		// Collect current tokens and append to mainTokens
 		tokens := e.fs.CollectForest(string(PreVisitProgram))
-		for _, t := range tokens {
-			e.file.WriteString(t.Serialize())
-		}
-		// Re-emit program marker so subsequent packages accumulate correctly
+		e.mainTokens = append(e.mainTokens, tokens...)
+		// Re-emit program marker so subsequent package content accumulates correctly
 		e.fs.AddMarker(string(PreVisitProgram))
 
-		// Create separate file for this package
-		pkgFileName := filepath.Join(e.OutputDir, name+".java")
-		pkgFile, err := os.Create(pkgFileName)
-		if err != nil {
-			fmt.Println("Error creating package file:", err)
-			return
-		}
-
-		// Write imports and class header to package file
-		pkgFile.WriteString("import java.util.*;\nimport java.util.function.*;\n\n")
-		pkgFile.WriteString(fmt.Sprintf("public class %s {\n\n", name))
-		pkgFile.Close()
-
-		// The package content will be accumulated in the fragment stack
-		// and appended to the package file in PostVisitPackage
-		e.fs.AddLeaf("", KindExpr, nil)
+		// Add package header as preamble IR nodes for the package file
+		e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "import java.util.*;\nimport java.util.function.*;\n\n"})
+		e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: fmt.Sprintf("public class %s {\n\n", name)})
 	}
 }
 
@@ -1232,24 +1204,16 @@ func (e *JavaEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 	name := pkg.Name
 
 	if name != "main" && name != "hmap" {
-		// Reduce tokens accumulated for this package
-		// They were pushed after the PreVisitPackage marker
 		// Close the class
 		e.fs.AddTree(IRTree(PackageDeclaration, KindDecl, Leaf(Identifier, "}\n")))
 
-		// Collect all tokens and append to the package file
-		// The tokens from this package need to be written to the separate file
+		// Collect package tokens and build OutputEntry
 		tokens := e.fs.CollectForest(string(PreVisitProgram))
+		root := IRNode{Type: ScopeNode, Kind: KindDecl, Children: tokens}
+		root.Content = root.Serialize()
 		pkgFileName := filepath.Join(e.OutputDir, name+".java")
-		pkgFile, err := os.OpenFile(pkgFileName, os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Println("Error opening package file:", err)
-			return
-		}
-		for _, t := range tokens {
-			pkgFile.WriteString(t.Serialize())
-		}
-		pkgFile.Close()
+		e.outputs = append(e.outputs, OutputEntry{Path: pkgFileName, Root: root})
+
 		// Re-emit program marker for subsequent packages
 		e.fs.AddMarker(string(PreVisitProgram))
 		return

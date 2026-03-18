@@ -59,6 +59,8 @@ type RustEmitter struct {
 	callExprArgDepth    int  // >0 when inside a call expression argument
 	compositeLitDepth   int  // >0 when inside a composite literal (struct/slice init)
 	localClosureBodies  map[string]string // maps local closure variable names to their body code
+	outputPath          string
+	outputs             []OutputEntry
 }
 
 func (e *RustEmitter) SetFile(file *os.File) { e.file = file }
@@ -870,7 +872,7 @@ func (e *RustEmitter) isHashableType(t types.Type, visited map[string]bool) bool
 func (e *RustEmitter) PreVisitProgram(indent int) {
 	e.aliases = make(map[string]Alias)
 	e.typeAliasMap = make(map[string]string)
-	outputFile := e.Output
+	e.outputPath = e.Output
 
 	if e.LinkRuntime != "" {
 		srcDir := filepath.Join(e.OutputDir, "src")
@@ -878,14 +880,7 @@ func (e *RustEmitter) PreVisitProgram(indent int) {
 			fmt.Println("Error creating src directory:", err)
 			return
 		}
-		outputFile = filepath.Join(srcDir, "main.rs")
-	}
-
-	var err error
-	e.file, err = os.Create(outputFile)
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
+		e.outputPath = filepath.Join(srcDir, "main.rs")
 	}
 
 	e.fs = e.GetForestBuilder()
@@ -982,12 +977,12 @@ pub fn len<T>(slice: &[T]) -> i32 {
     slice.len() as i32
 }
 `
-	e.file.WriteString(builtin)
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: builtin})
 
 	// Panic runtime
-	e.file.WriteString("\n// GoAny panic runtime\n")
-	e.file.WriteString(goanyrt.PanicRustSource)
-	e.file.WriteString("\n")
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n// GoAny panic runtime\n"})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: goanyrt.PanicRustSource})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n"})
 
 	// Runtime module imports
 	if e.LinkRuntime != "" {
@@ -995,22 +990,24 @@ pub fn len<T>(slice: &[T]) -> i32 {
 			if variant == "none" {
 				continue
 			}
-			e.file.WriteString(fmt.Sprintf("\n// %s runtime\nmod %s;\nuse %s::*;\n", name, name, name))
+			e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: fmt.Sprintf("\n// %s runtime\nmod %s;\nuse %s::*;\n", name, name, name)})
 		}
 	}
 }
 
 func (e *RustEmitter) PostVisitProgram(indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitProgram))
-	for _, t := range tokens {
-		e.file.WriteString(t.Serialize())
-	}
-	e.file.Close()
+	root := IRNode{Type: ScopeNode, Kind: KindDecl, Children: tokens}
+	root.Content = root.Serialize()
+	e.outputs = []OutputEntry{{Path: e.outputPath, Root: root}}
+}
 
+func (e *RustEmitter) GetOutputEntries() []OutputEntry { return e.outputs }
+
+func (e *RustEmitter) PostFileEmit() {
 	if len(e.structKeyTypes) > 0 {
 		e.replaceStructKeyFunctions()
 	}
-
 	if e.LinkRuntime != "" {
 		if err := e.GenerateCargoToml(); err != nil {
 			log.Printf("Warning: %v", err)
@@ -1022,7 +1019,6 @@ func (e *RustEmitter) PostVisitProgram(indent int) {
 			log.Printf("Warning: %v", err)
 		}
 	}
-
 	if e.Opt.OptimizeMoves && e.Opt.MoveOptCount > 0 {
 		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", e.Opt.MoveOptCount)
 	}

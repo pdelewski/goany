@@ -68,6 +68,7 @@ type CppEmitter struct {
 	funcLitDepth     int
 	nestedMapCounter int
 	pendingHashSpecs []pendingHashSpec
+	outputs          []OutputEntry
 }
 
 func (e *CppEmitter) SetFile(file *os.File) { e.file = file }
@@ -346,25 +347,18 @@ func (e *CppEmitter) exprContainsIdent(expr ast.Expr, name string) bool {
 // ============================================================
 
 func (e *CppEmitter) PreVisitProgram(indent int) {
-	var err error
-	e.file, err = os.Create(e.Output)
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
-	}
-
 	e.fs = e.GetForestBuilder()
 
 	// Write C++ header
-	e.file.WriteString("#include <vector>\n" +
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "#include <vector>\n" +
 		"#include <string>\n" +
 		"#include <tuple>\n" +
 		"#include <any>\n" +
 		"#include <cstdint>\n" +
-		"#include <functional>\n")
-	e.file.WriteString("#include <cstdarg> // For va_start, etc.\n" +
+		"#include <functional>\n"})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "#include <cstdarg> // For va_start, etc.\n" +
 		"#include <initializer_list>\n" +
-		"#include <iostream>\n")
+		"#include <iostream>\n"})
 
 	// Include runtime headers
 	if e.LinkRuntime != "" {
@@ -376,17 +370,17 @@ func (e *CppEmitter) PreVisitProgram(indent int) {
 			if variant != "" {
 				fileName += "_" + variant
 			}
-			e.file.WriteString(fmt.Sprintf("#include \"%s/cpp/%s.hpp\"\n", name, fileName))
+			e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: fmt.Sprintf("#include \"%s/cpp/%s.hpp\"\n", name, fileName)})
 		}
 	}
 
 	// Include panic runtime
-	e.file.WriteString("\n// GoAny panic runtime\n")
-	e.file.WriteString(goanyrt.PanicCppSource)
-	e.file.WriteString("\n")
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n// GoAny panic runtime\n"})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: goanyrt.PanicCppSource})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n"})
 
 	// C++ helper definitions
-	e.file.WriteString(`
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: `
 using int8 = int8_t;
 using int16 = int16_t;
 using int32 = int32_t;
@@ -466,31 +460,38 @@ std::vector<std::string>& append(std::vector<std::string> &vec, const char *elem
   result.push_back(std::string(element));
   return result;
 }
-`)
-	e.file.WriteString("\n\n")
+`})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n\n"})
 }
 
 func (e *CppEmitter) PostVisitProgram(indent int) {
-	tokens := e.fs.CollectForest(string(PreVisitProgram))
-	for _, t := range tokens {
-		e.file.WriteString(t.Serialize())
+	// Emit pending hash specializations for main package into IR tree
+	var remaining []pendingHashSpec
+	for _, spec := range e.pendingHashSpecs {
+		if spec.pkgName == "" {
+			e.emitHashSpec(spec)
+		} else {
+			remaining = append(remaining, spec)
+		}
 	}
+	e.pendingHashSpecs = remaining
 
-	// Emit pending hash specializations for main package
-	e.emitPendingHashSpecs("")
+	// Collect forest into single OutputEntry
+	tokens := e.fs.CollectForest(string(PreVisitProgram))
+	root := IRNode{Type: ScopeNode, Kind: KindDecl, Children: tokens}
+	root.Content = root.Serialize()
+	e.outputs = []OutputEntry{{Path: e.Output, Root: root}}
+}
 
-	e.file.Close()
+func (e *CppEmitter) GetOutputEntries() []OutputEntry { return e.outputs }
 
-	// Replace placeholder struct key functions
+func (e *CppEmitter) PostFileEmit() {
 	if len(e.structKeyTypes) > 0 {
 		e.replaceStructKeyFunctions()
 	}
-
-	// Generate Makefile
 	if err := e.GenerateMakefile(); err != nil {
 		log.Printf("Warning: %v", err)
 	}
-
 	if e.OptimizeMoves && e.MoveOptCount > 0 {
 		fmt.Printf("  C++: %d copy(ies) replaced by std::move()\n", e.MoveOptCount)
 	}
@@ -3819,51 +3820,6 @@ func (e *CppEmitter) emitHashSpec(spec pendingHashSpec) {
 	e.fs.AddTree(IRTree(TypeKeyword, TagExpr, hashChildren...))
 }
 
-func (e *CppEmitter) emitPendingHashSpecs(pkgName string) {
-	var specsForPkg []pendingHashSpec
-	var remaining []pendingHashSpec
-
-	for _, spec := range e.pendingHashSpecs {
-		if spec.pkgName == pkgName {
-			specsForPkg = append(specsForPkg, spec)
-		} else {
-			remaining = append(remaining, spec)
-		}
-	}
-	e.pendingHashSpecs = remaining
-
-	for _, spec := range specsForPkg {
-		qualifiedName := spec.structName
-		if spec.pkgName != "" {
-			qualifiedName = spec.pkgName + "::" + spec.structName
-		}
-
-		e.file.WriteString(fmt.Sprintf("inline bool operator==(const %s& a, const %s& b) {\n", qualifiedName, qualifiedName))
-		e.file.WriteString("    return ")
-		for i, fieldName := range spec.fieldNames {
-			if i > 0 {
-				e.file.WriteString(" && ")
-			}
-			e.file.WriteString(fmt.Sprintf("a.%s == b.%s", fieldName, fieldName))
-		}
-		if len(spec.fieldNames) == 0 {
-			e.file.WriteString("true")
-		}
-		e.file.WriteString(";\n}\n\n")
-
-		e.file.WriteString("namespace std {\n")
-		e.file.WriteString(fmt.Sprintf("    template<> struct hash<%s> {\n", qualifiedName))
-		e.file.WriteString(fmt.Sprintf("        size_t operator()(const %s& s) const {\n", qualifiedName))
-		e.file.WriteString("            size_t h = 0;\n")
-		for _, fieldName := range spec.fieldNames {
-			e.file.WriteString(fmt.Sprintf("            h ^= std::hash<decltype(s.%s)>{}(s.%s) + 0x9e3779b9 + (h << 6) + (h >> 2);\n", fieldName, fieldName))
-		}
-		e.file.WriteString("            return h;\n")
-		e.file.WriteString("        }\n")
-		e.file.WriteString("    };\n")
-		e.file.WriteString("}\n\n")
-	}
-}
 
 // ============================================================
 // Constants

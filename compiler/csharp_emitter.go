@@ -249,6 +249,7 @@ type CSharpEmitter struct {
 	currentAliasName string
 	rangeVarCounter int
 	funcReturnType  types.Type // Current function's return type (for narrowing casts)
+	outputs         []OutputEntry
 }
 
 func (e *CSharpEmitter) SetFile(file *os.File) { e.file = file }
@@ -656,27 +657,20 @@ func csMapKeyTypeConst(t *types.Map) int {
 // ============================================================
 
 func (e *CSharpEmitter) PreVisitProgram(indent int) {
-	var err error
-	e.file, err = os.Create(e.Output)
-	if err != nil {
-		fmt.Println("Error opening file:", err)
-		return
-	}
-
 	e.fs = e.GetForestBuilder()
 	e.typeAliasMap = make(map[string]string)
 	e.aliases = make(map[string]Alias)
 
 	// Write C# header
-	e.file.WriteString("using System;\nusing System.Collections;\nusing System.Collections.Generic;\n\n")
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "using System;\nusing System.Collections;\nusing System.Collections.Generic;\n\n"})
 
 	// Include panic runtime
-	e.file.WriteString("// GoAny panic runtime\n")
-	e.file.WriteString(goanyrt.PanicCsSource)
-	e.file.WriteString("\n")
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "// GoAny panic runtime\n"})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: goanyrt.PanicCsSource})
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n"})
 
 	// Write SliceBuiltins and Formatter classes
-	e.file.WriteString(`public static class SliceBuiltins
+	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: `public static class SliceBuiltins
 {
   public static List<T> Append<T>(this List<T> list, T element)
   {
@@ -831,31 +825,27 @@ public class Formatter {
     }
 }
 
-`)
-
-	// Runtime packages are copied to separate .cs files by CopyRuntimePackages() in PostVisitProgram
+`})
 }
 
 
 func (e *CSharpEmitter) PostVisitProgram(indent int) {
 	// Reduce everything from program marker
 	tokens := e.fs.CollectForest(string(PreVisitProgram))
-	// Write all accumulated code
-	for _, t := range tokens {
-		e.file.WriteString(t.Serialize())
-	}
-	e.file.Close()
+	root := IRNode{Type: ScopeNode, Kind: KindDecl, Children: tokens}
+	root.Content = root.Serialize()
+	e.outputs = []OutputEntry{{Path: e.Output, Root: root}}
+}
 
+func (e *CSharpEmitter) GetOutputEntries() []OutputEntry { return e.outputs }
+
+func (e *CSharpEmitter) PostFileEmit() {
 	if e.OptimizeRefs && e.RefOptCount > 0 {
 		fmt.Printf("  C#: %d copy(ies) removed by reference optimization\n", e.RefOptCount)
 	}
-
-	// Replace placeholder struct key functions with working implementations
 	if len(e.structKeyTypes) > 0 {
 		e.replaceStructKeyFunctions()
 	}
-
-	// Generate .NET project files if link-runtime is enabled
 	if e.LinkRuntime != "" {
 		if err := e.GenerateCsproj(); err != nil {
 			log.Printf("Warning: %v", err)
