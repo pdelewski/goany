@@ -9,13 +9,22 @@ import (
 // TokenType represents different types of tokens in the code generation
 type TokenType int
 
+// Language tag constants for Keyword token type
+const (
+	TagRust   = 100
+	TagCpp    = 101
+	TagCSharp = 102
+	TagJava   = 103
+	TagJs     = 104
+)
+
 const (
 	// Language-specific keywords
 	EmptyToken TokenType = iota
-	CppKeyword
-	CSharpKeyword
-	RustKeyword
-	JavaKeyword
+	Keyword              // unified keyword type; language stored in Tag field
+	_                    // reserved (was CSharpKeyword)
+	_                    // reserved (was RustKeyword)
+	_                    // reserved (was JavaKeyword)
 
 	// Identifiers and literals
 	Identifier
@@ -189,10 +198,7 @@ func LeafTag(tokenType TokenType, content string, tag int) Token {
 
 // TokenTypeNames provides string representations for token types
 var TokenTypeNames = map[TokenType]string{
-	CppKeyword:         "CppKeyword",
-	CSharpKeyword:      "CSharpKeyword",
-	RustKeyword:        "RustKeyword",
-	JavaKeyword:        "JavaKeyword",
+	Keyword: "Keyword",
 	Identifier:         "Identifier",
 	StringLiteral:      "StringLiteral",
 	NumberLiteral:      "NumberLiteral",
@@ -273,7 +279,7 @@ func CreateToken(tokenType TokenType, content string) Token {
 
 // IsKeyword returns true if the token type represents a keyword
 func (t TokenType) IsKeyword() bool {
-	return t >= CppKeyword && t <= AbstractKeyword
+	return t == Keyword || (t >= IfKeyword && t <= AbstractKeyword)
 }
 
 // IsOperator returns true if the token type represents an operator
@@ -308,40 +314,40 @@ type LanguageKeywordMap struct {
 func GetLanguageKeywords() LanguageKeywordMap {
 	return LanguageKeywordMap{
 		Cpp: map[string]TokenType{
-			"include":   CppKeyword,
-			"namespace": CppKeyword,
-			"using":     CppKeyword,
-			"template":  CppKeyword,
-			"typename":  CppKeyword,
-			"const":     CppKeyword,
-			"auto":      CppKeyword,
+			"include":   Keyword,
+			"namespace": Keyword,
+			"using":     Keyword,
+			"template":  Keyword,
+			"typename":  Keyword,
+			"const":     Keyword,
+			"auto":      Keyword,
 		},
 		CSharp: map[string]TokenType{
-			"using":     CSharpKeyword,
-			"namespace": CSharpKeyword,
-			"var":       CSharpKeyword,
-			"readonly":  CSharpKeyword,
-			"override":  CSharpKeyword,
-			"virtual":   CSharpKeyword,
-			"sealed":    CSharpKeyword,
+			"using":     Keyword,
+			"namespace": Keyword,
+			"var":       Keyword,
+			"readonly":  Keyword,
+			"override":  Keyword,
+			"virtual":   Keyword,
+			"sealed":    Keyword,
 		},
 		Rust: map[string]TokenType{
-			"fn":    RustKeyword,
-			"let":   RustKeyword,
-			"mut":   RustKeyword,
-			"impl":  RustKeyword,
-			"trait": RustKeyword,
-			"mod":   RustKeyword,
-			"use":   RustKeyword,
+			"fn":    Keyword,
+			"let":   Keyword,
+			"mut":   Keyword,
+			"impl":  Keyword,
+			"trait": Keyword,
+			"mod":   Keyword,
+			"use":   Keyword,
 		},
 		Java: map[string]TokenType{
-			"import":     JavaKeyword,
-			"package":    JavaKeyword,
-			"extends":    JavaKeyword,
-			"implements": JavaKeyword,
-			"interface":  JavaKeyword,
-			"enum":       JavaKeyword,
-			"throws":     JavaKeyword,
+			"import":     Keyword,
+			"package":    Keyword,
+			"extends":    Keyword,
+			"implements": Keyword,
+			"interface":  Keyword,
+			"enum":       Keyword,
+			"throws":     Keyword,
 		},
 	}
 }

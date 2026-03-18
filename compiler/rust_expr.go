@@ -453,7 +453,11 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
 						Leaf(Identifier, "hmap::hashMapLen"),
 						Leaf(LeftParen, "("),
-						Leaf(Identifier, argsStr+".clone()"),
+						Leaf(Identifier, argsStr),
+						Leaf(Dot, "."),
+						Leaf(Identifier, "clone"),
+						Leaf(LeftParen, "("),
+						Leaf(RightParen, ")"),
 						Leaf(RightParen, ")"),
 					))
 				}
@@ -1266,56 +1270,74 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 						kvMap[key] = parts[1]
 					}
 				}
-				var sb strings.Builder
-				sb.WriteString(fmt.Sprintf("%s { ", typeName))
+				children := []Token{
+					Leaf(Identifier, typeName),
+					Leaf(WhiteSpace, " "),
+					Leaf(LeftBrace, "{"),
+					Leaf(WhiteSpace, " "),
+				}
 				first := true
 				allFieldsProvided := len(kvMap) >= u.NumFields()
 				for i := 0; i < u.NumFields(); i++ {
 					fieldName := u.Field(i).Name()
 					if val, ok := kvMap[fieldName]; ok {
 						if !first {
-							sb.WriteString(", ")
+							children = append(children, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 						}
 						val = e.castSmallIntFieldValue(u.Field(i).Type(), val)
 						val = e.cloneStructFieldValue(u.Field(i).Type(), val)
-						sb.WriteString(fmt.Sprintf("%s: %s", fieldName, val))
+						children = append(children,
+							Leaf(Identifier, fieldName),
+							Leaf(Colon, ":"),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, val),
+						)
 						first = false
 					}
 				}
 				if !allFieldsProvided {
 					if !first {
-						sb.WriteString(", ")
+						children = append(children, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 					}
-					sb.WriteString("..Default::default() ")
+					children = append(children, Leaf(Identifier, "..Default::default()"), Leaf(WhiteSpace, " "))
 				} else {
-					sb.WriteString(" ")
+					children = append(children, Leaf(WhiteSpace, " "))
 				}
-				sb.WriteString("}")
-				e.fs.PushCode(sb.String())
+				children = append(children, Leaf(RightBrace, "}"))
+				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 				return
 			}
 		}
 		// Positional struct literal or empty struct
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("%s { ", typeName))
+		children := []Token{
+			Leaf(Identifier, typeName),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftBrace, "{"),
+			Leaf(WhiteSpace, " "),
+		}
 		for i, elt := range elts {
 			if i > 0 {
-				sb.WriteString(", ")
+				children = append(children, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 			}
 			if i < u.NumFields() {
 				elt = e.castSmallIntFieldValue(u.Field(i).Type(), elt)
 				elt = e.cloneStructFieldValue(u.Field(i).Type(), elt)
-				sb.WriteString(fmt.Sprintf("%s: %s", u.Field(i).Name(), elt))
+				children = append(children,
+					Leaf(Identifier, u.Field(i).Name()),
+					Leaf(Colon, ":"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, elt),
+				)
 			}
 		}
 		if len(elts) < u.NumFields() {
 			if len(elts) > 0 {
-				sb.WriteString(", ")
+				children = append(children, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 			}
-			sb.WriteString("..Default::default()")
+			children = append(children, Leaf(Identifier, "..Default::default()"))
 		}
-		sb.WriteString(" }")
-		e.fs.PushCode(sb.String())
+		children = append(children, Leaf(WhiteSpace, " "), Leaf(RightBrace, "}"))
+		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 	case *types.Slice:
 		if len(elts) == 0 {
 			elemRustType := e.qualifiedRustTypeName(u.Elem())
@@ -1347,9 +1369,21 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 			// Build map with initial values
 			e.nestedMapCounter++
 			tmpVar := fmt.Sprintf("_m%d", e.nestedMapCounter)
-			var sb strings.Builder
-			sb.WriteString("{\n")
-			sb.WriteString(fmt.Sprintf("let mut %s = hmap::newHashMap(%d);\n", tmpVar, keyTypeConst))
+			children := []Token{
+				Leaf(LeftBrace, "{"),
+				Leaf(Identifier, "\n"),
+				Leaf(Identifier, "let mut "),
+				Leaf(Identifier, tmpVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap::newHashMap"),
+				Leaf(LeftParen, "("),
+				Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(Identifier, "\n"),
+			}
 
 			mapUnderlying := litType.Underlying().(*types.Map)
 			keyCast := getRustKeyCast(mapUnderlying.Key())
@@ -1362,16 +1396,34 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 					valStr := parts[1]
 					var keyExpr string
 					if keyIsStr {
-						keyExpr = fmt.Sprintf("Rc::new(%s)", keyStr)
+						keyExpr = "Rc::new(" + keyStr + ")"
 					} else {
-						keyExpr = fmt.Sprintf("Rc::new(%s%s)", keyStr, keyCast)
+						keyExpr = "Rc::new(" + keyStr + keyCast + ")"
 					}
-					sb.WriteString(fmt.Sprintf("%s = hmap::hashMapSet(%s, %s, Rc::new(%s));\n", tmpVar, tmpVar, keyExpr, valStr))
+					children = append(children,
+						Leaf(Identifier, tmpVar),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "hmap::hashMapSet"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, tmpVar),
+						Leaf(Comma, ","),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, keyExpr),
+						Leaf(Comma, ","),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "Rc::new("),
+						Leaf(Identifier, valStr),
+						Leaf(RightParen, ")"),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(Identifier, "\n"),
+					)
 				}
 			}
-			sb.WriteString(tmpVar)
-			sb.WriteString("\n}")
-			e.fs.PushCode(sb.String())
+			children = append(children, Leaf(Identifier, tmpVar), Leaf(Identifier, "\n"), Leaf(RightBrace, "}"))
+			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 		}
 	default:
 		if len(elts) == 0 {
@@ -1554,7 +1606,7 @@ func (e *RustEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, inde
 	for _, name := range node.Names {
 		escapedName := escapeRustKeyword(name.Name)
 		token := TokenTree(Identifier, TagIdent,
-			Leaf(RustKeyword, "mut"),
+			LeafTag(Keyword, "mut", TagRust),
 			Leaf(WhiteSpace, " "),
 			Leaf(Identifier, escapedName),
 			Leaf(Colon, ":"),

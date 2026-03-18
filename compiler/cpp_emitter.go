@@ -524,8 +524,8 @@ func (e *CppEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	}
 	if pkg.Name != "main" {
 		e.inNamespace = true
-		e.fs.PushTree(TokenTree(CppKeyword, TagExpr,
-			Leaf(CppKeyword, "namespace"),
+		e.fs.PushTree(TokenTree(Keyword, TagExpr,
+			LeafTag(Keyword, "namespace", TagCpp),
 			Leaf(WhiteSpace, " "),
 			Leaf(Identifier, pkg.Name),
 			Leaf(NewLine, "\n"),
@@ -537,7 +537,7 @@ func (e *CppEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 func (e *CppEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 	if pkg.Name != "main" {
-		e.fs.PushTree(TokenTree(CppKeyword, TagExpr,
+		e.fs.PushTree(TokenTree(Keyword, TagExpr,
 			Leaf(RightBrace, "}"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LineComment, "// namespace "+pkg.Name),
@@ -1169,13 +1169,34 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 			))
 		} else {
 			// Map literal with elements
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("[&]() { auto _m = hmap::newHashMap(%d); ", keyTypeConst))
 			castPfx, castSfx := "", ""
 			if mapType, ok := litType.Underlying().(*types.Map); ok {
 				castPfx, castSfx = getCppKeyCast(mapType.Key())
 			}
 			_ = u
+			var children []Token
+			children = append(children,
+				Leaf(LeftBracket, "["),
+				Leaf(Identifier, "&"),
+				Leaf(RightBracket, "]"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftBrace, "{"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "auto", TagCpp),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "_m"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap::newHashMap"),
+				Leaf(LeftParen, "("),
+				Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+			)
 			for _, elt := range elts {
 				// Each element is ".key = value" from KeyValueExpr
 				parts := strings.SplitN(elt, " = ", 2)
@@ -1186,11 +1207,35 @@ func (e *CppEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
 					if castPfx != "" {
 						keyStr = castPfx + key + castSfx
 					}
-					sb.WriteString(fmt.Sprintf("_m = hmap::hashMapSet(_m, %s, %s); ", keyStr, valStr))
+					children = append(children,
+						Leaf(Identifier, "_m"),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "hmap::hashMapSet"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, "_m"),
+						Leaf(Comma, ", "),
+						Leaf(Identifier, keyStr),
+						Leaf(Comma, ", "),
+						Leaf(Identifier, valStr),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(WhiteSpace, " "),
+					)
 				}
 			}
-			sb.WriteString("return _m; }()")
-			e.fs.PushCode(sb.String())
+			children = append(children,
+				Leaf(ReturnKeyword, "return"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "_m"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(RightBrace, "}"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+			)
+			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 		}
 
 	default:
@@ -1716,15 +1761,15 @@ func (e *CppEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int
 
 func (e *CppEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
-	var sb strings.Builder
-	sb.WriteString("{\n")
+	var children []Token
+	children = append(children, Leaf(LeftBrace, "{"), Leaf(NewLine, "\n"))
 	for _, t := range tokens {
 		if t.Serialize() != "" {
-			sb.WriteString(t.Serialize())
+			children = append(children, Leaf(Identifier, t.Serialize()))
 		}
 	}
-	sb.WriteString(cppIndent(indent) + "}")
-	e.fs.PushCode(sb.String())
+	children = append(children, Leaf(WhiteSpace, cppIndent(indent)), Leaf(RightBrace, "}"))
+	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 }
 
 // ============================================================
@@ -1887,7 +1932,6 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 
 				lastIdx := len(ops) - 1
-				var sb strings.Builder
 
 				// Prologue: extract temp variables for INTERMEDIATE map accesses only
 				for i, op := range ops {
@@ -1896,8 +1940,29 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						if op.keyCastPfx != "" {
 							key = op.keyCastPfx + key + op.keyCastSfx
 						}
-						sb.WriteString(fmt.Sprintf("%sauto %s = std::any_cast<%s>(hmap::hashMapGet(%s, %s));\n",
-							ind, op.tempVarName, op.valueCppType, op.mapVarExpr, key))
+						e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+							Leaf(WhiteSpace, ind),
+							LeafTag(Keyword, "auto", TagCpp),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, op.tempVarName),
+							Leaf(WhiteSpace, " "),
+							Leaf(Assignment, "="),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, "std::any_cast"),
+							Leaf(LeftAngle, "<"),
+							Leaf(Identifier, op.valueCppType),
+							Leaf(RightAngle, ">"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, "hmap::hashMapGet"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, op.mapVarExpr),
+							Leaf(Comma, ", "),
+							Leaf(Identifier, key),
+							Leaf(RightParen, ")"),
+							Leaf(RightParen, ")"),
+							Leaf(Semicolon, ";"),
+							Leaf(NewLine, "\n"),
+						))
 					}
 				}
 
@@ -1909,11 +1974,35 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if lastOp.keyCastPfx != "" {
 						key = lastOp.keyCastPfx + key + lastOp.keyCastSfx
 					}
-					sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
-						ind, lastOp.mapVarExpr, lastOp.mapVarExpr, key, rhsStr))
+					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, lastOp.mapVarExpr),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "hmap::hashMapSet"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, lastOp.mapVarExpr),
+						Leaf(Comma, ", "),
+						Leaf(Identifier, key),
+						Leaf(Comma, ", "),
+						Leaf(Identifier, rhsStr),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
 				} else {
 					// Last op is slice: assign to slice element
-					sb.WriteString(fmt.Sprintf("%s%s %s %s;\n", ind, currentVar, tokStr, rhsStr))
+					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, currentVar),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, tokStr),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, rhsStr),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
 				}
 
 				// Epilogue: write back INTERMEDIATE map entries in reverse
@@ -1924,11 +2013,25 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						if op.keyCastPfx != "" {
 							key = op.keyCastPfx + key + op.keyCastSfx
 						}
-						sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s, %s, %s);\n",
-							ind, op.mapVarExpr, op.mapVarExpr, key, op.tempVarName))
+						e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+							Leaf(WhiteSpace, ind),
+							Leaf(Identifier, op.mapVarExpr),
+							Leaf(WhiteSpace, " "),
+							Leaf(Assignment, "="),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, "hmap::hashMapSet"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, op.mapVarExpr),
+							Leaf(Comma, ", "),
+							Leaf(Identifier, key),
+							Leaf(Comma, ", "),
+							Leaf(Identifier, op.tempVarName),
+							Leaf(RightParen, ")"),
+							Leaf(Semicolon, ";"),
+							Leaf(NewLine, "\n"),
+						))
 					}
 				}
-				e.fs.PushCode(sb.String())
 				return
 			}
 		}
@@ -1971,13 +2074,24 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				e.nestedMapCounter++
 				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
 					Leaf(WhiteSpace, ind),
-					Leaf(CppKeyword, "auto"),
+					LeafTag(Keyword, "auto", TagCpp),
 					Leaf(WhiteSpace, " "),
 					Leaf(Identifier, tempVar),
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
 					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "std::any_cast<hmap::HashMap>(hmap::hashMapGet("+outerVar+", "+outerKey+"))"),
+					Leaf(Identifier, "std::any_cast"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, "hmap::HashMap"),
+					Leaf(RightAngle, ">"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, "hmap::hashMapGet"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, outerVar),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, outerKey),
+					Leaf(RightParen, ")"),
+					Leaf(RightParen, ")"),
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
@@ -1987,7 +2101,14 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
 					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "hmap::hashMapSet("+tempVar+", "+mapKey+", "+rhsStr+")"),
+					Leaf(Identifier, "hmap::hashMapSet"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, tempVar),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, mapKey),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, rhsStr),
+					Leaf(RightParen, ")"),
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
@@ -1997,7 +2118,14 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
 					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "hmap::hashMapSet("+outerVar+", "+outerKey+", "+tempVar+")"),
+					Leaf(Identifier, "hmap::hashMapSet"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, outerVar),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, outerKey),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, tempVar),
+					Leaf(RightParen, ")"),
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
@@ -2013,7 +2141,14 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			Leaf(WhiteSpace, " "),
 			Leaf(Assignment, "="),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, "hmap::hashMapSet("+mapVar+", "+mapKey+", "+rhsStr+")"),
+			Leaf(Identifier, "hmap::hashMapSet"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, mapVar),
+			Leaf(Comma, ", "),
+			Leaf(Identifier, mapKey),
+			Leaf(Comma, ", "),
+			Leaf(Identifier, rhsStr),
+			Leaf(RightParen, ")"),
 			Leaf(Semicolon, ";"),
 			Leaf(NewLine, "\n"),
 		))
@@ -2051,7 +2186,12 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
 					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "hmap::hashMapContains("+mapName+", "+keyStr+")"),
+					Leaf(Identifier, "hmap::hashMapContains"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, mapName),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, keyStr),
+					Leaf(RightParen, ")"),
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
@@ -2061,7 +2201,28 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
 					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, okName+" ? std::any_cast<"+valueCppType+">(hmap::hashMapGet("+mapName+", "+keyStr+")) : "+valueCppType+"{}"),
+					Leaf(Identifier, okName),
+					Leaf(WhiteSpace, " "),
+					Leaf(BinaryOperator, "?"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "std::any_cast"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, valueCppType),
+					Leaf(RightAngle, ">"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, "hmap::hashMapGet"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, mapName),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, keyStr),
+					Leaf(RightParen, ")"),
+					Leaf(RightParen, ")"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Colon, ":"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, valueCppType),
+					Leaf(LeftBrace, "{"),
+					Leaf(RightBrace, "}"),
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
@@ -2093,7 +2254,23 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(WhiteSpace, " "),
 				Leaf(Assignment, "="),
 				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, "(std::any("+xExpr+")).type() == typeid("+typeName+")"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "std::any"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xExpr),
+				Leaf(RightParen, ")"),
+				Leaf(RightParen, ")"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "type"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "=="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "typeid"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, typeName),
+				Leaf(RightParen, ")"),
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
 			))
@@ -2103,7 +2280,26 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(WhiteSpace, " "),
 				Leaf(Assignment, "="),
 				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, okName+" ? std::any_cast<"+typeName+">(std::any("+xExpr+")) : "+typeName+"{}"),
+				Leaf(Identifier, okName),
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, "?"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "std::any_cast"),
+				Leaf(LeftAngle, "<"),
+				Leaf(Identifier, typeName),
+				Leaf(RightAngle, ">"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "std::any"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xExpr),
+				Leaf(RightParen, ")"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, typeName),
+				Leaf(LeftBrace, "{"),
+				Leaf(RightBrace, "}"),
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
 			))
@@ -2133,7 +2329,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		if tokStr == ":=" {
 			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
-				Leaf(CppKeyword, "auto"),
+				LeafTag(Keyword, "auto", TagCpp),
 				Leaf(WhiteSpace, " "),
 				Leaf(LeftBracket, "["),
 				Leaf(Identifier, strings.Join(lhsParts, ", ")),
@@ -2202,7 +2398,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			} else {
 				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
 					Leaf(WhiteSpace, ind),
-					Leaf(CppKeyword, "auto"),
+					LeafTag(Keyword, "auto", TagCpp),
 					Leaf(WhiteSpace, " "),
 					Leaf(Identifier, lhsStr),
 					Leaf(WhiteSpace, " "),
@@ -2216,7 +2412,7 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		} else {
 			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
-				Leaf(CppKeyword, "auto"),
+				LeafTag(Keyword, "auto", TagCpp),
 				Leaf(WhiteSpace, " "),
 				Leaf(Identifier, lhsStr),
 				Leaf(WhiteSpace, " "),
@@ -2289,7 +2485,7 @@ func (e *CppEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
 	ind := cppIndent(indent)
 
-	var sb strings.Builder
+	var children []Token
 	i := 0
 	for i < len(tokens) {
 		typeStr := ""
@@ -2316,7 +2512,18 @@ func (e *CppEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		}
 
 		if valueStr != "" {
-			sb.WriteString(fmt.Sprintf("%s%s %s = %s;\n", ind, typeStr, nameStr, valueStr))
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, typeStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, nameStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, valueStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 		} else {
 			// Check for map type → default init with newHashMap
 			if goType != nil {
@@ -2333,14 +2540,37 @@ func (e *CppEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 							}
 						}
 					}
-					sb.WriteString(fmt.Sprintf("%s%s %s = hmap::newHashMap(%d);\n", ind, typeStr, nameStr, keyType))
+					children = append(children,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, typeStr),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, nameStr),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "hmap::newHashMap"),
+						Leaf(LeftParen, "("),
+						Leaf(NumberLiteral, fmt.Sprintf("%d", keyType)),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					)
 					continue
 				}
 			}
-			sb.WriteString(fmt.Sprintf("%s%s %s;\n", ind, typeStr, nameStr))
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, typeStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, nameStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 		}
 	}
-	e.fs.PushCode(sb.String())
+	if len(children) > 0 {
+		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+	}
 }
 
 // ============================================================
@@ -2449,27 +2679,61 @@ func (e *CppEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.ifBodyStack = e.ifBodyStack[:n-1]
 	e.ifElseStack = e.ifElseStack[:n-1]
 
-	var sb strings.Builder
+	var children []Token
 	if initCode != "" {
-		sb.WriteString(fmt.Sprintf("%s{\n", ind))
-		sb.WriteString(initCode)
-		sb.WriteString(fmt.Sprintf("%sif (%s)\n%s", ind, condCode, bodyCode))
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(LeftBrace, "{"),
+			Leaf(NewLine, "\n"),
+			Leaf(Identifier, initCode),
+			Leaf(WhiteSpace, ind),
+			Leaf(IfKeyword, "if"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, condCode),
+			Leaf(RightParen, ")"),
+			Leaf(NewLine, "\n"),
+			Leaf(Identifier, bodyCode),
+		)
 	} else {
-		sb.WriteString(fmt.Sprintf("%sif (%s)\n%s", ind, condCode, bodyCode))
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(IfKeyword, "if"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, condCode),
+			Leaf(RightParen, ")"),
+			Leaf(NewLine, "\n"),
+			Leaf(Identifier, bodyCode),
+		)
 	}
 	if elseCode != "" {
 		trimmed := strings.TrimLeft(elseCode, " \t\n")
 		if strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(") {
-			sb.WriteString("\nelse " + trimmed)
+			children = append(children,
+				Leaf(NewLine, "\n"),
+				Leaf(ElseKeyword, "else"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, trimmed),
+			)
 		} else {
-			sb.WriteString("\nelse\n" + elseCode)
+			children = append(children,
+				Leaf(NewLine, "\n"),
+				Leaf(ElseKeyword, "else"),
+				Leaf(NewLine, "\n"),
+				Leaf(Identifier, elseCode),
+			)
 		}
 	}
-	sb.WriteString("\n")
+	children = append(children, Leaf(NewLine, "\n"))
 	if initCode != "" {
-		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(RightBrace, "}"),
+			Leaf(NewLine, "\n"),
+		)
 	}
-	e.fs.PushCode(sb.String())
+	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 }
 
 // ============================================================
@@ -2639,30 +2903,195 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		loopIdx := fmt.Sprintf("_mi%d", e.rangeVarCounter)
 		e.rangeVarCounter++
 		if valCode != "" && valCode != "_" {
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("%s{\n", ind))
-			sb.WriteString(fmt.Sprintf("%s    auto %s = hmap::hashMapKeys(%s);\n", ind, keysVar, xCode))
-			sb.WriteString(fmt.Sprintf("%s    for (size_t %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			var children []Token
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				LeafTag(Keyword, "auto", TagCpp),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keysVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap::hashMapKeys"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "size_t"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0"),
+				Leaf(Semicolon, "; "),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "<"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keysVar),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "size"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, "; "),
+				Leaf(Identifier, loopIdx),
+				Leaf(UnaryOperator, "++"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+			)
 			if keyCode != "_" {
-				sb.WriteString(fmt.Sprintf("%s        auto %s = std::any_cast<%s>(%s[%s]);\n", ind, keyCode, keyCppType, keysVar, loopIdx))
+				children = append(children,
+					Leaf(WhiteSpace, ind+"        "),
+					LeafTag(Keyword, "auto", TagCpp),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, keyCode),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "std::any_cast"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, keyCppType),
+					Leaf(RightAngle, ">"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, keysVar),
+					Leaf(LeftBracket, "["),
+					Leaf(Identifier, loopIdx),
+					Leaf(RightBracket, "]"),
+					Leaf(RightParen, ")"),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			}
-			sb.WriteString(fmt.Sprintf("%s        auto %s = std::any_cast<%s>(hmap::hashMapGet(%s, %s[%s]));\n", ind, valCode, valueCppType, xCode, keysVar, loopIdx))
-			sb.WriteString(fmt.Sprintf("%s        %s\n", ind, bodyCode))
-			sb.WriteString(fmt.Sprintf("%s    }\n", ind))
-			sb.WriteString(fmt.Sprintf("%s}\n", ind))
-			e.fs.PushCode(sb.String())
+			children = append(children,
+				Leaf(WhiteSpace, ind+"        "),
+				LeafTag(Keyword, "auto", TagCpp),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, valCode),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "std::any_cast"),
+				Leaf(LeftAngle, "<"),
+				Leaf(Identifier, valueCppType),
+				Leaf(RightAngle, ">"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "hmap::hashMapGet"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, keysVar),
+				Leaf(LeftBracket, "["),
+				Leaf(Identifier, loopIdx),
+				Leaf(RightBracket, "]"),
+				Leaf(RightParen, ")"),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"        "),
+				Leaf(Identifier, bodyCode),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+			)
+			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 		} else {
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("%s{\n", ind))
-			sb.WriteString(fmt.Sprintf("%s    auto %s = hmap::hashMapKeys(%s);\n", ind, keysVar, xCode))
-			sb.WriteString(fmt.Sprintf("%s    for (size_t %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			var children []Token
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				LeafTag(Keyword, "auto", TagCpp),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keysVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap::hashMapKeys"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "size_t"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0"),
+				Leaf(Semicolon, "; "),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "<"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keysVar),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "size"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, "; "),
+				Leaf(Identifier, loopIdx),
+				Leaf(UnaryOperator, "++"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+			)
 			if keyCode != "_" {
-				sb.WriteString(fmt.Sprintf("%s        auto %s = std::any_cast<%s>(%s[%s]);\n", ind, keyCode, keyCppType, keysVar, loopIdx))
+				children = append(children,
+					Leaf(WhiteSpace, ind+"        "),
+					LeafTag(Keyword, "auto", TagCpp),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, keyCode),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "std::any_cast"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, keyCppType),
+					Leaf(RightAngle, ">"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, keysVar),
+					Leaf(LeftBracket, "["),
+					Leaf(Identifier, loopIdx),
+					Leaf(RightBracket, "]"),
+					Leaf(RightParen, ")"),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			}
-			sb.WriteString(fmt.Sprintf("%s        %s\n", ind, bodyCode))
-			sb.WriteString(fmt.Sprintf("%s    }\n", ind))
-			sb.WriteString(fmt.Sprintf("%s}\n", ind))
-			e.fs.PushCode(sb.String())
+			children = append(children,
+				Leaf(WhiteSpace, ind+"        "),
+				Leaf(Identifier, bodyCode),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+			)
+			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 		}
 		return
 	}
@@ -2671,9 +3100,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	if _, isCompLit := node.X.(*ast.CompositeLit); isCompLit {
 		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)
 		e.rangeVarCounter++
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("%s{\n", ind))
-		sb.WriteString(fmt.Sprintf("%s    auto %s = %s;\n", ind, tmpVar, xCode))
+		origXCode := xCode
 		xCode = tmpVar
 		// Generate the loop inside the block
 		if valCode != "" && valCode != "_" {
@@ -2683,18 +3110,91 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			}
 			valDecl := fmt.Sprintf("%s        auto %s = %s[%s];\n", ind, valCode, xCode, loopVar)
 			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
-			sb.WriteString(fmt.Sprintf("%s    for (size_t %s = 0; %s < %s.size(); %s++)\n%s\n",
-				ind, loopVar, loopVar, xCode, loopVar, bodyWithDecl))
+			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				Leaf(WhiteSpace, ind),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				LeafTag(Keyword, "auto", TagCpp),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, tmpVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, origXCode),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "size_t"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0"),
+				Leaf(Semicolon, "; "),
+				Leaf(Identifier, loopVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "<"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "size"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, "; "),
+				Leaf(Identifier, loopVar),
+				Leaf(UnaryOperator, "++"),
+				Leaf(RightParen, ")"),
+				Leaf(NewLine, "\n"),
+				Leaf(Identifier, bodyWithDecl),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+			))
 		} else {
 			loopVar := keyCode
 			if loopVar == "_" || loopVar == "" {
 				loopVar = "_i"
 			}
-			sb.WriteString(fmt.Sprintf("%s    for (auto %s : %s)\n%s\n",
-				ind, loopVar, xCode, bodyCode))
+			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				Leaf(WhiteSpace, ind),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				LeafTag(Keyword, "auto", TagCpp),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, tmpVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, origXCode),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				LeafTag(Keyword, "auto", TagCpp),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, xCode),
+				Leaf(RightParen, ")"),
+				Leaf(NewLine, "\n"),
+				Leaf(Identifier, bodyCode),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+			))
 		}
-		sb.WriteString(fmt.Sprintf("%s}\n", ind))
-		e.fs.PushCode(sb.String())
 		return
 	}
 
@@ -2713,11 +3213,26 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, "size_t "+loopVar+" = 0"),
+			Leaf(Identifier, "size_t"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, loopVar),
+			Leaf(WhiteSpace, " "),
+			Leaf(Assignment, "="),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, "0"),
 			Leaf(Semicolon, "; "),
-			Leaf(Identifier, loopVar+" < "+xCode+".size()"),
+			Leaf(Identifier, loopVar),
+			Leaf(WhiteSpace, " "),
+			Leaf(ComparisonOperator, "<"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, xCode),
+			Leaf(Dot, "."),
+			Leaf(Identifier, "size"),
+			Leaf(LeftParen, "("),
+			Leaf(RightParen, ")"),
 			Leaf(Semicolon, "; "),
-			Leaf(Identifier, loopVar+"++"),
+			Leaf(Identifier, loopVar),
+			Leaf(UnaryOperator, "++"),
 			Leaf(RightParen, ")"),
 			Leaf(NewLine, "\n"),
 			Leaf(Identifier, bodyWithDecl),
@@ -2734,7 +3249,7 @@ func (e *CppEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LeftParen, "("),
-			Leaf(CppKeyword, "auto"),
+			LeafTag(Keyword, "auto", TagCpp),
 			Leaf(WhiteSpace, " "),
 			Leaf(Identifier, loopVar),
 			Leaf(WhiteSpace, " "),
@@ -2773,13 +3288,27 @@ func (e *CppEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 		idx++
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%sswitch (%s) {\n", ind, tagCode))
+	var children []Token
+	children = append(children,
+		Leaf(WhiteSpace, ind),
+		Leaf(SwitchKeyword, "switch"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftParen, "("),
+		Leaf(Identifier, tagCode),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+	)
 	for i := idx; i < len(tokens); i++ {
-		sb.WriteString(tokens[i].Serialize())
+		children = append(children, Leaf(Identifier, tokens[i].Serialize()))
 	}
-	sb.WriteString(ind + "}\n")
-	e.fs.PushCode(sb.String())
+	children = append(children,
+		Leaf(WhiteSpace, ind),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+	)
+	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 }
 
 func (e *CppEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
@@ -2806,12 +3335,17 @@ func (e *CppEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitCaseClause))
 	ind := cppIndent(indent)
 
-	var sb strings.Builder
+	var children []Token
 	idx := 0
 	if len(node.List) == 0 {
 		// Default case: PushCode("") is a no-op (empty tokens are dropped),
 		// so all tokens on the stack are body statements.
-		sb.WriteString(ind + "  default:\n")
+		children = append(children,
+			Leaf(WhiteSpace, ind+"  "),
+			Leaf(DefaultKeyword, "default"),
+			Leaf(Colon, ":"),
+			Leaf(NewLine, "\n"),
+		)
 	} else {
 		// Regular case: token[0] is case expressions, rest is body
 		caseExprs := ""
@@ -2821,14 +3355,26 @@ func (e *CppEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 		}
 		vals := strings.Split(caseExprs, ", ")
 		for _, v := range vals {
-			sb.WriteString(fmt.Sprintf("%s  case %s:\n", ind, v))
+			children = append(children,
+				Leaf(WhiteSpace, ind+"  "),
+				Leaf(CaseKeyword, "case"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, v),
+				Leaf(Colon, ":"),
+				Leaf(NewLine, "\n"),
+			)
 		}
 	}
 	for i := idx; i < len(tokens); i++ {
-		sb.WriteString(tokens[i].Serialize())
+		children = append(children, Leaf(Identifier, tokens[i].Serialize()))
 	}
-	sb.WriteString(ind + "    break;\n")
-	e.fs.PushCode(sb.String())
+	children = append(children,
+		Leaf(WhiteSpace, ind+"    "),
+		Leaf(BreakKeyword, "break"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+	)
+	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 }
 
 // ============================================================
@@ -2883,8 +3429,15 @@ func (e *CppEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	}
 
 	// Collect type-name pairs
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("struct %s\n{\n", node.Name))
+	var children []Token
+	children = append(children,
+		Leaf(StructKeyword, "struct"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, node.Name),
+		Leaf(NewLine, "\n"),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+	)
 
 	i := 0
 	for i < len(tokens) {
@@ -2899,17 +3452,27 @@ func (e *CppEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			i++
 		}
 		if typeStr != "" && nameStr != "" {
-			sb.WriteString(fmt.Sprintf("%s %s;\n", typeStr, nameStr))
+			children = append(children,
+				Leaf(Identifier, typeStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, nameStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 		}
 	}
-	sb.WriteString("};\n\n")
+	children = append(children,
+		Leaf(RightBrace, "}"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n\n"),
+	)
 
 	// Generate operator== and std::hash for hashable structs
 	if node.Struct != nil && e.structHasOnlyPrimitiveFields(node.Name) {
 		e.generateStructHashAndEquality(node)
 	}
 
-	e.fs.PushCode(sb.String())
+	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
 }
 
 func (e *CppEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
@@ -3068,35 +3631,187 @@ func (e *CppEmitter) emitHashSpec(spec pendingHashSpec) {
 		qualifiedName = spec.pkgName + "::" + spec.structName
 	}
 
-	var sb strings.Builder
 	// operator==
-	sb.WriteString(fmt.Sprintf("inline bool operator==(const %s& a, const %s& b) {\n", qualifiedName, qualifiedName))
-	sb.WriteString("    return ")
+	var eqChildren []Token
+	eqChildren = append(eqChildren,
+		Leaf(Keyword, "inline"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "bool"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "operator=="),
+		Leaf(LeftParen, "("),
+		LeafTag(Keyword, "const", TagCpp),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, qualifiedName),
+		Leaf(Identifier, "&"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "a"),
+		Leaf(Comma, ", "),
+		LeafTag(Keyword, "const", TagCpp),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, qualifiedName),
+		Leaf(Identifier, "&"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "b"),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(ReturnKeyword, "return"),
+		Leaf(WhiteSpace, " "),
+	)
 	for i, fieldName := range spec.fieldNames {
 		if i > 0 {
-			sb.WriteString(" && ")
+			eqChildren = append(eqChildren,
+				Leaf(WhiteSpace, " "),
+				Leaf(LogicalOperator, "&&"),
+				Leaf(WhiteSpace, " "),
+			)
 		}
-		sb.WriteString(fmt.Sprintf("a.%s == b.%s", fieldName, fieldName))
+		eqChildren = append(eqChildren,
+			Leaf(Identifier, "a"),
+			Leaf(Dot, "."),
+			Leaf(Identifier, fieldName),
+			Leaf(WhiteSpace, " "),
+			Leaf(ComparisonOperator, "=="),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, "b"),
+			Leaf(Dot, "."),
+			Leaf(Identifier, fieldName),
+		)
 	}
 	if len(spec.fieldNames) == 0 {
-		sb.WriteString("true")
+		eqChildren = append(eqChildren, Leaf(BooleanLiteral, "true"))
 	}
-	sb.WriteString(";\n}\n\n")
+	eqChildren = append(eqChildren,
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n\n"),
+	)
+	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, eqChildren...))
 
 	// std::hash
-	sb.WriteString("namespace std {\n")
-	sb.WriteString(fmt.Sprintf("    template<> struct hash<%s> {\n", qualifiedName))
-	sb.WriteString(fmt.Sprintf("        size_t operator()(const %s& s) const {\n", qualifiedName))
-	sb.WriteString("            size_t h = 0;\n")
+	var hashChildren []Token
+	hashChildren = append(hashChildren,
+		Leaf(Keyword, "namespace"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "std"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(Identifier, "template"),
+		Leaf(LeftAngle, "<"),
+		Leaf(RightAngle, ">"),
+		Leaf(WhiteSpace, " "),
+		Leaf(StructKeyword, "struct"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "hash"),
+		Leaf(LeftAngle, "<"),
+		Leaf(Identifier, qualifiedName),
+		Leaf(RightAngle, ">"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "        "),
+		Leaf(Identifier, "size_t"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "operator()"),
+		Leaf(LeftParen, "("),
+		LeafTag(Keyword, "const", TagCpp),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, qualifiedName),
+		Leaf(Identifier, "&"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "s"),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		LeafTag(Keyword, "const", TagCpp),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "            "),
+		Leaf(Identifier, "size_t"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "h"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Assignment, "="),
+		Leaf(WhiteSpace, " "),
+		Leaf(NumberLiteral, "0"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+	)
 	for _, fieldName := range spec.fieldNames {
-		sb.WriteString(fmt.Sprintf("            h ^= std::hash<decltype(s.%s)>{}(s.%s) + 0x9e3779b9 + (h << 6) + (h >> 2);\n", fieldName, fieldName))
+		hashChildren = append(hashChildren,
+			Leaf(WhiteSpace, "            "),
+			Leaf(Identifier, "h"),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, "^="),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, "std::hash"),
+			Leaf(LeftAngle, "<"),
+			Leaf(Identifier, "decltype"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, "s"),
+			Leaf(Dot, "."),
+			Leaf(Identifier, fieldName),
+			Leaf(RightParen, ")"),
+			Leaf(RightAngle, ">"),
+			Leaf(LeftBrace, "{"),
+			Leaf(RightBrace, "}"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, "s"),
+			Leaf(Dot, "."),
+			Leaf(Identifier, fieldName),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, "+"),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, "0x9e3779b9"),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, "+"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, "h"),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, "<<"),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, "6"),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, "+"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, "h"),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, ">>"),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, "2"),
+			Leaf(RightParen, ")"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		)
 	}
-	sb.WriteString("            return h;\n")
-	sb.WriteString("        }\n")
-	sb.WriteString("    };\n")
-	sb.WriteString("}\n\n")
-
-	e.fs.PushCode(sb.String())
+	hashChildren = append(hashChildren,
+		Leaf(WhiteSpace, "            "),
+		Leaf(ReturnKeyword, "return"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "h"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "        "),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(RightBrace, "}"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n\n"),
+	)
+	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, hashChildren...))
 }
 
 func (e *CppEmitter) emitPendingHashSpecs(pkgName string) {
@@ -3159,9 +3874,9 @@ func (e *CppEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
 		valCode = "0"
 	}
 	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
-		Leaf(CppKeyword, "constexpr"),
+		LeafTag(Keyword, "constexpr", TagCpp),
 		Leaf(WhiteSpace, " "),
-		Leaf(CppKeyword, "auto"),
+		LeafTag(Keyword, "auto", TagCpp),
 		Leaf(WhiteSpace, " "),
 		Leaf(Identifier, node.Name),
 		Leaf(WhiteSpace, " "),
@@ -3196,7 +3911,7 @@ func (e *CppEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
 	}
 	if nameCode != "" && typeCode != "" {
 		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
-			Leaf(CppKeyword, "using"),
+			LeafTag(Keyword, "using", TagCpp),
 			Leaf(WhiteSpace, " "),
 			Leaf(Identifier, nameCode),
 			Leaf(WhiteSpace, " "),
