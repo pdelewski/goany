@@ -156,7 +156,7 @@ const (
 	fmt.Fprintf(output, `)
 
 type BaseEmitter struct{
-	gir GoFIR
+	fb *IRForestBuilder
 }
 
 `)
@@ -166,8 +166,8 @@ type BaseEmitter struct{
 		// Check if method has return type
 		if strings.Contains(method, ") *os.File") {
 			fmt.Fprintf(output, "%s { return nil }\n", method)
-		} else if strings.Contains(method, ") *GoFIR") {
-			fmt.Fprintf(output, "%s { return &v.gir }\n", method)
+		} else if strings.Contains(method, ") *IRForestBuilder") {
+			fmt.Fprintf(output, "%s {\n\tif v.fb == nil {\n\t\tv.fb = NewIRForestBuilder()\n\t}\n\treturn v.fb\n}\n", method)
 		} else {
 			fmt.Fprintf(output, "%s {}\n", method)
 		}

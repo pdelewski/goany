@@ -15,10 +15,10 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// RustEmitter implements the Emitter interface using a shift/reduce FragmentStack
+// RustEmitter implements the Emitter interface using a shift/reduce IRForestBuilder
 // architecture for Rust code generation.
 type RustEmitter struct {
-	fs              *FragmentStack
+	fs              *IRForestBuilder
 	Output          string
 	OutputDir       string
 	OutputName      string
@@ -888,7 +888,7 @@ func (e *RustEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	e.fs = NewFragmentStack(e.GetGoFIR())
+	e.fs = e.GetForestBuilder()
 
 	// Write Rust preamble
 	builtin := `use std::fmt;
@@ -1001,9 +1001,9 @@ pub fn len<T>(slice: &[T]) -> i32 {
 }
 
 func (e *RustEmitter) PostVisitProgram(indent int) {
-	tokens := e.fs.Reduce(string(PreVisitProgram))
+	tokens := e.fs.CollectForest(string(PreVisitProgram))
 	for _, t := range tokens {
-		e.file.WriteString(t.Content)
+		e.file.WriteString(t.Serialize())
 	}
 	e.file.Close()
 
@@ -1043,13 +1043,34 @@ func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	}
 
 	if pkg.Name != "main" {
-		e.fs.PushCode(fmt.Sprintf("pub mod %s {\nuse crate::*;\n\n", pkg.Name))
+		e.fs.AddTree(IRTree(PackageDeclaration, KindDecl,
+			LeafTag(Keyword, "pub", TagRust),
+			Leaf(WhiteSpace, " "),
+			LeafTag(Keyword, "mod", TagRust),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, pkg.Name),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftBrace, "{"),
+			Leaf(NewLine, "\n"),
+			LeafTag(Keyword, "use", TagRust),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, "crate::*"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+			Leaf(NewLine, "\n"),
+		))
 	}
 }
 
 func (e *RustEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 	if pkg.Name != "main" {
-		e.fs.PushCode(fmt.Sprintf("} // pub mod %s\n\n", pkg.Name))
+		e.fs.AddTree(IRTree(PackageDeclaration, KindDecl,
+			Leaf(RightBrace, "}"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LineComment, "// pub mod "+pkg.Name),
+			Leaf(NewLine, "\n"),
+			Leaf(NewLine, "\n"),
+		))
 	}
 }
 
@@ -1062,7 +1083,7 @@ func (e *RustEmitter) PreVisitFuncDeclSignatures(indent int) {
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatures(indent int) {
-	e.fs.Reduce(string(PreVisitFuncDeclSignatures))
+	e.fs.CollectForest(string(PreVisitFuncDeclSignatures))
 	e.forwardDecl = false
 }
 
@@ -1085,30 +1106,30 @@ func (e *RustEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, i
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeResultsList))
-	e.fs.PushCode(typeCode)
+	typeCode := e.fs.CollectText(string(PreVisitFuncDeclSignatureTypeResultsList))
+	e.fs.AddLeaf(typeCode, KindExpr, nil)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResults))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeResults))
 	var resultTypes []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			resultTypes = append(resultTypes, t.Content)
+		if t.Serialize() != "" {
+			resultTypes = append(resultTypes, t.Serialize())
 		}
 	}
 	if len(resultTypes) == 0 {
-		e.fs.Push("", TagType, nil)
+		e.fs.AddLeaf("", TagType, nil)
 	} else if len(resultTypes) == 1 {
-		e.fs.Push(resultTypes[0], TagType, nil)
+		e.fs.AddLeaf(resultTypes[0], TagType, nil)
 	} else {
-		e.fs.Push("("+strings.Join(resultTypes, ", ")+")", TagType, nil)
+		e.fs.AddLeaf("("+strings.Join(resultTypes, ", ")+")", TagType, nil)
 	}
 }
 
 func (e *RustEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
-	e.fs.Reduce(string(PreVisitFuncDeclName))
-	e.fs.Push(node.Name, TagIdent, nil)
+	e.fs.CollectForest(string(PreVisitFuncDeclName))
+	e.fs.AddLeaf(node.Name, TagIdent, nil)
 	// Track current function key for optimization
 	e.Opt.refOptCurrentFunc = e.Opt.refOptCurrentPkg + "." + node.Name
 	e.Opt.currentParamIndex = 0
@@ -1117,25 +1138,25 @@ func (e *RustEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
-	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeParamsListType))
-	e.fs.PushCode(typeCode)
+	typeCode := e.fs.CollectText(string(PreVisitFuncDeclSignatureTypeParamsListType))
+	e.fs.AddLeaf(typeCode, KindExpr, nil)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsArgName))
-	e.fs.Push(node.Name, TagIdent, nil)
+	e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParamsArgName))
+	e.fs.AddLeaf(node.Name, TagIdent, nil)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsList))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParamsList))
 	// tokens: type (TagExpr), then names (TagIdent)
 	typeStr := ""
 	var names []string
 	for _, t := range tokens {
-		if t.Tag == TagExpr && typeStr == "" {
-			typeStr = t.Content
-		} else if t.Tag == TagIdent {
-			names = append(names, t.Content)
+		if t.Kind == TagExpr && typeStr == "" {
+			typeStr = t.Serialize()
+		} else if t.Kind == TagIdent {
+			names = append(names, t.Serialize())
 		}
 	}
 	// Rust params: name: mut Type, name: &Type (ref-opt), or name: &mut Type (mut-ref-opt)
@@ -1159,20 +1180,40 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 			}
 		}
 		if isRefOpt {
-			e.fs.Push(fmt.Sprintf("%s: &%s", escapedName, typeStr), TagIdent, nil)
+			e.fs.AddTree(IRTree(Identifier, TagIdent,
+				Leaf(Identifier, escapedName),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "&", TagRust),
+				Leaf(Identifier, typeStr),
+			))
 			if e.Opt.refOptCurrentRefParams == nil {
 				e.Opt.refOptCurrentRefParams = make(map[string]bool)
 			}
 			e.Opt.refOptCurrentRefParams[escapedName] = true
 		} else if isMutRefOpt {
-			e.fs.Push(fmt.Sprintf("%s: &mut %s", escapedName, typeStr), TagIdent, nil)
+			e.fs.AddTree(IRTree(Identifier, TagIdent,
+				Leaf(Identifier, escapedName),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "&mut", TagRust),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, typeStr),
+			))
 			if e.Opt.refOptCurrentMutRefParams == nil {
 				e.Opt.refOptCurrentMutRefParams = make(map[string]bool)
 			}
 			e.Opt.refOptCurrentMutRefParams[escapedName] = true
 			e.Opt.RefOptCount++
 		} else {
-			e.fs.Push(fmt.Sprintf("mut %s: %s", escapedName, typeStr), TagIdent, nil)
+			e.fs.AddTree(IRTree(Identifier, TagIdent,
+				LeafTag(Keyword, "mut", TagRust),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, escapedName),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, typeStr),
+			))
 		}
 		paramIdx++
 	}
@@ -1180,56 +1221,72 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParams))
 	var paramDecls []string
 	for _, t := range tokens {
-		if t.Tag == TagIdent {
-			paramDecls = append(paramDecls, t.Content)
+		if t.Kind == TagIdent {
+			paramDecls = append(paramDecls, t.Serialize())
 		}
 	}
-	e.fs.PushCode(strings.Join(paramDecls, ", "))
+	e.fs.AddLeaf(strings.Join(paramDecls, ", "), KindExpr, nil)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
-	returnType := ""
-	funcName := ""
-	paramsStr := ""
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignature))
+	var returnTypeToken IRNode
+	var funcNameToken IRNode
+	var paramsToken IRNode
+	hasReturnType := false
+	hasFuncName := false
 	for _, t := range tokens {
-		if t.Tag == TagType && returnType == "" {
-			returnType = t.Content
-		} else if t.Tag == TagIdent && funcName == "" {
-			funcName = t.Content
-		} else if t.Tag == TagExpr {
-			paramsStr = t.Content
+		if t.Kind == TagType && !hasReturnType {
+			returnTypeToken = t
+			hasReturnType = true
+		} else if t.Kind == TagIdent && !hasFuncName {
+			funcNameToken = t
+			hasFuncName = true
+		} else if t.Kind == TagExpr {
+			paramsToken = t
 		}
 	}
 
-	var sig string
-	if returnType != "" {
-		sig = fmt.Sprintf("\npub fn %s(%s) -> %s", funcName, paramsStr, returnType)
-	} else {
-		sig = fmt.Sprintf("\npub fn %s(%s)", funcName, paramsStr)
+	var children []IRNode
+	children = append(children, Leaf(NewLine, "\n"))
+	children = append(children, LeafTag(Keyword, "pub", TagRust))
+	children = append(children, Leaf(WhiteSpace, " "))
+	children = append(children, LeafTag(Keyword, "fn", TagRust))
+	children = append(children, Leaf(WhiteSpace, " "))
+	children = append(children, funcNameToken)
+	children = append(children, Leaf(LeftParen, "("))
+	children = append(children, paramsToken)
+	children = append(children, Leaf(RightParen, ")"))
+	if hasReturnType && returnTypeToken.Serialize() != "" {
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, "->"))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, returnTypeToken)
 	}
-	e.fs.PushCode(sig)
+	e.fs.AddTree(IRTree(FuncDeclaration, KindDecl, children...))
 }
 
 func (e *RustEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncDeclBody))
-	e.fs.PushCode(bodyCode)
+	bodyCode := e.fs.CollectText(string(PreVisitFuncDeclBody))
+	e.fs.AddLeaf(bodyCode, KindExpr, nil)
 }
 
 func (e *RustEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
-	sigCode := ""
-	bodyCode := ""
+	tokens := e.fs.CollectForest(string(PreVisitFuncDecl))
+	var children []IRNode
 	if len(tokens) >= 1 {
-		sigCode = tokens[0].Content
+		children = append(children, tokens[0])
 	}
+	children = append(children, Leaf(WhiteSpace, " "))
 	if len(tokens) >= 2 {
-		bodyCode = tokens[1].Content
+		children = append(children, tokens[1])
 	}
-	e.fs.PushCode(sigCode + " " + bodyCode + "\n\n")
+	children = append(children, Leaf(NewLine, "\n"))
+	children = append(children, Leaf(NewLine, "\n"))
+	e.fs.AddTree(IRTree(FuncDeclaration, KindDecl, children...))
 }
 
 // ============================================================
@@ -1241,21 +1298,23 @@ func (e *RustEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
 }
 
 func (e *RustEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	itemCode := e.fs.ReduceToCode(string(PreVisitBlockStmtList))
-	e.fs.PushCode(itemCode)
+	itemCode := e.fs.CollectText(string(PreVisitBlockStmtList))
+	e.fs.AddLeaf(itemCode, KindExpr, nil)
 }
 
 func (e *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
-	var sb strings.Builder
-	sb.WriteString("{\n")
+	tokens := e.fs.CollectForest(string(PreVisitBlockStmt))
+	var children []IRNode
+	children = append(children, Leaf(LeftBrace, "{"))
+	children = append(children, Leaf(NewLine, "\n"))
 	for _, t := range tokens {
-		if t.Content != "" {
-			sb.WriteString(t.Content)
+		if t.Serialize() != "" {
+			children = append(children, t)
 		}
 	}
-	sb.WriteString(rustIndent(indent/2) + "}")
-	e.fs.PushCode(sb.String())
+	children = append(children, Leaf(WhiteSpace, rustIndent(indent/2)))
+	children = append(children, Leaf(RightBrace, "}"))
+	e.fs.AddTree(IRTree(BlockStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -1263,17 +1322,17 @@ func (e *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 // ============================================================
 
 func (e *RustEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
-	typeCode := e.fs.ReduceToCode(string(PreVisitGenStructFieldType))
-	e.fs.PushCode(typeCode)
+	typeCode := e.fs.CollectText(string(PreVisitGenStructFieldType))
+	e.fs.AddLeaf(typeCode, KindExpr, nil)
 }
 
 func (e *RustEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
-	e.fs.Reduce(string(PreVisitGenStructFieldName))
-	e.fs.Push(node.Name, TagIdent, nil)
+	e.fs.CollectForest(string(PreVisitGenStructFieldName))
+	e.fs.AddLeaf(node.Name, TagIdent, nil)
 }
 
 func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitGenStructInfo))
+	tokens := e.fs.CollectForest(string(PreVisitGenStructInfo))
 
 	if node.Struct == nil {
 		return
@@ -1286,16 +1345,16 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	var fields []fieldInfo
 	i := 0
 	for i < len(tokens) {
-		if tokens[i].Tag == TagExpr {
-			fi := fieldInfo{typeName: tokens[i].Content}
+		if tokens[i].Kind == TagExpr {
+			fi := fieldInfo{typeName: tokens[i].Serialize()}
 			i++
-			if i < len(tokens) && tokens[i].Tag == TagIdent {
-				fi.name = tokens[i].Content
+			if i < len(tokens) && tokens[i].Kind == TagIdent {
+				fi.name = tokens[i].Serialize()
 				i++
 			}
 			fields = append(fields, fi)
-		} else if tokens[i].Tag == TagIdent {
-			fields = append(fields, fieldInfo{typeName: "Rc<dyn Any>", name: tokens[i].Content})
+		} else if tokens[i].Kind == TagIdent {
+			fields = append(fields, fieldInfo{typeName: "Rc<dyn Any>", name: tokens[i].Serialize()})
 			i++
 		} else {
 			i++
@@ -1306,36 +1365,92 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	hasInterfaceFields := e.structHasInterfaceFields(node.Name)
 	hasFunctionFields := e.structHasFunctionFields(node.Name)
 
-	var sb strings.Builder
+	var children []IRNode
+
+	// Derive attribute
 	if hasFunctionFields {
-		sb.WriteString("#[derive(Clone)]\n")
+		children = append(children, Leaf(Identifier, "#[derive(Clone)]"))
+		children = append(children, Leaf(NewLine, "\n"))
 	} else if hasInterfaceFields {
-		sb.WriteString("#[derive(Clone, Debug)]\n")
+		children = append(children, Leaf(Identifier, "#[derive(Clone, Debug)]"))
+		children = append(children, Leaf(NewLine, "\n"))
 	} else {
 		canCopy := e.structCanDeriveCopy(node.Name)
 		canHash := e.structCanDeriveHash(node.Name)
 		if canCopy && canHash {
-			sb.WriteString("#[derive(Default, Clone, Copy, Debug, Hash, PartialEq, Eq)]\n")
+			children = append(children, Leaf(Identifier, "#[derive(Default, Clone, Copy, Debug, Hash, PartialEq, Eq)]"))
+			children = append(children, Leaf(NewLine, "\n"))
 		} else if canCopy {
-			sb.WriteString("#[derive(Default, Clone, Copy, Debug)]\n")
+			children = append(children, Leaf(Identifier, "#[derive(Default, Clone, Copy, Debug)]"))
+			children = append(children, Leaf(NewLine, "\n"))
 		} else if canHash {
-			sb.WriteString("#[derive(Default, Clone, Debug, Hash, PartialEq, Eq)]\n")
+			children = append(children, Leaf(Identifier, "#[derive(Default, Clone, Debug, Hash, PartialEq, Eq)]"))
+			children = append(children, Leaf(NewLine, "\n"))
 		} else {
-			sb.WriteString("#[derive(Default, Clone, Debug)]\n")
+			children = append(children, Leaf(Identifier, "#[derive(Default, Clone, Debug)]"))
+			children = append(children, Leaf(NewLine, "\n"))
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("pub struct %s {\n", node.Name))
+	// pub struct Name {
+	children = append(children, LeafTag(Keyword, "pub", TagRust))
+	children = append(children, Leaf(WhiteSpace, " "))
+	children = append(children, LeafTag(Keyword, "struct", TagRust))
+	children = append(children, Leaf(WhiteSpace, " "))
+	children = append(children, Leaf(Identifier, node.Name))
+	children = append(children, Leaf(WhiteSpace, " "))
+	children = append(children, Leaf(LeftBrace, "{"))
+	children = append(children, Leaf(NewLine, "\n"))
+
+	// Fields
 	for _, f := range fields {
-		sb.WriteString(fmt.Sprintf("    pub %s: %s,\n", f.name, f.typeName))
+		children = append(children, Leaf(WhiteSpace, "    "))
+		children = append(children, LeafTag(Keyword, "pub", TagRust))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, f.name))
+		children = append(children, Leaf(Colon, ":"))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, f.typeName))
+		children = append(children, Leaf(Comma, ","))
+		children = append(children, Leaf(NewLine, "\n"))
 	}
-	sb.WriteString("}\n")
+
+	children = append(children, Leaf(RightBrace, "}"))
+	children = append(children, Leaf(NewLine, "\n"))
 
 	// Manual impl Default for structs with interface{} fields
 	if hasInterfaceFields && !hasFunctionFields && node.Struct != nil && node.Struct.Fields != nil {
-		sb.WriteString(fmt.Sprintf("\nimpl Default for %s {\n", node.Name))
-		sb.WriteString("    fn default() -> Self {\n")
-		sb.WriteString(fmt.Sprintf("        %s {\n", node.Name))
+		children = append(children, Leaf(NewLine, "\n"))
+		children = append(children, LeafTag(Keyword, "impl", TagRust))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, "Default"))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, LeafTag(Keyword, "for", TagRust))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, node.Name))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(LeftBrace, "{"))
+		children = append(children, Leaf(NewLine, "\n"))
+		// fn default() -> Self {
+		children = append(children, Leaf(WhiteSpace, "    "))
+		children = append(children, LeafTag(Keyword, "fn", TagRust))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, "default"))
+		children = append(children, Leaf(LeftParen, "("))
+		children = append(children, Leaf(RightParen, ")"))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, "->"))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, LeafTag(Keyword, "Self", TagRust))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(LeftBrace, "{"))
+		children = append(children, Leaf(NewLine, "\n"))
+		// StructName {
+		children = append(children, Leaf(WhiteSpace, "        "))
+		children = append(children, Leaf(Identifier, node.Name))
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(LeftBrace, "{"))
+		children = append(children, Leaf(NewLine, "\n"))
 		for _, field := range node.Struct.Fields.List {
 			if len(field.Names) == 0 {
 				continue
@@ -1343,15 +1458,26 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			fieldName := field.Names[0].Name
 			fieldType := e.pkg.TypesInfo.Types[field.Type].Type
 			defaultVal := e.rustDefaultForGoType(fieldType)
-			sb.WriteString(fmt.Sprintf("            %s: %s,\n", fieldName, defaultVal))
+			children = append(children, Leaf(WhiteSpace, "            "))
+			children = append(children, Leaf(Identifier, fieldName))
+			children = append(children, Leaf(Colon, ":"))
+			children = append(children, Leaf(WhiteSpace, " "))
+			children = append(children, Leaf(Identifier, defaultVal))
+			children = append(children, Leaf(Comma, ","))
+			children = append(children, Leaf(NewLine, "\n"))
 		}
-		sb.WriteString("        }\n")
-		sb.WriteString("    }\n")
-		sb.WriteString("}\n")
+		children = append(children, Leaf(WhiteSpace, "        "))
+		children = append(children, Leaf(RightBrace, "}"))
+		children = append(children, Leaf(NewLine, "\n"))
+		children = append(children, Leaf(WhiteSpace, "    "))
+		children = append(children, Leaf(RightBrace, "}"))
+		children = append(children, Leaf(NewLine, "\n"))
+		children = append(children, Leaf(RightBrace, "}"))
+		children = append(children, Leaf(NewLine, "\n"))
 	}
 
-	sb.WriteString("\n")
-	e.fs.PushCode(sb.String())
+	children = append(children, Leaf(NewLine, "\n"))
+	e.fs.AddTree(IRTree(StructTypeNode, KindType, children...))
 }
 
 func (e *RustEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
@@ -1363,10 +1489,10 @@ func (e *RustEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
 // ============================================================
 
 func (e *RustEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
-	valTokens := e.fs.Reduce(string(PreVisitGenDeclConstName))
+	valTokens := e.fs.CollectForest(string(PreVisitGenDeclConstName))
 	valCode := ""
 	for _, t := range valTokens {
-		valCode += t.Content
+		valCode += t.Serialize()
 	}
 	if valCode == "" {
 		valCode = "0"
@@ -1399,7 +1525,22 @@ func (e *RustEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
 	if constType == "String" {
 		constType = "&str"
 	}
-	e.fs.PushCode(fmt.Sprintf("pub const %s: %s = %s;\n", name, constType, valCode))
+	e.fs.AddTree(IRTree(DeclStatement, KindStmt,
+		LeafTag(Keyword, "pub", TagRust),
+		Leaf(WhiteSpace, " "),
+		LeafTag(Keyword, "const", TagRust),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, name),
+		Leaf(Colon, ":"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, constType),
+		Leaf(WhiteSpace, " "),
+		Leaf(Assignment, "="),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, valCode),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+	))
 }
 
 func (e *RustEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
@@ -1415,7 +1556,7 @@ func (e *RustEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
 }
 
 func (e *RustEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
-	e.fs.Reduce(string(PreVisitTypeAliasName))
+	e.fs.CollectForest(string(PreVisitTypeAliasName))
 
 	if e.currentAliasName != "" {
 		if e.pkg != nil && e.pkg.TypesInfo != nil {
@@ -1426,7 +1567,19 @@ func (e *RustEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
 				}
 				e.typeAliasMap[e.currentAliasName] = rustType
 				// Emit Rust type alias
-				e.fs.PushCode(fmt.Sprintf("pub type %s = %s;\n", e.currentAliasName, rustType))
+				e.fs.AddTree(IRTree(DeclStatement, KindStmt,
+					LeafTag(Keyword, "pub", TagRust),
+					Leaf(WhiteSpace, " "),
+					LeafTag(Keyword, "type", TagRust),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, e.currentAliasName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, rustType),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				))
 			}
 		}
 	}

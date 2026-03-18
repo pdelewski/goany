@@ -17,18 +17,18 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// JavaEmitter implements the Emitter interface using a shift/reduce FragmentStack
+// JavaEmitter implements the Emitter interface using a shift/reduce IRForestBuilder
 // architecture for Java code generation. This follows the same pattern as CSharpEmitter.
 type JavaEmitter struct {
 	// --- Core infrastructure ---
-	fs              *FragmentStack
+	fs              *IRForestBuilder
 	Output          string
 	OutputDir       string
 	OutputName      string
 	LinkRuntime     string
 	RuntimePackages map[string]string
 	file            *os.File
-	Emitter // interface embedding (provides GetGoFIR via BaseEmitter)
+	Emitter // interface embedding (provides GetForestBuilder via BaseEmitter)
 	pkg            *packages.Package
 	currentPackage string
 	indent         int
@@ -748,7 +748,7 @@ func (e *JavaEmitter) PreVisitProgram(indent int) {
 		return
 	}
 
-	e.fs = NewFragmentStack(e.GetGoFIR())
+	e.fs = e.GetForestBuilder()
 	e.typeAliasMap = make(map[string]string)
 	e.aliases = make(map[string]Alias)
 	e.structKeyTypes = make(map[string]string)
@@ -916,10 +916,10 @@ class Formatter {
 
 func (e *JavaEmitter) PostVisitProgram(indent int) {
 	// Reduce everything from program marker
-	tokens := e.fs.Reduce(string(PreVisitProgram))
+	tokens := e.fs.CollectForest(string(PreVisitProgram))
 	// Write all accumulated code
 	for _, t := range tokens {
-		e.file.WriteString(t.Content)
+		e.file.WriteString(t.Serialize())
 	}
 	e.file.Close()
 
@@ -1165,11 +1165,19 @@ func (e *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 			className = "Main"
 		}
 		e.currentPackage = className
-		e.fs.PushCode(fmt.Sprintf("public class %s {\n\n", className))
+		e.fs.AddTree(IRTree(Keyword, TagExpr,
+			LeafTag(Keyword, "public class ", TagJava),
+			Leaf(Identifier, className),
+			LeafTag(Keyword, " {\n\n", TagJava),
+		))
 	} else if name == "hmap" {
 		// hmap is inlined in the main file
 		e.currentPackage = name
-		e.fs.PushCode(fmt.Sprintf("class %s {\n\n", name))
+		e.fs.AddTree(IRTree(Keyword, TagExpr,
+			LeafTag(Keyword, "class ", TagJava),
+			Leaf(Identifier, name),
+			LeafTag(Keyword, " {\n\n", TagJava),
+		))
 	} else {
 		// For non-main, non-hmap packages, create separate file with imports
 		e.currentPackage = name
@@ -1194,12 +1202,12 @@ func (e *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 		}
 
 		// Flush current tokens to main file before switching
-		tokens := e.fs.Reduce(string(PreVisitProgram))
+		tokens := e.fs.CollectForest(string(PreVisitProgram))
 		for _, t := range tokens {
-			e.file.WriteString(t.Content)
+			e.file.WriteString(t.Serialize())
 		}
-		// Re-push program marker
-		e.fs.PushMarker(string(PreVisitProgram))
+		// Re-emit program marker so subsequent packages accumulate correctly
+		e.fs.AddMarker(string(PreVisitProgram))
 
 		// Create separate file for this package
 		pkgFileName := filepath.Join(e.OutputDir, name+".java")
@@ -1216,7 +1224,7 @@ func (e *JavaEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 		// The package content will be accumulated in the fragment stack
 		// and appended to the package file in PostVisitPackage
-		e.fs.PushCode("")
+		e.fs.AddLeaf("", KindExpr, nil)
 	}
 }
 
@@ -1227,11 +1235,11 @@ func (e *JavaEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 		// Reduce tokens accumulated for this package
 		// They were pushed after the PreVisitPackage marker
 		// Close the class
-		e.fs.PushCode("}\n")
+		e.fs.AddTree(IRTree(PackageDeclaration, KindDecl, Leaf(Identifier, "}\n")))
 
 		// Collect all tokens and append to the package file
 		// The tokens from this package need to be written to the separate file
-		tokens := e.fs.Reduce(string(PreVisitProgram))
+		tokens := e.fs.CollectForest(string(PreVisitProgram))
 		pkgFileName := filepath.Join(e.OutputDir, name+".java")
 		pkgFile, err := os.OpenFile(pkgFileName, os.O_APPEND|os.O_WRONLY, 0644)
 		if err != nil {
@@ -1239,15 +1247,15 @@ func (e *JavaEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 			return
 		}
 		for _, t := range tokens {
-			pkgFile.WriteString(t.Content)
+			pkgFile.WriteString(t.Serialize())
 		}
 		pkgFile.Close()
-		// Re-push program marker for subsequent packages
-		e.fs.PushMarker(string(PreVisitProgram))
+		// Re-emit program marker for subsequent packages
+		e.fs.AddMarker(string(PreVisitProgram))
 		return
 	}
 
-	e.fs.PushCode("}\n")
+	e.fs.AddTree(IRTree(PackageDeclaration, KindDecl, Leaf(Identifier, "}\n")))
 }
 
 // ============================================================
@@ -1293,7 +1301,7 @@ func (e *JavaEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
 			val = fmt.Sprintf("(int)'%s'", inner)
 		}
 	}
-	e.fs.Push(val, TagLiteral, nil)
+	e.fs.AddLeaf(val, TagLiteral, nil)
 }
 
 func (e *JavaEmitter) PreVisitIdent(node *ast.Ident, indent int) {
@@ -1301,26 +1309,26 @@ func (e *JavaEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 	// Map Go builtins
 	switch name {
 	case "true", "false":
-		e.fs.Push(name, TagLiteral, nil)
+		e.fs.AddLeaf(name, TagLiteral, nil)
 		return
 	case "nil":
-		e.fs.Push("null", TagLiteral, nil)
+		e.fs.AddLeaf("null", TagLiteral, nil)
 		return
 	case "string":
-		e.fs.Push("String", TagType, nil)
+		e.fs.AddLeaf("String", TagType, nil)
 		return
 	case "bool":
-		e.fs.Push("boolean", TagType, nil)
+		e.fs.AddLeaf("boolean", TagType, nil)
 		return
 	}
 	// Check javaTypesMap for type mappings
 	if javaType, ok := javaTypesMap[name]; ok {
-		e.fs.Push(javaType, TagType, nil)
+		e.fs.AddLeaf(javaType, TagType, nil)
 		return
 	}
 	// Check typeAliasMap
 	if underlyingType, ok := e.typeAliasMap[name]; ok {
-		e.fs.Push(underlyingType, TagType, nil)
+		e.fs.AddLeaf(underlyingType, TagType, nil)
 		return
 	}
 	// Check if this is a reference to another package
@@ -1337,14 +1345,28 @@ func (e *JavaEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 	if e.closureCapturedMutVars != nil && e.closureCapturedMutVars[name] {
 		capturedType := e.closureCapturedVarType[name]
 		if capturedType != "" {
-			e.fs.Push(fmt.Sprintf("((%s)%s[0])", capturedType, name), TagIdent, goType)
+			e.fs.AddTree(IRTree(Identifier, TagIdent,
+				Leaf(LeftParen, "(("),
+				Leaf(TypeKeyword, capturedType),
+				Leaf(RightParen, ")"),
+				Leaf(Identifier, name),
+				Leaf(LeftBracket, "["),
+				Leaf(NumberLiteral, "0"),
+				Leaf(RightBracket, "]"),
+				Leaf(RightParen, ")"),
+			))
 		} else {
-			e.fs.Push(fmt.Sprintf("%s[0]", name), TagIdent, goType)
+			e.fs.AddTree(IRTree(Identifier, TagIdent,
+				Leaf(Identifier, name),
+				Leaf(LeftBracket, "["),
+				Leaf(NumberLiteral, "0"),
+				Leaf(RightBracket, "]"),
+			))
 		}
 		return
 	}
 
-	e.fs.Push(name, TagIdent, goType)
+	e.fs.AddLeaf(name, TagIdent, goType)
 }
 
 // closureUnwrapLhs extracts "name[0]" from "((Type)name[0])" for assignment LHS.
@@ -1379,24 +1401,24 @@ func closureUnwrapName(expr string) string {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitBinaryExprLeft(node ast.Expr, indent int) {
-	left := e.fs.ReduceToCode(string(PreVisitBinaryExprLeft))
-	e.fs.PushCode(left)
+	left := e.fs.CollectText(string(PreVisitBinaryExprLeft))
+	e.fs.AddLeaf(left, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
-	right := e.fs.ReduceToCode(string(PreVisitBinaryExprRight))
-	e.fs.PushCode(right)
+	right := e.fs.CollectText(string(PreVisitBinaryExprRight))
+	e.fs.AddLeaf(right, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitBinaryExpr))
+	tokens := e.fs.CollectForest(string(PreVisitBinaryExpr))
 	left := ""
 	right := ""
 	if len(tokens) >= 1 {
-		left = tokens[0].Content
+		left = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		right = tokens[1].Content
+		right = tokens[1].Serialize()
 	}
 	op := node.Op.String()
 
@@ -1406,11 +1428,26 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	if leftType != nil {
 		if basic, ok := leftType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 			if op == "==" {
-				e.fs.PushCode(fmt.Sprintf("%s.equals(%s)", left, right))
+				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+					Leaf(Identifier, left),
+					Leaf(Dot, "."),
+					Leaf(Identifier, "equals"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, right),
+					Leaf(RightParen, ")"),
+				))
 				return
 			}
 			if op == "!=" {
-				e.fs.PushCode(fmt.Sprintf("!%s.equals(%s)", left, right))
+				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+					Leaf(UnaryOperator, "!"),
+					Leaf(Identifier, left),
+					Leaf(Dot, "."),
+					Leaf(Identifier, "equals"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, right),
+					Leaf(RightParen, ")"),
+				))
 				return
 			}
 		}
@@ -1440,12 +1477,23 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	// but (byte & byte) already promotes to int in Java, so the & 0xFF is needed
 	// when the result is later compared.
 	if op == "&" && e.isByteTypeJ(leftType) && e.isByteTypeJ(rightType) {
-		expr := fmt.Sprintf("(%s %s %s & 0xFF)", left, op, right)
-		e.fs.PushCode(expr)
+		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, left),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, op),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, right),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, "&"),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, "0xFF"),
+			Leaf(RightParen, ")"),
+		))
 		return
 	}
 
-	expr := fmt.Sprintf("%s %s %s", left, op, right)
+	expr := left + " " + op + " " + right
 
 	// For arithmetic ops on narrow types, Java promotes to int - add narrowing cast
 	goType := e.getExprGoTypeJ(node)
@@ -1453,14 +1501,16 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		if basic, ok := goType.Underlying().(*types.Basic); ok {
 			switch basic.Kind() {
 			case types.Int8, types.Uint8:
-				expr = fmt.Sprintf("(byte)(%s)", expr)
+				expr = "(byte)(" + expr + ")"
 			case types.Int16:
-				expr = fmt.Sprintf("(short)(%s)", expr)
+				expr = "(short)(" + expr + ")"
 			}
 		}
 	}
 
-	e.fs.PushCode(expr)
+	e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+		Leaf(Identifier, expr),
+	))
 }
 
 // ============================================================
@@ -1468,12 +1518,12 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
-	funCode := e.fs.ReduceToCode(string(PreVisitCallExprFun))
-	e.fs.PushCode(funCode)
+	funCode := e.fs.CollectText(string(PreVisitCallExprFun))
+	e.fs.AddLeaf(funCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	argCode := e.fs.ReduceToCode(string(PreVisitCallExprArg))
+	argCode := e.fs.CollectText(string(PreVisitCallExprArg))
 
 	// Check if this arg is a function reference (identifier referencing a function)
 	// In Java, function references need ClassName::methodName syntax
@@ -1490,29 +1540,29 @@ func (e *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 		}
 	}
 
-	e.fs.PushCode(argCode)
+	e.fs.AddLeaf(argCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
-	argTokens := e.fs.Reduce(string(PreVisitCallExprArgs))
+	argTokens := e.fs.CollectForest(string(PreVisitCallExprArgs))
 	var args []string
 	for _, t := range argTokens {
-		if t.Content != "" {
-			args = append(args, t.Content)
+		if t.Serialize() != "" {
+			args = append(args, t.Serialize())
 		}
 	}
-	e.fs.PushCode(strings.Join(args, ", "))
+	e.fs.AddLeaf(strings.Join(args, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitCallExpr))
+	tokens := e.fs.CollectForest(string(PreVisitCallExpr))
 	funName := ""
 	argsStr := ""
 	if len(tokens) >= 1 {
-		funName = tokens[0].Content
+		funName = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		argsStr = tokens[1].Content
+		argsStr = tokens[1].Serialize()
 	}
 
 	// Handle special built-in functions
@@ -1520,28 +1570,62 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	case "len", "SliceBuiltins.Length":
 		// len(x) - for maps use hmap.hashMapLen(x), otherwise SliceBuiltins.Length(x)
 		if len(node.Args) > 0 && e.isMapTypeExprJ(node.Args[0]) {
-			e.fs.PushCode(fmt.Sprintf("hmap.hashMapLen(%s)", argsStr))
+			e.fs.AddTree(IRTree(CallExpression, KindExpr,
+				Leaf(Identifier, "hmap.hashMapLen"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, argsStr),
+				Leaf(RightParen, ")"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("SliceBuiltins.Length(%s)", argsStr))
+			e.fs.AddTree(IRTree(CallExpression, KindExpr,
+				Leaf(Identifier, "SliceBuiltins.Length"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, argsStr),
+				Leaf(RightParen, ")"),
+			))
 		}
 		return
 	case "append", "SliceBuiltins.Append":
-		e.fs.PushCode(fmt.Sprintf("SliceBuiltins.Append(%s)", argsStr))
+		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+			Leaf(Identifier, "SliceBuiltins.Append"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, argsStr),
+			Leaf(RightParen, ")"),
+		))
 		return
 	case "delete":
 		// delete(m, k) -> m = hmap.hashMapDelete(m, k)
 		if len(node.Args) >= 2 {
 			mapName := exprToJavaString(node.Args[0])
-			e.fs.PushCode(fmt.Sprintf("%s = hmap.hashMapDelete(%s)", mapName, argsStr))
+			e.fs.AddTree(IRTree(CallExpression, KindExpr,
+				Leaf(Identifier, mapName),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap.hashMapDelete"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, argsStr),
+				Leaf(RightParen, ")"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("hmap.hashMapDelete(%s)", argsStr))
+			e.fs.AddTree(IRTree(CallExpression, KindExpr,
+				Leaf(Identifier, "hmap.hashMapDelete"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, argsStr),
+				Leaf(RightParen, ")"),
+			))
 		}
 		return
 	case "make":
 		if len(node.Args) >= 1 {
 			if mapType, ok := node.Args[0].(*ast.MapType); ok {
 				keyTypeConst := e.getMapKeyTypeConstJ(mapType)
-				e.fs.PushCode(fmt.Sprintf("hmap.newHashMap(%d)", keyTypeConst))
+				e.fs.AddTree(IRTree(CallExpression, KindExpr,
+					Leaf(Identifier, "hmap.newHashMap"),
+					Leaf(LeftParen, "("),
+					Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
+					Leaf(RightParen, ")"),
+				))
 				return
 			}
 			if _, ok := node.Args[0].(*ast.ArrayType); ok {
@@ -1561,21 +1645,53 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				parts := strings.SplitN(argsStr, ", ", 2)
 				if len(parts) >= 2 {
 					if isBool {
-						e.fs.PushCode(fmt.Sprintf("SliceBuiltins.MakeBoolSlice(%s)", parts[1]))
+						e.fs.AddTree(IRTree(CallExpression, KindExpr,
+							Leaf(Identifier, "SliceBuiltins.MakeBoolSlice"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, parts[1]),
+							Leaf(RightParen, ")"),
+						))
 					} else {
 						boxed := toBoxedType(elemType)
-						e.fs.PushCode(fmt.Sprintf("SliceBuiltins.<%s>MakeSlice(%s)", boxed, parts[1]))
+						e.fs.AddTree(IRTree(CallExpression, KindExpr,
+							Leaf(Identifier, "SliceBuiltins."),
+							Leaf(LeftAngle, "<"),
+							Leaf(Identifier, boxed),
+							Leaf(RightAngle, ">"),
+							Leaf(Identifier, "MakeSlice"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, parts[1]),
+							Leaf(RightParen, ")"),
+						))
 					}
 				} else {
-					e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType)))
+					e.fs.AddTree(IRTree(CallExpression, KindExpr,
+						LeafTag(Keyword, "new ", TagJava),
+						Leaf(Identifier, "ArrayList"),
+						Leaf(LeftAngle, "<"),
+						Leaf(Identifier, toBoxedType(elemType)),
+						Leaf(RightAngle, ">"),
+						Leaf(LeftParen, "("),
+						Leaf(RightParen, ")"),
+					))
 				}
 				return
 			}
 		}
-		e.fs.PushCode(fmt.Sprintf("make(%s)", argsStr))
+		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+			Leaf(Identifier, "make"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, argsStr),
+			Leaf(RightParen, ")"),
+		))
 		return
 	case "GoanyPanic.goPanic":
-		e.fs.PushCode(fmt.Sprintf("GoanyPanic.goPanic(%s)", argsStr))
+		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+			Leaf(Identifier, "GoanyPanic.goPanic"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, argsStr),
+			Leaf(RightParen, ")"),
+		))
 		return
 	}
 
@@ -1594,13 +1710,23 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 								if basic, ok := argType.Underlying().(*types.Basic); ok {
 									if basic.Kind() == types.Int || basic.Kind() == types.Int32 ||
 										basic.Kind() == types.Uint8 || basic.Kind() == types.Int8 {
-										e.fs.PushCode(fmt.Sprintf("String.valueOf((char)(%s))", argsStr))
+										e.fs.AddTree(IRTree(CallExpression, KindExpr,
+										Leaf(Identifier, "String.valueOf"),
+										Leaf(LeftParen, "((char)("),
+										Leaf(Identifier, argsStr),
+										Leaf(RightParen, "))"),
+									))
 										return
 									}
 								}
 							}
 						}
-						e.fs.PushCode(fmt.Sprintf("String.valueOf(%s)", argsStr))
+						e.fs.AddTree(IRTree(CallExpression, KindExpr,
+							Leaf(Identifier, "String.valueOf"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, argsStr),
+							Leaf(RightParen, ")"),
+						))
 						return
 					}
 					// byte-to-int/long: int(byteVar) -> (byteVar & 0xFF), int64(byteVar) -> (long)(byteVar & 0xFF)
@@ -1608,14 +1734,24 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 						argType := e.getExprGoTypeJ(node.Args[0])
 						if e.isByteTypeJ(argType) {
 							if javaType == "long" {
-								e.fs.PushCode(fmt.Sprintf("(long)(%s)", e.maskByteValueJ(argsStr)))
+								e.fs.AddTree(IRTree(CallExpression, KindExpr,
+								Leaf(LeftParen, "(long)("),
+								Leaf(Identifier, e.maskByteValueJ(argsStr)),
+								Leaf(RightParen, ")"),
+							))
 							} else {
-								e.fs.PushCode(e.maskByteValueJ(argsStr))
+								e.fs.AddTree(IRTree(CallExpression, KindExpr, Leaf(Identifier, e.maskByteValueJ(argsStr))))
 							}
 							return
 						}
 					}
-					e.fs.PushCode(fmt.Sprintf("(%s)(%s)", javaType, argsStr))
+					e.fs.AddTree(IRTree(CallExpression, KindExpr,
+						Leaf(LeftParen, "("),
+						Leaf(TypeKeyword, javaType),
+						Leaf(RightParen, ")("),
+						Leaf(Identifier, argsStr),
+						Leaf(RightParen, ")"),
+					))
 					return
 				}
 			}
@@ -1637,7 +1773,14 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				if sig, ok := tv.Type.Underlying().(*types.Signature); ok {
 					method := getJavaFuncInterfaceMethod(sig)
 					if method != "" {
-						e.fs.PushCode(fmt.Sprintf("%s.%s(%s)", funName, method, argsStr))
+						e.fs.AddTree(IRTree(CallExpression, KindExpr,
+							Leaf(Identifier, funName),
+							Leaf(Dot, "."),
+							Leaf(Identifier, method),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, argsStr),
+							Leaf(RightParen, ")"),
+						))
 						return
 					}
 				}
@@ -1653,7 +1796,14 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				if sig, ok := sel.Type().Underlying().(*types.Signature); ok {
 					method := getJavaFuncInterfaceMethod(sig)
 					if method != "" {
-						e.fs.PushCode(fmt.Sprintf("%s.%s(%s)", funName, method, argsStr))
+						e.fs.AddTree(IRTree(CallExpression, KindExpr,
+							Leaf(Identifier, funName),
+							Leaf(Dot, "."),
+							Leaf(Identifier, method),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, argsStr),
+							Leaf(RightParen, ")"),
+						))
 						return
 					}
 				}
@@ -1670,7 +1820,14 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 					if sig, ok := obj.Type().Underlying().(*types.Signature); ok {
 						method := getJavaFuncInterfaceMethod(sig)
 						if method != "" {
-							e.fs.PushCode(fmt.Sprintf("%s.%s(%s)", funName, method, argsStr))
+							e.fs.AddTree(IRTree(CallExpression, KindExpr,
+								Leaf(Identifier, funName),
+								Leaf(Dot, "."),
+								Leaf(Identifier, method),
+								Leaf(LeftParen, "("),
+								Leaf(Identifier, argsStr),
+								Leaf(RightParen, ")"),
+							))
 							return
 						}
 					}
@@ -1717,7 +1874,12 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 	}
 
-	e.fs.PushCode(fmt.Sprintf("%s(%s)", funName, argsStr))
+	e.fs.AddTree(IRTree(CallExpression, KindExpr,
+		Leaf(Identifier, funName),
+		Leaf(LeftParen, "("),
+		Leaf(Identifier, argsStr),
+		Leaf(RightParen, ")"),
+	))
 }
 
 // ============================================================
@@ -1725,34 +1887,34 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitSelectorExprX))
-	e.fs.PushCode(xCode)
+	xCode := e.fs.CollectText(string(PreVisitSelectorExprX))
+	e.fs.AddLeaf(xCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitSelectorExprSel(node *ast.Ident, indent int) {
-	e.fs.Reduce(string(PreVisitSelectorExprSel))
-	e.fs.PushCode(node.Name)
+	e.fs.CollectForest(string(PreVisitSelectorExprSel))
+	e.fs.AddLeaf(node.Name, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitSelectorExpr))
+	tokens := e.fs.CollectForest(string(PreVisitSelectorExpr))
 	xCode := ""
 	selCode := ""
 	if len(tokens) >= 1 {
-		xCode = tokens[0].Content
+		xCode = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		selCode = tokens[1].Content
+		selCode = tokens[1].Serialize()
 	}
 
 	if xCode == "os" && selCode == "Args" {
-		e.fs.PushCode("goany_os_args")
+		e.fs.AddTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, "goany_os_args")))
 		return
 	}
 
 	// Check if selector is a type alias
 	if _, isAlias := e.typeAliasMap[selCode]; isAlias {
-		e.fs.PushCode(e.typeAliasMap[selCode])
+		e.fs.AddTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, e.typeAliasMap[selCode])))
 		return
 	}
 
@@ -1761,9 +1923,9 @@ func (e *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 	loweredSel := javaLowerBuiltin(selCode)
 
 	if loweredX == "" {
-		e.fs.PushCode(loweredSel)
+		e.fs.AddTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, loweredSel)))
 	} else {
-		e.fs.PushCode(loweredX + "." + loweredSel)
+		e.fs.AddTree(IRTree(SelectorExpression, KindExpr, Leaf(Identifier, loweredX+"."+loweredSel)))
 	}
 }
 
@@ -1772,26 +1934,26 @@ func (e *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 // ============================================================
 
 func (e *JavaEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitIndexExprX))
-	e.fs.PushCode(xCode)
+	xCode := e.fs.CollectText(string(PreVisitIndexExprX))
+	e.fs.AddLeaf(xCode, KindExpr, nil)
 	e.lastIndexXCode = xCode
 }
 
 func (e *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	idxCode := e.fs.ReduceToCode(string(PreVisitIndexExprIndex))
-	e.fs.PushCode(idxCode)
+	idxCode := e.fs.CollectText(string(PreVisitIndexExprIndex))
+	e.fs.AddLeaf(idxCode, KindExpr, nil)
 	e.lastIndexKeyCode = idxCode
 }
 
 func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitIndexExpr))
+	tokens := e.fs.CollectForest(string(PreVisitIndexExpr))
 	xCode := ""
 	idxCode := ""
 	if len(tokens) >= 1 {
-		xCode = tokens[0].Content
+		xCode = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		idxCode = tokens[1].Content
+		idxCode = tokens[1].Serialize()
 	}
 
 	if e.isMapTypeExprJ(node.X) {
@@ -1805,28 +1967,51 @@ func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 				pfx, sfx = getJavaKeyCastJ(mapUnderlying.Key())
 			}
 		}
-		e.fs.PushCodeWithType(
-			fmt.Sprintf("((%s)hmap.hashMapGet(%s, %s%s%s))", valType, xCode, pfx, idxCode, sfx),
-			e.getExprGoTypeJ(node),
+		indexNode := IRTree(IndexExpression, KindExpr,
+			Leaf(Identifier, "((" + valType + ")hmap.hashMapGet(" + xCode + ", " + pfx + idxCode + sfx + "))"),
 		)
+		indexNode.GoType = e.getExprGoTypeJ(node)
+		e.fs.AddTree(indexNode)
 	} else {
 		// Check for string indexing: s[i] -> (int)s.charAt(i)
 		xType := e.getExprGoTypeJ(node.X)
 		if xType != nil {
 			if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
-				e.fs.PushCode(fmt.Sprintf("(int)%s.charAt(%s)", xCode, idxCode))
+				e.fs.AddTree(IRTree(IndexExpression, KindExpr,
+					Leaf(LeftParen, "(int)"),
+					Leaf(Identifier, xCode),
+					Leaf(Dot, "."),
+					Leaf(Identifier, "charAt"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, idxCode),
+					Leaf(RightParen, ")"),
+				))
 				return
 			}
 		}
 		// Slice access: x[i] -> x.get(i)
 		if xType != nil {
 			if _, ok := xType.Underlying().(*types.Slice); ok {
-				e.fs.PushCode(fmt.Sprintf("%s.get(%s)", xCode, idxCode))
+				e.fs.AddTree(IRTree(IndexExpression, KindExpr,
+					Leaf(Identifier, xCode),
+					Leaf(Dot, "."),
+					Leaf(Identifier, "get"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, idxCode),
+					Leaf(RightParen, ")"),
+				))
 				return
 			}
 		}
 		// Fallback to array-style access
-		e.fs.PushCode(fmt.Sprintf("%s.get(%s)", xCode, idxCode))
+		e.fs.AddTree(IRTree(IndexExpression, KindExpr,
+			Leaf(Identifier, xCode),
+			Leaf(Dot, "."),
+			Leaf(Identifier, "get"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, idxCode),
+			Leaf(RightParen, ")"),
+		))
 	}
 }
 
@@ -1835,13 +2020,13 @@ func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitUnaryExpr))
+	xCode := e.fs.CollectText(string(PreVisitUnaryExpr))
 	op := node.Op.String()
 	// Go ^ is bitwise complement, Java uses ~
 	if op == "^" {
-		e.fs.PushCode("~" + xCode)
+		e.fs.AddTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, "~"+xCode)))
 	} else {
-		e.fs.PushCode(op + xCode)
+		e.fs.AddTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, op+xCode)))
 	}
 }
 
@@ -1850,8 +2035,8 @@ func (e *JavaEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
-	inner := e.fs.ReduceToCode(string(PreVisitParenExpr))
-	e.fs.PushCode("(" + inner + ")")
+	inner := e.fs.CollectText(string(PreVisitParenExpr))
+	e.fs.AddTree(IRTree(ParenExpression, KindExpr, Leaf(Identifier, "("+inner+")")))
 }
 
 // ============================================================
@@ -1965,36 +2150,36 @@ func convertGoTypeToJava(goType string) string {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
-	e.fs.Reduce(string(PreVisitCompositeLitType))
+	e.fs.CollectForest(string(PreVisitCompositeLitType))
 }
 
 func (e *JavaEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	eltCode := e.fs.ReduceToCode(string(PreVisitCompositeLitElt))
-	e.fs.PushCode(eltCode)
+	eltCode := e.fs.CollectText(string(PreVisitCompositeLitElt))
+	e.fs.AddLeaf(eltCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
-	eltTokens := e.fs.Reduce(string(PreVisitCompositeLitElts))
+	eltTokens := e.fs.CollectForest(string(PreVisitCompositeLitElts))
 	for _, t := range eltTokens {
-		if t.Content != "" {
-			e.fs.Push(t.Content, TagLiteral, nil)
+		if t.Serialize() != "" {
+			e.fs.AddLeaf(t.Serialize(), TagLiteral, nil)
 		}
 	}
 }
 
 func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitCompositeLit))
+	tokens := e.fs.CollectForest(string(PreVisitCompositeLit))
 	var elts []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			elts = append(elts, t.Content)
+		if t.Serialize() != "" {
+			elts = append(elts, t.Serialize())
 		}
 	}
 	eltsStr := strings.Join(elts, ", ")
 
 	litType := e.getExprGoTypeJ(node)
 	if litType == nil {
-		e.fs.PushCode("new ArrayList<>(java.util.Arrays.asList(" + eltsStr + "))")
+		e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr, Leaf(Identifier, "new ArrayList<>(java.util.Arrays.asList("+eltsStr+"))")))
 		return
 	}
 
@@ -2044,7 +2229,13 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 						orderedArgs = append(orderedArgs, narrowArg(e.javaDefaultForGoTypeQ(u.Field(i).Type()), u.Field(i).Type()))
 					}
 				}
-				e.fs.PushCode(fmt.Sprintf("new %s(%s)", typeName, strings.Join(orderedArgs, ", ")))
+				e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+					LeafTag(Keyword, "new ", TagJava),
+					Leaf(Identifier, typeName),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, strings.Join(orderedArgs, ", ")),
+					Leaf(RightParen, ")"),
+				))
 				return
 			}
 		}
@@ -2060,11 +2251,25 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 			}
 			eltsStr = strings.Join(narrowedElts, ", ")
 		}
-		e.fs.PushCode(fmt.Sprintf("new %s(%s)", typeName, eltsStr))
+		e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+			LeafTag(Keyword, "new ", TagJava),
+			Leaf(Identifier, typeName),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, eltsStr),
+			Leaf(RightParen, ")"),
+		))
 	case *types.Slice:
 		elemType := e.qualifiedJavaTypeName(u.Elem())
 		if eltsStr == "" {
-			e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType)))
+			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, "ArrayList"),
+				Leaf(LeftAngle, "<"),
+				Leaf(Identifier, toBoxedType(elemType)),
+				Leaf(RightAngle, ">"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+			))
 		} else {
 			// Cast integer literals for byte/short slice elements
 			needsCast := ""
@@ -2084,15 +2289,37 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 			}
 			// Check if elements contain lambdas (function type) — use double-brace init
 			if _, isFuncElem := u.Elem().Underlying().(*types.Signature); isFuncElem {
-				var sb strings.Builder
-				sb.WriteString(fmt.Sprintf("new ArrayList<%s>() {{ ", toBoxedType(elemType)))
+				var children []IRNode
+				children = append(children, LeafTag(Keyword, "new ", TagJava))
+				children = append(children, Leaf(Identifier, "ArrayList"))
+				children = append(children, Leaf(LeftAngle, "<"))
+				children = append(children, Leaf(Identifier, toBoxedType(elemType)))
+				children = append(children, Leaf(RightAngle, ">"))
+				children = append(children, Leaf(LeftParen, "()"))
+				children = append(children, Leaf(WhiteSpace, " "))
+				children = append(children, Leaf(LeftBrace, "{{"))
+				children = append(children, Leaf(WhiteSpace, " "))
 				for _, elt := range elts {
-					sb.WriteString(fmt.Sprintf("add(%s); ", elt))
+					children = append(children, Leaf(Identifier, "add"))
+					children = append(children, Leaf(LeftParen, "("))
+					children = append(children, Leaf(Identifier, elt))
+					children = append(children, Leaf(RightParen, ")"))
+					children = append(children, Leaf(Semicolon, ";"))
+					children = append(children, Leaf(WhiteSpace, " "))
 				}
-				sb.WriteString("}}")
-				e.fs.PushCode(sb.String())
+				children = append(children, Leaf(RightBrace, "}}"))
+				e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr, children...))
 			} else {
-				e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>(java.util.Arrays.asList(%s))", toBoxedType(elemType), eltsStr))
+				e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+					LeafTag(Keyword, "new ", TagJava),
+					Leaf(Identifier, "ArrayList"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, toBoxedType(elemType)),
+					Leaf(RightAngle, ">"),
+					Leaf(LeftParen, "(java.util.Arrays.asList("),
+					Leaf(Identifier, eltsStr),
+					Leaf(RightParen, "))"),
+				))
 			}
 		}
 	case *types.Map:
@@ -2106,7 +2333,12 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 			}
 		}
 		if len(elts) == 0 {
-			e.fs.PushCode(fmt.Sprintf("hmap.newHashMap(%d)", keyTypeConst))
+			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+				Leaf(Identifier, "hmap.newHashMap"),
+				Leaf(LeftParen, "("),
+				Leaf(NumberLiteral, fmt.Sprintf("%d", keyTypeConst)),
+				Leaf(RightParen, ")"),
+			))
 		} else {
 			pfx, sfx := getJavaKeyCastJ(u.Key())
 			e.nestedMapCounter++
@@ -2120,7 +2352,7 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 				}
 			}
 			initCode += fmt.Sprintf("return %s; })).get()", tmpVar)
-			e.fs.PushCode(initCode)
+			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr, Leaf(Identifier, initCode)))
 		}
 	default:
 		elemType := "Object"
@@ -2128,9 +2360,26 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 			elemType = e.qualifiedJavaTypeName(slice.Elem())
 		}
 		if eltsStr == "" {
-			e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>()", toBoxedType(elemType)))
+			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, "ArrayList"),
+				Leaf(LeftAngle, "<"),
+				Leaf(Identifier, toBoxedType(elemType)),
+				Leaf(RightAngle, ">"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("new ArrayList<%s>(java.util.Arrays.asList(%s))", toBoxedType(elemType), eltsStr))
+			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, "ArrayList"),
+				Leaf(LeftAngle, "<"),
+				Leaf(Identifier, toBoxedType(elemType)),
+				Leaf(RightAngle, ">"),
+				Leaf(LeftParen, "(java.util.Arrays.asList("),
+				Leaf(Identifier, eltsStr),
+				Leaf(RightParen, "))"),
+			))
 		}
 	}
 }
@@ -2140,26 +2389,26 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 // ============================================================
 
 func (e *JavaEmitter) PostVisitKeyValueExprKey(node ast.Expr, indent int) {
-	keyCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprKey))
-	e.fs.PushCode(keyCode)
+	keyCode := e.fs.CollectText(string(PreVisitKeyValueExprKey))
+	e.fs.AddLeaf(keyCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
-	valCode := e.fs.ReduceToCode(string(PreVisitKeyValueExprValue))
-	e.fs.PushCode(valCode)
+	valCode := e.fs.CollectText(string(PreVisitKeyValueExprValue))
+	e.fs.AddLeaf(valCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitKeyValueExpr))
+	tokens := e.fs.CollectForest(string(PreVisitKeyValueExpr))
 	keyCode := ""
 	valCode := ""
 	if len(tokens) >= 1 {
-		keyCode = tokens[0].Content
+		keyCode = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		valCode = tokens[1].Content
+		valCode = tokens[1].Serialize()
 	}
-	e.fs.PushCode(keyCode + ": " + valCode)
+	e.fs.AddTree(IRTree(KeyValueExpression, KindExpr, Leaf(Identifier, keyCode+": "+valCode)))
 }
 
 // ============================================================
@@ -2167,45 +2416,45 @@ func (e *JavaEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) 
 // ============================================================
 
 func (e *JavaEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitSliceExprX))
-	e.fs.PushCode(xCode)
+	xCode := e.fs.CollectText(string(PreVisitSliceExprX))
+	e.fs.AddLeaf(xCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
-	e.fs.Reduce(string(PreVisitSliceExprXBegin))
+	e.fs.CollectForest(string(PreVisitSliceExprXBegin))
 }
 
 func (e *JavaEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
-	lowCode := e.fs.ReduceToCode(string(PreVisitSliceExprLow))
-	e.fs.PushCode(lowCode)
+	lowCode := e.fs.CollectText(string(PreVisitSliceExprLow))
+	e.fs.AddLeaf(lowCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
-	e.fs.Reduce(string(PreVisitSliceExprXEnd))
+	e.fs.CollectForest(string(PreVisitSliceExprXEnd))
 }
 
 func (e *JavaEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
-	highCode := e.fs.ReduceToCode(string(PreVisitSliceExprHigh))
-	e.fs.PushCode(highCode)
+	highCode := e.fs.CollectText(string(PreVisitSliceExprHigh))
+	e.fs.AddLeaf(highCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitSliceExpr))
+	tokens := e.fs.CollectForest(string(PreVisitSliceExpr))
 	xCode := ""
 	lowCode := ""
 	highCode := ""
 
 	idx := 0
 	if idx < len(tokens) {
-		xCode = tokens[idx].Content
+		xCode = tokens[idx].Serialize()
 		idx++
 	}
 	if node.Low != nil && idx < len(tokens) {
-		lowCode = tokens[idx].Content
+		lowCode = tokens[idx].Serialize()
 		idx++
 	}
 	if node.High != nil && idx < len(tokens) {
-		highCode = tokens[idx].Content
+		highCode = tokens[idx].Serialize()
 	}
 
 	if lowCode == "" {
@@ -2223,15 +2472,60 @@ func (e *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 
 	if isString {
 		if highCode == "" {
-			e.fs.PushCode(fmt.Sprintf("%s.substring(%s)", xCode, lowCode))
+			e.fs.AddTree(IRTree(SliceExpression, KindExpr,
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "substring"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, lowCode),
+				Leaf(RightParen, ")"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("%s.substring(%s, %s)", xCode, lowCode, highCode))
+			e.fs.AddTree(IRTree(SliceExpression, KindExpr,
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "substring"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, lowCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, highCode),
+				Leaf(RightParen, ")"),
+			))
 		}
 	} else {
 		if highCode == "" {
-			e.fs.PushCode(fmt.Sprintf("new ArrayList<>(%s.subList(%s, %s.size()))", xCode, lowCode, xCode))
+			e.fs.AddTree(IRTree(SliceExpression, KindExpr,
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, "ArrayList<>"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "subList"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, lowCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "size"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, "))"),
+				Leaf(RightParen, ")"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("new ArrayList<>(%s.subList(%s, %s))", xCode, lowCode, highCode))
+			e.fs.AddTree(IRTree(SliceExpression, KindExpr,
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, "ArrayList<>"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "subList"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, lowCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, highCode),
+				Leaf(RightParen, ")"),
+				Leaf(RightParen, ")"),
+			))
 		}
 	}
 }
@@ -2241,15 +2535,21 @@ func (e *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
-	typeTokens := e.fs.Reduce(string(PreVisitArrayType))
+	typeTokens := e.fs.CollectForest(string(PreVisitArrayType))
 	elemType := ""
 	for _, t := range typeTokens {
-		elemType += t.Content
+		elemType += t.Serialize()
 	}
 	if elemType == "" {
 		elemType = "Object"
 	}
-	e.fs.Push(fmt.Sprintf("ArrayList<%s>", toBoxedType(elemType)), TagType, nil)
+	children := []IRNode{
+		Leaf(Identifier, "ArrayList"),
+		Leaf(LeftAngle, "<"),
+		Leaf(Identifier, toBoxedType(elemType)),
+		Leaf(RightAngle, ">"),
+	}
+	e.fs.AddTree(IRTree(TypeKeyword, TagType, children...))
 }
 
 // ============================================================
@@ -2257,16 +2557,16 @@ func (e *JavaEmitter) PostVisitArrayType(node ast.ArrayType, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitMapKeyType(node ast.Expr, indent int) {
-	e.fs.Reduce(string(PreVisitMapKeyType))
+	e.fs.CollectForest(string(PreVisitMapKeyType))
 }
 
 func (e *JavaEmitter) PostVisitMapValueType(node ast.Expr, indent int) {
-	e.fs.Reduce(string(PreVisitMapValueType))
+	e.fs.CollectForest(string(PreVisitMapValueType))
 }
 
 func (e *JavaEmitter) PostVisitMapType(node *ast.MapType, indent int) {
-	e.fs.Reduce(string(PreVisitMapType))
-	e.fs.Push("hmap.HashMap", TagType, nil)
+	e.fs.CollectForest(string(PreVisitMapType))
+	e.fs.AddTree(IRTree(MapTypeNode, KindType, Leaf(Identifier, "hmap.HashMap")))
 }
 
 // ============================================================
@@ -2274,76 +2574,130 @@ func (e *JavaEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitFuncTypeResult(node *ast.Field, index int, indent int) {
-	resultCode := e.fs.ReduceToCode(string(PreVisitFuncTypeResult))
-	e.fs.PushCode(resultCode)
+	resultCode := e.fs.CollectText(string(PreVisitFuncTypeResult))
+	e.fs.AddLeaf(resultCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncTypeResults(node *ast.FieldList, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncTypeResults))
+	tokens := e.fs.CollectForest(string(PreVisitFuncTypeResults))
 	var resultTypes []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			resultTypes = append(resultTypes, t.Content)
+		s := t.Serialize()
+		if s != "" {
+			resultTypes = append(resultTypes, s)
 		}
 	}
-	e.fs.PushCode(strings.Join(resultTypes, ", "))
+	e.fs.AddLeaf(strings.Join(resultTypes, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncTypeParam(node *ast.Field, index int, indent int) {
-	paramCode := e.fs.ReduceToCode(string(PreVisitFuncTypeParam))
-	e.fs.PushCode(paramCode)
+	paramCode := e.fs.CollectText(string(PreVisitFuncTypeParam))
+	e.fs.AddLeaf(paramCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncTypeParams(node *ast.FieldList, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncTypeParams))
+	tokens := e.fs.CollectForest(string(PreVisitFuncTypeParams))
 	var paramTypes []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			paramTypes = append(paramTypes, t.Content)
+		s := t.Serialize()
+		if s != "" {
+			paramTypes = append(paramTypes, s)
 		}
 	}
-	e.fs.PushCode(strings.Join(paramTypes, ", "))
+	e.fs.AddLeaf(strings.Join(paramTypes, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncType))
+	tokens := e.fs.CollectForest(string(PreVisitFuncType))
 	resultTypes := ""
 	paramTypes := ""
 	if node.Results != nil && node.Results.NumFields() > 0 {
 		if len(tokens) >= 1 {
-			resultTypes = tokens[0].Content
+			resultTypes = tokens[0].Serialize()
 		}
 		if len(tokens) >= 2 {
-			paramTypes = tokens[1].Content
+			paramTypes = tokens[1].Serialize()
 		}
 		resultBoxed := toBoxedJavaType(resultTypes)
 		if paramTypes != "" {
 			params := strings.Split(paramTypes, ", ")
 			if len(params) == 1 {
-				e.fs.PushCode(fmt.Sprintf("Function<%s, %s>", toBoxedJavaType(params[0]), resultBoxed))
+				children := []IRNode{
+					Leaf(Identifier, "Function"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, toBoxedJavaType(params[0])),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, resultBoxed),
+					Leaf(RightAngle, ">"),
+				}
+				e.fs.AddTree(IRTree(TypeKeyword, TagExpr, children...))
 			} else if len(params) == 2 {
-				e.fs.PushCode(fmt.Sprintf("BiFunction<%s, %s, %s>", toBoxedJavaType(params[0]), toBoxedJavaType(params[1]), resultBoxed))
+				children := []IRNode{
+					Leaf(Identifier, "BiFunction"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, toBoxedJavaType(params[0])),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, toBoxedJavaType(params[1])),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, resultBoxed),
+					Leaf(RightAngle, ">"),
+				}
+				e.fs.AddTree(IRTree(TypeKeyword, TagExpr, children...))
 			} else {
-				e.fs.PushCode(fmt.Sprintf("Function<%s, %s>", toBoxedJavaType(params[0]), resultBoxed))
+				children := []IRNode{
+					Leaf(Identifier, "Function"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, toBoxedJavaType(params[0])),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, resultBoxed),
+					Leaf(RightAngle, ">"),
+				}
+				e.fs.AddTree(IRTree(TypeKeyword, TagExpr, children...))
 			}
 		} else {
-			e.fs.PushCode(fmt.Sprintf("Supplier<%s>", resultBoxed))
+			children := []IRNode{
+				Leaf(Identifier, "Supplier"),
+				Leaf(LeftAngle, "<"),
+				Leaf(Identifier, resultBoxed),
+				Leaf(RightAngle, ">"),
+			}
+			e.fs.AddTree(IRTree(TypeKeyword, TagExpr, children...))
 		}
 	} else {
 		if len(tokens) >= 1 {
-			paramTypes = tokens[0].Content
+			paramTypes = tokens[0].Serialize()
 		}
 		if paramTypes != "" {
 			params := strings.Split(paramTypes, ", ")
 			if len(params) == 1 {
-				e.fs.PushCode(fmt.Sprintf("Consumer<%s>", toBoxedJavaType(params[0])))
+				children := []IRNode{
+					Leaf(Identifier, "Consumer"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, toBoxedJavaType(params[0])),
+					Leaf(RightAngle, ">"),
+				}
+				e.fs.AddTree(IRTree(TypeKeyword, TagExpr, children...))
 			} else if len(params) == 2 {
-				e.fs.PushCode(fmt.Sprintf("BiConsumer<%s, %s>", toBoxedJavaType(params[0]), toBoxedJavaType(params[1])))
+				children := []IRNode{
+					Leaf(Identifier, "BiConsumer"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, toBoxedJavaType(params[0])),
+					Leaf(Comma, ", "),
+					Leaf(Identifier, toBoxedJavaType(params[1])),
+					Leaf(RightAngle, ">"),
+				}
+				e.fs.AddTree(IRTree(TypeKeyword, TagExpr, children...))
 			} else {
-				e.fs.PushCode(fmt.Sprintf("Consumer<%s>", toBoxedJavaType(params[0])))
+				children := []IRNode{
+					Leaf(Identifier, "Consumer"),
+					Leaf(LeftAngle, "<"),
+					Leaf(Identifier, toBoxedJavaType(params[0])),
+					Leaf(RightAngle, ">"),
+				}
+				e.fs.AddTree(IRTree(TypeKeyword, TagExpr, children...))
 			}
 		} else {
-			e.fs.PushCode("Runnable")
+			e.fs.AddLeaf("Runnable", KindExpr, nil)
 		}
 	}
 }
@@ -2353,7 +2707,7 @@ func (e *JavaEmitter) PostVisitFuncType(node *ast.FuncType, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, indent int) {
-	e.fs.Reduce(string(PreVisitFuncLitTypeParam))
+	e.fs.CollectForest(string(PreVisitFuncLitTypeParam))
 	// For Java lambdas, omit parameter types and use inference
 	// Rename params that shadow enclosing scope variables (Java doesn't allow this)
 	for _, name := range node.Names {
@@ -2376,43 +2730,43 @@ func (e *JavaEmitter) PostVisitFuncLitTypeParam(node *ast.Field, index int, inde
 			e.lambdaParamRenames[paramName] = newName
 			paramName = newName
 		}
-		e.fs.Push(paramName, TagIdent, nil)
+		e.fs.AddLeaf(paramName, TagIdent, nil)
 	}
 }
 
 func (e *JavaEmitter) PostVisitFuncLitTypeParams(node *ast.FieldList, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncLitTypeParams))
+	tokens := e.fs.CollectForest(string(PreVisitFuncLitTypeParams))
 	var paramNames []string
 	for _, t := range tokens {
-		if t.Tag == TagIdent && t.Content != "" {
-			paramNames = append(paramNames, t.Content)
+		if t.Kind == TagIdent && t.Serialize() != "" {
+			paramNames = append(paramNames, t.Serialize())
 		}
 	}
 	paramsStr := strings.Join(paramNames, ", ")
 	if paramsStr == "" {
 		paramsStr = " "
 	}
-	e.fs.PushCode(paramsStr)
+	e.fs.AddLeaf(paramsStr, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncLitTypeResults(node *ast.FieldList, indent int) {
-	e.fs.Reduce(string(PreVisitFuncLitTypeResults))
+	e.fs.CollectForest(string(PreVisitFuncLitTypeResults))
 }
 
 func (e *JavaEmitter) PostVisitFuncLitBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncLitBody))
-	e.fs.PushCode(bodyCode)
+	bodyCode := e.fs.CollectText(string(PreVisitFuncLitBody))
+	e.fs.AddLeaf(bodyCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncLit))
+	tokens := e.fs.CollectForest(string(PreVisitFuncLit))
 	paramsCode := ""
 	bodyCode := ""
 	if len(tokens) >= 1 {
-		paramsCode = strings.TrimSpace(tokens[0].Content)
+		paramsCode = strings.TrimSpace(tokens[0].Serialize())
 	}
 	if len(tokens) >= 2 {
-		bodyCode = tokens[1].Content
+		bodyCode = tokens[1].Serialize()
 	}
 
 	// Apply lambda param renames to body code.
@@ -2426,7 +2780,15 @@ func (e *JavaEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 		e.lambdaParamRenames = nil
 	}
 
-	e.fs.PushCode(fmt.Sprintf("(%s) -> %s", paramsCode, bodyCode))
+	e.fs.AddTree(IRTree(FuncLitExpression, KindExpr,
+		Leaf(LeftParen, "("),
+		Leaf(Identifier, paramsCode),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		LeafTag(Keyword, "->", TagJava),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, bodyCode),
+	))
 }
 
 // ============================================================
@@ -2434,29 +2796,35 @@ func (e *JavaEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
-	typeCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprType))
-	e.fs.PushCode(typeCode)
+	typeCode := e.fs.CollectText(string(PreVisitTypeAssertExprType))
+	e.fs.AddLeaf(typeCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitTypeAssertExprX))
-	e.fs.PushCode(xCode)
+	xCode := e.fs.CollectText(string(PreVisitTypeAssertExprX))
+	e.fs.AddLeaf(xCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitTypeAssertExpr))
+	tokens := e.fs.CollectForest(string(PreVisitTypeAssertExpr))
 	typeCode := ""
 	xCode := ""
 	if len(tokens) >= 1 {
-		typeCode = tokens[0].Content
+		typeCode = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		xCode = tokens[1].Content
+		xCode = tokens[1].Serialize()
 	}
 	if typeCode != "" {
-		e.fs.PushCode(fmt.Sprintf("((%s)%s)", typeCode, xCode))
+		e.fs.AddTree(IRTree(TypeAssertExpression, KindExpr,
+			Leaf(LeftParen, "(("),
+			Leaf(TypeKeyword, typeCode),
+			Leaf(RightParen, ")"),
+			Leaf(Identifier, xCode),
+			Leaf(RightParen, ")"),
+		))
 	} else {
-		e.fs.PushCode(xCode)
+		e.fs.AddTree(IRTree(TypeAssertExpression, KindExpr, Leaf(Identifier, xCode)))
 	}
 }
 
@@ -2465,8 +2833,8 @@ func (e *JavaEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent i
 // ============================================================
 
 func (e *JavaEmitter) PostVisitStarExpr(node *ast.StarExpr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitStarExpr))
-	e.fs.PushCode(xCode)
+	xCode := e.fs.CollectText(string(PreVisitStarExpr))
+	e.fs.AddTree(IRTree(StarExpression, KindExpr, Leaf(Identifier, xCode)))
 }
 
 // ============================================================
@@ -2474,8 +2842,8 @@ func (e *JavaEmitter) PostVisitStarExpr(node *ast.StarExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitInterfaceType(node *ast.InterfaceType, indent int) {
-	e.fs.Reduce(string(PreVisitInterfaceType))
-	e.fs.Push("Object", TagType, nil)
+	e.fs.CollectForest(string(PreVisitInterfaceType))
+	e.fs.AddTree(IRTree(InterfaceTypeNode, KindType, Leaf(Identifier, "Object")))
 }
 
 // ============================================================
@@ -2502,66 +2870,70 @@ func (e *JavaEmitter) PreVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, i
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeResultsList(node *ast.Field, index int, indent int) {
-	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeResultsList))
-	e.fs.PushCode(typeCode)
+	typeCode := e.fs.CollectText(string(PreVisitFuncDeclSignatureTypeResultsList))
+	e.fs.AddLeaf(typeCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeResults(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeResults))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeResults))
 	var resultTypes []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			resultTypes = append(resultTypes, t.Content)
+		if t.Serialize() != "" {
+			resultTypes = append(resultTypes, t.Serialize())
 		}
 	}
 	if len(resultTypes) == 0 {
-		e.fs.Push("void", TagType, nil)
+		e.fs.AddLeaf("void", TagType, nil)
 	} else if len(resultTypes) == 1 {
-		e.fs.Push(resultTypes[0], TagType, nil)
+		e.fs.AddLeaf(resultTypes[0], TagType, nil)
 	} else {
 		// Multi-return: use Object[] for now
-		e.fs.Push("Object[]", TagType, nil)
+		e.fs.AddLeaf("Object[]", TagType, nil)
 	}
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
-	e.fs.Reduce(string(PreVisitFuncDeclName))
+	e.fs.CollectForest(string(PreVisitFuncDeclName))
 	name := node.Name
-	e.fs.Push(name, TagIdent, nil)
+	e.fs.AddLeaf(name, TagIdent, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
-	typeCode := e.fs.ReduceToCode(string(PreVisitFuncDeclSignatureTypeParamsListType))
-	e.fs.PushCode(typeCode)
+	typeCode := e.fs.CollectText(string(PreVisitFuncDeclSignatureTypeParamsListType))
+	e.fs.AddLeaf(typeCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParamsArgName(node *ast.Ident, index int, indent int) {
-	e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsArgName))
-	e.fs.Push(node.Name, TagIdent, nil)
+	e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParamsArgName))
+	e.fs.AddLeaf(node.Name, TagIdent, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, index int, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParamsList))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParamsList))
 	typeStr := ""
 	var names []string
 	for _, t := range tokens {
-		if t.Tag == TagExpr && typeStr == "" {
-			typeStr = t.Content
-		} else if t.Tag == TagIdent {
-			names = append(names, t.Content)
+		if t.Kind == TagExpr && typeStr == "" {
+			typeStr = t.Serialize()
+		} else if t.Kind == TagIdent {
+			names = append(names, t.Serialize())
 		}
 	}
 	for _, name := range names {
-		e.fs.Push(fmt.Sprintf("%s %s", typeStr, name), TagIdent, nil)
+		e.fs.AddTree(IRTree(Identifier, TagIdent,
+			Leaf(TypeKeyword, typeStr),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, name),
+		))
 	}
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignatureTypeParams))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParams))
 	var paramDecls []string
 	for _, t := range tokens {
-		if t.Tag == TagIdent {
-			paramDecls = append(paramDecls, t.Content)
+		if t.Kind == TagIdent {
+			paramDecls = append(paramDecls, t.Serialize())
 		}
 	}
 	// Track function parameter names for lambda shadowing detection
@@ -2574,30 +2946,45 @@ func (e *JavaEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, i
 			}
 		}
 	}
-	e.fs.PushCode(strings.Join(paramDecls, ", "))
+	e.fs.AddLeaf(strings.Join(paramDecls, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignature))
 	returnType := "void"
 	funcName := ""
 	paramsStr := ""
 	for _, t := range tokens {
-		if t.Tag == TagType && returnType == "void" {
-			returnType = t.Content
-		} else if t.Tag == TagIdent && funcName == "" {
-			funcName = t.Content
-		} else if t.Tag == TagExpr {
-			paramsStr = t.Content
+		if t.Kind == TagType && returnType == "void" {
+			returnType = t.Serialize()
+		} else if t.Kind == TagIdent && funcName == "" {
+			funcName = t.Serialize()
+		} else if t.Kind == TagExpr {
+			paramsStr = t.Serialize()
 		}
 	}
 
 	if funcName == "main" {
-		sig := fmt.Sprintf("\npublic static void main(String[] args)")
-		e.fs.PushCode(sig)
+		e.fs.AddTree(IRTree(Keyword, TagExpr,
+			Leaf(NewLine, "\n"),
+			LeafTag(Keyword, "public static void main", TagJava),
+			Leaf(LeftParen, "("),
+			Leaf(TypeKeyword, "String[]"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, "args"),
+			Leaf(RightParen, ")"),
+		))
 	} else {
-		sig := fmt.Sprintf("\npublic static %s %s(%s)", returnType, funcName, paramsStr)
-		e.fs.PushCode(sig)
+		e.fs.AddTree(IRTree(Keyword, TagExpr,
+			Leaf(NewLine, "\n"),
+			LeafTag(Keyword, "public static ", TagJava),
+			Leaf(TypeKeyword, returnType),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, funcName),
+			Leaf(LeftParen, "("),
+			Leaf(ParameterList, paramsStr),
+			Leaf(RightParen, ")"),
+		))
 	}
 }
 
@@ -2756,24 +3143,24 @@ func (e *JavaEmitter) analyzeClosureCapturesJ(body *ast.BlockStmt, funcParams *a
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.ReduceToCode(string(PreVisitFuncDeclBody))
-	e.fs.PushCode(bodyCode)
+	bodyCode := e.fs.CollectText(string(PreVisitFuncDeclBody))
+	e.fs.AddLeaf(bodyCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
+	tokens := e.fs.CollectForest(string(PreVisitFuncDecl))
 	sigCode := ""
 	bodyCode := ""
 	if len(tokens) >= 1 {
-		sigCode = tokens[0].Content
+		sigCode = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		bodyCode = tokens[1].Content
+		bodyCode = tokens[1].Serialize()
 	}
 	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
 		bodyCode = "{\n" + javaIndent(2) + "ArrayList<String> goany_os_args = new ArrayList<>();\n" + javaIndent(2) + "goany_os_args.add(\"program\");\n" + javaIndent(2) + "goany_os_args.addAll(java.util.Arrays.asList(args));\n" + bodyCode[2:]
 	}
-	e.fs.PushCode(sigCode + " " + bodyCode + "\n")
+	e.fs.AddTree(IRTree(FuncDeclaration, KindDecl, Leaf(Identifier, sigCode+" "+bodyCode+"\n")))
 }
 
 // ============================================================
@@ -2785,7 +3172,7 @@ func (e *JavaEmitter) PreVisitFuncDeclSignatures(indent int) {
 }
 
 func (e *JavaEmitter) PostVisitFuncDeclSignatures(indent int) {
-	e.fs.Reduce(string(PreVisitFuncDeclSignatures))
+	e.fs.CollectForest(string(PreVisitFuncDeclSignatures))
 	e.forwardDecl = false
 }
 
@@ -2798,21 +3185,21 @@ func (e *JavaEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	itemCode := e.fs.ReduceToCode(string(PreVisitBlockStmtList))
-	e.fs.PushCode(itemCode)
+	itemCode := e.fs.CollectText(string(PreVisitBlockStmtList))
+	e.fs.AddLeaf(itemCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
-	var sb strings.Builder
-	sb.WriteString("{\n")
+	tokens := e.fs.CollectForest(string(PreVisitBlockStmt))
+	var children []IRNode
+	children = append(children, Leaf(LeftBrace, "{"), Leaf(NewLine, "\n"))
 	for _, t := range tokens {
-		if t.Content != "" {
-			sb.WriteString(t.Content)
+		if t.Serialize() != "" {
+			children = append(children, Leaf(Identifier, t.Serialize()))
 		}
 	}
-	sb.WriteString(javaIndent(indent/2) + "}")
-	e.fs.PushCode(sb.String())
+	children = append(children, Leaf(WhiteSpace, javaIndent(indent/2)), Leaf(RightBrace, "}"))
+	e.fs.AddTree(IRTree(BlockStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -2826,7 +3213,7 @@ func (e *JavaEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, indent int) {
-	lhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtLhsExpr))
+	lhsCode := e.fs.CollectText(string(PreVisitAssignStmtLhsExpr))
 
 	if indexExpr, ok := node.(*ast.IndexExpr); ok {
 		// Save LHS index info before RHS is visited (RHS may overwrite lastIndexXCode/lastIndexKeyCode)
@@ -2835,49 +3222,49 @@ func (e *JavaEmitter) PostVisitAssignStmtLhsExpr(node ast.Expr, index int, inden
 		if e.isMapTypeExprJ(indexExpr.X) {
 			e.mapAssignVar = e.lhsIndexXCode
 			e.mapAssignKey = e.lhsIndexKeyCode
-			e.fs.PushCode(lhsCode)
+			e.fs.AddLeaf(lhsCode, KindExpr, nil)
 			return
 		}
 	}
-	e.fs.PushCode(lhsCode)
+	e.fs.AddLeaf(lhsCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitAssignStmtLhs(node *ast.AssignStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitAssignStmtLhs))
+	tokens := e.fs.CollectForest(string(PreVisitAssignStmtLhs))
 	var lhsExprs []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			lhsExprs = append(lhsExprs, t.Content)
+		if t.Serialize() != "" {
+			lhsExprs = append(lhsExprs, t.Serialize())
 		}
 	}
-	e.fs.PushCode(strings.Join(lhsExprs, ", "))
+	e.fs.AddLeaf(strings.Join(lhsExprs, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitAssignStmtRhsExpr(node ast.Expr, index int, indent int) {
-	rhsCode := e.fs.ReduceToCode(string(PreVisitAssignStmtRhsExpr))
-	e.fs.PushCode(rhsCode)
+	rhsCode := e.fs.CollectText(string(PreVisitAssignStmtRhsExpr))
+	e.fs.AddLeaf(rhsCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitAssignStmtRhs))
+	tokens := e.fs.CollectForest(string(PreVisitAssignStmtRhs))
 	var rhsExprs []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			rhsExprs = append(rhsExprs, t.Content)
+		if t.Serialize() != "" {
+			rhsExprs = append(rhsExprs, t.Serialize())
 		}
 	}
-	e.fs.PushCode(strings.Join(rhsExprs, ", "))
+	e.fs.AddLeaf(strings.Join(rhsExprs, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitAssignStmt))
+	tokens := e.fs.CollectForest(string(PreVisitAssignStmt))
 	lhsStr := ""
 	rhsStr := ""
 	if len(tokens) >= 1 {
-		lhsStr = tokens[0].Content
+		lhsStr = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
-		rhsStr = tokens[1].Content
+		rhsStr = tokens[1].Serialize()
 	}
 
 	ind := javaIndent(indent / 2)
@@ -2886,7 +3273,11 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if len(node.Lhs) == 1 {
 		if lhsIdent, ok := node.Lhs[0].(*ast.Ident); ok {
 			if comment, ok := PtrLocalComments[lhsIdent.Pos()]; ok {
-				e.fs.PushCode(fmt.Sprintf("%s%s\n", ind, comment))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					Leaf(WhiteSpace, ind),
+					Leaf(LineComment, comment),
+					Leaf(NewLine, "\n"),
+				))
 				return
 			}
 		}
@@ -2925,7 +3316,7 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 
 				lastIdx := len(ops) - 1
-				var sb strings.Builder
+				var children []IRNode
 
 				// Prologue: extract temp variables for intermediate map accesses
 				for i, op := range ops {
@@ -2934,8 +3325,26 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						if op.keyCastPfx != "" {
 							key = op.keyCastPfx + key + op.keyCastSfx
 						}
-						sb.WriteString(fmt.Sprintf("%svar %s = (%s)hmap.hashMapGet(%s, %s);\n",
-							ind, op.tempVarName, op.valueJavaType, op.mapVarExpr, key))
+						children = append(children,
+							Leaf(WhiteSpace, ind),
+							LeafTag(Keyword, "var ", TagJava),
+							Leaf(Identifier, op.tempVarName),
+							Leaf(WhiteSpace, " "),
+							Leaf(Assignment, "="),
+							Leaf(WhiteSpace, " "),
+							Leaf(LeftParen, "("),
+							Leaf(TypeKeyword, op.valueJavaType),
+							Leaf(RightParen, ")"),
+							Leaf(Identifier, "hmap.hashMapGet"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, op.mapVarExpr),
+							Leaf(Comma, ","),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, key),
+							Leaf(RightParen, ")"),
+							Leaf(Semicolon, ";"),
+							Leaf(NewLine, "\n"),
+						)
 					}
 				}
 
@@ -2954,13 +3363,56 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						idxExpr := lastOp.mapVarExpr[lastGetIdx+5 : closeParen]
 						newMapVal := fmt.Sprintf("hmap.hashMapSet(%s, %s, %s)",
 							lastOp.mapVarExpr, key, rhsStr)
-						sb.WriteString(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, parentExpr, idxExpr, newMapVal))
+						children = append(children,
+							Leaf(WhiteSpace, ind),
+							Leaf(Identifier, parentExpr),
+							Leaf(Dot, "."),
+							Leaf(Identifier, "set"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, idxExpr),
+							Leaf(Comma, ","),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, newMapVal),
+							Leaf(RightParen, ")"),
+							Leaf(Semicolon, ";"),
+							Leaf(NewLine, "\n"),
+						)
 					} else {
-						sb.WriteString(fmt.Sprintf("%s%s = hmap.hashMapSet(%s, %s, %s);\n",
-							ind, lastOp.mapVarExpr, lastOp.mapVarExpr, key, rhsStr))
+						children = append(children,
+							Leaf(WhiteSpace, ind),
+							Leaf(Identifier, lastOp.mapVarExpr),
+							Leaf(WhiteSpace, " "),
+							Leaf(Assignment, "="),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, "hmap.hashMapSet"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, lastOp.mapVarExpr),
+							Leaf(Comma, ","),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, key),
+							Leaf(Comma, ","),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, rhsStr),
+							Leaf(RightParen, ")"),
+							Leaf(Semicolon, ";"),
+							Leaf(NewLine, "\n"),
+						)
 					}
 				} else {
-					sb.WriteString(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, lastOp.mapVarExpr, lastOp.keyExpr, rhsStr))
+					children = append(children,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, lastOp.mapVarExpr),
+						Leaf(Dot, "."),
+						Leaf(Identifier, "set"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, lastOp.keyExpr),
+						Leaf(Comma, ","),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, rhsStr),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					)
 				}
 
 				// Epilogue: write back intermediate maps in reverse
@@ -2971,11 +3423,28 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						if op.keyCastPfx != "" {
 							key = op.keyCastPfx + key + op.keyCastSfx
 						}
-						sb.WriteString(fmt.Sprintf("%s%s = hmap.hashMapSet(%s, %s, %s);\n",
-							ind, op.mapVarExpr, op.mapVarExpr, key, op.tempVarName))
+						children = append(children,
+							Leaf(WhiteSpace, ind),
+							Leaf(Identifier, op.mapVarExpr),
+							Leaf(WhiteSpace, " "),
+							Leaf(Assignment, "="),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, "hmap.hashMapSet"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, op.mapVarExpr),
+							Leaf(Comma, ","),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, key),
+							Leaf(Comma, ","),
+							Leaf(WhiteSpace, " "),
+							Leaf(Identifier, op.tempVarName),
+							Leaf(RightParen, ")"),
+							Leaf(Semicolon, ";"),
+							Leaf(NewLine, "\n"),
+						)
 					}
 				}
-				e.fs.PushCode(sb.String())
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt, children...))
 				e.mapAssignVar = ""
 				e.mapAssignKey = ""
 				return
@@ -3012,7 +3481,19 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 							valStr = "(short)(" + valStr + ")"
 						}
 					}
-					e.fs.PushCode(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, xCode, idxCode, valStr))
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, xCode),
+						Leaf(Dot, "."),
+						Leaf(Identifier, "set"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, idxCode),
+						Leaf(Comma, ", "),
+						Leaf(Identifier, valStr),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
 					return
 				}
 			}
@@ -3036,12 +3517,40 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			parentExpr := e.mapAssignVar[:lastGetIdx]
 			closeParen := strings.LastIndex(e.mapAssignVar, ")")
 			idxExpr := e.mapAssignVar[lastGetIdx+5 : closeParen]
-			newMapVal := fmt.Sprintf("hmap.hashMapSet(%s, %s%s%s, %s)",
-				e.mapAssignVar, pfx, e.mapAssignKey, sfx, rhsStr)
-			e.fs.PushCode(fmt.Sprintf("%s%s.set(%s, %s);\n", ind, parentExpr, idxExpr, newMapVal))
+			newMapVal := "hmap.hashMapSet(" + e.mapAssignVar + ", " + pfx + e.mapAssignKey + sfx + ", " + rhsStr + ")"
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, parentExpr),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "set"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, idxExpr),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, newMapVal),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("%s%s = hmap.hashMapSet(%s, %s%s%s, %s);\n",
-				ind, e.mapAssignVar, e.mapAssignVar, pfx, e.mapAssignKey, sfx, rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, e.mapAssignVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap.hashMapSet"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, e.mapAssignVar),
+				Leaf(Comma, ","),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, pfx+e.mapAssignKey+sfx),
+				Leaf(Comma, ","),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		}
 		e.mapAssignVar = ""
 		e.mapAssignKey = ""
@@ -3070,15 +3579,95 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					}
 				}
 				if tokStr == ":=" {
-					e.fs.PushCode(fmt.Sprintf("%svar %s = hmap.hashMapContains(%s, %s%s%s);\n",
-						ind, okName, mapName, pfx, keyStr, sfx))
-					e.fs.PushCode(fmt.Sprintf("%svar %s = %s ? (%s)hmap.hashMapGet(%s, %s%s%s) : %s;\n",
-						ind, valName, okName, valType, mapName, pfx, keyStr, sfx, zeroVal))
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						LeafTag(Keyword, "var ", TagJava),
+						Leaf(Identifier, okName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "hmap.hashMapContains"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, mapName),
+						Leaf(Comma, ","),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, pfx+keyStr+sfx),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						LeafTag(Keyword, "var ", TagJava),
+						Leaf(Identifier, valName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, okName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "?"),
+						Leaf(WhiteSpace, " "),
+						Leaf(LeftParen, "("),
+						Leaf(TypeKeyword, valType),
+						Leaf(RightParen, ")"),
+						Leaf(Identifier, "hmap.hashMapGet"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, mapName),
+						Leaf(Comma, ","),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, pfx+keyStr+sfx),
+						Leaf(RightParen, ")"),
+						Leaf(WhiteSpace, " "),
+						Leaf(Colon, ":"),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, zeroVal),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
 				} else {
-					e.fs.PushCode(fmt.Sprintf("%s%s = hmap.hashMapContains(%s, %s%s%s);\n",
-						ind, okName, mapName, pfx, keyStr, sfx))
-					e.fs.PushCode(fmt.Sprintf("%s%s = %s ? (%s)hmap.hashMapGet(%s, %s%s%s) : %s;\n",
-						ind, valName, okName, valType, mapName, pfx, keyStr, sfx, zeroVal))
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, okName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "hmap.hashMapContains"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, mapName),
+						Leaf(Comma, ","),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, pfx+keyStr+sfx),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, valName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, okName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "?"),
+						Leaf(WhiteSpace, " "),
+						Leaf(LeftParen, "("),
+						Leaf(TypeKeyword, valType),
+						Leaf(RightParen, ")"),
+						Leaf(Identifier, "hmap.hashMapGet"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, mapName),
+						Leaf(Comma, ","),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, pfx+keyStr+sfx),
+						Leaf(RightParen, ")"),
+						Leaf(WhiteSpace, " "),
+						Leaf(Colon, ":"),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, zeroVal),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
 				}
 				return
 			}
@@ -3100,13 +3689,79 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			boxedAssertType := toBoxedType(assertType)
 			xExpr := exprToString(typeAssert.X)
 			if tokStr == ":=" {
-				e.fs.PushCode(fmt.Sprintf("%svar %s = %s instanceof %s;\n", ind, okName, xExpr, boxedAssertType))
-				e.fs.PushCode(fmt.Sprintf("%svar %s = %s ? (%s)%s : null;\n",
-					ind, valName, okName, assertType, xExpr))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					Leaf(WhiteSpace, ind),
+					LeafTag(Keyword, "var ", TagJava),
+					Leaf(Identifier, okName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, xExpr),
+					Leaf(WhiteSpace, " "),
+					LeafTag(Keyword, "instanceof", TagJava),
+					Leaf(WhiteSpace, " "),
+					Leaf(TypeKeyword, boxedAssertType),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					Leaf(WhiteSpace, ind),
+					LeafTag(Keyword, "var ", TagJava),
+					Leaf(Identifier, valName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, okName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "?"),
+					Leaf(WhiteSpace, " "),
+					Leaf(LeftParen, "("),
+					Leaf(TypeKeyword, assertType),
+					Leaf(RightParen, ")"),
+					Leaf(Identifier, xExpr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Colon, ":"),
+					Leaf(WhiteSpace, " "),
+					LeafTag(Keyword, "null", TagJava),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				))
 			} else {
-				e.fs.PushCode(fmt.Sprintf("%s%s = %s instanceof %s;\n", ind, okName, xExpr, boxedAssertType))
-				e.fs.PushCode(fmt.Sprintf("%s%s = %s ? (%s)%s : null;\n",
-					ind, valName, okName, assertType, xExpr))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					Leaf(WhiteSpace, ind),
+					Leaf(Identifier, okName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, xExpr),
+					Leaf(WhiteSpace, " "),
+					LeafTag(Keyword, "instanceof", TagJava),
+					Leaf(WhiteSpace, " "),
+					Leaf(TypeKeyword, boxedAssertType),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					Leaf(WhiteSpace, ind),
+					Leaf(Identifier, valName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, okName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "?"),
+					Leaf(WhiteSpace, " "),
+					Leaf(LeftParen, "("),
+					Leaf(TypeKeyword, assertType),
+					Leaf(RightParen, ")"),
+					Leaf(Identifier, xExpr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Colon, ":"),
+					Leaf(WhiteSpace, " "),
+					LeafTag(Keyword, "null", TagJava),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				))
 			}
 			return
 		}
@@ -3189,9 +3844,19 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			return fmt.Sprintf("(%s)%s", javaType, arrExpr)
 		}
 
-		var sb strings.Builder
+		var children []IRNode
 		if tokStr == ":=" {
-			sb.WriteString(fmt.Sprintf("%svar %s = %s;\n", ind, tmpVar, rhsStr))
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, tmpVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 			for i, lhs := range node.Lhs {
 				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
 					continue
@@ -3201,13 +3866,46 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				castExpr := genCast(goType, fmt.Sprintf("%s[%d]", tmpVar, i))
 				// Check if this LHS var is closure-captured
 				if ident, ok := lhs.(*ast.Ident); ok && e.closureCapturedMutVars != nil && e.closureCapturedMutVars[ident.Name] {
-					sb.WriteString(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, lhsName, castExpr))
+					children = append(children,
+						Leaf(WhiteSpace, ind),
+						Leaf(TypeKeyword, "Object[]"),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, lhsName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(LeftBrace, "{"),
+						Leaf(Identifier, castExpr),
+						Leaf(RightBrace, "}"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					)
 				} else {
-					sb.WriteString(fmt.Sprintf("%svar %s = %s;\n", ind, lhsName, castExpr))
+					children = append(children,
+						Leaf(WhiteSpace, ind),
+						LeafTag(Keyword, "var ", TagJava),
+						Leaf(Identifier, lhsName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, castExpr),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					)
 				}
 			}
 		} else {
-			sb.WriteString(fmt.Sprintf("%svar %s = %s;\n", ind, tmpVar, rhsStr))
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, tmpVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 			for i, lhs := range node.Lhs {
 				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == "_" {
 					continue
@@ -3217,13 +3915,34 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				castExpr := genCast(goType, fmt.Sprintf("%s[%d]", tmpVar, i))
 				// Check if this LHS var is closure-captured
 				if ident, ok := lhs.(*ast.Ident); ok && e.closureCapturedMutVars != nil && e.closureCapturedMutVars[ident.Name] {
-					sb.WriteString(fmt.Sprintf("%s%s[0] = %s;\n", ind, lhsName, castExpr))
+					children = append(children,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, lhsName),
+						Leaf(LeftBracket, "["),
+						Leaf(NumberLiteral, "0"),
+						Leaf(RightBracket, "]"),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, castExpr),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					)
 				} else {
-					sb.WriteString(fmt.Sprintf("%s%s = %s;\n", ind, lhsName, castExpr))
+					children = append(children,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, lhsName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, castExpr),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					)
 				}
 			}
 		}
-		e.fs.PushCode(sb.String())
+		e.fs.AddTree(IRTree(AssignStatement, KindStmt, children...))
 		return
 	}
 
@@ -3265,12 +3984,39 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	case ":=":
 		if isClosureCaptured {
 			// Declaration of closure-captured variable: Object[] name = {rhsStr};
-			e.fs.PushCode(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, closureCapturedName, rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(TypeKeyword, "Object[]"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, closureCapturedName),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftBrace, "{"),
+				Leaf(Identifier, rhsStr),
+				Leaf(RightBrace, "}"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		} else if narrowCast != "" {
 			// Use explicit type for narrow types
 			lhsType := e.getExprGoTypeJ(node.Lhs[0])
 			javaType := getJavaPrimTypeName(lhsType)
-			e.fs.PushCode(fmt.Sprintf("%s%s %s = %s(%s);\n", ind, javaType, lhsStr, narrowCast, rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(TypeKeyword, javaType),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, lhsStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, narrowCast),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, rhsStr),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		} else {
 			// Check if RHS is a func literal — Java can't infer lambda type with var
 			usedExplicitType := false
@@ -3289,35 +4035,124 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					if lhsType != nil {
 						if sig, ok := lhsType.Underlying().(*types.Signature); ok {
 							funcType := e.getJavaFuncInterfaceType(sig)
-							e.fs.PushCode(fmt.Sprintf("%s%s %s = %s;\n", ind, funcType, lhsStr, rhsStr))
+							e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+								Leaf(WhiteSpace, ind),
+								Leaf(TypeKeyword, funcType),
+								Leaf(WhiteSpace, " "),
+								Leaf(Identifier, lhsStr),
+								Leaf(WhiteSpace, " "),
+								Leaf(Assignment, "="),
+								Leaf(WhiteSpace, " "),
+								Leaf(Identifier, rhsStr),
+								Leaf(Semicolon, ";"),
+								Leaf(NewLine, "\n"),
+							))
 							usedExplicitType = true
 						}
 					}
 				}
 			}
 			if !usedExplicitType {
-				e.fs.PushCode(fmt.Sprintf("%svar %s = %s;\n", ind, lhsStr, rhsStr))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					Leaf(WhiteSpace, ind),
+					LeafTag(Keyword, "var ", TagJava),
+					Leaf(Identifier, lhsStr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, rhsStr),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				))
 			}
 		}
 	case "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=":
 		if isClosureCaptured {
 			// Compound assignment to captured var: name[0] = ((Type)name[0]) op rhsStr
 			lhs := closureUnwrapLhs(lhsStr)
-			e.fs.PushCode(fmt.Sprintf("%s%s = %s %s %s;\n", ind, lhs, lhsStr, tokStr[:len(tokStr)-1], rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, lhs),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, lhsStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, tokStr[:len(tokStr)-1]),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		} else if narrowCast != "" {
-			e.fs.PushCode(fmt.Sprintf("%s%s = %s(%s %s %s);\n", ind, lhsStr, narrowCast, lhsStr, tokStr[:len(tokStr)-1], rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, lhsStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, narrowCast),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, lhsStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, tokStr[:len(tokStr)-1]),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("%s%s %s %s;\n", ind, lhsStr, tokStr, rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, lhsStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, tokStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		}
 	default:
 		if isClosureCaptured {
 			// Simple assignment to captured var: name[0] = rhsStr
 			lhs := closureUnwrapLhs(lhsStr)
-			e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, lhs, rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, lhs),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		} else if narrowCast != "" {
-			e.fs.PushCode(fmt.Sprintf("%s%s = %s(%s);\n", ind, lhsStr, narrowCast, rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, lhsStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, narrowCast),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, rhsStr),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		} else {
-			e.fs.PushCode(fmt.Sprintf("%s%s = %s;\n", ind, lhsStr, rhsStr))
+			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				Leaf(WhiteSpace, ind),
+				Leaf(Identifier, lhsStr),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, rhsStr),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			))
 		}
 	}
 }
@@ -3331,10 +4166,10 @@ func (e *JavaEmitter) PreVisitDeclStmt(node *ast.DeclStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index int, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitDeclStmtValueSpecType))
+	tokens := e.fs.CollectForest(string(PreVisitDeclStmtValueSpecType))
 	typeStr := ""
 	for _, t := range tokens {
-		typeStr += t.Content
+		typeStr += t.Serialize()
 	}
 	var goType types.Type
 	if e.pkg != nil && e.pkg.TypesInfo != nil && index < len(node.Names) {
@@ -3342,24 +4177,24 @@ func (e *JavaEmitter) PostVisitDeclStmtValueSpecType(node *ast.ValueSpec, index 
 			goType = obj.Type()
 		}
 	}
-	e.fs.Push(typeStr, TagType, goType)
+	e.fs.AddLeaf(typeStr, TagType, goType)
 }
 
 func (e *JavaEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int, indent int) {
-	e.fs.Reduce(string(PreVisitDeclStmtValueSpecNames))
-	e.fs.Push(node.Name, TagIdent, nil)
+	e.fs.CollectForest(string(PreVisitDeclStmtValueSpecNames))
+	e.fs.AddLeaf(node.Name, TagIdent, nil)
 }
 
 func (e *JavaEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
-	valCode := e.fs.ReduceToCode(string(PreVisitDeclStmtValueSpecValue))
-	e.fs.Push(valCode, TagExpr, nil)
+	valCode := e.fs.CollectText(string(PreVisitDeclStmtValueSpecValue))
+	e.fs.AddLeaf(valCode, TagExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
+	tokens := e.fs.CollectForest(string(PreVisitDeclStmt))
 	ind := javaIndent(indent / 2)
 
-	var sb strings.Builder
+	var children []IRNode
 	i := 0
 	for i < len(tokens) {
 		typeStr := ""
@@ -3367,17 +4202,17 @@ func (e *JavaEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		nameStr := ""
 		valueStr := ""
 
-		if i < len(tokens) && tokens[i].Tag == TagType {
-			typeStr = tokens[i].Content
+		if i < len(tokens) && tokens[i].Kind == TagType {
+			typeStr = tokens[i].Serialize()
 			goType = tokens[i].GoType
 			i++
 		}
-		if i < len(tokens) && tokens[i].Tag == TagIdent {
-			nameStr = tokens[i].Content
+		if i < len(tokens) && tokens[i].Kind == TagIdent {
+			nameStr = tokens[i].Serialize()
 			i++
 		}
-		if i < len(tokens) && tokens[i].Tag == TagExpr {
-			valueStr = tokens[i].Content
+		if i < len(tokens) && tokens[i].Kind == TagExpr {
+			valueStr = tokens[i].Serialize()
 			i++
 		}
 
@@ -3390,9 +4225,33 @@ func (e *JavaEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 
 		if valueStr != "" {
 			if isCaptured {
-				sb.WriteString(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, nameStr, valueStr))
+				children = append(children,
+					Leaf(WhiteSpace, ind),
+					Leaf(TypeKeyword, "Object[]"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, nameStr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(LeftBrace, "{"),
+					Leaf(Identifier, valueStr),
+					Leaf(RightBrace, "}"),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			} else {
-				sb.WriteString(fmt.Sprintf("%s%s %s = %s;\n", ind, typeStr, nameStr, valueStr))
+				children = append(children,
+					Leaf(WhiteSpace, ind),
+					Leaf(TypeKeyword, typeStr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, nameStr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, valueStr),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			}
 		} else {
 			// No initializer - generate default value
@@ -3429,13 +4288,37 @@ func (e *JavaEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 				}
 			}
 			if isCaptured {
-				sb.WriteString(fmt.Sprintf("%sObject[] %s = {%s};\n", ind, nameStr, defaultVal))
+				children = append(children,
+					Leaf(WhiteSpace, ind),
+					Leaf(TypeKeyword, "Object[]"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, nameStr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(LeftBrace, "{"),
+					Leaf(Identifier, defaultVal),
+					Leaf(RightBrace, "}"),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			} else {
-				sb.WriteString(fmt.Sprintf("%s%s %s = %s;\n", ind, typeStr, nameStr, defaultVal))
+				children = append(children,
+					Leaf(WhiteSpace, ind),
+					Leaf(TypeKeyword, typeStr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, nameStr),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, defaultVal),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			}
 		}
 	}
-	e.fs.PushCode(sb.String())
+	e.fs.AddTree(IRTree(DeclStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -3447,37 +4330,59 @@ func (e *JavaEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitReturnStmtResult(node ast.Expr, index int, indent int) {
-	resultCode := e.fs.ReduceToCode(string(PreVisitReturnStmtResult))
-	e.fs.PushCode(resultCode)
+	resultCode := e.fs.CollectText(string(PreVisitReturnStmtResult))
+	e.fs.AddLeaf(resultCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitReturnStmt))
+	tokens := e.fs.CollectForest(string(PreVisitReturnStmt))
 	ind := javaIndent(indent / 2)
 
 	if len(tokens) == 0 {
-		e.fs.PushCode(ind + "return;\n")
+		e.fs.AddTree(IRTree(ReturnStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(ReturnKeyword, "return"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
 	} else if len(tokens) == 1 {
-		retExpr := tokens[0].Content
+		retExpr := tokens[0].Serialize()
 		// Add narrowing cast if return type is narrower than int
 		if e.funcReturnType != nil {
 			if basic, ok := e.funcReturnType.Underlying().(*types.Basic); ok {
 				switch basic.Kind() {
 				case types.Int8, types.Uint8:
-					retExpr = fmt.Sprintf("(byte)(%s)", retExpr)
+					retExpr = "(byte)(" + retExpr + ")"
 				case types.Int16:
-					retExpr = fmt.Sprintf("(short)(%s)", retExpr)
+					retExpr = "(short)(" + retExpr + ")"
 				}
 			}
 		}
-		e.fs.PushCode(fmt.Sprintf("%sreturn %s;\n", ind, retExpr))
+		e.fs.AddTree(IRTree(ReturnStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(ReturnKeyword, "return"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, retExpr),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
 	} else {
 		// Multi-value return: return new Object[]{a, b}
 		var vals []string
 		for _, t := range tokens {
-			vals = append(vals, t.Content)
+			vals = append(vals, t.Serialize())
 		}
-		e.fs.PushCode(fmt.Sprintf("%sreturn new Object[]{%s};\n", ind, strings.Join(vals, ", ")))
+		e.fs.AddTree(IRTree(ReturnStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(ReturnKeyword, "return"),
+			Leaf(WhiteSpace, " "),
+			LeafTag(Keyword, "new Object[]", TagJava),
+			Leaf(LeftBrace, "{"),
+			Leaf(Identifier, strings.Join(vals, ", ")),
+			Leaf(RightBrace, "}"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
 	}
 }
 
@@ -3490,18 +4395,23 @@ func (e *JavaEmitter) PreVisitExprStmt(node *ast.ExprStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitExprStmtX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitExprStmtX))
-	e.fs.PushCode(xCode)
+	xCode := e.fs.CollectText(string(PreVisitExprStmtX))
+	e.fs.AddLeaf(xCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitExprStmt))
+	tokens := e.fs.CollectForest(string(PreVisitExprStmt))
 	code := ""
 	if len(tokens) >= 1 {
-		code = tokens[0].Content
+		code = tokens[0].Serialize()
 	}
 	ind := javaIndent(indent / 2)
-	e.fs.PushCode(ind + code + ";\n")
+	e.fs.AddTree(IRTree(ExprStatement, KindStmt,
+		Leaf(WhiteSpace, ind),
+		Leaf(Identifier, code),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+	))
 }
 
 // ============================================================
@@ -3517,23 +4427,23 @@ func (e *JavaEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
-	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtInit))
+	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.CollectText(string(PreVisitIfStmtInit))
 }
 
 func (e *JavaEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtCond))
+	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.CollectText(string(PreVisitIfStmtCond))
 }
 
 func (e *JavaEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
-	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtBody))
+	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.CollectText(string(PreVisitIfStmtBody))
 }
 
 func (e *JavaEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.ReduceToCode(string(PreVisitIfStmtElse))
+	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.CollectText(string(PreVisitIfStmtElse))
 }
 
 func (e *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
-	e.fs.Reduce(string(PreVisitIfStmt))
+	e.fs.CollectForest(string(PreVisitIfStmt))
 	ind := javaIndent(indent / 2)
 
 	n := len(e.ifInitStack)
@@ -3546,27 +4456,61 @@ func (e *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.ifBodyStack = e.ifBodyStack[:n-1]
 	e.ifElseStack = e.ifElseStack[:n-1]
 
-	var sb strings.Builder
+	var children []IRNode
 	if initCode != "" {
-		sb.WriteString(fmt.Sprintf("%s{\n", ind))
-		sb.WriteString(initCode)
-		sb.WriteString(fmt.Sprintf("%sif (%s) %s", ind, condCode, bodyCode))
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(LeftBrace, "{"),
+			Leaf(NewLine, "\n"),
+			Leaf(Identifier, initCode),
+			Leaf(WhiteSpace, ind),
+			Leaf(IfKeyword, "if"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, condCode),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, bodyCode),
+		)
 	} else {
-		sb.WriteString(fmt.Sprintf("%sif (%s) %s", ind, condCode, bodyCode))
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(IfKeyword, "if"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, condCode),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, bodyCode),
+		)
 	}
 	if elseCode != "" {
 		trimmed := strings.TrimLeft(elseCode, " \t\n")
 		if strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(") {
-			sb.WriteString(" else " + trimmed)
+			children = append(children,
+				Leaf(WhiteSpace, " "),
+				Leaf(ElseKeyword, "else"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, trimmed),
+			)
 		} else {
-			sb.WriteString(" else " + elseCode)
+			children = append(children,
+				Leaf(WhiteSpace, " "),
+				Leaf(ElseKeyword, "else"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, elseCode),
+			)
 		}
 	}
-	sb.WriteString("\n")
+	children = append(children, Leaf(NewLine, "\n"))
 	if initCode != "" {
-		sb.WriteString(fmt.Sprintf("%s}\n", ind))
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(RightBrace, "}"),
+			Leaf(NewLine, "\n"),
+		)
 	}
-	e.fs.PushCode(sb.String())
+	e.fs.AddTree(IRTree(IfStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -3581,25 +4525,25 @@ func (e *JavaEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
-	initCode := e.fs.ReduceToCode(string(PreVisitForStmtInit))
+	initCode := e.fs.CollectText(string(PreVisitForStmtInit))
 	initCode = strings.TrimRight(initCode, ";\n \t")
 	initCode = strings.TrimLeft(initCode, " \t")
 	e.forInitStack[len(e.forInitStack)-1] = initCode
 }
 
 func (e *JavaEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
-	e.forCondStack[len(e.forCondStack)-1] = e.fs.ReduceToCode(string(PreVisitForStmtCond))
+	e.forCondStack[len(e.forCondStack)-1] = e.fs.CollectText(string(PreVisitForStmtCond))
 }
 
 func (e *JavaEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
-	postCode := e.fs.ReduceToCode(string(PreVisitForStmtPost))
+	postCode := e.fs.CollectText(string(PreVisitForStmtPost))
 	postCode = strings.TrimRight(postCode, ";\n \t")
 	postCode = strings.TrimLeft(postCode, " \t")
 	e.forPostStack[len(e.forPostStack)-1] = postCode
 }
 
 func (e *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
-	bodyCode := e.fs.ReduceToCode(string(PreVisitForStmt))
+	bodyCode := e.fs.CollectText(string(PreVisitForStmt))
 	ind := javaIndent(indent / 2)
 
 	n := len(e.forInitStack)
@@ -3611,16 +4555,50 @@ func (e *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	e.forPostStack = e.forPostStack[:n-1]
 
 	if node.Init == nil && node.Cond == nil && node.Post == nil {
-		e.fs.PushCode(fmt.Sprintf("%swhile (true) %s\n", ind, bodyCode))
+		e.fs.AddTree(IRTree(ForStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(WhileKeyword, "while"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(BooleanLiteral, "true"),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, bodyCode),
+			Leaf(NewLine, "\n"),
+		))
 		return
 	}
 
 	if node.Init == nil && node.Post == nil && node.Cond != nil {
-		e.fs.PushCode(fmt.Sprintf("%swhile (%s) %s\n", ind, condCode, bodyCode))
+		e.fs.AddTree(IRTree(ForStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(WhileKeyword, "while"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, condCode),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, bodyCode),
+			Leaf(NewLine, "\n"),
+		))
 		return
 	}
 
-	e.fs.PushCode(fmt.Sprintf("%sfor (%s; %s; %s) %s\n", ind, initCode, condCode, postCode, bodyCode))
+	e.fs.AddTree(IRTree(ForStatement, KindStmt,
+		Leaf(WhiteSpace, ind),
+		Leaf(ForKeyword, "for"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftParen, "("),
+		Leaf(Identifier, initCode),
+		Leaf(Semicolon, "; "),
+		Leaf(Identifier, condCode),
+		Leaf(Semicolon, "; "),
+		Leaf(Identifier, postCode),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, bodyCode),
+		Leaf(NewLine, "\n"),
+	))
 }
 
 // ============================================================
@@ -3632,22 +4610,22 @@ func (e *JavaEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
-	keyCode := e.fs.ReduceToCode(string(PreVisitRangeStmtKey))
-	e.fs.Push(keyCode, TagIdent, nil)
+	keyCode := e.fs.CollectText(string(PreVisitRangeStmtKey))
+	e.fs.AddLeaf(keyCode, TagIdent, nil)
 }
 
 func (e *JavaEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
-	valCode := e.fs.ReduceToCode(string(PreVisitRangeStmtValue))
-	e.fs.Push(valCode, TagIdent, nil)
+	valCode := e.fs.CollectText(string(PreVisitRangeStmtValue))
+	e.fs.AddLeaf(valCode, TagIdent, nil)
 }
 
 func (e *JavaEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitRangeStmtX))
-	e.fs.PushCode(xCode)
+	xCode := e.fs.CollectText(string(PreVisitRangeStmtX))
+	e.fs.AddLeaf(xCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitRangeStmt))
+	tokens := e.fs.CollectForest(string(PreVisitRangeStmt))
 	ind := javaIndent(indent / 2)
 
 	keyCode := ""
@@ -3657,23 +4635,23 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 
 	idx := 0
 	if node.Key != nil {
-		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
-			keyCode = tokens[idx].Content
+		if idx < len(tokens) && tokens[idx].Kind == TagIdent {
+			keyCode = tokens[idx].Serialize()
 			idx++
 		}
 	}
 	if node.Value != nil {
-		if idx < len(tokens) && tokens[idx].Tag == TagIdent {
-			valCode = tokens[idx].Content
+		if idx < len(tokens) && tokens[idx].Kind == TagIdent {
+			valCode = tokens[idx].Serialize()
 			idx++
 		}
 	}
 	if idx < len(tokens) {
-		xCode = tokens[idx].Content
+		xCode = tokens[idx].Serialize()
 		idx++
 	}
 	if idx < len(tokens) {
-		bodyCode = tokens[idx].Content
+		bodyCode = tokens[idx].Serialize()
 	}
 	if node.Key == nil && valCode != "" {
 		keyCode = "_"
@@ -3698,30 +4676,190 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		loopIdx := fmt.Sprintf("_mi%d", e.rangeVarCounter)
 		e.rangeVarCounter++
 		if valCode != "" && valCode != "_" {
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("%s{\n", ind))
-			sb.WriteString(fmt.Sprintf("%s  var %s = hmap.hashMapKeys(%s);\n", ind, keysVar, xCode))
-			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			var children []IRNode
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"  "),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, keysVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap.hashMapKeys"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"  "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "<"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keysVar),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "size"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopIdx),
+				Leaf(Identifier, "++"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+			)
 			if keyCode != "_" {
-				sb.WriteString(fmt.Sprintf("%s    var %s = (%s)%s.get(%s);\n", ind, keyCode, keyType, keysVar, loopIdx))
+				children = append(children,
+					Leaf(WhiteSpace, ind+"    "),
+					LeafTag(Keyword, "var ", TagJava),
+					Leaf(Identifier, keyCode),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(LeftParen, "("),
+					Leaf(TypeKeyword, keyType),
+					Leaf(RightParen, ")"),
+					Leaf(Identifier, keysVar),
+					Leaf(Dot, "."),
+					Leaf(Identifier, "get"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, loopIdx),
+					Leaf(RightParen, ")"),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			}
-			sb.WriteString(fmt.Sprintf("%s    var %s = (%s)hmap.hashMapGet(%s, %s.get(%s));\n", ind, valCode, valType, xCode, keysVar, loopIdx))
-			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
-			sb.WriteString(fmt.Sprintf("%s  }\n", ind))
-			sb.WriteString(fmt.Sprintf("%s}\n", ind))
-			e.fs.PushCode(sb.String())
+			children = append(children,
+				Leaf(WhiteSpace, ind+"    "),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, valCode),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				Leaf(TypeKeyword, valType),
+				Leaf(RightParen, ")"),
+				Leaf(Identifier, "hmap.hashMapGet"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Comma, ","),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keysVar),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "get"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, loopIdx),
+				Leaf(RightParen, ")"),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(Identifier, bodyCode),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"  "),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+			)
+			e.fs.AddTree(IRTree(RangeStatement, KindStmt, children...))
 		} else {
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("%s{\n", ind))
-			sb.WriteString(fmt.Sprintf("%s  var %s = hmap.hashMapKeys(%s);\n", ind, keysVar, xCode))
-			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s.size(); %s++) {\n", ind, loopIdx, loopIdx, keysVar, loopIdx))
+			var children []IRNode
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"  "),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, keysVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap.hashMapKeys"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"  "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopIdx),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "<"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keysVar),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "size"),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopIdx),
+				Leaf(Identifier, "++"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftBrace, "{"),
+				Leaf(NewLine, "\n"),
+			)
 			if keyCode != "_" {
-				sb.WriteString(fmt.Sprintf("%s    var %s = (%s)%s.get(%s);\n", ind, keyCode, keyType, keysVar, loopIdx))
+				children = append(children,
+					Leaf(WhiteSpace, ind+"    "),
+					LeafTag(Keyword, "var ", TagJava),
+					Leaf(Identifier, keyCode),
+					Leaf(WhiteSpace, " "),
+					Leaf(Assignment, "="),
+					Leaf(WhiteSpace, " "),
+					Leaf(LeftParen, "("),
+					Leaf(TypeKeyword, keyType),
+					Leaf(RightParen, ")"),
+					Leaf(Identifier, keysVar),
+					Leaf(Dot, "."),
+					Leaf(Identifier, "get"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, loopIdx),
+					Leaf(RightParen, ")"),
+					Leaf(Semicolon, ";"),
+					Leaf(NewLine, "\n"),
+				)
 			}
-			sb.WriteString(fmt.Sprintf("%s    %s\n", ind, bodyCode))
-			sb.WriteString(fmt.Sprintf("%s  }\n", ind))
-			sb.WriteString(fmt.Sprintf("%s}\n", ind))
-			e.fs.PushCode(sb.String())
+			children = append(children,
+				Leaf(WhiteSpace, ind+"    "),
+				Leaf(Identifier, bodyCode),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind+"  "),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+				Leaf(WhiteSpace, ind),
+				Leaf(RightBrace, "}"),
+				Leaf(NewLine, "\n"),
+			)
+			e.fs.AddTree(IRTree(RangeStatement, KindStmt, children...))
 		}
 		return
 	}
@@ -3741,9 +4879,21 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	if _, isCompLit := node.X.(*ast.CompositeLit); isCompLit {
 		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)
 		e.rangeVarCounter++
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("%s{\n", ind))
-		sb.WriteString(fmt.Sprintf("%s  var %s = %s;\n", ind, tmpVar, xCode))
+		var children []IRNode
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(LeftBrace, "{"),
+			Leaf(NewLine, "\n"),
+			Leaf(WhiteSpace, ind+"  "),
+			LeafTag(Keyword, "var ", TagJava),
+			Leaf(Identifier, tmpVar),
+			Leaf(WhiteSpace, " "),
+			Leaf(Assignment, "="),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, xCode),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		)
 		xCode = tmpVar
 		lenExpr = xCode + ".size()"
 		if valCode != "" && valCode != "_" {
@@ -3759,19 +4909,73 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 				valDecl = fmt.Sprintf("%s      var %s = %s.get(%s);\n", ind, valCode, xCode, loopVar)
 			}
 			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
-			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s; %s++) %s\n",
-				ind, loopVar, loopVar, lenExpr, loopVar, bodyWithDecl))
+			children = append(children,
+				Leaf(WhiteSpace, ind+"  "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, loopVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "<"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, lenExpr),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopVar),
+				Leaf(Identifier, "++"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, bodyWithDecl),
+				Leaf(NewLine, "\n"),
+			)
 		} else {
 			loopVar := keyCode
 			if loopVar == "_" || loopVar == "" {
 				loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
 				e.rangeVarCounter++
 			}
-			sb.WriteString(fmt.Sprintf("%s  for (var %s = 0; %s < %s; %s++) %s\n",
-				ind, loopVar, loopVar, lenExpr, loopVar, bodyCode))
+			children = append(children,
+				Leaf(WhiteSpace, ind+"  "),
+				Leaf(ForKeyword, "for"),
+				Leaf(WhiteSpace, " "),
+				Leaf(LeftParen, "("),
+				LeafTag(Keyword, "var ", TagJava),
+				Leaf(Identifier, loopVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0"),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopVar),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "<"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, lenExpr),
+				Leaf(Semicolon, ";"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, loopVar),
+				Leaf(Identifier, "++"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, bodyCode),
+				Leaf(NewLine, "\n"),
+			)
 		}
-		sb.WriteString(fmt.Sprintf("%s}\n", ind))
-		e.fs.PushCode(sb.String())
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(RightBrace, "}"),
+			Leaf(NewLine, "\n"),
+		)
+		e.fs.AddTree(IRTree(RangeStatement, KindStmt, children...))
 		return
 	}
 
@@ -3791,16 +4995,62 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		}
 		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
 
-		e.fs.PushCode(fmt.Sprintf("%sfor (var %s = 0; %s < %s; %s++) %s\n",
-			ind, loopVar, loopVar, lenExpr, loopVar, bodyWithDecl))
+		e.fs.AddTree(IRTree(RangeStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(ForKeyword, "for"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			LeafTag(Keyword, "var ", TagJava),
+			Leaf(Identifier, loopVar),
+			Leaf(WhiteSpace, " "),
+			Leaf(Assignment, "="),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, "0"),
+			Leaf(Semicolon, "; "),
+			Leaf(Identifier, loopVar),
+			Leaf(WhiteSpace, " "),
+			Leaf(ComparisonOperator, "<"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, lenExpr),
+			Leaf(Semicolon, "; "),
+			Leaf(Identifier, loopVar),
+			Leaf(UnaryOperator, "++"),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, bodyWithDecl),
+			Leaf(NewLine, "\n"),
+		))
 	} else {
 		loopVar := keyCode
 		if loopVar == "_" || loopVar == "" {
 			loopVar = fmt.Sprintf("_i%d", e.rangeVarCounter)
 			e.rangeVarCounter++
 		}
-		e.fs.PushCode(fmt.Sprintf("%sfor (var %s = 0; %s < %s; %s++) %s\n",
-			ind, loopVar, loopVar, lenExpr, loopVar, bodyCode))
+		e.fs.AddTree(IRTree(RangeStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(ForKeyword, "for"),
+			Leaf(WhiteSpace, " "),
+			Leaf(LeftParen, "("),
+			LeafTag(Keyword, "var ", TagJava),
+			Leaf(Identifier, loopVar),
+			Leaf(WhiteSpace, " "),
+			Leaf(Assignment, "="),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, "0"),
+			Leaf(Semicolon, "; "),
+			Leaf(Identifier, loopVar),
+			Leaf(WhiteSpace, " "),
+			Leaf(ComparisonOperator, "<"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, lenExpr),
+			Leaf(Semicolon, "; "),
+			Leaf(Identifier, loopVar),
+			Leaf(UnaryOperator, "++"),
+			Leaf(RightParen, ")"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, bodyCode),
+			Leaf(NewLine, "\n"),
+		))
 	}
 }
 
@@ -3813,28 +5063,42 @@ func (e *JavaEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
-	tagCode := e.fs.ReduceToCode(string(PreVisitSwitchStmtTag))
-	e.fs.PushCode(tagCode)
+	tagCode := e.fs.CollectText(string(PreVisitSwitchStmtTag))
+	e.fs.AddLeaf(tagCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitSwitchStmt))
+	tokens := e.fs.CollectForest(string(PreVisitSwitchStmt))
 	ind := javaIndent(indent / 2)
 
 	tagCode := ""
 	idx := 0
 	if idx < len(tokens) {
-		tagCode = tokens[idx].Content
+		tagCode = tokens[idx].Serialize()
 		idx++
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%sswitch (%s) {\n", ind, tagCode))
+	var children []IRNode
+	children = append(children,
+		Leaf(WhiteSpace, ind),
+		Leaf(SwitchKeyword, "switch"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftParen, "("),
+		Leaf(Identifier, tagCode),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+	)
 	for i := idx; i < len(tokens); i++ {
-		sb.WriteString(tokens[i].Content)
+		children = append(children, Leaf(Identifier, tokens[i].Serialize()))
 	}
-	sb.WriteString(ind + "}\n")
-	e.fs.PushCode(sb.String())
+	children = append(children,
+		Leaf(WhiteSpace, ind),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+	)
+	e.fs.AddTree(IRTree(SwitchStatement, KindStmt, children...))
 }
 
 func (e *JavaEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
@@ -3842,48 +5106,66 @@ func (e *JavaEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	exprCode := e.fs.ReduceToCode(string(PreVisitCaseClauseListExpr))
-	e.fs.PushCode(exprCode)
+	exprCode := e.fs.CollectText(string(PreVisitCaseClauseListExpr))
+	e.fs.AddLeaf(exprCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitCaseClauseList))
+	tokens := e.fs.CollectForest(string(PreVisitCaseClauseList))
 	var exprs []string
 	for _, t := range tokens {
-		if t.Content != "" {
-			exprs = append(exprs, t.Content)
+		if t.Serialize() != "" {
+			exprs = append(exprs, t.Serialize())
 		}
 	}
-	e.fs.PushCode(strings.Join(exprs, ", "))
+	e.fs.AddLeaf(strings.Join(exprs, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitCaseClause))
+	tokens := e.fs.CollectForest(string(PreVisitCaseClause))
 	ind := javaIndent(indent / 2)
 
-	var sb strings.Builder
+	var children []IRNode
 	idx := 0
 	if len(node.List) == 0 {
-		sb.WriteString(ind + "default:\n")
+		children = append(children,
+			Leaf(WhiteSpace, ind),
+			Leaf(DefaultKeyword, "default"),
+			Leaf(Colon, ":"),
+			Leaf(NewLine, "\n"),
+		)
 	} else {
 		caseExprs := ""
 		if idx < len(tokens) {
-			caseExprs = tokens[idx].Content
+			caseExprs = tokens[idx].Serialize()
 			idx++
 		}
 		vals := strings.Split(caseExprs, ", ")
 		for _, v := range vals {
-			sb.WriteString(fmt.Sprintf("%scase %s:\n", ind, v))
+			children = append(children,
+				Leaf(WhiteSpace, ind),
+				Leaf(CaseKeyword, "case"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, v),
+				Leaf(Colon, ":"),
+				Leaf(NewLine, "\n"),
+			)
 		}
 	}
 	for i := idx; i < len(tokens); i++ {
-		sb.WriteString(tokens[i].Content)
+		children = append(children, Leaf(Identifier, tokens[i].Serialize()))
 	}
-	bodyStr := sb.String()
+	// Check if body already contains return or break
+	bodyStr := IRTree(CaseClauseStatement, KindStmt, children...).Serialize()
 	if !strings.Contains(bodyStr, "return ") && !strings.Contains(bodyStr, "break;") {
-		sb.WriteString(ind + "  break;\n")
+		children = append(children,
+			Leaf(WhiteSpace, ind+"  "),
+			Leaf(BreakKeyword, "break"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		)
 	}
-	e.fs.PushCode(sb.String())
+	e.fs.AddTree(IRTree(CaseClauseStatement, KindStmt, children...))
 }
 
 // ============================================================
@@ -3891,7 +5173,7 @@ func (e *JavaEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
+	xCode := e.fs.CollectText(string(PreVisitIncDecStmt))
 	ind := javaIndent(indent / 2)
 
 	// Handle closure-captured variables: ((Type)name[0])++ -> name[0] = ((Type)name[0]) + 1
@@ -3902,11 +5184,30 @@ func (e *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 			op = "-"
 		}
 		lhs := closureUnwrapLhs(xCode)
-		e.fs.PushCode(fmt.Sprintf("%s%s = %s %s %s;\n", ind, lhs, xCode, op, opVal))
+		e.fs.AddTree(IRTree(IncDecStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(Identifier, lhs),
+			Leaf(WhiteSpace, " "),
+			Leaf(Assignment, "="),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, xCode),
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, op),
+			Leaf(WhiteSpace, " "),
+			Leaf(NumberLiteral, opVal),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
 		return
 	}
 
-	e.fs.PushCode(fmt.Sprintf("%s%s%s;\n", ind, xCode, node.Tok.String()))
+	e.fs.AddTree(IRTree(IncDecStatement, KindStmt,
+		Leaf(WhiteSpace, ind),
+		Leaf(Identifier, xCode),
+		Leaf(UnaryOperator, node.Tok.String()),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+	))
 }
 
 // ============================================================
@@ -3917,9 +5218,19 @@ func (e *JavaEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 	ind := javaIndent(indent / 2)
 	switch node.Tok {
 	case token.BREAK:
-		e.fs.PushCode(ind + "break;\n")
+		e.fs.AddTree(IRTree(BranchStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(BreakKeyword, "break"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
 	case token.CONTINUE:
-		e.fs.PushCode(ind + "continue;\n")
+		e.fs.AddTree(IRTree(BranchStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(ContinueKeyword, "continue"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
 	}
 }
 
@@ -3928,17 +5239,17 @@ func (e *JavaEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitGenStructFieldType(node ast.Expr, indent int) {
-	typeCode := e.fs.ReduceToCode(string(PreVisitGenStructFieldType))
-	e.fs.PushCode(typeCode)
+	typeCode := e.fs.CollectText(string(PreVisitGenStructFieldType))
+	e.fs.AddLeaf(typeCode, KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitGenStructFieldName(node *ast.Ident, indent int) {
-	e.fs.Reduce(string(PreVisitGenStructFieldName))
-	e.fs.Push(node.Name, TagIdent, nil)
+	e.fs.CollectForest(string(PreVisitGenStructFieldName))
+	e.fs.AddLeaf(node.Name, TagIdent, nil)
 }
 
 func (e *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
-	tokens := e.fs.Reduce(string(PreVisitGenStructInfo))
+	tokens := e.fs.CollectForest(string(PreVisitGenStructInfo))
 
 	if node.Struct == nil {
 		return
@@ -3952,46 +5263,100 @@ func (e *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	var fields []fieldInfo
 	i := 0
 	for i < len(tokens) {
-		if tokens[i].Tag == TagExpr {
-			fi := fieldInfo{typeName: tokens[i].Content}
+		if tokens[i].Kind == TagExpr {
+			fi := fieldInfo{typeName: tokens[i].Serialize()}
 			i++
-			if i < len(tokens) && tokens[i].Tag == TagIdent {
-				fi.name = tokens[i].Content
+			if i < len(tokens) && tokens[i].Kind == TagIdent {
+				fi.name = tokens[i].Serialize()
 				i++
 			}
 			fields = append(fields, fi)
-		} else if tokens[i].Tag == TagIdent {
-			fields = append(fields, fieldInfo{typeName: "Object", name: tokens[i].Content})
+		} else if tokens[i].Kind == TagIdent {
+			fields = append(fields, fieldInfo{typeName: "Object", name: tokens[i].Serialize()})
 			i++
 		} else {
 			i++
 		}
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("static class %s {\n", node.Name))
+	var children []IRNode
+
+	// Class header
+	children = append(children,
+		LeafTag(Keyword, "static class ", TagJava),
+		Leaf(Identifier, node.Name),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+	)
 
 	// Public fields
 	for _, f := range fields {
-		sb.WriteString(fmt.Sprintf("  public %s %s;\n", f.typeName, f.name))
+		children = append(children,
+			Leaf(WhiteSpace, "  "),
+			LeafTag(Keyword, "public ", TagJava),
+			Leaf(TypeKeyword, f.typeName),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, f.name),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		)
 	}
 
 	// No-arg constructor with defaults
-	sb.WriteString(fmt.Sprintf("  public %s() {\n", node.Name))
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		LeafTag(Keyword, "public ", TagJava),
+		Leaf(Identifier, node.Name),
+		Leaf(LeftParen, "("),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+	)
 	for _, f := range fields {
-		sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", f.name, getJavaDefaultValueForStruct(f.typeName)))
+		children = append(children,
+			Leaf(WhiteSpace, "    "),
+			LeafTag(Keyword, "this", TagJava),
+			Leaf(Dot, "."),
+			Leaf(Identifier, f.name),
+			Leaf(WhiteSpace, " "),
+			Leaf(Assignment, "="),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, getJavaDefaultValueForStruct(f.typeName)),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		)
 	}
-	sb.WriteString("  }\n")
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+	)
 
 	// All-args constructor
-	sb.WriteString(fmt.Sprintf("  public %s(", node.Name))
-	for i, f := range fields {
-		if i > 0 {
-			sb.WriteString(", ")
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		LeafTag(Keyword, "public ", TagJava),
+		Leaf(Identifier, node.Name),
+		Leaf(LeftParen, "("),
+	)
+	for j, f := range fields {
+		if j > 0 {
+			children = append(children, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 		}
-		sb.WriteString(fmt.Sprintf("%s %s", f.typeName, f.name))
+		children = append(children,
+			Leaf(TypeKeyword, f.typeName),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, f.name),
+		)
 	}
-	sb.WriteString(") {\n")
+	children = append(children,
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+	)
 	for _, f := range fields {
 		if !isJavaPrimitiveType(f.typeName) &&
 			!strings.HasPrefix(f.typeName, "ArrayList<") &&
@@ -4001,63 +5366,333 @@ func (e *JavaEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			f.typeName != "hmap.HashMap" &&
 			f.typeName != "Object" &&
 			f.typeName != "String" {
-			sb.WriteString(fmt.Sprintf("    this.%s = %s != null ? %s : new %s();\n", f.name, f.name, f.name, f.typeName))
+			// this.field = field != null ? field : new Type();
+			children = append(children,
+				Leaf(WhiteSpace, "    "),
+				LeafTag(Keyword, "this", TagJava),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "!="),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "null", TagJava),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "?"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, f.typeName),
+				Leaf(LeftParen, "("),
+				Leaf(RightParen, ")"),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 		} else {
-			sb.WriteString(fmt.Sprintf("    this.%s = %s;\n", f.name, f.name))
+			children = append(children,
+				Leaf(WhiteSpace, "    "),
+				LeafTag(Keyword, "this", TagJava),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, f.name),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 		}
 	}
-	sb.WriteString("  }\n")
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+	)
 
 	// Copy constructor
-	sb.WriteString(fmt.Sprintf("  public %s(%s other) {\n", node.Name, node.Name))
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		LeafTag(Keyword, "public ", TagJava),
+		Leaf(Identifier, node.Name),
+		Leaf(LeftParen, "("),
+		Leaf(TypeKeyword, node.Name),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "other"),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+	)
 	for _, f := range fields {
 		if strings.HasPrefix(f.typeName, "ArrayList<") {
-			sb.WriteString(fmt.Sprintf("    this.%s = other.%s != null ? new ArrayList<>(other.%s) : null;\n", f.name, f.name, f.name))
-		} else if f.typeName == "hmap.HashMap" || strings.HasPrefix(f.typeName, "HashMap<") {
-			sb.WriteString(fmt.Sprintf("    this.%s = other.%s;\n", f.name, f.name))
-		} else if isJavaPrimitiveType(f.typeName) {
-			sb.WriteString(fmt.Sprintf("    this.%s = other.%s;\n", f.name, f.name))
-		} else if isJavaFunctionalInterface(f.typeName) || isJavaBuiltinReferenceType(f.typeName) {
-			sb.WriteString(fmt.Sprintf("    this.%s = other.%s;\n", f.name, f.name))
+			children = append(children,
+				Leaf(WhiteSpace, "    "),
+				LeafTag(Keyword, "this", TagJava),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "other"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "!="),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "null", TagJava),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "?"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, "ArrayList<>"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "other"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "null", TagJava),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
+		} else if f.typeName == "hmap.HashMap" || strings.HasPrefix(f.typeName, "HashMap<") ||
+			isJavaPrimitiveType(f.typeName) ||
+			isJavaFunctionalInterface(f.typeName) || isJavaBuiltinReferenceType(f.typeName) {
+			children = append(children,
+				Leaf(WhiteSpace, "    "),
+				LeafTag(Keyword, "this", TagJava),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "other"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 		} else {
-			sb.WriteString(fmt.Sprintf("    this.%s = other.%s != null ? new %s(other.%s) : null;\n", f.name, f.name, f.typeName, f.name))
+			children = append(children,
+				Leaf(WhiteSpace, "    "),
+				LeafTag(Keyword, "this", TagJava),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "other"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "!="),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "null", TagJava),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "?"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "new ", TagJava),
+				Leaf(Identifier, f.typeName),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "other"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(Colon, ":"),
+				Leaf(WhiteSpace, " "),
+				LeafTag(Keyword, "null", TagJava),
+				Leaf(Semicolon, ";"),
+				Leaf(NewLine, "\n"),
+			)
 		}
 	}
-	sb.WriteString("  }\n")
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+	)
 
 	// hashCode()
-	sb.WriteString("  @Override\n  public int hashCode() {\n    return java.util.Objects.hash(")
-	for i, f := range fields {
-		if i > 0 {
-			sb.WriteString(", ")
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		Leaf(Identifier, "@Override"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "  "),
+		LeafTag(Keyword, "public ", TagJava),
+		Leaf(TypeKeyword, "int"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "hashCode"),
+		Leaf(LeftParen, "("),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(ReturnKeyword, "return"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "java.util.Objects.hash"),
+		Leaf(LeftParen, "("),
+	)
+	for j, f := range fields {
+		if j > 0 {
+			children = append(children, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 		}
-		sb.WriteString(fmt.Sprintf("this.%s", f.name))
+		children = append(children,
+			LeafTag(Keyword, "this", TagJava),
+			Leaf(Dot, "."),
+			Leaf(Identifier, f.name),
+		)
 	}
-	sb.WriteString(");\n  }\n")
+	children = append(children,
+		Leaf(RightParen, ")"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "  "),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+	)
 
 	// equals()
-	sb.WriteString("  @Override\n  public boolean equals(Object obj) {\n")
-	sb.WriteString("    if (this == obj) return true;\n")
-	sb.WriteString("    if (obj == null || getClass() != obj.getClass()) return false;\n")
-	sb.WriteString(fmt.Sprintf("    %s other = (%s) obj;\n", node.Name, node.Name))
-	sb.WriteString("    return ")
-	for i, f := range fields {
-		if i > 0 {
-			sb.WriteString(" && ")
+	children = append(children,
+		Leaf(WhiteSpace, "  "),
+		Leaf(Identifier, "@Override"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "  "),
+		LeafTag(Keyword, "public ", TagJava),
+		Leaf(TypeKeyword, "boolean"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "equals"),
+		Leaf(LeftParen, "("),
+		Leaf(TypeKeyword, "Object"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "obj"),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftBrace, "{"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(IfKeyword, "if"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftParen, "("),
+		LeafTag(Keyword, "this", TagJava),
+		Leaf(WhiteSpace, " "),
+		Leaf(ComparisonOperator, "=="),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "obj"),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(ReturnKeyword, "return"),
+		Leaf(WhiteSpace, " "),
+		Leaf(BooleanLiteral, "true"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(IfKeyword, "if"),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftParen, "("),
+		Leaf(Identifier, "obj"),
+		Leaf(WhiteSpace, " "),
+		Leaf(ComparisonOperator, "=="),
+		Leaf(WhiteSpace, " "),
+		LeafTag(Keyword, "null", TagJava),
+		Leaf(WhiteSpace, " "),
+		Leaf(LogicalOperator, "||"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "getClass"),
+		Leaf(LeftParen, "("),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(ComparisonOperator, "!="),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "obj"),
+		Leaf(Dot, "."),
+		Leaf(Identifier, "getClass"),
+		Leaf(LeftParen, "("),
+		Leaf(RightParen, ")"),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(ReturnKeyword, "return"),
+		Leaf(WhiteSpace, " "),
+		Leaf(BooleanLiteral, "false"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(TypeKeyword, node.Name),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "other"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Assignment, "="),
+		Leaf(WhiteSpace, " "),
+		Leaf(LeftParen, "("),
+		Leaf(TypeKeyword, node.Name),
+		Leaf(RightParen, ")"),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, "obj"),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "    "),
+		Leaf(ReturnKeyword, "return"),
+		Leaf(WhiteSpace, " "),
+	)
+	for j, f := range fields {
+		if j > 0 {
+			children = append(children, Leaf(WhiteSpace, " "), Leaf(LogicalOperator, "&&"), Leaf(WhiteSpace, " "))
 		}
 		if isJavaPrimitiveType(f.typeName) && f.typeName != "String" {
-			sb.WriteString(fmt.Sprintf("this.%s == other.%s", f.name, f.name))
+			children = append(children,
+				LeafTag(Keyword, "this", TagJava),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(WhiteSpace, " "),
+				Leaf(ComparisonOperator, "=="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "other"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+			)
 		} else {
-			sb.WriteString(fmt.Sprintf("java.util.Objects.equals(this.%s, other.%s)", f.name, f.name))
+			children = append(children,
+				Leaf(Identifier, "java.util.Objects.equals"),
+				Leaf(LeftParen, "("),
+				LeafTag(Keyword, "this", TagJava),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(Comma, ","),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "other"),
+				Leaf(Dot, "."),
+				Leaf(Identifier, f.name),
+				Leaf(RightParen, ")"),
+			)
 		}
 	}
 	if len(fields) == 0 {
-		sb.WriteString("true")
+		children = append(children, Leaf(BooleanLiteral, "true"))
 	}
-	sb.WriteString(";\n  }\n")
+	children = append(children,
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+		Leaf(WhiteSpace, "  "),
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+	)
 
-	sb.WriteString("}\n\n")
-	e.fs.PushCode(sb.String())
+	// Close class
+	children = append(children,
+		Leaf(RightBrace, "}"),
+		Leaf(NewLine, "\n"),
+		Leaf(NewLine, "\n"),
+	)
+	e.fs.AddTree(IRTree(ClassKeyword, TagExpr, children...))
 }
 
 func (e *JavaEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
@@ -4069,10 +5704,10 @@ func (e *JavaEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
-	valTokens := e.fs.Reduce(string(PreVisitGenDeclConstName))
+	valTokens := e.fs.CollectForest(string(PreVisitGenDeclConstName))
 	valCode := ""
 	for _, t := range valTokens {
-		valCode += t.Content
+		valCode += t.Serialize()
 	}
 	if valCode == "" {
 		valCode = "0"
@@ -4102,7 +5737,18 @@ func (e *JavaEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
 	}
 
 	name := node.Name
-	e.fs.PushCode(fmt.Sprintf("public static final %s %s = %s;\n", constType, name, valCode))
+	e.fs.AddTree(IRTree(Keyword, TagExpr,
+		LeafTag(Keyword, "public static final ", TagJava),
+		Leaf(TypeKeyword, constType),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, name),
+		Leaf(WhiteSpace, " "),
+		Leaf(Assignment, "="),
+		Leaf(WhiteSpace, " "),
+		Leaf(Identifier, valCode),
+		Leaf(Semicolon, ";"),
+		Leaf(NewLine, "\n"),
+	))
 }
 
 func (e *JavaEmitter) PostVisitGenDeclConst(node *ast.GenDecl, indent int) {
@@ -4118,7 +5764,7 @@ func (e *JavaEmitter) PreVisitTypeAliasName(node *ast.Ident, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
-	e.fs.Reduce(string(PreVisitTypeAliasName))
+	e.fs.CollectForest(string(PreVisitTypeAliasName))
 
 	if e.currentAliasName != "" {
 		if e.pkg != nil && e.pkg.TypesInfo != nil {

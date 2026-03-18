@@ -67,7 +67,7 @@ type RustOptState struct {
 	// Return temp extraction: extract later return results into temps so first result can be moved
 	// Pattern: return c, c.Memory[addr] → let __mv0: u8 = c.Memory[addr]; return (c, __mv0);
 	returnTempReplacements map[int]string
-	returnTempPreamble     string // temp binding code to emit before return statement
+	returnTempPreamble     []IRNode // temp binding tokens to emit before return statement
 
 	// argAlreadyCloned: when a vec element access already added .clone(), skip redundant clone
 	argAlreadyCloned bool
