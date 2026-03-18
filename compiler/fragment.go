@@ -32,7 +32,7 @@ func (fs *FragmentStack) PushMarker(name string) {
 
 // Push adds a token to the GoFIR's tokenSlice with the given code, tag, and Go type.
 func (fs *FragmentStack) Push(code string, tag int, goType types.Type) {
-	token := Token{Content: code, Tag: tag, GoType: goType}
+	token := IRNode{Content: code, Tag: tag, GoType: goType}
 	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
 }
 
@@ -48,14 +48,14 @@ func (fs *FragmentStack) PushCodeWithType(code string, t types.Type) {
 
 // PushWithMeta adds a token with optimization metadata to the stack.
 func (fs *FragmentStack) PushWithMeta(code string, tag int, meta *OptMeta) {
-	token := Token{Content: code, Tag: tag, OptMeta: meta}
+	token := IRNode{Content: code, Tag: tag, OptMeta: meta}
 	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
 }
 
 // Reduce finds the last marker matching the given visitMethod string, extracts all tokens
 // from that position to the end, trims both tokenSlice and pointerAndIndexVec,
 // and returns the extracted tokens.
-func (fs *FragmentStack) Reduce(visitMethod string) []Token {
+func (fs *FragmentStack) Reduce(visitMethod string) []IRNode {
 	target := visitMethod
 	// Find marker in pointerAndIndexVec (searching from end)
 	pivIdx := -1
@@ -70,9 +70,9 @@ func (fs *FragmentStack) Reduce(visitMethod string) []Token {
 	}
 	tokenIdx := fs.gir.pointerAndIndexVec[pivIdx].Index
 	// Extract tokens from marker position to end
-	var result []Token
+	var result []IRNode
 	if tokenIdx < len(fs.gir.tokenSlice) {
-		result = make([]Token, len(fs.gir.tokenSlice)-tokenIdx)
+		result = make([]IRNode, len(fs.gir.tokenSlice)-tokenIdx)
 		copy(result, fs.gir.tokenSlice[tokenIdx:])
 	}
 	// Trim tokenSlice
@@ -93,7 +93,7 @@ func (fs *FragmentStack) ReduceToCode(visitMethod string) string {
 }
 
 // PushTree pushes a tree token onto the stack (auto-computes Content for backward compat).
-func (fs *FragmentStack) PushTree(token Token) {
+func (fs *FragmentStack) PushTree(token IRNode) {
 	// Ensure Content is populated for backward compatibility
 	if len(token.Children) > 0 && token.Content == "" {
 		token.Content = token.Serialize()
@@ -102,21 +102,21 @@ func (fs *FragmentStack) PushTree(token Token) {
 }
 
 // PushLeaf pushes an atomic leaf token onto the stack.
-func (fs *FragmentStack) PushLeaf(tokenType TokenType, content string, tag int) {
+func (fs *FragmentStack) PushLeaf(tokenType IRNodeType, content string, tag int) {
 	token := LeafTag(tokenType, content, tag)
 	fs.gir.emitTokenToFileBufferString(token, "__PUSH")
 }
 
 // ReduceToTree reduces tokens from the marker and wraps them as children of a new parent token.
-func (fs *FragmentStack) ReduceToTree(visitMethod string, tokenType TokenType, tag int) Token {
+func (fs *FragmentStack) ReduceToTree(visitMethod string, tokenType IRNodeType, tag int) IRNode {
 	children := fs.Reduce(visitMethod)
-	return TokenTree(tokenType, tag, children...)
+	return IRTree(tokenType, tag, children...)
 }
 
 // Pop removes and returns the last token from the tokenSlice.
-func (fs *FragmentStack) Pop() Token {
+func (fs *FragmentStack) Pop() IRNode {
 	if len(fs.gir.tokenSlice) == 0 {
-		return Token{}
+		return IRNode{}
 	}
 	last := fs.gir.tokenSlice[len(fs.gir.tokenSlice)-1]
 	fs.gir.tokenSlice = fs.gir.tokenSlice[:len(fs.gir.tokenSlice)-1]
@@ -124,9 +124,9 @@ func (fs *FragmentStack) Pop() Token {
 }
 
 // Peek returns the last token without removing it.
-func (fs *FragmentStack) Peek() Token {
+func (fs *FragmentStack) Peek() IRNode {
 	if len(fs.gir.tokenSlice) == 0 {
-		return Token{}
+		return IRNode{}
 	}
 	return fs.gir.tokenSlice[len(fs.gir.tokenSlice)-1]
 }

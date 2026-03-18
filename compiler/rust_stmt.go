@@ -28,7 +28,7 @@ func (e *RustEmitter) PostVisitExprStmt(node *ast.ExprStmt, indent int) {
 		code = tokens[0].Serialize()
 	}
 	ind := rustIndent(indent / 2)
-	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+	e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 		Leaf(WhiteSpace, ind),
 		Leaf(Identifier, code),
 		Leaf(Semicolon, ";"),
@@ -146,7 +146,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	if len(node.Lhs) == 1 {
 		if lhsIdent, ok := node.Lhs[0].(*ast.Ident); ok {
 			if comment, ok := PtrLocalComments[lhsIdent.Pos()]; ok {
-				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				Leaf(LineComment, comment),
 				Leaf(NewLine, "\n"),
@@ -238,7 +238,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					e.Opt.RefOptCount += 2 // hashMapContains + hashMapGet
 				}
 				if tokStr == ":=" {
-					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 						Leaf(WhiteSpace, ind),
 						LeafTag(Keyword, "let", TagRust),
 						Leaf(WhiteSpace, " "),
@@ -252,7 +252,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
 					))
-					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 						Leaf(WhiteSpace, ind),
 						LeafTag(Keyword, "let", TagRust),
 						Leaf(WhiteSpace, " "),
@@ -283,7 +283,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(NewLine, "\n"),
 					))
 				} else {
-					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, okName),
 						Leaf(WhiteSpace, " "),
@@ -293,7 +293,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
 					))
-					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, valName),
 						Leaf(WhiteSpace, " "),
@@ -340,7 +340,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			xExpr := exprToString(typeAssert.X)
 			zeroVal := rustDefaultForRustType(assertType)
 			if tokStr == ":=" {
-				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 					Leaf(WhiteSpace, ind),
 					LeafTag(Keyword, "let", TagRust),
 					Leaf(WhiteSpace, " "),
@@ -361,7 +361,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 					Leaf(WhiteSpace, ind),
 					LeafTag(Keyword, "let", TagRust),
 					Leaf(WhiteSpace, " "),
@@ -399,7 +399,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(NewLine, "\n"),
 				))
 			} else {
-				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, okName),
 					Leaf(WhiteSpace, " "),
@@ -416,7 +416,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, valName),
 					Leaf(WhiteSpace, " "),
@@ -466,7 +466,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		if len(callExts) > 0 {
 			for _, ext := range callExts {
 				if ext.code != "" {
-					e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+					e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 						Leaf(WhiteSpace, ind),
 						LeafTag(Keyword, "let", TagRust),
 						Leaf(WhiteSpace, " "),
@@ -498,7 +498,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 			}
 			destructured := "(" + strings.Join(lhsParts, ", ") + ")"
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "let", TagRust),
 				Leaf(WhiteSpace, " "),
@@ -525,7 +525,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 			}
 			destructured := "(" + strings.Join(lhsParts, ", ") + ")"
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, destructured),
 				Leaf(WhiteSpace, " "),
@@ -578,7 +578,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		wrappedRhs := "Rc::new(" + rhsStr + ")"
 		switch tokStr {
 		case ":=":
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "let", TagRust),
 				Leaf(WhiteSpace, " "),
@@ -593,7 +593,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(NewLine, "\n"),
 			))
 		default:
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, lhsStr),
 				Leaf(WhiteSpace, " "),
@@ -607,7 +607,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	} else {
 		switch tokStr {
 		case ":=":
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "let", TagRust),
 				Leaf(WhiteSpace, " "),
@@ -627,7 +627,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				lhsType := e.getExprGoType(node.Lhs[0])
 				if lhsType != nil {
 					if basic, ok := lhsType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
-						e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+						e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 							Leaf(WhiteSpace, ind),
 							Leaf(Identifier, lhsStr),
 							Leaf(WhiteSpace, " "),
@@ -642,7 +642,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					}
 				}
 			}
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, lhsStr),
 				Leaf(WhiteSpace, " "),
@@ -663,7 +663,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			if len(callExts) > 0 {
 				for _, ext := range callExts {
 					if ext.code != "" {
-						e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+						e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 							Leaf(WhiteSpace, ind),
 							LeafTag(Keyword, "let", TagRust),
 							Leaf(WhiteSpace, " "),
@@ -681,7 +681,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					}
 				}
 			}
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, lhsStr),
 				Leaf(WhiteSpace, " "),
@@ -732,7 +732,7 @@ func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitDeclStmt))
 	ind := rustIndent(indent / 2)
 
-	var children []Token
+	var children []IRNode
 	i := 0
 	for i < len(tokens) {
 		typeStr := ""
@@ -822,7 +822,7 @@ func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		}
 	}
 	if len(children) > 0 {
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
 	} else {
 		e.fs.PushCode("")
 	}
@@ -845,7 +845,7 @@ func (e *RustEmitter) PreVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 			ind := rustIndent(indent / 2)
 			replacements := make(map[int]string)
 			tempIdx := 0
-			var preambleTokens []Token
+			var preambleTokens []IRNode
 			for i := 1; i < len(node.Results); i++ {
 				if !ExprContainsIdent(node.Results[i], ident.Name) {
 					continue
@@ -916,14 +916,14 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 	ind := rustIndent(indent / 2)
 
 	if len(tokens) == 0 {
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ReturnKeyword, "return"),
 			Leaf(Semicolon, ";"),
 			Leaf(NewLine, "\n"),
 		))
 	} else if len(tokens) == 1 {
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ReturnKeyword, "return"),
 			Leaf(WhiteSpace, " "),
@@ -1013,9 +1013,9 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 		}
 		// Emit temp bindings before the return statement (e.g., let __mv0 = expr;)
 		if len(returnTempPreamble) > 0 {
-			e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, returnTempPreamble...))
+			e.fs.PushTree(IRTree(TypeKeyword, TagExpr, returnTempPreamble...))
 		}
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ReturnKeyword, "return"),
 			Leaf(WhiteSpace, " "),
@@ -1070,7 +1070,7 @@ func (e *RustEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.ifBodyStack = e.ifBodyStack[:n-1]
 	e.ifElseStack = e.ifElseStack[:n-1]
 
-	var children []Token
+	var children []IRNode
 	if initCode != "" {
 		children = append(children,
 			Leaf(WhiteSpace, ind),
@@ -1120,7 +1120,7 @@ func (e *RustEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 			Leaf(NewLine, "\n"),
 		)
 	}
-	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
 }
 
 // ============================================================
@@ -1166,7 +1166,7 @@ func (e *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 
 	// Infinite loop: for {}
 	if node.Init == nil && node.Cond == nil && node.Post == nil {
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "loop"),
 			Leaf(WhiteSpace, " "),
@@ -1178,7 +1178,7 @@ func (e *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 
 	// Condition-only loop: for cond {}
 	if node.Init == nil && node.Post == nil && node.Cond != nil {
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(WhileKeyword, "while"),
 			Leaf(WhiteSpace, " "),
@@ -1205,7 +1205,7 @@ func (e *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 	ind4 := ind + "    "
 	ind8 := ind + "        "
 	ind12 := ind + "            "
-	var children []Token
+	var children []IRNode
 	children = append(children,
 		Leaf(WhiteSpace, ind),
 		Leaf(LeftBrace, "{"),
@@ -1295,49 +1295,49 @@ func (e *RustEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 		Leaf(RightBrace, "}"),
 		Leaf(NewLine, "\n"),
 	)
-	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
 }
 
 // tryEmitForRange detects simple integer range patterns and emits Rust for..in syntax.
-// Returns a Token with children, or a zero Token if the pattern doesn't match.
-func (e *RustEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode string, initCode string) Token {
+// Returns a IRNode with children, or a zero IRNode if the pattern doesn't match.
+func (e *RustEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode string, initCode string) IRNode {
 	// Must have init, cond, and post
 	if node.Init == nil || node.Cond == nil || node.Post == nil {
-		return Token{}
+		return IRNode{}
 	}
 
 	// Init must be an assignment: i := start
 	assignStmt, ok := node.Init.(*ast.AssignStmt)
 	if !ok || len(assignStmt.Lhs) != 1 || len(assignStmt.Rhs) != 1 || assignStmt.Tok != token.DEFINE {
-		return Token{}
+		return IRNode{}
 	}
 	loopIdent, ok := assignStmt.Lhs[0].(*ast.Ident)
 	if !ok {
-		return Token{}
+		return IRNode{}
 	}
 	loopVar := escapeRustKeyword(loopIdent.Name)
 
 	// Get start value — accept literals, identifiers, or other simple expressions
 	startVal := e.exprToRustCode(assignStmt.Rhs[0])
 	if startVal == "" {
-		return Token{}
+		return IRNode{}
 	}
 
 	// Cond must be binary expr: i < end, i <= end, i > end, i >= end
 	condBin, ok := node.Cond.(*ast.BinaryExpr)
 	if !ok {
-		return Token{}
+		return IRNode{}
 	}
 	condIdent, ok := condBin.X.(*ast.Ident)
 	if !ok || condIdent.Name != loopIdent.Name {
-		return Token{}
+		return IRNode{}
 	}
 
 	// Get end expression as code
 	// We need the end expression as a Rust string - reuse condCode's right side
 	endCode := e.exprToRustCode(condBin.Y)
 	if endCode == "" {
-		return Token{}
+		return IRNode{}
 	}
 
 	// Post must be inc/dec statement or assign with +=/-=
@@ -1348,7 +1348,7 @@ func (e *RustEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode st
 	if incDec, ok := node.Post.(*ast.IncDecStmt); ok {
 		postIdent, ok := incDec.X.(*ast.Ident)
 		if !ok || postIdent.Name != loopIdent.Name {
-			return Token{}
+			return IRNode{}
 		}
 		if incDec.Tok == token.INC {
 			isIncrement = true
@@ -1359,15 +1359,15 @@ func (e *RustEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode st
 		}
 	} else if assignPost, ok := node.Post.(*ast.AssignStmt); ok {
 		if len(assignPost.Lhs) != 1 || len(assignPost.Rhs) != 1 {
-			return Token{}
+			return IRNode{}
 		}
 		postIdent, ok := assignPost.Lhs[0].(*ast.Ident)
 		if !ok || postIdent.Name != loopIdent.Name {
-			return Token{}
+			return IRNode{}
 		}
 		rhsLit, ok := assignPost.Rhs[0].(*ast.BasicLit)
 		if !ok || rhsLit.Kind != token.INT {
-			return Token{}
+			return IRNode{}
 		}
 		if assignPost.Tok == token.ADD_ASSIGN {
 			isIncrement = true
@@ -1376,15 +1376,15 @@ func (e *RustEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode st
 			isDecrement = true
 			stepVal = rhsLit.Value
 		} else {
-			return Token{}
+			return IRNode{}
 		}
 	} else {
-		return Token{}
+		return IRNode{}
 	}
 
-	// Helper to build a for..in TokenTree
-	buildForIn := func(rangeExpr string) Token {
-		return TokenTree(TypeKeyword, TagExpr,
+	// Helper to build a for..in IRTree
+	buildForIn := func(rangeExpr string) IRNode {
+		return IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
@@ -1434,7 +1434,7 @@ func (e *RustEmitter) tryEmitForRange(node *ast.ForStmt, ind string, bodyCode st
 		}
 	}
 
-	return Token{}
+	return IRNode{}
 }
 
 // exprToRustCode converts a simple AST expression to a Rust code string.
@@ -1606,7 +1606,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		}
 		ind4 := ind + "    "
 		ind8 := ind + "        "
-		var children []Token
+		var children []IRNode
 		children = append(children,
 			Leaf(WhiteSpace, ind),
 			Leaf(LeftBrace, "{"),
@@ -1712,7 +1712,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			Leaf(RightBrace, "}"),
 			Leaf(NewLine, "\n"),
 		)
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
 		return
 	}
 
@@ -1721,7 +1721,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		tmpVar := fmt.Sprintf("_range%d", e.rangeVarCounter)
 		e.rangeVarCounter++
 		ind4 := ind + "    "
-		var children []Token
+		var children []IRNode
 		children = append(children,
 			Leaf(WhiteSpace, ind),
 			Leaf(LeftBrace, "{"),
@@ -1791,7 +1791,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			Leaf(RightBrace, "}"),
 			Leaf(NewLine, "\n"),
 		)
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
 		return
 	}
 
@@ -1813,7 +1813,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
 
 		lenExpr := xCode + ".len() as i32"
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
@@ -1835,7 +1835,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		}
 
 		lenExpr := xCode + ".len() as i32"
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ForKeyword, "for"),
 			Leaf(WhiteSpace, " "),
@@ -1902,7 +1902,7 @@ func (e *RustEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 		}
 	}
 
-	var children []Token
+	var children []IRNode
 	children = append(children,
 		Leaf(WhiteSpace, ind),
 		Leaf(SwitchKeyword, "match"),
@@ -1932,7 +1932,7 @@ func (e *RustEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 		Leaf(RightBrace, "}"),
 		Leaf(NewLine, "\n"),
 	)
-	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
 }
 
 func (e *RustEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
@@ -1959,7 +1959,7 @@ func (e *RustEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitCaseClause))
 	ind := rustIndent(indent / 2)
 
-	var children []Token
+	var children []IRNode
 	idx := 0
 	if len(node.List) == 0 {
 		children = append(children,
@@ -1995,7 +1995,7 @@ func (e *RustEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 		Leaf(RightBrace, "}"),
 		Leaf(NewLine, "\n"),
 	)
-	e.fs.PushTree(TokenTree(TypeKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(TypeKeyword, TagExpr, children...))
 }
 
 // ============================================================
@@ -2006,7 +2006,7 @@ func (e *RustEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 	xCode := e.fs.ReduceToCode(string(PreVisitIncDecStmt))
 	ind := rustIndent(indent / 2)
 	if node.Tok == token.INC {
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(Identifier, xCode),
 			Leaf(WhiteSpace, " "),
@@ -2017,7 +2017,7 @@ func (e *RustEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 			Leaf(NewLine, "\n"),
 		))
 	} else {
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(Identifier, xCode),
 			Leaf(WhiteSpace, " "),
@@ -2038,14 +2038,14 @@ func (e *RustEmitter) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
 	ind := rustIndent(indent / 2)
 	switch node.Tok {
 	case token.BREAK:
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(BreakKeyword, "break"),
 			Leaf(Semicolon, ";"),
 			Leaf(NewLine, "\n"),
 		))
 	case token.CONTINUE:
-		e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+		e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 			Leaf(WhiteSpace, ind),
 			Leaf(ContinueKeyword, "continue"),
 			Leaf(Semicolon, ";"),

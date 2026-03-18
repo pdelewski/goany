@@ -1043,7 +1043,7 @@ func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 	}
 
 	if pkg.Name != "main" {
-		e.fs.PushTree(TokenTree(Keyword, TagExpr,
+		e.fs.PushTree(IRTree(Keyword, TagExpr,
 			LeafTag(Keyword, "pub", TagRust),
 			Leaf(WhiteSpace, " "),
 			LeafTag(Keyword, "mod", TagRust),
@@ -1064,7 +1064,7 @@ func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 func (e *RustEmitter) PostVisitPackage(pkg *packages.Package, indent int) {
 	if pkg.Name != "main" {
-		e.fs.PushTree(TokenTree(Keyword, TagExpr,
+		e.fs.PushTree(IRTree(Keyword, TagExpr,
 			Leaf(RightBrace, "}"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LineComment, "// pub mod "+pkg.Name),
@@ -1180,7 +1180,7 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 			}
 		}
 		if isRefOpt {
-			e.fs.PushTree(TokenTree(Identifier, TagIdent,
+			e.fs.PushTree(IRTree(Identifier, TagIdent,
 				Leaf(Identifier, escapedName),
 				Leaf(Colon, ":"),
 				Leaf(WhiteSpace, " "),
@@ -1192,7 +1192,7 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 			}
 			e.Opt.refOptCurrentRefParams[escapedName] = true
 		} else if isMutRefOpt {
-			e.fs.PushTree(TokenTree(Identifier, TagIdent,
+			e.fs.PushTree(IRTree(Identifier, TagIdent,
 				Leaf(Identifier, escapedName),
 				Leaf(Colon, ":"),
 				Leaf(WhiteSpace, " "),
@@ -1206,7 +1206,7 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 			e.Opt.refOptCurrentMutRefParams[escapedName] = true
 			e.Opt.RefOptCount++
 		} else {
-			e.fs.PushTree(TokenTree(Identifier, TagIdent,
+			e.fs.PushTree(IRTree(Identifier, TagIdent,
 				LeafTag(Keyword, "mut", TagRust),
 				Leaf(WhiteSpace, " "),
 				Leaf(Identifier, escapedName),
@@ -1233,9 +1233,9 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, i
 
 func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitFuncDeclSignature))
-	var returnTypeToken Token
-	var funcNameToken Token
-	var paramsToken Token
+	var returnTypeToken IRNode
+	var funcNameToken IRNode
+	var paramsToken IRNode
 	hasReturnType := false
 	hasFuncName := false
 	for _, t := range tokens {
@@ -1250,7 +1250,7 @@ func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int)
 		}
 	}
 
-	var children []Token
+	var children []IRNode
 	children = append(children, Leaf(NewLine, "\n"))
 	children = append(children, LeafTag(Keyword, "pub", TagRust))
 	children = append(children, Leaf(WhiteSpace, " "))
@@ -1266,7 +1266,7 @@ func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int)
 		children = append(children, Leaf(WhiteSpace, " "))
 		children = append(children, returnTypeToken)
 	}
-	e.fs.PushTree(TokenTree(FunctionKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(FunctionKeyword, TagExpr, children...))
 }
 
 func (e *RustEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
@@ -1276,7 +1276,7 @@ func (e *RustEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
 
 func (e *RustEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitFuncDecl))
-	var children []Token
+	var children []IRNode
 	if len(tokens) >= 1 {
 		children = append(children, tokens[0])
 	}
@@ -1286,7 +1286,7 @@ func (e *RustEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	}
 	children = append(children, Leaf(NewLine, "\n"))
 	children = append(children, Leaf(NewLine, "\n"))
-	e.fs.PushTree(TokenTree(FunctionKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(FunctionKeyword, TagExpr, children...))
 }
 
 // ============================================================
@@ -1304,7 +1304,7 @@ func (e *RustEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent in
 
 func (e *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 	tokens := e.fs.Reduce(string(PreVisitBlockStmt))
-	var children []Token
+	var children []IRNode
 	children = append(children, Leaf(LeftBrace, "{"))
 	children = append(children, Leaf(NewLine, "\n"))
 	for _, t := range tokens {
@@ -1314,7 +1314,7 @@ func (e *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {
 	}
 	children = append(children, Leaf(WhiteSpace, rustIndent(indent/2)))
 	children = append(children, Leaf(RightBrace, "}"))
-	e.fs.PushTree(TokenTree(Identifier, TagExpr, children...))
+	e.fs.PushTree(IRTree(Identifier, TagExpr, children...))
 }
 
 // ============================================================
@@ -1365,7 +1365,7 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	hasInterfaceFields := e.structHasInterfaceFields(node.Name)
 	hasFunctionFields := e.structHasFunctionFields(node.Name)
 
-	var children []Token
+	var children []IRNode
 
 	// Derive attribute
 	if hasFunctionFields {
@@ -1477,7 +1477,7 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	}
 
 	children = append(children, Leaf(NewLine, "\n"))
-	e.fs.PushTree(TokenTree(StructKeyword, TagExpr, children...))
+	e.fs.PushTree(IRTree(StructKeyword, TagExpr, children...))
 }
 
 func (e *RustEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
@@ -1525,7 +1525,7 @@ func (e *RustEmitter) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
 	if constType == "String" {
 		constType = "&str"
 	}
-	e.fs.PushTree(TokenTree(Keyword, TagExpr,
+	e.fs.PushTree(IRTree(Keyword, TagExpr,
 		LeafTag(Keyword, "pub", TagRust),
 		Leaf(WhiteSpace, " "),
 		LeafTag(Keyword, "const", TagRust),
@@ -1567,7 +1567,7 @@ func (e *RustEmitter) PostVisitTypeAliasType(node ast.Expr, indent int) {
 				}
 				e.typeAliasMap[e.currentAliasName] = rustType
 				// Emit Rust type alias
-				e.fs.PushTree(TokenTree(TypeKeyword, TagExpr,
+				e.fs.PushTree(IRTree(TypeKeyword, TagExpr,
 					LeafTag(Keyword, "pub", TagRust),
 					Leaf(WhiteSpace, " "),
 					LeafTag(Keyword, "type", TagRust),

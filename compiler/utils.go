@@ -181,7 +181,7 @@ func RemovePointerEntryReverseString(pointerAndIndexVec []PointerAndIndex, targe
 }
 
 // New token-based functions
-func ExtractTokensNew(position int, tokenSlice []Token) ([]Token, error) {
+func ExtractTokensNew(position int, tokenSlice []IRNode) ([]IRNode, error) {
 	if position < 0 || position >= len(tokenSlice) {
 		return nil, fmt.Errorf("position %d is out of bounds", position)
 	}
@@ -189,7 +189,7 @@ func ExtractTokensNew(position int, tokenSlice []Token) ([]Token, error) {
 }
 
 // Backward compatibility for string-based ExtractTokens
-func ExtractTokens(position int, tokenSlice []Token) ([]string, error) {
+func ExtractTokens(position int, tokenSlice []IRNode) ([]string, error) {
 	if position < 0 || position >= len(tokenSlice) {
 		return nil, fmt.Errorf("position %d is out of bounds", position)
 	}
@@ -200,7 +200,7 @@ func ExtractTokens(position int, tokenSlice []Token) ([]string, error) {
 	return result, nil
 }
 
-func ExtractTokensBetween(begin int, end int, tokenSlice []Token) ([]Token, error) {
+func ExtractTokensBetween(begin int, end int, tokenSlice []IRNode) ([]IRNode, error) {
 	if begin < 0 || end > len(tokenSlice) || begin > end {
 		return nil, fmt.Errorf("invalid range: begin %d, end %d", begin, end)
 	}
@@ -208,11 +208,11 @@ func ExtractTokensBetween(begin int, end int, tokenSlice []Token) ([]Token, erro
 }
 
 // New token-based functions
-func RewriteTokensBetweenNew(tokenSlice []Token, begin int, end int, content []Token) ([]Token, error) {
+func RewriteTokensBetweenNew(tokenSlice []IRNode, begin int, end int, content []IRNode) ([]IRNode, error) {
 	if begin < 0 || end > len(tokenSlice) || begin > end {
 		return tokenSlice, fmt.Errorf("invalid range: begin %d, end %d", begin, end)
 	}
-	result := make([]Token, 0, begin+len(content)+(len(tokenSlice)-end))
+	result := make([]IRNode, 0, begin+len(content)+(len(tokenSlice)-end))
 	result = append(result, tokenSlice[:begin]...)
 	result = append(result, content...)
 	result = append(result, tokenSlice[end:]...)
@@ -220,16 +220,16 @@ func RewriteTokensBetweenNew(tokenSlice []Token, begin int, end int, content []T
 }
 
 // Backward compatibility for string-based RewriteTokensBetween
-func RewriteTokensBetween(tokenSlice []Token, begin int, end int, content []string) ([]Token, error) {
+func RewriteTokensBetween(tokenSlice []IRNode, begin int, end int, content []string) ([]IRNode, error) {
 	if begin < 0 || end > len(tokenSlice) || begin > end {
 		return tokenSlice, fmt.Errorf("invalid range: begin %d, end %d", begin, end)
 	}
 	// Convert strings to tokens
-	tokenContent := make([]Token, len(content))
+	tokenContent := make([]IRNode, len(content))
 	for i, s := range content {
-		tokenContent[i] = CreateToken(Identifier, s)
+		tokenContent[i] = CreateIRNode(Identifier, s)
 	}
-	result := make([]Token, 0, begin+len(tokenContent)+(len(tokenSlice)-end))
+	result := make([]IRNode, 0, begin+len(tokenContent)+(len(tokenSlice)-end))
 	result = append(result, tokenSlice[:begin]...)
 	result = append(result, tokenContent...)
 	result = append(result, tokenSlice[end:]...)
@@ -237,7 +237,7 @@ func RewriteTokensBetween(tokenSlice []Token, begin int, end int, content []stri
 }
 
 // Backward compatibility for string-based RewriteTokens
-func RewriteTokens(tokenSlice []Token, position int, oldContent, newContent []string) ([]Token, error) {
+func RewriteTokens(tokenSlice []IRNode, position int, oldContent, newContent []string) ([]IRNode, error) {
 	if position < 0 || position+len(oldContent) > len(tokenSlice) {
 		return tokenSlice, fmt.Errorf("position %d is out of bounds or oldContent does not match", position)
 	}
@@ -247,11 +247,11 @@ func RewriteTokens(tokenSlice []Token, position int, oldContent, newContent []st
 		}
 	}
 	// Convert strings to tokens
-	tokenNewContent := make([]Token, len(newContent))
+	tokenNewContent := make([]IRNode, len(newContent))
 	for i, s := range newContent {
-		tokenNewContent[i] = CreateToken(Identifier, s)
+		tokenNewContent[i] = CreateIRNode(Identifier, s)
 	}
-	result := make([]Token, 0, len(tokenSlice)-len(oldContent)+len(tokenNewContent))
+	result := make([]IRNode, 0, len(tokenSlice)-len(oldContent)+len(tokenNewContent))
 	result = append(result, tokenSlice[:position]...)
 	result = append(result, tokenNewContent...)
 	result = append(result, tokenSlice[position+len(oldContent):]...)
@@ -263,9 +263,9 @@ type PointerAndIndex struct {
 	Index   int
 }
 
-// New Token-based methods
+// New IRNode-based methods
 func (gir *GoFIR) emitTokenToFileBuffer(
-	token Token, pointer VisitMethod) error {
+	token IRNode, pointer VisitMethod) error {
 	gir.pointerAndIndexVec = append(gir.pointerAndIndexVec, PointerAndIndex{
 		Pointer: string(pointer),
 		Index:   len(gir.tokenSlice),
@@ -277,7 +277,7 @@ func (gir *GoFIR) emitTokenToFileBuffer(
 }
 
 func (gir *GoFIR) emitTokenToFileBufferString(
-	token Token, pointer string) error {
+	token IRNode, pointer string) error {
 	gir.pointerAndIndexVec = append(gir.pointerAndIndexVec, PointerAndIndex{
 		Pointer: pointer,
 		Index:   len(gir.tokenSlice),
@@ -297,7 +297,7 @@ func (gir *GoFIR) emitToFileBuffer(
 	})
 	if s != "" {
 		// Convert string to token for storage
-		token := CreateToken(Identifier, s) // Default token type
+		token := CreateIRNode(Identifier, s) // Default token type
 		gir.tokenSlice = append(gir.tokenSlice, token)
 	}
 	return nil
@@ -312,7 +312,7 @@ func (gir *GoFIR) emitToFileBufferString(
 	})
 	if s != "" {
 		// Convert string to token for storage
-		token := CreateToken(Identifier, s) // Default token type
+		token := CreateIRNode(Identifier, s) // Default token type
 		gir.tokenSlice = append(gir.tokenSlice, token)
 	}
 	return nil
@@ -327,7 +327,7 @@ func emitToFile(file *os.File, fileBuffer string) error {
 	return nil
 }
 
-func emitTokensToFile(file *os.File, tokenSlice []Token) error {
+func emitTokensToFile(file *os.File, tokenSlice []IRNode) error {
 	for _, token := range tokenSlice {
 		_, err := file.WriteString(token.Serialize())
 		if err != nil {
@@ -368,25 +368,25 @@ func containsWhitespace(s string) bool {
 }
 
 type GoFIR struct {
-	tokenSlice         []Token
+	tokenSlice         []IRNode
 	pointerAndIndexVec []PointerAndIndex
 }
 
 // RemoveTokenAt removes the token at the specified index from the tokenSlice
-func RemoveTokenAt(tokenSlice []Token, index int) ([]Token, error) {
+func RemoveTokenAt(tokenSlice []IRNode, index int) ([]IRNode, error) {
 	if index < 0 || index >= len(tokenSlice) {
 		return tokenSlice, fmt.Errorf("index %d is out of bounds for tokenSlice of length %d", index, len(tokenSlice))
 	}
 
-	result := make([]Token, 0, len(tokenSlice)-1)
+	result := make([]IRNode, 0, len(tokenSlice)-1)
 	result = append(result, tokenSlice[:index]...)
 	result = append(result, tokenSlice[index+1:]...)
 
 	return result, nil
 }
 
-// Helper function to emit string as Token (backward compatibility)
-func (gir *GoFIR) emitStringAsToken(s string, tokenType TokenType, pointer VisitMethod) error {
-	token := CreateToken(tokenType, s)
+// Helper function to emit string as IRNode (backward compatibility)
+func (gir *GoFIR) emitStringAsToken(s string, tokenType IRNodeType, pointer VisitMethod) error {
+	token := CreateIRNode(tokenType, s)
 	return gir.emitTokenToFileBuffer(token, pointer)
 }

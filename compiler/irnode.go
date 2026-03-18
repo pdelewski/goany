@@ -6,8 +6,8 @@ import (
 	"strings"
 )
 
-// TokenType represents different types of tokens in the code generation
-type TokenType int
+// IRNodeType represents different types of tokens in the code generation
+type IRNodeType int
 
 // Language tag constants for Keyword token type
 const (
@@ -20,7 +20,7 @@ const (
 
 const (
 	// Language-specific keywords
-	EmptyToken TokenType = iota
+	EmptyIRNode IRNodeType = iota
 	Keyword              // unified keyword type; language stored in Tag field
 	_                    // reserved (was CSharpKeyword)
 	_                    // reserved (was RustKeyword)
@@ -125,7 +125,7 @@ const (
 )
 
 // OptMeta carries optimization-relevant context from emitter to optimizer.
-// Attached as a pointer on Token so non-annotated tokens have zero overhead.
+// Attached as a pointer on IRNode so non-annotated tokens have zero overhead.
 type OptMeta struct {
 	Kind            OptKind
 	VarName         string        // variable name for clone/move decisions
@@ -144,20 +144,20 @@ type OptMeta struct {
 	MapContent      string        // map variable code (for &map vs map.clone())
 }
 
-// Token represents a single token with its type and content
-type Token struct {
-	Type     TokenType
+// IRNode represents a single token with its type and content
+type IRNode struct {
+	Type     IRNodeType
 	Content  string
 	GoType   types.Type // Go type info for shift/reduce backends, nil if N/A
 	Tag      int        // Fragment tag (TagExpr, TagStmt, etc.), 0 if unset
 	OptMeta  *OptMeta   // nil when no optimization metadata
-	Children []Token    // child tokens for tree structure; nil for leaf tokens
+	Children []IRNode    // child tokens for tree structure; nil for leaf tokens
 }
 
 // Serialize returns the string representation of this token.
 // For leaf tokens (no children), it returns Content directly.
 // For tree tokens, it recursively serializes all children.
-func (t Token) Serialize() string {
+func (t IRNode) Serialize() string {
 	if len(t.Children) == 0 {
 		return t.Content
 	}
@@ -168,9 +168,9 @@ func (t Token) Serialize() string {
 	return sb.String()
 }
 
-// TokenTree builds a parent token with children and eagerly sets Content = Serialize().
-func TokenTree(tokenType TokenType, tag int, children ...Token) Token {
-	t := Token{
+// IRTree builds a parent token with children and eagerly sets Content = Serialize().
+func IRTree(tokenType IRNodeType, tag int, children ...IRNode) IRNode {
+	t := IRNode{
 		Type:     tokenType,
 		Tag:      tag,
 		Children: children,
@@ -180,24 +180,24 @@ func TokenTree(tokenType TokenType, tag int, children ...Token) Token {
 }
 
 // Leaf creates an atomic token with no children.
-func Leaf(tokenType TokenType, content string) Token {
-	return Token{
+func Leaf(tokenType IRNodeType, content string) IRNode {
+	return IRNode{
 		Type:    tokenType,
 		Content: content,
 	}
 }
 
 // LeafTag creates an atomic token with a tag and no children.
-func LeafTag(tokenType TokenType, content string, tag int) Token {
-	return Token{
+func LeafTag(tokenType IRNodeType, content string, tag int) IRNode {
+	return IRNode{
 		Type:    tokenType,
 		Content: content,
 		Tag:     tag,
 	}
 }
 
-// TokenTypeNames provides string representations for token types
-var TokenTypeNames = map[TokenType]string{
+// IRNodeTypeNames provides string representations for token types
+var IRNodeTypeNames = map[IRNodeType]string{
 	Keyword: "Keyword",
 	Identifier:         "Identifier",
 	StringLiteral:      "StringLiteral",
@@ -261,59 +261,59 @@ var TokenTypeNames = map[TokenType]string{
 	ReturnType:         "ReturnType",
 }
 
-// String returns the string representation of a TokenType
-func (t TokenType) String() string {
-	if name, ok := TokenTypeNames[t]; ok {
+// String returns the string representation of a IRNodeType
+func (t IRNodeType) String() string {
+	if name, ok := IRNodeTypeNames[t]; ok {
 		return name
 	}
 	return "Unknown"
 }
 
-// CreateToken creates a new token with the given type and content
-func CreateToken(tokenType TokenType, content string) Token {
-	return Token{
+// CreateIRNode creates a new token with the given type and content
+func CreateIRNode(tokenType IRNodeType, content string) IRNode {
+	return IRNode{
 		Type:    tokenType,
 		Content: content,
 	}
 }
 
 // IsKeyword returns true if the token type represents a keyword
-func (t TokenType) IsKeyword() bool {
+func (t IRNodeType) IsKeyword() bool {
 	return t == Keyword || (t >= IfKeyword && t <= AbstractKeyword)
 }
 
 // IsOperator returns true if the token type represents an operator
-func (t TokenType) IsOperator() bool {
+func (t IRNodeType) IsOperator() bool {
 	return t >= Assignment && t <= ArithmeticOperator
 }
 
 // IsPunctuation returns true if the token type represents punctuation
-func (t TokenType) IsPunctuation() bool {
+func (t IRNodeType) IsPunctuation() bool {
 	return t >= Comma && t <= RightAngle
 }
 
 // IsWhitespace returns true if the token type represents whitespace
-func (t TokenType) IsWhitespace() bool {
+func (t IRNodeType) IsWhitespace() bool {
 	return t >= WhiteSpace && t <= Tab
 }
 
 // IsLiteral returns true if the token type represents a literal value
-func (t TokenType) IsLiteral() bool {
+func (t IRNodeType) IsLiteral() bool {
 	return t >= StringLiteral && t <= CharLiteral
 }
 
 // LanguageSpecificKeywords maps keywords to their target language equivalents
 type LanguageKeywordMap struct {
-	Cpp    map[string]TokenType
-	CSharp map[string]TokenType
-	Rust   map[string]TokenType
-	Java   map[string]TokenType
+	Cpp    map[string]IRNodeType
+	CSharp map[string]IRNodeType
+	Rust   map[string]IRNodeType
+	Java   map[string]IRNodeType
 }
 
 // GetLanguageKeywords returns keyword mappings for different languages
 func GetLanguageKeywords() LanguageKeywordMap {
 	return LanguageKeywordMap{
-		Cpp: map[string]TokenType{
+		Cpp: map[string]IRNodeType{
 			"include":   Keyword,
 			"namespace": Keyword,
 			"using":     Keyword,
@@ -322,7 +322,7 @@ func GetLanguageKeywords() LanguageKeywordMap {
 			"const":     Keyword,
 			"auto":      Keyword,
 		},
-		CSharp: map[string]TokenType{
+		CSharp: map[string]IRNodeType{
 			"using":     Keyword,
 			"namespace": Keyword,
 			"var":       Keyword,
@@ -331,7 +331,7 @@ func GetLanguageKeywords() LanguageKeywordMap {
 			"virtual":   Keyword,
 			"sealed":    Keyword,
 		},
-		Rust: map[string]TokenType{
+		Rust: map[string]IRNodeType{
 			"fn":    Keyword,
 			"let":   Keyword,
 			"mut":   Keyword,
@@ -340,7 +340,7 @@ func GetLanguageKeywords() LanguageKeywordMap {
 			"mod":   Keyword,
 			"use":   Keyword,
 		},
-		Java: map[string]TokenType{
+		Java: map[string]IRNodeType{
 			"import":     Keyword,
 			"package":    Keyword,
 			"extends":    Keyword,
