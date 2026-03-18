@@ -75,9 +75,11 @@ func (v *BasePassVisitor) emitArgs(node *ast.CallExpr, indent int) {
 		v.traverseExpression(arg, 0) // Function arguments
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCallExprArg)
 		v.emitter.PostVisitCallExprArg(arg, i, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCallExprArg)
 	}
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCallExprArgs)
 	v.emitter.PostVisitCallExprArgs(node.Args, indent)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitCallExprArgs)
 }
 
 func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
@@ -88,11 +90,13 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.emitter.PreVisitBasicLit(e, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBasicLit)
 		v.emitter.PostVisitBasicLit(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitBasicLit)
 	case *ast.Ident:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIdent)
 		v.emitter.PreVisitIdent(e, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIdent)
 		v.emitter.PostVisitIdent(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIdent)
 	case *ast.BinaryExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitBinaryExpr)
 		v.emitter.PreVisitBinaryExpr(e, indent)
@@ -101,17 +105,21 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.X, indent) // Left operand
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBinaryExprLeft)
 		v.emitter.PostVisitBinaryExprLeft(e.X, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitBinaryExprLeft)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitBinaryExprOperator)
 		v.emitter.PreVisitBinaryExprOperator(e.Op, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBinaryExprOperator)
 		v.emitter.PostVisitBinaryExprOperator(e.Op, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitBinaryExprOperator)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitBinaryExprRight)
 		v.emitter.PreVisitBinaryExprRight(e.Y, indent)
 		v.traverseExpression(e.Y, indent) // Right operand
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBinaryExprRight)
 		v.emitter.PostVisitBinaryExprRight(e.Y, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitBinaryExprRight)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBinaryExpr)
 		v.emitter.PostVisitBinaryExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitBinaryExpr)
 	case *ast.CallExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitCallExpr)
 		v.emitter.PreVisitCallExpr(e, indent)
@@ -120,15 +128,18 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.Fun, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCallExprFun)
 		v.emitter.PostVisitCallExprFun(e.Fun, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCallExprFun)
 		v.emitArgs(e, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCallExpr)
 		v.emitter.PostVisitCallExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCallExpr)
 	case *ast.ParenExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitParenExpr)
 		v.emitter.PreVisitParenExpr(e, indent)
 		v.traverseExpression(e.X, indent) // Dump inner expression
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitParenExpr)
 		v.emitter.PostVisitParenExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitParenExpr)
 	case *ast.CompositeLit:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitCompositeLit)
 		v.emitter.PreVisitCompositeLit(e, indent)
@@ -137,6 +148,7 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.Type, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCompositeLitType)
 		v.emitter.PostVisitCompositeLitType(e.Type, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCompositeLitType)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitCompositeLitElts)
 		v.emitter.PreVisitCompositeLitElts(e.Elts, indent)
 		for i, elt := range e.Elts {
@@ -145,17 +157,21 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 			v.traverseExpression(elt, 0) // Function arguments
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCompositeLitElt)
 			v.emitter.PostVisitCompositeLitElt(elt, i, indent)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitCompositeLitElt)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCompositeLitElts)
 		v.emitter.PostVisitCompositeLitElts(e.Elts, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCompositeLitElts)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCompositeLit)
 		v.emitter.PostVisitCompositeLit(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCompositeLit)
 	case *ast.ArrayType:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitArrayType)
 		v.emitter.PreVisitArrayType(*e, indent)
 		v.traverseExpression(e.Elt, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitArrayType)
 		v.emitter.PostVisitArrayType(*e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitArrayType)
 	case *ast.SelectorExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSelectorExpr)
 		v.emitter.PreVisitSelectorExpr(e, indent)
@@ -164,6 +180,7 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSelectorExprX)
 		v.emitter.PostVisitSelectorExprX(e.X, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSelectorExprX)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSelectorExprSel)
 		v.emitter.PreVisitSelectorExprSel(e.Sel, indent)
 		oldIndent := indent
@@ -171,8 +188,10 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		indent = oldIndent
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSelectorExprSel)
 		v.emitter.PostVisitSelectorExprSel(e.Sel, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSelectorExprSel)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSelectorExpr)
 		v.emitter.PostVisitSelectorExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSelectorExpr)
 	case *ast.IndexExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIndexExpr)
 		v.emitter.PreVisitIndexExpr(e, indent)
@@ -181,19 +200,23 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIndexExprX)
 		v.emitter.PostVisitIndexExprX(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIndexExprX)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIndexExprIndex)
 		v.emitter.PreVisitIndexExprIndex(e, indent)
 		v.traverseExpression(e.Index, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIndexExprIndex)
 		v.emitter.PostVisitIndexExprIndex(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIndexExprIndex)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIndexExpr)
 		v.emitter.PostVisitIndexExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIndexExpr)
 	case *ast.UnaryExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitUnaryExpr)
 		v.emitter.PreVisitUnaryExpr(e, indent)
 		v.traverseExpression(e.X, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitUnaryExpr)
 		v.emitter.PostVisitUnaryExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitUnaryExpr)
 	case *ast.SliceExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSliceExpr)
 		v.emitter.PreVisitSliceExpr(e, indent)
@@ -202,12 +225,14 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.X, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSliceExprX)
 		v.emitter.PostVisitSliceExprX(e.X, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSliceExprX)
 		// Check and print Low, High, and Max
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSliceExprXBegin)
 		v.emitter.PreVisitSliceExprXBegin(e.X, indent)
 		v.traverseExpression(e.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSliceExprXBegin)
 		v.emitter.PostVisitSliceExprXBegin(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSliceExprXBegin)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSliceExprLow)
 		v.emitter.PreVisitSliceExprLow(e.Low, indent)
 		if e.Low != nil {
@@ -215,11 +240,13 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSliceExprLow)
 		v.emitter.PostVisitSliceExprLow(e.Low, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSliceExprLow)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSliceExprXEnd)
 		v.emitter.PreVisitSliceExprXEnd(e, indent)
 		v.traverseExpression(e.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSliceExprXEnd)
 		v.emitter.PostVisitSliceExprXEnd(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSliceExprXEnd)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSliceExprHigh)
 		v.emitter.PreVisitSliceExprHigh(e.High, indent)
 		if e.High != nil {
@@ -227,6 +254,7 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSliceExprHigh)
 		v.emitter.PostVisitSliceExprHigh(e.High, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSliceExprHigh)
 		if e.Slice3 && e.Max != nil {
 			v.traverseExpression(e.Max, indent)
 		} else if e.Slice3 {
@@ -234,6 +262,7 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSliceExpr)
 		v.emitter.PostVisitSliceExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSliceExpr)
 	case *ast.FuncType:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncType)
 		v.emitter.PreVisitFuncType(e, indent)
@@ -246,10 +275,12 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 				v.traverseExpression(result.Type, indent)
 				v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncTypeResult)
 				v.emitter.PostVisitFuncTypeResult(result, i, indent)
+				v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncTypeResult)
 			}
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncTypeResults)
 		v.emitter.PostVisitFuncTypeResults(e.Results, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncTypeResults)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncTypeParams)
 		v.emitter.PreVisitFuncTypeParams(e.Params, indent)
 		for i, param := range e.Params.List {
@@ -258,11 +289,14 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 			v.traverseExpression(param.Type, 0)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncTypeParam)
 			v.emitter.PostVisitFuncTypeParam(param, i, indent)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncTypeParam)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncTypeParams)
 		v.emitter.PostVisitFuncTypeParams(e.Params, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncTypeParams)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncType)
 		v.emitter.PostVisitFuncType(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncType)
 	case *ast.KeyValueExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitKeyValueExpr)
 		v.emitter.PreVisitKeyValueExpr(e, indent)
@@ -271,13 +305,16 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.Key, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitKeyValueExprKey)
 		v.emitter.PostVisitKeyValueExprKey(e.Key, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitKeyValueExprKey)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitKeyValueExprValue)
 		v.emitter.PreVisitKeyValueExprValue(e.Value, indent)
 		v.traverseExpression(e.Value, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitKeyValueExprValue)
 		v.emitter.PostVisitKeyValueExprValue(e.Value, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitKeyValueExprValue)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitKeyValueExpr)
 		v.emitter.PostVisitKeyValueExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitKeyValueExpr)
 	case *ast.FuncLit:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncLit)
 		v.emitter.PreVisitFuncLit(e, indent)
@@ -289,9 +326,11 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 			v.traverseExpression(param.Type, indent)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncLitTypeParam)
 			v.emitter.PostVisitFuncLitTypeParam(param, i, indent)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncLitTypeParam)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncLitTypeParams)
 		v.emitter.PostVisitFuncLitTypeParams(e.Type.Params, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncLitTypeParams)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncLitTypeResults)
 		v.emitter.PreVisitFuncLitTypeResults(e.Type.Results, indent)
 
@@ -302,17 +341,21 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 				v.traverseExpression(result.Type, indent)
 				v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncLitTypeResult)
 				v.emitter.PostVisitFuncLitTypeResult(result, i, indent)
+				v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncLitTypeResult)
 			}
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncLitTypeResults)
 		v.emitter.PostVisitFuncLitTypeResults(e.Type.Results, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncLitTypeResults)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncLitBody)
 		v.emitter.PreVisitFuncLitBody(e.Body, indent)
 		v.traverseStmt(e.Body, indent+4)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncLitBody)
 		v.emitter.PostVisitFuncLitBody(e.Body, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncLitBody)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncLit)
 		v.emitter.PostVisitFuncLit(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncLit)
 	case *ast.TypeAssertExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitTypeAssertExpr)
 		v.emitter.PreVisitTypeAssertExpr(e, indent)
@@ -321,13 +364,16 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.Type, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitTypeAssertExprType)
 		v.emitter.PostVisitTypeAssertExprType(e.Type, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitTypeAssertExprType)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitTypeAssertExprX)
 		v.emitter.PreVisitTypeAssertExprX(e.X, indent)
 		v.traverseExpression(e.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitTypeAssertExprX)
 		v.emitter.PostVisitTypeAssertExprX(e.X, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitTypeAssertExprX)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitTypeAssertExpr)
 		v.emitter.PostVisitTypeAssertExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitTypeAssertExpr)
 	case *ast.StarExpr:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitStarExpr)
 		v.emitter.PreVisitStarExpr(e, indent)
@@ -336,18 +382,22 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitStarExprX)
 		v.emitter.PostVisitStarExprX(e.X, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitStarExprX)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitStarExpr)
 		v.emitter.PostVisitStarExpr(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitStarExpr)
 	case *ast.InterfaceType:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitInterfaceType)
 		v.emitter.PreVisitInterfaceType(e, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitInterfaceType)
 		v.emitter.PostVisitInterfaceType(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitInterfaceType)
 	case *ast.StructType:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitStructType)
 		v.emitter.PreVisitStructType(e, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitStructType)
 		v.emitter.PostVisitStructType(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitStructType)
 	case *ast.MapType:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitMapType)
 		v.emitter.PreVisitMapType(e, indent)
@@ -357,23 +407,28 @@ func (v *BasePassVisitor) traverseExpression(expr ast.Expr, indent int) string {
 		v.traverseExpression(e.Key, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitMapKeyType)
 		v.emitter.PostVisitMapKeyType(e.Key, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitMapKeyType)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitMapValueType)
 		v.emitter.PreVisitMapValueType(e.Value, indent)
 		v.traverseExpression(e.Value, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitMapValueType)
 		v.emitter.PostVisitMapValueType(e.Value, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitMapValueType)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitMapType)
 		v.emitter.PostVisitMapType(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitMapType)
 	case *ast.ChanType:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitChanType)
 		v.emitter.PreVisitChanType(e, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitChanType)
 		v.emitter.PostVisitChanType(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitChanType)
 	case *ast.Ellipsis:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitEllipsis)
 		v.emitter.PreVisitEllipsis(e, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitEllipsis)
 		v.emitter.PostVisitEllipsis(e, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitEllipsis)
 	default:
 		panic(fmt.Sprintf("unsupported expression type: %T", e))
 	}
@@ -389,9 +444,11 @@ func (v *BasePassVisitor) traverseAssignment(assignStmt *ast.AssignStmt, indent 
 		v.traverseExpression(assignStmt.Lhs[i], indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitAssignStmtLhsExpr)
 		v.emitter.PostVisitAssignStmtLhsExpr(assignStmt.Lhs[i], i, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitAssignStmtLhsExpr)
 	}
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitAssignStmtLhs)
 	v.emitter.PostVisitAssignStmtLhs(assignStmt, indent)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitAssignStmtLhs)
 
 	v.emitter.GetForestBuilder().AddVisitMarker(PreVisitAssignStmtRhs)
 	v.emitter.PreVisitAssignStmtRhs(assignStmt, indent)
@@ -401,9 +458,11 @@ func (v *BasePassVisitor) traverseAssignment(assignStmt *ast.AssignStmt, indent 
 		v.traverseExpression(assignStmt.Rhs[i], indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitAssignStmtRhsExpr)
 		v.emitter.PostVisitAssignStmtRhsExpr(assignStmt.Rhs[i], i, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitAssignStmtRhsExpr)
 	}
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitAssignStmtRhs)
 	v.emitter.PostVisitAssignStmtRhs(assignStmt, indent)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitAssignStmtRhs)
 }
 
 func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
@@ -416,8 +475,10 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		v.traverseExpression(stmt.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitExprStmtX)
 		v.emitter.PostVisitExprStmtX(stmt.X, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitExprStmtX)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitExprStmt)
 		v.emitter.PostVisitExprStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitExprStmt)
 	case *ast.DeclStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitDeclStmt)
 		v.emitter.PreVisitDeclStmt(stmt, indent)
@@ -431,11 +492,13 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 						v.traverseExpression(valueSpec.Type, indent)
 						v.emitter.GetForestBuilder().AddVisitMarker(PostVisitDeclStmtValueSpecType)
 						v.emitter.PostVisitDeclStmtValueSpecType(valueSpec, i, indent)
+						v.emitter.GetForestBuilder().AutoCollect(PostVisitDeclStmtValueSpecType)
 						v.emitter.GetForestBuilder().AddVisitMarker(PreVisitDeclStmtValueSpecNames)
 						v.emitter.PreVisitDeclStmtValueSpecNames(valueSpec.Names[i], i, indent)
 						v.traverseExpression(valueSpec.Names[i], 0)
 						v.emitter.GetForestBuilder().AddVisitMarker(PostVisitDeclStmtValueSpecNames)
 						v.emitter.PostVisitDeclStmtValueSpecNames(valueSpec.Names[i], i, indent)
+						v.emitter.GetForestBuilder().AutoCollect(PostVisitDeclStmtValueSpecNames)
 						// Traverse initialization value if present
 						if i < len(valueSpec.Values) {
 							v.emitter.GetForestBuilder().AddVisitMarker(PreVisitDeclStmtValueSpecValue)
@@ -443,6 +506,7 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 							v.traverseExpression(valueSpec.Values[i], indent)
 							v.emitter.GetForestBuilder().AddVisitMarker(PostVisitDeclStmtValueSpecValue)
 							v.emitter.PostVisitDeclStmtValueSpecValue(valueSpec.Values[i], i, indent)
+							v.emitter.GetForestBuilder().AutoCollect(PostVisitDeclStmtValueSpecValue)
 						}
 					}
 				}
@@ -450,12 +514,14 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitDeclStmt)
 		v.emitter.PostVisitDeclStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitDeclStmt)
 	case *ast.AssignStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitAssignStmt)
 		v.emitter.PreVisitAssignStmt(stmt, indent)
 		v.traverseAssignment(stmt, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitAssignStmt)
 		v.emitter.PostVisitAssignStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitAssignStmt)
 	case *ast.ReturnStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitReturnStmt)
 		v.emitter.PreVisitReturnStmt(stmt, indent)
@@ -465,9 +531,11 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 			v.traverseExpression(stmt.Results[i], 0)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitReturnStmtResult)
 			v.emitter.PostVisitReturnStmtResult(stmt.Results[i], i, indent)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitReturnStmtResult)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitReturnStmt)
 		v.emitter.PostVisitReturnStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitReturnStmt)
 	case *ast.IfStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIfStmt)
 		v.emitter.PreVisitIfStmt(stmt, indent)
@@ -478,25 +546,30 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIfStmtInit)
 		v.emitter.PostVisitIfStmtInit(stmt.Init, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIfStmtInit)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIfStmtCond)
 		v.emitter.PreVisitIfStmtCond(stmt, indent)
 		v.traverseExpression(stmt.Cond, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIfStmtCond)
 		v.emitter.PostVisitIfStmtCond(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIfStmtCond)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIfStmtBody)
 		v.emitter.PreVisitIfStmtBody(stmt, indent)
 		v.traverseStmt(stmt.Body, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIfStmtBody)
 		v.emitter.PostVisitIfStmtBody(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIfStmtBody)
 		if stmt.Else != nil {
 			v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIfStmtElse)
 			v.emitter.PreVisitIfStmtElse(stmt, indent)
 			v.traverseStmt(stmt.Else, indent)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIfStmtElse)
 			v.emitter.PostVisitIfStmtElse(stmt, indent)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitIfStmtElse)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIfStmt)
 		v.emitter.PostVisitIfStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIfStmt)
 	case *ast.ForStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitForStmt)
 		v.emitter.PreVisitForStmt(stmt, indent)
@@ -508,6 +581,7 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitForStmtInit)
 		v.emitter.PostVisitForStmtInit(stmt.Init, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitForStmtInit)
 
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitForStmtCond)
 		v.emitter.PreVisitForStmtCond(stmt.Cond, indent)
@@ -516,6 +590,7 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitForStmtCond)
 		v.emitter.PostVisitForStmtCond(stmt.Cond, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitForStmtCond)
 
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitForStmtPost)
 		v.emitter.PreVisitForStmtPost(stmt.Post, indent)
@@ -524,11 +599,13 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitForStmtPost)
 		v.emitter.PostVisitForStmtPost(stmt.Post, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitForStmtPost)
 
 		v.traverseStmt(stmt.Body, indent)
 
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitForStmt)
 		v.emitter.PostVisitForStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitForStmt)
 	case *ast.RangeStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitRangeStmt)
 		v.emitter.PreVisitRangeStmt(stmt, indent)
@@ -539,6 +616,7 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitRangeStmtKey)
 		v.emitter.PostVisitRangeStmtKey(stmt.Key, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitRangeStmtKey)
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitRangeStmtValue)
 		v.emitter.PreVisitRangeStmtValue(stmt.Value, indent)
 		if stmt.Value != nil {
@@ -546,16 +624,19 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitRangeStmtValue)
 		v.emitter.PostVisitRangeStmtValue(stmt.Value, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitRangeStmtValue)
 
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitRangeStmtX)
 		v.emitter.PreVisitRangeStmtX(stmt.X, indent)
 		v.traverseExpression(stmt.X, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitRangeStmtX)
 		v.emitter.PostVisitRangeStmtX(stmt.X, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitRangeStmtX)
 
 		v.traverseStmt(stmt.Body, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitRangeStmt)
 		v.emitter.PostVisitRangeStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitRangeStmt)
 	case *ast.SwitchStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSwitchStmt)
 		v.emitter.PreVisitSwitchStmt(stmt, indent)
@@ -564,28 +645,33 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		v.traverseExpression(stmt.Tag, 0)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSwitchStmtTag)
 		v.emitter.PostVisitSwitchStmtTag(stmt.Tag, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSwitchStmtTag)
 
 		for _, stmt := range stmt.Body.List {
 			v.traverseStmt(stmt, indent+2)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSwitchStmt)
 		v.emitter.PostVisitSwitchStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSwitchStmt)
 	case *ast.TypeSwitchStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitTypeSwitchStmt)
 		v.emitter.PreVisitTypeSwitchStmt(stmt, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitTypeSwitchStmt)
 		v.emitter.PostVisitTypeSwitchStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitTypeSwitchStmt)
 	case *ast.BranchStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitBranchStmt)
 		v.emitter.PreVisitBranchStmt(stmt, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBranchStmt)
 		v.emitter.PostVisitBranchStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitBranchStmt)
 	case *ast.IncDecStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitIncDecStmt)
 		v.emitter.PreVisitIncDecStmt(stmt, indent)
 		v.traverseExpression(stmt.X, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitIncDecStmt)
 		v.emitter.PostVisitIncDecStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitIncDecStmt)
 	case *ast.CaseClause:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitCaseClause)
 		v.emitter.PreVisitCaseClause(stmt, indent)
@@ -597,14 +683,17 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 			v.traverseExpression(stmt.List[i], 0)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCaseClauseListExpr)
 			v.emitter.PostVisitCaseClauseListExpr(stmt.List[i], i, indent)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitCaseClauseListExpr)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCaseClauseList)
 		v.emitter.PostVisitCaseClauseList(stmt.List, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCaseClauseList)
 		for i := 0; i < len(stmt.Body); i++ {
 			v.traverseStmt(stmt.Body[i], indent+4)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitCaseClause)
 		v.emitter.PostVisitCaseClause(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitCaseClause)
 	case *ast.BlockStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitBlockStmt)
 		v.emitter.PreVisitBlockStmt(stmt, indent)
@@ -614,21 +703,25 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 			v.traverseStmt(stmt.List[i], indent+2)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBlockStmtList)
 			v.emitter.PostVisitBlockStmtList(stmt.List[i], i, indent+2)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitBlockStmtList)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitBlockStmt)
 		v.emitter.PostVisitBlockStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitBlockStmt)
 	case *ast.DeferStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitDeferStmt)
 		v.emitter.PreVisitDeferStmt(stmt, indent)
 		v.traverseExpression(stmt.Call, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitDeferStmt)
 		v.emitter.PostVisitDeferStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitDeferStmt)
 	case *ast.GoStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitGoStmt)
 		v.emitter.PreVisitGoStmt(stmt, indent)
 		v.traverseExpression(stmt.Call, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitGoStmt)
 		v.emitter.PostVisitGoStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitGoStmt)
 	case *ast.SendStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSendStmt)
 		v.emitter.PreVisitSendStmt(stmt, indent)
@@ -636,6 +729,7 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		v.traverseExpression(stmt.Value, indent)
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSendStmt)
 		v.emitter.PostVisitSendStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSendStmt)
 	case *ast.SelectStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSelectStmt)
 		v.emitter.PreVisitSelectStmt(stmt, indent)
@@ -644,6 +738,7 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSelectStmt)
 		v.emitter.PostVisitSelectStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitSelectStmt)
 	case *ast.LabeledStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitLabeledStmt)
 		v.emitter.PreVisitLabeledStmt(stmt, indent)
@@ -652,6 +747,7 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitLabeledStmt)
 		v.emitter.PostVisitLabeledStmt(stmt, indent)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitLabeledStmt)
 	default:
 		DebugPrintf("<Other statement type>\n")
 	}
@@ -670,16 +766,19 @@ func (v *BasePassVisitor) generateFuncDeclSignature(node *ast.FuncDecl) ast.Visi
 			v.traverseExpression(node.Type.Results.List[i].Type, 0)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignatureTypeResultsList)
 			v.emitter.PostVisitFuncDeclSignatureTypeResultsList(node.Type.Results.List[i], i, 0)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignatureTypeResultsList)
 		}
 	}
 
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignatureTypeResults)
 	v.emitter.PostVisitFuncDeclSignatureTypeResults(node, 0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignatureTypeResults)
 
 	v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncDeclName)
 	v.emitter.PreVisitFuncDeclName(node.Name, 0)
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclName)
 	v.emitter.PostVisitFuncDeclName(node.Name, 0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclName)
 
 	v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncDeclSignatureTypeParams)
 	v.emitter.PreVisitFuncDeclSignatureTypeParams(node, 0)
@@ -693,19 +792,24 @@ func (v *BasePassVisitor) generateFuncDeclSignature(node *ast.FuncDecl) ast.Visi
 			v.traverseExpression(node.Type.Params.List[i].Type, 0)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignatureTypeParamsListType)
 			v.emitter.PostVisitFuncDeclSignatureTypeParamsListType(node.Type.Params.List[i].Type, argName, j, 0)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignatureTypeParamsListType)
 			v.emitter.GetForestBuilder().AddVisitMarker(PreVisitFuncDeclSignatureTypeParamsArgName)
 			v.emitter.PreVisitFuncDeclSignatureTypeParamsArgName(argName, j, 0)
 			v.traverseExpression(argName, 0)
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignatureTypeParamsArgName)
 			v.emitter.PostVisitFuncDeclSignatureTypeParamsArgName(argName, j, 0)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignatureTypeParamsArgName)
 		}
 		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignatureTypeParamsList)
 		v.emitter.PostVisitFuncDeclSignatureTypeParamsList(node.Type.Params.List[i], i, 0)
+		v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignatureTypeParamsList)
 	}
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignatureTypeParams)
 	v.emitter.PostVisitFuncDeclSignatureTypeParams(node, 0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignatureTypeParams)
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignature)
 	v.emitter.PostVisitFuncDeclSignature(node, 0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignature)
 	return v
 }
 
@@ -718,8 +822,10 @@ func (v *BasePassVisitor) generateFuncDecl(node *ast.FuncDecl) ast.Visitor {
 	v.traverseStmt(node.Body, 0)
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclBody)
 	v.emitter.PostVisitFuncDeclBody(node.Body, 0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclBody)
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDecl)
 	v.emitter.PostVisitFuncDecl(node, 0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDecl)
 	return v
 }
 
@@ -869,15 +975,18 @@ func (v *BasePassVisitor) gen(precedence map[string]int) {
 					v.traverseExpression(field.Type, 2)
 					v.emitter.GetForestBuilder().AddVisitMarker(PostVisitGenStructFieldType)
 					v.emitter.PostVisitGenStructFieldType(field.Type, 2)
+					v.emitter.GetForestBuilder().AutoCollect(PostVisitGenStructFieldType)
 					v.emitter.GetForestBuilder().AddVisitMarker(PreVisitGenStructFieldName)
 					v.emitter.PreVisitGenStructFieldName(fieldName, 0)
 					v.traverseExpression(fieldName, 0)
 					v.emitter.GetForestBuilder().AddVisitMarker(PostVisitGenStructFieldName)
 					v.emitter.PostVisitGenStructFieldName(fieldName, 0)
+					v.emitter.GetForestBuilder().AutoCollect(PostVisitGenStructFieldName)
 				}
 			}
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitGenStructInfo)
 			v.emitter.PostVisitGenStructInfo(typeInfos[i], 0)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitGenStructInfo)
 		} else if node, ok := typeInfos[i].Other.(*ast.TypeSpec); ok {
 			if _, ok2 := typeInfos[i].Other.(*ast.StructType); !ok2 {
 				v.emitter.GetForestBuilder().AddVisitMarker(PreVisitTypeAliasName)
@@ -885,16 +994,19 @@ func (v *BasePassVisitor) gen(precedence map[string]int) {
 				v.traverseExpression(node.Name, 0)
 				v.emitter.GetForestBuilder().AddVisitMarker(PostVisitTypeAliasName)
 				v.emitter.PostVisitTypeAliasName(node.Name, 0)
+				v.emitter.GetForestBuilder().AutoCollect(PostVisitTypeAliasName)
 				v.emitter.GetForestBuilder().AddVisitMarker(PreVisitTypeAliasType)
 				v.emitter.PreVisitTypeAliasType(node.Type, 0)
 				v.traverseExpression(node.Type, 0)
 				v.emitter.GetForestBuilder().AddVisitMarker(PostVisitTypeAliasType)
 				v.emitter.PostVisitTypeAliasType(node.Type, 0)
+				v.emitter.GetForestBuilder().AutoCollect(PostVisitTypeAliasType)
 			}
 		}
 	}
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitGenStructInfos)
 	v.emitter.PostVisitGenStructInfos(typeInfos, 0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitGenStructInfos)
 	for _, node := range v.nodes {
 		if genDecl, ok := node.(*ast.GenDecl); ok && genDecl.Tok == token.CONST {
 			v.emitter.GetForestBuilder().AddVisitMarker(PreVisitGenDeclConst)
@@ -909,10 +1021,12 @@ func (v *BasePassVisitor) gen(precedence map[string]int) {
 					}
 					v.emitter.GetForestBuilder().AddVisitMarker(PostVisitGenDeclConstName)
 					v.emitter.PostVisitGenDeclConstName(name, 0)
+					v.emitter.GetForestBuilder().AutoCollect(PostVisitGenDeclConstName)
 				}
 			}
 			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitGenDeclConst)
 			v.emitter.PostVisitGenDeclConst(genDecl, 0)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitGenDeclConst)
 		}
 	}
 
@@ -926,6 +1040,7 @@ func (v *BasePassVisitor) gen(precedence map[string]int) {
 	}
 	v.emitter.GetForestBuilder().AddVisitMarker(PostVisitFuncDeclSignatures)
 	v.emitter.PostVisitFuncDeclSignatures(0)
+	v.emitter.GetForestBuilder().AutoCollect(PostVisitFuncDeclSignatures)
 	for _, node := range v.nodes {
 		switch node := node.(type) {
 		case *ast.FuncDecl:
@@ -949,6 +1064,7 @@ func (v *BasePass) ProLog() {
 func (v *BasePass) EpiLog() {
 	v.Emitter.GetForestBuilder().AddVisitMarker(PostVisitProgram)
 	v.Emitter.PostVisitProgram(0)
+	v.Emitter.GetForestBuilder().AutoCollect(PostVisitProgram)
 }
 
 func (v *BasePass) PreVisit(visitor ast.Visitor) {
@@ -1025,4 +1141,5 @@ func (v *BasePass) PostVisit(visitor ast.Visitor, visited map[string]struct{}) {
 	cppVisitor.gen(typesPrecedence)
 	v.Emitter.GetForestBuilder().AddVisitMarker(PostVisitPackage)
 	v.Emitter.PostVisitPackage(cppVisitor.pkg, 0)
+	v.Emitter.GetForestBuilder().AutoCollect(PostVisitPackage)
 }
