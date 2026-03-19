@@ -1509,13 +1509,18 @@ func (e *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 
 func (e *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 	argTokens := e.fs.CollectForest(string(PreVisitCallExprArgs))
-	var args []string
+	first := true
 	for _, t := range argTokens {
-		if t.Serialize() != "" {
-			args = append(args, t.Serialize())
+		if t.Serialize() == "" {
+			continue
 		}
+		if !first {
+			e.fs.AddTree(IRNode{Type: Comma, Content: ", "})
+		}
+		t.Type = CallExpression
+		e.fs.AddTree(t)
+		first = false
 	}
-	e.fs.AddLeaf(strings.Join(args, ", "), KindExpr, nil)
 }
 
 func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
@@ -1525,8 +1530,12 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	if len(tokens) >= 1 {
 		funName = tokens[0].Serialize()
 	}
-	if len(tokens) >= 2 {
-		argsStr = tokens[1].Serialize()
+	if len(tokens) > 1 {
+		var sb strings.Builder
+		for _, t := range tokens[1:] {
+			sb.WriteString(t.Serialize())
+		}
+		argsStr = sb.String()
 	}
 
 	// Handle special built-in functions

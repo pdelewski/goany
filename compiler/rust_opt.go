@@ -49,6 +49,7 @@ type RustOptState struct {
 	funcLitDepth              int
 	currentCallArgIdentsStack []map[string]int
 	currentCalleeName         string
+	currentCalleeKey          string
 	currentParamIndex         int
 	currentCallIsLen          bool
 

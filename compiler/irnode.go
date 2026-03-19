@@ -199,6 +199,9 @@ type OptMeta struct {
 	ParamName       string        // parameter name (for signature changes)
 	TypeStr         string        // type string (for signature changes)
 	IsInsideClosure bool          // whether this is inside a FuncLit
+	IsRefEligible   bool          // true if type is struct or slice (eligible for &T optimization)
+	IsReadOnly      bool          // param determined read-only by analysis (for RefOptPass)
+	IsMutRef        bool          // param determined mut-ref by analysis (for RefOptPass)
 	NodeExpr        ast.Expr      // original Go AST expression
 	NodeStmt        ast.Stmt      // original Go AST statement
 	ReturnNode      *ast.ReturnStmt // for multi-return analysis

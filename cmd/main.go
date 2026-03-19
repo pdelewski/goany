@@ -197,6 +197,9 @@ func main() {
 				OptimizeMoves:   optimizeMoves,
 				OptimizeRefs:    optimizeRefs,
 			}},
+			IRPasses: []compiler.IRPass{
+				&compiler.RefOptPass{Tag: compiler.TagCpp, Enabled: true},
+			},
 		})
 		programFiles = append(programFiles, "cpp")
 	}
@@ -211,6 +214,9 @@ func main() {
 				OutputName:      outputName,
 				OptimizeRefs:    optimizeRefs,
 			}},
+			IRPasses: []compiler.IRPass{
+				&compiler.RefOptPass{Tag: compiler.TagCSharp, Enabled: true},
+			},
 		})
 		programFiles = append(programFiles, "cs")
 	}
@@ -228,6 +234,9 @@ func main() {
 					OptimizeRefs:  optimizeRefs,
 				},
 			}},
+			IRPasses: []compiler.IRPass{
+				&compiler.RefOptPass{Tag: compiler.TagRust, Enabled: true},
+			},
 		})
 		programFiles = append(programFiles, "rs")
 	}

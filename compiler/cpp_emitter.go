@@ -63,6 +63,8 @@ type CppEmitter struct {
 	refOptCurrentRefParams    map[string]bool
 	refOptCurrentMutRefParams map[string]bool
 	currentParamIndex     int
+	currentCalleeName     string
+	currentCalleeKey      string
 	// C++-specific
 	forwardDecl      bool
 	funcLitDepth     int
@@ -649,6 +651,18 @@ func (e *CppEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 
 func (e *CppEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 	funCode := e.fs.CollectText(string(PreVisitCallExprFun))
+	if ident, ok := node.(*ast.Ident); ok {
+		e.currentCalleeName = ident.Name
+	} else if sel, ok := node.(*ast.SelectorExpr); ok {
+		e.currentCalleeName = sel.Sel.Name
+	} else {
+		e.currentCalleeName = ""
+	}
+	if e.currentCalleeName != "" {
+		e.currentCalleeKey = e.refOptCurrentPkg + "." + e.currentCalleeName
+	} else {
+		e.currentCalleeKey = ""
+	}
 	e.fs.AddLeaf(funCode, KindExpr, nil)
 }
 
@@ -683,24 +697,43 @@ func (e *CppEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		e.currentCallArgIdentsStack = e.currentCallArgIdentsStack[:len(e.currentCallArgIdentsStack)-1]
 	}
 	argTokens := e.fs.CollectForest(string(PreVisitCallExprArgs))
-	var args []string
+	first := true
+	argIdx := 0
 	for _, t := range argTokens {
-		if t.Serialize() != "" {
-			args = append(args, t.Serialize())
+		if t.Serialize() == "" {
+			continue
 		}
+		if !first {
+			e.fs.AddTree(IRNode{Type: Comma, Content: ", "})
+		}
+		t.Type = CallExpression
+		t.OptMeta = &OptMeta{
+			Kind:       OptCallArg,
+			CalleeName: e.currentCalleeName,
+			FuncKey:    e.currentCalleeKey,
+			ParamIndex: argIdx,
+		}
+		e.fs.AddTree(t)
+		first = false
+		argIdx++
 	}
-	e.fs.AddLeaf(strings.Join(args, ", "), KindExpr, nil)
 }
 
 func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
+	e.currentCalleeName = ""
+	e.currentCalleeKey = ""
 	tokens := e.fs.CollectForest(string(PreVisitCallExpr))
 	funName := ""
 	argsStr := ""
 	if len(tokens) >= 1 {
 		funName = tokens[0].Serialize()
 	}
-	if len(tokens) >= 2 {
-		argsStr = tokens[1].Serialize()
+	if len(tokens) > 1 {
+		var sb strings.Builder
+		for _, t := range tokens[1:] {
+			sb.WriteString(t.Serialize())
+		}
+		argsStr = sb.String()
 	}
 
 	// Handle special built-in functions
@@ -1603,8 +1636,17 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, i
 			names = append(names, t.Serialize())
 		}
 	}
+	goType := e.getExprGoType(node.Type)
 	paramIdx := e.currentParamIndex
 	for _, name := range names {
+		optMeta := &OptMeta{
+			Kind:          OptFuncParam,
+			FuncKey:       e.refOptCurrentFunc,
+			ParamIndex:    paramIdx,
+			ParamName:     name,
+			TypeStr:       typeStr,
+			IsRefEligible: isRefOptEligibleType(goType),
+		}
 		isRefOpt := false
 		isMutRefOpt := false
 		if e.OptimizeRefs && e.refOptReadOnly != nil {
@@ -1621,16 +1663,20 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, i
 				}
 			}
 		}
+		optMeta.IsReadOnly = isRefOpt
+		optMeta.IsMutRef = isMutRefOpt
+		// Always emit base form; RefOptPass transforms to const T& / T&
+		paramNode := IRTree(Identifier, TagIdent,
+			Leaf(Identifier, typeStr),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, name),
+		)
+		paramNode.OptMeta = optMeta
+		e.fs.AddTree(paramNode)
 		if isRefOpt {
-			e.fs.AddLeaf("const "+typeStr+"& "+name, TagExpr, nil)
 			e.refOptCurrentRefParams[name] = true
-			e.RefOptCount++
 		} else if isMutRefOpt {
-			e.fs.AddLeaf(typeStr+"& "+name, TagExpr, nil)
 			e.refOptCurrentMutRefParams[name] = true
-			e.RefOptCount++
-		} else {
-			e.fs.AddLeaf(typeStr+" "+name, TagExpr, nil)
 		}
 		paramIdx++
 	}
@@ -1639,13 +1685,19 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, i
 
 func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParams))
-	var params []string
+	// Build wrapper tree preserving individual param nodes (with OptMeta for RefOptPass)
+	var children []IRNode
+	first := true
 	for _, t := range tokens {
-		if t.Kind == TagExpr && t.Serialize() != "" {
-			params = append(params, t.Serialize())
+		if t.Kind == TagIdent {
+			if !first {
+				children = append(children, IRNode{Type: Comma, Content: ", "})
+			}
+			children = append(children, t)
+			first = false
 		}
 	}
-	e.fs.AddLeaf(strings.Join(params, ", "), KindExpr, nil)
+	e.fs.AddTree(IRTree(Identifier, KindExpr, children...))
 }
 
 func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
@@ -1653,7 +1705,8 @@ func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) 
 	// Tokens: result-type, name, params
 	resultType := ""
 	funcName := ""
-	paramsStr := ""
+	var paramsToken IRNode
+	hasParams := false
 	for _, t := range tokens {
 		if t.Kind == TagIdent && funcName == "" {
 			funcName = t.Serialize()
@@ -1661,10 +1714,12 @@ func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) 
 			if resultType == "" {
 				resultType = t.Serialize()
 			} else {
-				paramsStr = t.Serialize()
+				paramsToken = t
+				hasParams = true
 			}
 		}
 	}
+	_ = hasParams
 
 	if e.forwardDecl {
 		if funcName == "main" {
@@ -1684,7 +1739,7 @@ func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) 
 				Leaf(WhiteSpace, " "),
 				Leaf(Identifier, funcName),
 				Leaf(LeftParen, "("),
-				Leaf(Identifier, paramsStr),
+				paramsToken,
 				Leaf(RightParen, ")"),
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
@@ -1708,7 +1763,7 @@ func (e *CppEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) 
 				Leaf(WhiteSpace, " "),
 				Leaf(Identifier, funcName),
 				Leaf(LeftParen, "("),
-				Leaf(Identifier, paramsStr),
+				paramsToken,
 				Leaf(RightParen, ")"),
 			))
 		}
@@ -1722,18 +1777,21 @@ func (e *CppEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
 
 func (e *CppEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitFuncDecl))
-	sigCode := ""
-	bodyCode := ""
+	var children []IRNode
 	if len(tokens) >= 1 {
-		sigCode = tokens[0].Serialize()
+		children = append(children, tokens[0]) // sig as tree (preserves OptMeta)
 	}
 	if len(tokens) >= 2 {
-		bodyCode = tokens[1].Serialize()
+		bodyCode := tokens[1].Serialize()
+		if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
+			bodyCode = "{\n" + cppIndent(1) + "std::vector<std::string> goany_os_args(argv, argv + argc);\n" + bodyCode[2:]
+		}
+		children = append(children, Leaf(NewLine, "\n"))
+		children = append(children, Leaf(Identifier, bodyCode))
 	}
-	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
-		bodyCode = "{\n" + cppIndent(1) + "std::vector<std::string> goany_os_args(argv, argv + argc);\n" + bodyCode[2:]
-	}
-	e.fs.AddTree(IRTree(FuncDeclaration, KindDecl, Leaf(Identifier, sigCode+"\n"+bodyCode+"\n\n")))
+	children = append(children, Leaf(NewLine, "\n"))
+	children = append(children, Leaf(NewLine, "\n"))
+	e.fs.AddTree(IRTree(FuncDeclaration, KindDecl, children...))
 }
 
 // Forward Declaration Signatures

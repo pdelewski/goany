@@ -241,6 +241,8 @@ type CSharpEmitter struct {
 	refOptCalleeReadOnly      [][]bool
 	refOptCalleeMutRef        [][]bool
 	currentParamIndex         int
+	currentCalleeName         string
+	currentCalleeKey          string
 	// C#-specific
 	forwardDecl      bool
 	nestedMapCounter int
@@ -1048,19 +1050,28 @@ func (e *CSharpEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 func (e *CSharpEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 	funCode := e.fs.CollectText(string(PreVisitCallExprFun))
 
-	// Push callee's read-only and mut-ref parameter flags for ref optimization
+	// Track callee name for OptMeta annotations
+	if ident, ok := node.(*ast.Ident); ok {
+		e.currentCalleeName = ident.Name
+	} else if sel, ok := node.(*ast.SelectorExpr); ok {
+		e.currentCalleeName = sel.Sel.Name
+	} else {
+		e.currentCalleeName = ""
+	}
+
+	// Track callee key for OptMeta annotations on call args
+	e.currentCalleeKey = e.csRefOptFuncKey(funCode)
+
+	// Push callee read-only/mut-ref flags for ref-opt arg checks
 	if e.OptimizeRefs && e.refOptReadOnly != nil {
-		funcKey := e.csRefOptFuncKey(funCode)
-		if flags, ok := e.refOptReadOnly.ReadOnly[funcKey]; ok {
-			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, flags)
-		} else {
-			e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, nil)
-		}
-		if flags, ok := e.refOptReadOnly.MutRef[funcKey]; ok {
-			e.refOptCalleeMutRef = append(e.refOptCalleeMutRef, flags)
-		} else {
-			e.refOptCalleeMutRef = append(e.refOptCalleeMutRef, nil)
-		}
+		key := e.currentCalleeKey
+		readOnly := e.refOptReadOnly.ReadOnly[key]
+		mutRef := e.refOptReadOnly.MutRef[key]
+		e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, readOnly)
+		e.refOptCalleeMutRef = append(e.refOptCalleeMutRef, mutRef)
+	} else {
+		e.refOptCalleeReadOnly = append(e.refOptCalleeReadOnly, nil)
+		e.refOptCalleeMutRef = append(e.refOptCalleeMutRef, nil)
 	}
 
 	e.fs.AddLeaf(funCode, KindExpr, nil)
@@ -1069,7 +1080,7 @@ func (e *CSharpEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 func (e *CSharpEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
 	argCode := e.fs.CollectText(string(PreVisitCallExprArg))
 
-	// Reference optimization: add in/ref at call site.
+	// Ref-opt: add in/ref prefix for read-only/mut-ref parameters.
 	// Only for simple identifiers — C# requires lvalues for in/ref.
 	// Index expressions (list[i]), field accesses, and calls return rvalues.
 	if _, isIdent := node.(*ast.Ident); isIdent {
@@ -1085,24 +1096,37 @@ func (e *CSharpEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent in
 
 func (e *CSharpEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 	argTokens := e.fs.CollectForest(string(PreVisitCallExprArgs))
-	var args []string
+	first := true
+	argIdx := 0
 	for _, t := range argTokens {
-		if t.Serialize() != "" {
-			args = append(args, t.Serialize())
+		if t.Serialize() == "" {
+			continue
 		}
+		if !first {
+			e.fs.AddTree(IRNode{Type: Comma, Content: ", "})
+		}
+		t.Type = CallExpression
+		t.OptMeta = &OptMeta{
+			Kind:       OptCallArg,
+			CalleeName: e.currentCalleeName,
+			FuncKey:    e.currentCalleeKey,
+			ParamIndex: argIdx,
+		}
+		e.fs.AddTree(t)
+		first = false
+		argIdx++
 	}
-	e.fs.AddLeaf(strings.Join(args, ", "), KindExpr, nil)
 }
 
 func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
-	// Pop callee ref-opt flags (pushed in PostVisitCallExprFun)
-	if e.OptimizeRefs {
-		if len(e.refOptCalleeReadOnly) > 0 {
-			e.refOptCalleeReadOnly = e.refOptCalleeReadOnly[:len(e.refOptCalleeReadOnly)-1]
-		}
-		if len(e.refOptCalleeMutRef) > 0 {
-			e.refOptCalleeMutRef = e.refOptCalleeMutRef[:len(e.refOptCalleeMutRef)-1]
-		}
+	e.currentCalleeName = ""
+	e.currentCalleeKey = ""
+	// Pop callee ref-opt flags
+	if len(e.refOptCalleeReadOnly) > 0 {
+		e.refOptCalleeReadOnly = e.refOptCalleeReadOnly[:len(e.refOptCalleeReadOnly)-1]
+	}
+	if len(e.refOptCalleeMutRef) > 0 {
+		e.refOptCalleeMutRef = e.refOptCalleeMutRef[:len(e.refOptCalleeMutRef)-1]
 	}
 
 	tokens := e.fs.CollectForest(string(PreVisitCallExpr))
@@ -1111,8 +1135,12 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	if len(tokens) >= 1 {
 		funName = tokens[0].Serialize()
 	}
-	if len(tokens) >= 2 {
-		argsStr = tokens[1].Serialize()
+	if len(tokens) > 1 {
+		var sb strings.Builder
+		for _, t := range tokens[1:] {
+			sb.WriteString(t.Serialize())
+		}
+		argsStr = sb.String()
 	}
 
 	// Handle special built-in functions
@@ -2082,8 +2110,17 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field
 			names = append(names, t.Serialize())
 		}
 	}
+	goType := e.getExprGoType(node.Type)
 	paramIdx := e.currentParamIndex
 	for _, name := range names {
+		optMeta := &OptMeta{
+			Kind:          OptFuncParam,
+			FuncKey:       e.refOptCurrentFunc,
+			ParamIndex:    paramIdx,
+			ParamName:     name,
+			TypeStr:       typeStr,
+			IsRefEligible: isRefOptEligibleType(goType),
+		}
 		isRefOpt := false
 		isMutRefOpt := false
 		if e.OptimizeRefs && e.refOptReadOnly != nil {
@@ -2100,30 +2137,20 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field
 				}
 			}
 		}
+		optMeta.IsReadOnly = isRefOpt
+		optMeta.IsMutRef = isMutRefOpt
+		// Always emit base form; RefOptPass transforms to in T / ref T
+		paramNode := IRTree(Identifier, TagIdent,
+			Leaf(Identifier, typeStr),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, name),
+		)
+		paramNode.OptMeta = optMeta
+		e.fs.AddTree(paramNode)
 		if isRefOpt {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				LeafTag(Keyword, "in ", TagCSharp),
-				Leaf(Identifier, typeStr),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, name),
-			))
 			e.refOptCurrentRefParams[name] = true
-			e.RefOptCount++
 		} else if isMutRefOpt {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				LeafTag(Keyword, "ref ", TagCSharp),
-				Leaf(Identifier, typeStr),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, name),
-			))
 			e.refOptCurrentMutRefParams[name] = true
-			e.RefOptCount++
-		} else {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				Leaf(Identifier, typeStr),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, name),
-			))
 		}
 		paramIdx++
 	}
@@ -2132,37 +2159,53 @@ func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field
 
 func (e *CSharpEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParams))
-	var paramDecls []string
+	// Build wrapper tree preserving individual param nodes (with OptMeta for RefOptPass)
+	var children []IRNode
+	first := true
 	for _, t := range tokens {
 		if t.Kind == TagIdent {
-			paramDecls = append(paramDecls, t.Serialize())
+			if !first {
+				children = append(children, IRNode{Type: Comma, Content: ", "})
+			}
+			children = append(children, t)
+			first = false
 		}
 	}
-	e.fs.AddLeaf(strings.Join(paramDecls, ", "), KindExpr, nil)
+	e.fs.AddTree(IRTree(Identifier, KindExpr, children...))
 }
 
 func (e *CSharpEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignature))
 	returnType := "void"
 	funcName := ""
-	paramsStr := ""
+	var paramsToken IRNode
 	for _, t := range tokens {
 		if t.Kind == TagType && returnType == "void" {
 			returnType = t.Serialize()
 		} else if t.Kind == TagIdent && funcName == "" {
 			funcName = t.Serialize()
 		} else if t.Kind == TagExpr {
-			paramsStr = t.Serialize()
+			paramsToken = t
 		}
 	}
 
+	var sigChildren []IRNode
+	sigChildren = append(sigChildren, Leaf(NewLine, "\n"))
+	sigChildren = append(sigChildren, LeafTag(Keyword, "public", TagCSharp))
+	sigChildren = append(sigChildren, Leaf(WhiteSpace, " "))
+	sigChildren = append(sigChildren, LeafTag(Keyword, "static", TagCSharp))
+	sigChildren = append(sigChildren, Leaf(WhiteSpace, " "))
+	sigChildren = append(sigChildren, Leaf(Identifier, returnType))
+	sigChildren = append(sigChildren, Leaf(WhiteSpace, " "))
+	sigChildren = append(sigChildren, Leaf(Identifier, funcName))
+	sigChildren = append(sigChildren, Leaf(LeftParen, "("))
 	if funcName == "Main" {
-		sig := fmt.Sprintf("\npublic static %s %s(string[] args)", returnType, funcName)
-		e.fs.AddLeaf(sig, KindExpr, nil)
+		sigChildren = append(sigChildren, Leaf(Identifier, "string[] args"))
 	} else {
-		sig := fmt.Sprintf("\npublic static %s %s(%s)", returnType, funcName, paramsStr)
-		e.fs.AddLeaf(sig, KindExpr, nil)
+		sigChildren = append(sigChildren, paramsToken)
 	}
+	sigChildren = append(sigChildren, Leaf(RightParen, ")"))
+	e.fs.AddTree(IRTree(TypeKeyword, KindExpr, sigChildren...))
 }
 
 func (e *CSharpEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
@@ -2172,18 +2215,20 @@ func (e *CSharpEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
 
 func (e *CSharpEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitFuncDecl))
-	sigCode := ""
-	bodyCode := ""
+	var children []IRNode
 	if len(tokens) >= 1 {
-		sigCode = tokens[0].Serialize()
+		children = append(children, tokens[0]) // sig as tree (preserves OptMeta)
 	}
 	if len(tokens) >= 2 {
-		bodyCode = tokens[1].Serialize()
+		bodyCode := tokens[1].Serialize()
+		if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
+			bodyCode = "{\n" + csIndent(2) + "List<string> goany_os_args = new List<string>();\n" + csIndent(2) + "goany_os_args.Add(\"program\");\n" + csIndent(2) + "goany_os_args.AddRange(args);\n" + bodyCode[2:]
+		}
+		children = append(children, Leaf(WhiteSpace, " "))
+		children = append(children, Leaf(Identifier, bodyCode))
 	}
-	if node.Name.Name == "main" && strings.HasPrefix(bodyCode, "{\n") {
-		bodyCode = "{\n" + csIndent(2) + "List<string> goany_os_args = new List<string>();\n" + csIndent(2) + "goany_os_args.Add(\"program\");\n" + csIndent(2) + "goany_os_args.AddRange(args);\n" + bodyCode[2:]
-	}
-	e.fs.AddTree(IRTree(FuncDeclaration, KindDecl, Leaf(Identifier, sigCode+" "+bodyCode+"\n")))
+	children = append(children, Leaf(NewLine, "\n"))
+	e.fs.AddTree(IRTree(FuncDeclaration, KindDecl, children...))
 }
 
 // ============================================================

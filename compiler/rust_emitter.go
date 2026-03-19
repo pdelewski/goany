@@ -1156,9 +1156,18 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 		}
 	}
 	// Rust params: name: mut Type, name: &Type (ref-opt), or name: &mut Type (mut-ref-opt)
+	goType := e.getExprGoType(node.Type)
 	paramIdx := e.Opt.currentParamIndex
 	for _, name := range names {
 		escapedName := escapeRustKeyword(name)
+		optMeta := &OptMeta{
+			Kind:          OptFuncParam,
+			FuncKey:       e.Opt.refOptCurrentFunc,
+			ParamIndex:    paramIdx,
+			ParamName:     escapedName,
+			TypeStr:       typeStr,
+			IsRefEligible: isRefOptEligibleType(goType),
+		}
 		isRefOpt := false
 		isMutRefOpt := false
 		if e.Opt.OptimizeRefs && e.Opt.refOptReadOnly != nil {
@@ -1175,41 +1184,23 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 				}
 			}
 		}
+		optMeta.IsReadOnly = isRefOpt
+		optMeta.IsMutRef = isMutRefOpt
+		// Always emit base form; RefOptPass transforms to &T / &mut T
+		paramNode := IRTree(Identifier, TagIdent,
+			LeafTag(Keyword, "mut", TagRust),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, escapedName),
+			Leaf(Colon, ":"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, typeStr),
+		)
+		paramNode.OptMeta = optMeta
+		e.fs.AddTree(paramNode)
 		if isRefOpt {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				Leaf(Identifier, escapedName),
-				Leaf(Colon, ":"),
-				Leaf(WhiteSpace, " "),
-				LeafTag(Keyword, "&", TagRust),
-				Leaf(Identifier, typeStr),
-			))
-			if e.Opt.refOptCurrentRefParams == nil {
-				e.Opt.refOptCurrentRefParams = make(map[string]bool)
-			}
 			e.Opt.refOptCurrentRefParams[escapedName] = true
 		} else if isMutRefOpt {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				Leaf(Identifier, escapedName),
-				Leaf(Colon, ":"),
-				Leaf(WhiteSpace, " "),
-				LeafTag(Keyword, "&mut", TagRust),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, typeStr),
-			))
-			if e.Opt.refOptCurrentMutRefParams == nil {
-				e.Opt.refOptCurrentMutRefParams = make(map[string]bool)
-			}
 			e.Opt.refOptCurrentMutRefParams[escapedName] = true
-			e.Opt.RefOptCount++
-		} else {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				LeafTag(Keyword, "mut", TagRust),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, escapedName),
-				Leaf(Colon, ":"),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, typeStr),
-			))
 		}
 		paramIdx++
 	}
@@ -1218,13 +1209,19 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParams))
-	var paramDecls []string
+	// Build wrapper tree preserving individual param nodes (with OptMeta for RefOptPass)
+	var children []IRNode
+	first := true
 	for _, t := range tokens {
 		if t.Kind == TagIdent {
-			paramDecls = append(paramDecls, t.Serialize())
+			if !first {
+				children = append(children, IRNode{Type: Comma, Content: ", "})
+			}
+			children = append(children, t)
+			first = false
 		}
 	}
-	e.fs.AddLeaf(strings.Join(paramDecls, ", "), KindExpr, nil)
+	e.fs.AddTree(IRTree(Identifier, KindExpr, children...))
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {

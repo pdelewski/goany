@@ -258,19 +258,19 @@ func (e *RustEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 		e.Opt.currentCalleeName = ""
 	}
 
-	// Push callee's read-only and mut-ref parameter flags for ref optimization
+	// Track callee key for OptMeta annotations on call args
+	e.Opt.currentCalleeKey = e.Opt.refOptFuncKey(funCode)
+
+	// Push callee read-only/mut-ref flags for ref-opt arg checks
 	if e.Opt.OptimizeRefs && e.Opt.refOptReadOnly != nil {
-		funcKey := e.Opt.refOptFuncKey(funCode)
-		if flags, ok := e.Opt.refOptReadOnly.ReadOnly[funcKey]; ok {
-			e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, flags)
-		} else {
-			e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, nil)
-		}
-		if flags, ok := e.Opt.refOptReadOnly.MutRef[funcKey]; ok {
-			e.Opt.refOptCalleeMutRef = append(e.Opt.refOptCalleeMutRef, flags)
-		} else {
-			e.Opt.refOptCalleeMutRef = append(e.Opt.refOptCalleeMutRef, nil)
-		}
+		key := e.Opt.currentCalleeKey
+		readOnly := e.Opt.refOptReadOnly.ReadOnly[key]
+		mutRef := e.Opt.refOptReadOnly.MutRef[key]
+		e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, readOnly)
+		e.Opt.refOptCalleeMutRef = append(e.Opt.refOptCalleeMutRef, mutRef)
+	} else {
+		e.Opt.refOptCalleeReadOnly = append(e.Opt.refOptCalleeReadOnly, nil)
+		e.Opt.refOptCalleeMutRef = append(e.Opt.refOptCalleeMutRef, nil)
 	}
 
 	e.fs.AddLeaf(funCode, KindExpr, nil)
@@ -310,32 +310,13 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 
 	argCode := e.fs.CollectText(string(PreVisitCallExprArg))
 
-	// Reference optimization: if callee param is read-only, use & instead of .clone()
+	// Ref-opt: pass by reference instead of cloning
 	if e.Opt.isRefOptArg(index) {
-		// If the argument is already a reference param in the current function, pass as-is
-		isAlreadyRef := false
-		if ident, ok := node.(*ast.Ident); ok {
-			isAlreadyRef = e.Opt.refOptCurrentRefParams[ident.Name]
-		}
-		if !isAlreadyRef {
-			argCode = "&" + argCode
-		}
-		e.Opt.RefOptCount++
-		e.fs.AddLeaf(argCode, KindExpr, nil)
+		e.fs.AddLeaf("&"+argCode, KindExpr, nil)
 		return
 	}
-
-	// Mutable reference optimization: if callee param is mut-ref, use &mut instead of .clone()
 	if e.Opt.isMutRefOptArg(index) {
-		isAlreadyMutRef := false
-		if ident, ok := node.(*ast.Ident); ok {
-			isAlreadyMutRef = e.Opt.refOptCurrentMutRefParams[ident.Name]
-		}
-		if !isAlreadyMutRef {
-			argCode = "&mut " + argCode
-		}
-		e.Opt.RefOptCount++
-		e.fs.AddLeaf(argCode, KindExpr, nil)
+		e.fs.AddLeaf("&mut "+argCode, KindExpr, nil)
 		return
 	}
 
@@ -388,14 +369,27 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 
 func (e *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 	argTokens := e.fs.CollectForest(string(PreVisitCallExprArgs))
-	var args []string
+	first := true
+	argIdx := 0
 	for _, t := range argTokens {
 		s := t.Serialize()
-		if s != "" {
-			args = append(args, s)
+		if s == "" {
+			continue
 		}
+		if !first {
+			e.fs.AddTree(IRNode{Type: Comma, Content: ", "})
+		}
+		t.Type = CallExpression
+		t.OptMeta = &OptMeta{
+			Kind:       OptCallArg,
+			CalleeName: e.Opt.currentCalleeName,
+			FuncKey:    e.Opt.currentCalleeKey,
+			ParamIndex: argIdx,
+		}
+		e.fs.AddTree(t)
+		first = false
+		argIdx++
 	}
-	e.fs.AddLeaf(strings.Join(args, ", "), KindExpr, nil)
 }
 
 func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
@@ -405,18 +399,24 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	if len(tokens) >= 1 {
 		funName = tokens[0].Serialize()
 	}
-	if len(tokens) >= 2 {
-		argsStr = tokens[1].Serialize()
+	if len(tokens) > 1 {
+		var sb strings.Builder
+		for _, t := range tokens[1:] {
+			sb.WriteString(t.Serialize())
+		}
+		argsStr = sb.String()
 	}
 
 	// Clear callee state after processing call
 	defer func() {
 		e.Opt.currentCalleeName = ""
 		e.Opt.currentCallIsLen = false
-		if e.Opt.OptimizeRefs && len(e.Opt.refOptCalleeReadOnly) > 0 {
+		e.Opt.currentCalleeKey = ""
+		// Pop callee ref-opt flags
+		if len(e.Opt.refOptCalleeReadOnly) > 0 {
 			e.Opt.refOptCalleeReadOnly = e.Opt.refOptCalleeReadOnly[:len(e.Opt.refOptCalleeReadOnly)-1]
 		}
-		if e.Opt.OptimizeRefs && len(e.Opt.refOptCalleeMutRef) > 0 {
+		if len(e.Opt.refOptCalleeMutRef) > 0 {
 			e.Opt.refOptCalleeMutRef = e.Opt.refOptCalleeMutRef[:len(e.Opt.refOptCalleeMutRef)-1]
 		}
 	}()
