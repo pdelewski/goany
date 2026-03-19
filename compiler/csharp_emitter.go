@@ -210,7 +210,6 @@ type CSharpEmitter struct {
 	LinkRuntime     string
 	RuntimePackages map[string]string
 	OptimizeRefs    bool
-	RefOptCount     int
 	file            *os.File
 	Emitter
 	pkg            *packages.Package
@@ -842,9 +841,6 @@ func (e *CSharpEmitter) PostVisitProgram(indent int) {
 func (e *CSharpEmitter) GetOutputEntries() []OutputEntry { return e.outputs }
 
 func (e *CSharpEmitter) PostFileEmit() {
-	if e.OptimizeRefs && e.RefOptCount > 0 {
-		fmt.Printf("  C#: %d copy(ies) removed by reference optimization\n", e.RefOptCount)
-	}
 	if len(e.structKeyTypes) > 0 {
 		e.replaceStructKeyFunctions()
 	}

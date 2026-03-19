@@ -28,7 +28,6 @@ type CppEmitter struct {
 	OptimizeMoves   bool
 	OptimizeRefs    bool
 	MoveOptCount    int
-	RefOptCount     int
 	blankCounter    int
 	file            *os.File
 	Emitter
@@ -496,9 +495,6 @@ func (e *CppEmitter) PostFileEmit() {
 	}
 	if e.OptimizeMoves && e.MoveOptCount > 0 {
 		fmt.Printf("  C++: %d copy(ies) replaced by std::move()\n", e.MoveOptCount)
-	}
-	if e.OptimizeRefs && e.RefOptCount > 0 {
-		fmt.Printf("  C++: %d copy(ies) removed by reference optimization\n", e.RefOptCount)
 	}
 }
 

@@ -19,8 +19,9 @@ import "strings"
 //   - C++:   Type name → const Type& name (read-only) or Type& name (mut-ref)
 //   - C#:    Type name → in Type name (read-only) or ref Type name (mut-ref)
 type RefOptPass struct {
-	Tag     int  // TagRust, TagCpp, TagCSharp
-	Enabled bool // when false, Transform is a no-op (coexists with inline ref-opt)
+	Tag            int  // TagRust, TagCpp, TagCSharp
+	Enabled        bool // when false, Transform is a no-op (coexists with inline ref-opt)
+	TransformCount int  // number of nodes transformed by the pass
 }
 
 func (p *RefOptPass) Name() string { return "RefOpt" }
@@ -97,6 +98,7 @@ func (p *RefOptPass) transformParam(node IRNode) IRNode {
 		return node
 	}
 
+	p.TransformCount++
 	switch p.Tag {
 	case TagRust:
 		return p.transformRustParam(node)
@@ -247,9 +249,11 @@ func (p *RefOptPass) transformRustCallArg(node IRNode, param *paramInfo) IRNode 
 	if param.IsReadOnly {
 		node.Content = "&" + content
 		node.Children = nil
+		p.TransformCount++
 	} else if param.IsMutRef {
 		node.Content = "&mut " + content
 		node.Children = nil
+		p.TransformCount++
 	}
 	return node
 }
@@ -266,9 +270,11 @@ func (p *RefOptPass) transformCSharpCallArg(node IRNode, param *paramInfo) IRNod
 	if param.IsReadOnly {
 		node.Content = "in " + content
 		node.Children = nil
+		p.TransformCount++
 	} else if param.IsMutRef {
 		node.Content = "ref " + content
 		node.Children = nil
+		p.TransformCount++
 	}
 	return node
 }

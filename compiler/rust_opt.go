@@ -29,7 +29,7 @@ type RustOptState struct {
 	OptimizeMoves bool
 	OptimizeRefs  bool
 	MoveOptCount  int
-	RefOptCount   int
+	RefOptPass    *RefOptPass
 
 	// Dependencies (set by emitter during traversal)
 	pkg          *packages.Package

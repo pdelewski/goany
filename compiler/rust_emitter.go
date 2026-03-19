@@ -226,7 +226,7 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 	getExpr := fmt.Sprintf("%s.clone()", rootMapName)
 	if e.Opt.OptimizeRefs {
 		getExpr = "&" + rootMapName
-		e.Opt.RefOptCount++
+		e.Opt.RefOptPass.TransformCount++
 	}
 	for i, lvl := range levels {
 		castType := "hmap::HashMap"
@@ -237,7 +237,7 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 			getExpr, lvl.keyExpr, castType)
 		if e.Opt.OptimizeRefs && i < len(levels)-1 {
 			getExpr = "&" + innerGetExpr
-			e.Opt.RefOptCount++
+			e.Opt.RefOptPass.TransformCount++
 		} else {
 			getExpr = innerGetExpr
 		}
@@ -264,7 +264,7 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 		extractExpr := fmt.Sprintf("%s.clone()", rootMapName)
 		if e.Opt.OptimizeRefs {
 			extractExpr = "&" + rootMapName
-			e.Opt.RefOptCount++
+			e.Opt.RefOptPass.TransformCount++
 		}
 		for i := 0; i < len(levels)-1; i++ {
 			e.nestedMapCounter++
@@ -274,7 +274,7 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 			extractExpr = fmt.Sprintf("%s.clone()", tempVars[i])
 			if e.Opt.OptimizeRefs {
 				extractExpr = "&" + tempVars[i]
-				e.Opt.RefOptCount++
+				e.Opt.RefOptPass.TransformCount++
 			}
 		}
 		// Set slice into innermost map
@@ -379,7 +379,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	rootMapRef := rootMapName + ".clone()"
 	if e.Opt.OptimizeRefs {
 		rootMapRef = "&" + rootMapName
-		e.Opt.RefOptCount++
+		e.Opt.RefOptPass.TransformCount++
 	}
 	sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
 		ind, tempVar, rootMapRef, rootKeyExpr, rootValType))
@@ -409,7 +409,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 					intermMapRef := indexPrefix + ".clone()"
 					if e.Opt.OptimizeRefs {
 						intermMapRef = "&" + indexPrefix
-						e.Opt.RefOptCount++
+						e.Opt.RefOptPass.TransformCount++
 					}
 					sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
 						ind, innerTemp, intermMapRef, intermKeyExpr, intermValType))
@@ -1021,9 +1021,6 @@ func (e *RustEmitter) PostFileEmit() {
 	}
 	if e.Opt.OptimizeMoves && e.Opt.MoveOptCount > 0 {
 		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", e.Opt.MoveOptCount)
-	}
-	if e.Opt.OptimizeRefs && e.Opt.RefOptCount > 0 {
-		fmt.Printf("  Rust: %d clone(s) removed by reference optimization\n", e.Opt.RefOptCount)
 	}
 }
 

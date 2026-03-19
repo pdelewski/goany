@@ -221,6 +221,7 @@ func main() {
 		programFiles = append(programFiles, "cs")
 	}
 	if useRust {
+		rustRefOpt := &compiler.RefOptPass{Tag: compiler.TagRust, Enabled: true}
 		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
 			CodeGen: &compiler.BasePass{PassName: "RustGen", Emitter: &compiler.RustEmitter{
 				Emitter:         &compiler.BaseEmitter{},
@@ -232,11 +233,10 @@ func main() {
 				Opt: compiler.RustOptState{
 					OptimizeMoves: optimizeMoves,
 					OptimizeRefs:  optimizeRefs,
+					RefOptPass:    rustRefOpt,
 				},
 			}},
-			IRPasses: []compiler.IRPass{
-				&compiler.RefOptPass{Tag: compiler.TagRust, Enabled: true},
-			},
+			IRPasses: []compiler.IRPass{rustRefOpt},
 		})
 		programFiles = append(programFiles, "rs")
 	}

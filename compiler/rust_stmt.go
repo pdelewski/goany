@@ -235,7 +235,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				mapRef := mapName + ".clone()"
 				if e.Opt.OptimizeRefs {
 					mapRef = "&" + mapName
-					e.Opt.RefOptCount += 2 // hashMapContains + hashMapGet
+					e.Opt.RefOptPass.TransformCount += 2 // hashMapContains + hashMapGet
 				}
 				if tokStr == ":=" {
 					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
@@ -1602,7 +1602,7 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		mapKeysRef := xCode + ".clone()"
 		if e.Opt.OptimizeRefs {
 			mapKeysRef = "&" + xCode
-			e.Opt.RefOptCount++
+			e.Opt.RefOptPass.TransformCount++
 		}
 		ind4 := ind + "    "
 		ind8 := ind + "        "

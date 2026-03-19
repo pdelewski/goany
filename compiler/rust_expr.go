@@ -310,13 +310,16 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 
 	argCode := e.fs.CollectText(string(PreVisitCallExprArg))
 
-	// Ref-opt: pass by reference instead of cloning
+	// Ref-opt: pass by reference instead of cloning (inline — call args are
+	// flattened by PostVisitCallExpr and cannot be reached by RefOptPass)
 	if e.Opt.isRefOptArg(index) {
 		e.fs.AddLeaf("&"+argCode, KindExpr, nil)
+		e.Opt.RefOptPass.TransformCount++
 		return
 	}
 	if e.Opt.isMutRefOptArg(index) {
 		e.fs.AddLeaf("&mut "+argCode, KindExpr, nil)
+		e.Opt.RefOptPass.TransformCount++
 		return
 	}
 
@@ -448,7 +451,7 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 						Leaf(Identifier, "&"+argsStr),
 						Leaf(RightParen, ")"),
 					))
-					e.Opt.RefOptCount++
+					e.Opt.RefOptPass.TransformCount++
 				} else {
 					e.fs.AddTree(IRTree(CallExpression, KindExpr,
 						Leaf(Identifier, "hmap::hashMapLen"),
@@ -873,7 +876,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		mapRef := xCode + ".clone()"
 		if e.Opt.OptimizeRefs {
 			mapRef = "&" + xCode
-			e.Opt.RefOptCount++
+			e.Opt.RefOptPass.TransformCount++
 		}
 		token := IRTree(IndexExpression, KindExpr,
 			Leaf(Identifier, "hmap::hashMapGet"),
