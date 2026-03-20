@@ -1035,6 +1035,9 @@ func (e *RustEmitter) PostFileEmit() {
 	if e.Opt.OptimizeMoves && e.Opt.MoveOptCount > 0 {
 		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", e.Opt.MoveOptCount)
 	}
+	if e.Opt.RefOptPass != nil && e.Opt.RefOptPass.TransformCount > 0 {
+		fmt.Printf("  Rust: %d ref(s) optimized by RefOptPass\n", e.Opt.RefOptPass.TransformCount)
+	}
 }
 
 func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {

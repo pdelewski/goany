@@ -99,22 +99,6 @@ func (pm *PassManager) RunPasses() {
 			file.Close()
 		}
 
-		// Report IR pass stats
-		for _, irPass := range backend.IRPasses {
-			if rop, ok := irPass.(*RefOptPass); ok && rop.TransformCount > 0 {
-				lang := ""
-				switch rop.Tag {
-				case TagRust:
-					lang = "Rust"
-				case TagCpp:
-					lang = "C++"
-				case TagCSharp:
-					lang = "C#"
-				}
-				fmt.Printf("  %s: %d ref(s) optimized by RefOptPass\n", lang, rop.TransformCount)
-			}
-		}
-
 		emitter.PostFileEmit()
 	}
 

@@ -186,6 +186,7 @@ func main() {
 	var programFiles []string
 
 	if useCpp {
+		cppRefOpt := &compiler.RefOptPass{Tag: compiler.TagCpp, Enabled: true}
 		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
 			CodeGen: &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CppEmitter{
 				Emitter:         &compiler.BaseEmitter{},
@@ -196,10 +197,11 @@ func main() {
 				OutputName:      outputName,
 				OptimizeMoves:   optimizeMoves,
 				OptimizeRefs:    optimizeRefs,
+				CppRefOptPass:   cppRefOpt,
 			}},
 			IRPasses: []compiler.IRPass{
 				&compiler.CloneMovePass{Tag: compiler.TagCpp, Enabled: true},
-				&compiler.RefOptPass{Tag: compiler.TagCpp, Enabled: true},
+				cppRefOpt,
 			},
 		})
 		programFiles = append(programFiles, "cpp")

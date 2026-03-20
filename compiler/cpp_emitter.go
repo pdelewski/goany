@@ -27,6 +27,7 @@ type CppEmitter struct {
 	RuntimePackages map[string]string
 	OptimizeMoves   bool
 	OptimizeRefs    bool
+	CppRefOptPass   *RefOptPass
 	MoveOptCount    int
 	blankCounter    int
 	file            *os.File
@@ -502,6 +503,9 @@ func (e *CppEmitter) PostFileEmit() {
 	}
 	if e.OptimizeMoves && e.MoveOptCount > 0 {
 		fmt.Printf("  C++: %d copy(ies) replaced by std::move()\n", e.MoveOptCount)
+	}
+	if e.CppRefOptPass != nil && e.CppRefOptPass.TransformCount > 0 {
+		fmt.Printf("  C++: %d ref(s) optimized by RefOptPass\n", e.CppRefOptPass.TransformCount)
 	}
 }
 

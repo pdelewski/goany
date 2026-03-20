@@ -833,6 +833,9 @@ func (e *CSharpEmitter) PostFileEmit() {
 			log.Printf("Warning: %v", err)
 		}
 	}
+	if e.CsRefOptPass != nil && e.CsRefOptPass.TransformCount > 0 {
+		fmt.Printf("  C#: %d ref(s) optimized by RefOptPass\n", e.CsRefOptPass.TransformCount)
+	}
 }
 
 // replaceStructKeyFunctions replaces placeholder hash/equality functions for struct keys.
