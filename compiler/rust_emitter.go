@@ -41,11 +41,18 @@ type RustEmitter struct {
 	forInitStack []string
 	forCondStack []string
 	forPostStack []string
+	forCondNodes []IRNode
+	forBodyNodes []IRNode
 	// If statement components (stacks for nesting)
 	ifInitStack []string
 	ifCondStack []string
 	ifBodyStack []string
 	ifElseStack []string
+	// Parallel node stacks for tree preservation
+	ifInitNodes []IRNode
+	ifCondNodes []IRNode
+	ifBodyNodes []IRNode
+	ifElseNodes []IRNode
 	// Rust-specific
 	forwardDecl      bool
 	nestedMapCounter int
@@ -482,6 +489,37 @@ func (e *RustEmitter) castSmallIntFieldValue(fieldType types.Type, val string) s
 		}
 	}
 	return val
+}
+
+// wrapSmallIntCastTree wraps an IRNode in a `(node as castType)` tree when the
+// target field type is a small integer (i8, u8, i16, u16). Unlike castSmallIntFieldValue
+// which returns a flat string, this preserves the inner tree structure (e.g., OptCallArg metadata).
+func (e *RustEmitter) wrapSmallIntCastTree(fieldType types.Type, node IRNode) IRNode {
+	if basic, ok := fieldType.Underlying().(*types.Basic); ok {
+		var castType string
+		switch basic.Kind() {
+		case types.Int8:
+			castType = "i8"
+		case types.Uint8:
+			castType = "u8"
+		case types.Int16:
+			castType = "i16"
+		case types.Uint16:
+			castType = "u16"
+		default:
+			return node
+		}
+		return IRTree(CallExpression, KindExpr,
+			Leaf(LeftParen, "("),
+			node,
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, "as"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, castType),
+			Leaf(RightParen, ")"),
+		)
+	}
+	return node
 }
 
 // cloneStructFieldValue adds .clone() to non-Copy struct field values that are
@@ -1033,6 +1071,9 @@ func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 	if e.Opt.OptimizeRefs {
 		e.Opt.AccumulateReadOnlyAnalysis(pkg)
+		if e.Opt.RefOptPass != nil {
+			e.Opt.RefOptPass.Analysis = e.Opt.refOptReadOnly
+		}
 	}
 
 	if pkg.Name != "main" {
@@ -1126,8 +1167,6 @@ func (e *RustEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 	// Track current function key for optimization
 	e.Opt.refOptCurrentFunc = e.Opt.refOptCurrentPkg + "." + node.Name
 	e.Opt.currentParamIndex = 0
-	e.Opt.refOptCurrentRefParams = make(map[string]bool)
-	e.Opt.refOptCurrentMutRefParams = make(map[string]bool)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
@@ -1194,11 +1233,6 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 		)
 		paramNode.OptMeta = optMeta
 		e.fs.AddTree(paramNode)
-		if isRefOpt {
-			e.Opt.refOptCurrentRefParams[escapedName] = true
-		} else if isMutRefOpt {
-			e.Opt.refOptCurrentMutRefParams[escapedName] = true
-		}
 		paramIdx++
 	}
 	e.Opt.currentParamIndex = paramIdx
@@ -1260,8 +1294,10 @@ func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.CollectText(string(PreVisitFuncDeclBody))
-	e.fs.AddLeaf(bodyCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclBody))
+	for _, t := range tokens {
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *RustEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
@@ -1288,8 +1324,10 @@ func (e *RustEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
 }
 
 func (e *RustEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	itemCode := e.fs.CollectText(string(PreVisitBlockStmtList))
-	e.fs.AddLeaf(itemCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitBlockStmtList))
+	for _, t := range tokens {
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {

@@ -1,27 +1,29 @@
 package compiler
 
-import "strings"
+import (
+	"strings"
+)
 
 // RefOptPass is an IR pass that transforms function parameter types
-// to use reference semantics when the analysis indicates the parameter
-// is read-only or mut-ref eligible.
+// and call-site arguments to use reference semantics when the analysis
+// indicates the parameter is read-only or mut-ref eligible.
 //
-// Active for Rust, C++, and C# — all three emitters preserve param tree
-// structure (via PostVisitFuncDeclSignatureTypeParams wrapper tree), allowing
-// the pass to find and transform OptFuncParam-annotated nodes in the IR tree.
+// Active for Rust, C++, and C# — all three emitters preserve tree structure
+// for both params (OptFuncParam) and call args (OptCallArg), allowing the
+// pass to handle all ref-opt transformations.
 //
-// Call-site transformation (&/&mut prefix for Rust, in/ref for C#) remains
-// inline in all emitters because call expressions are flattened by
-// ExprStmtX/BlockStmtList/FuncDeclBody.
+// Uses bottom-up traversal so inner OptCallArg nodes (nested calls) are
+// transformed before outer nodes flatten their children.
 //
 // Param transformations:
 //   - Rust:  mut name: T → name: &T (read-only) or name: &mut T (mut-ref)
 //   - C++:   Type name → const Type& name (read-only) or Type& name (mut-ref)
 //   - C#:    Type name → in Type name (read-only) or ref Type name (mut-ref)
 type RefOptPass struct {
-	Tag            int  // TagRust, TagCpp, TagCSharp
-	Enabled        bool // when false, Transform is a no-op (coexists with inline ref-opt)
-	TransformCount int  // number of nodes transformed by the pass
+	Tag            int              // TagRust, TagCpp, TagCSharp
+	Enabled        bool             // when false, Transform is a no-op (coexists with inline ref-opt)
+	TransformCount int              // number of nodes transformed by the pass
+	Analysis       *ReadOnlyAnalysis // cross-package read-only/mut-ref data (set by emitter)
 }
 
 func (p *RefOptPass) Name() string { return "RefOpt" }
@@ -35,6 +37,32 @@ func (p *RefOptPass) Transform(root IRNode) IRNode {
 	// Phase 1: Collect function param info from OptFuncParam annotations
 	funcParams := make(map[string][]paramInfo) // funcKey → params
 	p.collectFuncParams(root, funcParams)
+
+	// Phase 1b: Seed funcParams from cross-package ReadOnlyAnalysis
+	// OptFuncParam annotations only exist for functions defined in the current
+	// file's IR tree. For cross-package calls, the callee's params are in a
+	// different tree. Use the accumulated ReadOnlyAnalysis to fill in the gaps.
+	if p.Analysis != nil {
+		for key, flags := range p.Analysis.ReadOnly {
+			if _, exists := funcParams[key]; exists {
+				continue // already have from tree annotations
+			}
+			mutFlags := p.Analysis.MutRef[key]
+			for i, ro := range flags {
+				isMut := false
+				if mutFlags != nil && i < len(mutFlags) {
+					isMut = mutFlags[i]
+				}
+				if ro || isMut {
+					funcParams[key] = append(funcParams[key], paramInfo{
+						ParamIndex: i,
+						IsReadOnly: ro,
+						IsMutRef:   isMut,
+					})
+				}
+			}
+		}
+	}
 
 	// Phase 2: Transform param nodes and call arg nodes
 	return p.transformTree(root, funcParams)
@@ -66,9 +94,21 @@ func (p *RefOptPass) collectFuncParams(node IRNode, result map[string][]paramInf
 	}
 }
 
-// transformTree recursively transforms the IR tree.
+// transformTree recursively transforms the IR tree using bottom-up traversal.
+// Children are transformed first so that inner OptCallArg nodes (e.g., nested calls)
+// get their & prefix before an outer OptCallArg flattens children with Children=nil.
 func (p *RefOptPass) transformTree(node IRNode, funcParams map[string][]paramInfo) IRNode {
-	// Transform this node if it has OptMeta
+	// Bottom-up: recurse into children first
+	for i := range node.Children {
+		node.Children[i] = p.transformTree(node.Children[i], funcParams)
+	}
+
+	// Recompute Content after children changed
+	if len(node.Children) > 0 {
+		node.Content = node.Serialize()
+	}
+
+	// Transform this node
 	if node.OptMeta != nil {
 		switch node.OptMeta.Kind {
 		case OptFuncParam:
@@ -76,16 +116,6 @@ func (p *RefOptPass) transformTree(node IRNode, funcParams map[string][]paramInf
 		case OptCallArg:
 			node = p.transformCallArg(node, funcParams)
 		}
-	}
-
-	// Recurse into children
-	for i := range node.Children {
-		node.Children[i] = p.transformTree(node.Children[i], funcParams)
-	}
-
-	// Recompute Content if children changed
-	if len(node.Children) > 0 {
-		node.Content = node.Serialize()
 	}
 
 	return node
@@ -234,7 +264,7 @@ func (p *RefOptPass) transformCallArg(node IRNode, funcParams map[string][]param
 }
 
 // transformRustCallArg adds & or &mut prefix to Rust call arguments.
-// Also strips .clone() suffix since borrowing replaces cloning.
+// Also strips .clone() calls since borrowing replaces cloning.
 func (p *RefOptPass) transformRustCallArg(node IRNode, param *paramInfo) IRNode {
 	content := node.Content
 
@@ -243,7 +273,9 @@ func (p *RefOptPass) transformRustCallArg(node IRNode, param *paramInfo) IRNode 
 		return node
 	}
 
-	// Remove .clone() suffix — borrowing replaces cloning
+	// Remove trailing .clone() — borrowing replaces cloning.
+	// Only removes the suffix to preserve inner .clone() calls needed for
+	// other reasons (e.g., moving out of shared references).
 	content = strings.TrimSuffix(content, ".clone()")
 
 	if param.IsReadOnly {
@@ -260,6 +292,11 @@ func (p *RefOptPass) transformRustCallArg(node IRNode, param *paramInfo) IRNode 
 
 // transformCSharpCallArg adds in/ref prefix to C# call arguments.
 func (p *RefOptPass) transformCSharpCallArg(node IRNode, param *paramInfo) IRNode {
+	// C# requires lvalues for in/ref — skip non-identifier args
+	if node.OptMeta != nil && !node.OptMeta.IsIdentArg {
+		return node
+	}
+
 	content := node.Content
 
 	// Skip if already has in/ref prefix

@@ -18,6 +18,7 @@ type moveOptCallExt struct {
 	tempName string // temp variable name (e.g., "__mv0")
 	rustType string // Rust type of the result (e.g., "u8")
 	code     string // captured Rust code for the function call (filled during PostVisitCallExprArg)
+	node     IRNode // captured IR tree node (preserves OptCallArg metadata for ref-opt pass)
 }
 
 // RustOptState holds all optimization-related state, separated from the core emitter.
@@ -36,14 +37,9 @@ type RustOptState struct {
 	goTypeToRust func(string) string
 
 	// Ref optimization
-	refOptReadOnly            *ReadOnlyAnalysis
-	refOptCurrentFunc         string
-	refOptCurrentPkg          string
-	refOptCalleeReadOnly      [][]bool
-	refOptCalleeMutRef        [][]bool
-	refOptCurrentRefParams    map[string]bool
-	refOptCurrentMutRefParams map[string]bool
-
+	refOptReadOnly    *ReadOnlyAnalysis
+	refOptCurrentFunc string
+	refOptCurrentPkg  string
 	// Move optimization
 	currentAssignLhsNames     map[string]bool
 	funcLitDepth              int
@@ -52,6 +48,10 @@ type RustOptState struct {
 	currentCalleeKey          string
 	currentParamIndex         int
 	currentCallIsLen          bool
+	// Callee info save/restore stacks for nested calls
+	calleeNameStack []string
+	calleeKeyStack  []string
+	callIsLenStack  []bool
 
 	// Move extraction (temp binding) state
 	moveOptActive          bool
@@ -176,32 +176,6 @@ func (o *RustOptState) canMoveArg(varName string) bool {
 	}
 	o.MoveOptCount++
 	return true
-}
-
-// isRefOptArg checks if the current call's argument at the given index corresponds
-// to a read-only parameter in the callee function.
-func (o *RustOptState) isRefOptArg(index int) bool {
-	if !o.OptimizeRefs || len(o.refOptCalleeReadOnly) == 0 {
-		return false
-	}
-	flags := o.refOptCalleeReadOnly[len(o.refOptCalleeReadOnly)-1]
-	if flags == nil || index >= len(flags) {
-		return false
-	}
-	return flags[index]
-}
-
-// isMutRefOptArg checks if the current call's argument at the given index corresponds
-// to a mutable-reference parameter in the callee function (slice-element mutations only).
-func (o *RustOptState) isMutRefOptArg(index int) bool {
-	if !o.OptimizeRefs || len(o.refOptCalleeMutRef) == 0 {
-		return false
-	}
-	flags := o.refOptCalleeMutRef[len(o.refOptCalleeMutRef)-1]
-	if flags == nil || index >= len(flags) {
-		return false
-	}
-	return flags[index]
 }
 
 // refOptFuncKey converts a Rust-style function name to the analysis key format.

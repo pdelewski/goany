@@ -204,6 +204,7 @@ func main() {
 		programFiles = append(programFiles, "cpp")
 	}
 	if useCs {
+		csRefOpt := &compiler.RefOptPass{Tag: compiler.TagCSharp, Enabled: true}
 		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
 			CodeGen: &compiler.BasePass{PassName: "CsGen", Emitter: &compiler.CSharpEmitter{
 				Emitter:         &compiler.BaseEmitter{},
@@ -213,10 +214,9 @@ func main() {
 				OutputDir:       outputDir,
 				OutputName:      outputName,
 				OptimizeRefs:    optimizeRefs,
+				CsRefOptPass:    csRefOpt,
 			}},
-			IRPasses: []compiler.IRPass{
-				&compiler.RefOptPass{Tag: compiler.TagCSharp, Enabled: true},
-			},
+			IRPasses: []compiler.IRPass{csRefOpt},
 		})
 		programFiles = append(programFiles, "cs")
 	}

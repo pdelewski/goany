@@ -47,10 +47,17 @@ type JavaEmitter struct {
 	forInitStack []string
 	forCondStack []string
 	forPostStack []string
+	forCondNodes []IRNode
+	forBodyNodes []IRNode
 	ifInitStack  []string
 	ifCondStack  []string
 	ifBodyStack  []string
 	ifElseStack  []string
+	// Parallel node stacks for tree preservation
+	ifInitNodes []IRNode
+	ifCondNodes []IRNode
+	ifBodyNodes []IRNode
+	ifElseNodes []IRNode
 
 	// --- Java-specific state ---
 	forwardDecl      bool
@@ -1365,24 +1372,33 @@ func closureUnwrapName(expr string) string {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitBinaryExprLeft(node ast.Expr, indent int) {
-	left := e.fs.CollectText(string(PreVisitBinaryExprLeft))
-	e.fs.AddLeaf(left, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitBinaryExprLeft))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
-	right := e.fs.CollectText(string(PreVisitBinaryExprRight))
-	e.fs.AddLeaf(right, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitBinaryExprRight))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitBinaryExpr))
 	left := ""
 	right := ""
+	var leftNode, rightNode IRNode
 	if len(tokens) >= 1 {
 		left = tokens[0].Serialize()
+		leftNode = tokens[0]
 	}
 	if len(tokens) >= 2 {
 		right = tokens[1].Serialize()
+		rightNode = tokens[1]
 	}
 	op := node.Op.String()
 
@@ -1457,24 +1473,42 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		return
 	}
 
-	expr := left + " " + op + " " + right
-
 	// For arithmetic ops on narrow types, Java promotes to int - add narrowing cast
+	castPrefix := ""
+	castSuffix := ""
 	goType := e.getExprGoTypeJ(node)
 	if goType != nil {
 		if basic, ok := goType.Underlying().(*types.Basic); ok {
 			switch basic.Kind() {
 			case types.Int8, types.Uint8:
-				expr = "(byte)(" + expr + ")"
+				castPrefix = "(byte)("
+				castSuffix = ")"
 			case types.Int16:
-				expr = "(short)(" + expr + ")"
+				castPrefix = "(short)("
+				castSuffix = ")"
 			}
 		}
 	}
 
-	e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-		Leaf(Identifier, expr),
-	))
+	if castPrefix != "" {
+		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+			Leaf(Identifier, castPrefix),
+			leftNode,
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, op),
+			Leaf(WhiteSpace, " "),
+			rightNode,
+			Leaf(Identifier, castSuffix),
+		))
+	} else {
+		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+			leftNode,
+			Leaf(WhiteSpace, " "),
+			Leaf(BinaryOperator, op),
+			Leaf(WhiteSpace, " "),
+			rightNode,
+		))
+	}
 }
 
 // ============================================================
@@ -1487,7 +1521,8 @@ func (e *JavaEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
-	argCode := e.fs.CollectText(string(PreVisitCallExprArg))
+	tokens := e.fs.CollectForest(string(PreVisitCallExprArg))
+	argNode := collectToNode(tokens)
 
 	// Check if this arg is a function reference (identifier referencing a function)
 	// In Java, function references need ClassName::methodName syntax
@@ -1499,12 +1534,13 @@ func (e *JavaEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 				if obj.Pkg() != nil && obj.Pkg().Name() != e.currentPackage && obj.Pkg().Name() != "main" {
 					className = obj.Pkg().Name()
 				}
-				argCode = className + "::" + ident.Name
+				e.fs.AddLeaf(className+"::"+ident.Name, KindExpr, nil)
+				return
 			}
 		}
 	}
 
-	e.fs.AddLeaf(argCode, KindExpr, nil)
+	e.fs.AddTree(argNode)
 }
 
 func (e *JavaEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
@@ -1860,8 +1896,11 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitSelectorExprX(node ast.Expr, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitSelectorExprX))
-	e.fs.AddLeaf(xCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitSelectorExprX))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitSelectorExprSel(node *ast.Ident, indent int) {
@@ -1907,15 +1946,19 @@ func (e *JavaEmitter) PostVisitSelectorExpr(node *ast.SelectorExpr, indent int) 
 // ============================================================
 
 func (e *JavaEmitter) PostVisitIndexExprX(node *ast.IndexExpr, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitIndexExprX))
-	e.fs.AddLeaf(xCode, KindExpr, nil)
-	e.lastIndexXCode = xCode
+	tokens := e.fs.CollectForest(string(PreVisitIndexExprX))
+	xNode := collectToNode(tokens)
+	xNode.Kind = KindExpr
+	e.fs.AddTree(xNode)
+	e.lastIndexXCode = xNode.Serialize()
 }
 
 func (e *JavaEmitter) PostVisitIndexExprIndex(node *ast.IndexExpr, indent int) {
-	idxCode := e.fs.CollectText(string(PreVisitIndexExprIndex))
-	e.fs.AddLeaf(idxCode, KindExpr, nil)
-	e.lastIndexKeyCode = idxCode
+	tokens := e.fs.CollectForest(string(PreVisitIndexExprIndex))
+	xNode := collectToNode(tokens)
+	xNode.Kind = KindExpr
+	e.fs.AddTree(xNode)
+	e.lastIndexKeyCode = xNode.Serialize()
 }
 
 func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
@@ -1993,14 +2036,16 @@ func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitUnaryExpr))
+	tokens := e.fs.CollectForest(string(PreVisitUnaryExpr))
+	xNode := collectToNode(tokens)
 	op := node.Op.String()
-	// Go ^ is bitwise complement, Java uses ~
 	if op == "^" {
-		e.fs.AddTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, "~"+xCode)))
-	} else {
-		e.fs.AddTree(IRTree(UnaryExpression, KindExpr, Leaf(Identifier, op+xCode)))
+		op = "~" // Java uses ~ for bitwise complement
 	}
+	e.fs.AddTree(IRTree(UnaryExpression, KindExpr,
+		Leaf(UnaryOperator, op),
+		xNode,
+	))
 }
 
 // ============================================================
@@ -2008,8 +2053,13 @@ func (e *JavaEmitter) PostVisitUnaryExpr(node *ast.UnaryExpr, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitParenExpr(node *ast.ParenExpr, indent int) {
-	inner := e.fs.CollectText(string(PreVisitParenExpr))
-	e.fs.AddTree(IRTree(ParenExpression, KindExpr, Leaf(Identifier, "("+inner+")")))
+	tokens := e.fs.CollectForest(string(PreVisitParenExpr))
+	innerNode := collectToNode(tokens)
+	e.fs.AddTree(IRTree(ParenExpression, KindExpr,
+		Leaf(LeftParen, "("),
+		innerNode,
+		Leaf(RightParen, ")"),
+	))
 }
 
 // ============================================================
@@ -2127,8 +2177,11 @@ func (e *JavaEmitter) PostVisitCompositeLitType(node ast.Expr, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitCompositeLitElt(node ast.Expr, index int, indent int) {
-	eltCode := e.fs.CollectText(string(PreVisitCompositeLitElt))
-	e.fs.AddLeaf(eltCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitCompositeLitElt))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
@@ -2362,13 +2415,19 @@ func (e *JavaEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 // ============================================================
 
 func (e *JavaEmitter) PostVisitKeyValueExprKey(node ast.Expr, indent int) {
-	keyCode := e.fs.CollectText(string(PreVisitKeyValueExprKey))
-	e.fs.AddLeaf(keyCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitKeyValueExprKey))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
-	valCode := e.fs.CollectText(string(PreVisitKeyValueExprValue))
-	e.fs.AddLeaf(valCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitKeyValueExprValue))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
@@ -2389,8 +2448,11 @@ func (e *JavaEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) 
 // ============================================================
 
 func (e *JavaEmitter) PostVisitSliceExprX(node ast.Expr, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitSliceExprX))
-	e.fs.AddLeaf(xCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitSliceExprX))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
@@ -2398,8 +2460,11 @@ func (e *JavaEmitter) PostVisitSliceExprXBegin(node ast.Expr, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitSliceExprLow(node ast.Expr, indent int) {
-	lowCode := e.fs.CollectText(string(PreVisitSliceExprLow))
-	e.fs.AddLeaf(lowCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitSliceExprLow))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
@@ -2407,8 +2472,11 @@ func (e *JavaEmitter) PostVisitSliceExprXEnd(node ast.Expr, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitSliceExprHigh(node ast.Expr, indent int) {
-	highCode := e.fs.CollectText(string(PreVisitSliceExprHigh))
-	e.fs.AddLeaf(highCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitSliceExprHigh))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
@@ -2547,8 +2615,11 @@ func (e *JavaEmitter) PostVisitMapType(node *ast.MapType, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitFuncTypeResult(node *ast.Field, index int, indent int) {
-	resultCode := e.fs.CollectText(string(PreVisitFuncTypeResult))
-	e.fs.AddLeaf(resultCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitFuncTypeResult))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitFuncTypeResults(node *ast.FieldList, indent int) {
@@ -2564,8 +2635,11 @@ func (e *JavaEmitter) PostVisitFuncTypeResults(node *ast.FieldList, indent int) 
 }
 
 func (e *JavaEmitter) PostVisitFuncTypeParam(node *ast.Field, index int, indent int) {
-	paramCode := e.fs.CollectText(string(PreVisitFuncTypeParam))
-	e.fs.AddLeaf(paramCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitFuncTypeParam))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitFuncTypeParams(node *ast.FieldList, indent int) {
@@ -2727,8 +2801,11 @@ func (e *JavaEmitter) PostVisitFuncLitTypeResults(node *ast.FieldList, indent in
 }
 
 func (e *JavaEmitter) PostVisitFuncLitBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.CollectText(string(PreVisitFuncLitBody))
-	e.fs.AddLeaf(bodyCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitFuncLitBody))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
@@ -2769,13 +2846,19 @@ func (e *JavaEmitter) PostVisitFuncLit(node *ast.FuncLit, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitTypeAssertExprType(node ast.Expr, indent int) {
-	typeCode := e.fs.CollectText(string(PreVisitTypeAssertExprType))
-	e.fs.AddLeaf(typeCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitTypeAssertExprType))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitTypeAssertExprX(node ast.Expr, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitTypeAssertExprX))
-	e.fs.AddLeaf(xCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitTypeAssertExprX))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent int) {
@@ -2806,8 +2889,9 @@ func (e *JavaEmitter) PostVisitTypeAssertExpr(node *ast.TypeAssertExpr, indent i
 // ============================================================
 
 func (e *JavaEmitter) PostVisitStarExpr(node *ast.StarExpr, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitStarExpr))
-	e.fs.AddTree(IRTree(StarExpression, KindExpr, Leaf(Identifier, xCode)))
+	tokens := e.fs.CollectForest(string(PreVisitStarExpr))
+	xNode := collectToNode(tokens)
+	e.fs.AddTree(IRTree(StarExpression, KindExpr, xNode))
 }
 
 // ============================================================
@@ -4397,22 +4481,34 @@ func (e *JavaEmitter) PreVisitIfStmt(node *ast.IfStmt, indent int) {
 	e.ifCondStack = append(e.ifCondStack, "")
 	e.ifBodyStack = append(e.ifBodyStack, "")
 	e.ifElseStack = append(e.ifElseStack, "")
+	e.ifInitNodes = append(e.ifInitNodes, IRNode{})
+	e.ifCondNodes = append(e.ifCondNodes, IRNode{})
+	e.ifBodyNodes = append(e.ifBodyNodes, IRNode{})
+	e.ifElseNodes = append(e.ifElseNodes, IRNode{})
 }
 
 func (e *JavaEmitter) PostVisitIfStmtInit(node ast.Stmt, indent int) {
-	e.ifInitStack[len(e.ifInitStack)-1] = e.fs.CollectText(string(PreVisitIfStmtInit))
+	tokens := e.fs.CollectForest(string(PreVisitIfStmtInit))
+	e.ifInitNodes[len(e.ifInitNodes)-1] = collectToNode(tokens)
+	e.ifInitStack[len(e.ifInitStack)-1] = e.ifInitNodes[len(e.ifInitNodes)-1].Serialize()
 }
 
 func (e *JavaEmitter) PostVisitIfStmtCond(node *ast.IfStmt, indent int) {
-	e.ifCondStack[len(e.ifCondStack)-1] = e.fs.CollectText(string(PreVisitIfStmtCond))
+	tokens := e.fs.CollectForest(string(PreVisitIfStmtCond))
+	e.ifCondNodes[len(e.ifCondNodes)-1] = collectToNode(tokens)
+	e.ifCondStack[len(e.ifCondStack)-1] = e.ifCondNodes[len(e.ifCondNodes)-1].Serialize()
 }
 
 func (e *JavaEmitter) PostVisitIfStmtBody(node *ast.IfStmt, indent int) {
-	e.ifBodyStack[len(e.ifBodyStack)-1] = e.fs.CollectText(string(PreVisitIfStmtBody))
+	tokens := e.fs.CollectForest(string(PreVisitIfStmtBody))
+	e.ifBodyNodes[len(e.ifBodyNodes)-1] = collectToNode(tokens)
+	e.ifBodyStack[len(e.ifBodyStack)-1] = e.ifBodyNodes[len(e.ifBodyNodes)-1].Serialize()
 }
 
 func (e *JavaEmitter) PostVisitIfStmtElse(node *ast.IfStmt, indent int) {
-	e.ifElseStack[len(e.ifElseStack)-1] = e.fs.CollectText(string(PreVisitIfStmtElse))
+	tokens := e.fs.CollectForest(string(PreVisitIfStmtElse))
+	e.ifElseNodes[len(e.ifElseNodes)-1] = collectToNode(tokens)
+	e.ifElseStack[len(e.ifElseStack)-1] = e.ifElseNodes[len(e.ifElseNodes)-1].Serialize()
 }
 
 func (e *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
@@ -4421,13 +4517,21 @@ func (e *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 
 	n := len(e.ifInitStack)
 	initCode := e.ifInitStack[n-1]
-	condCode := e.ifCondStack[n-1]
-	bodyCode := e.ifBodyStack[n-1]
+	_ = e.ifCondStack[n-1]
+	_ = e.ifBodyStack[n-1]
 	elseCode := e.ifElseStack[n-1]
+	initNode := e.ifInitNodes[n-1]
+	condNode := e.ifCondNodes[n-1]
+	bodyNode := e.ifBodyNodes[n-1]
+	elseNode := e.ifElseNodes[n-1]
 	e.ifInitStack = e.ifInitStack[:n-1]
 	e.ifCondStack = e.ifCondStack[:n-1]
 	e.ifBodyStack = e.ifBodyStack[:n-1]
 	e.ifElseStack = e.ifElseStack[:n-1]
+	e.ifInitNodes = e.ifInitNodes[:n-1]
+	e.ifCondNodes = e.ifCondNodes[:n-1]
+	e.ifBodyNodes = e.ifBodyNodes[:n-1]
+	e.ifElseNodes = e.ifElseNodes[:n-1]
 
 	var children []IRNode
 	if initCode != "" {
@@ -4435,15 +4539,15 @@ func (e *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 			Leaf(WhiteSpace, ind),
 			Leaf(LeftBrace, "{"),
 			Leaf(NewLine, "\n"),
-			Leaf(Identifier, initCode),
+			initNode,
 			Leaf(WhiteSpace, ind),
 			Leaf(IfKeyword, "if"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, condCode),
+			condNode,
 			Leaf(RightParen, ")"),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, bodyCode),
+			bodyNode,
 		)
 	} else {
 		children = append(children,
@@ -4451,27 +4555,29 @@ func (e *JavaEmitter) PostVisitIfStmt(node *ast.IfStmt, indent int) {
 			Leaf(IfKeyword, "if"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, condCode),
+			condNode,
 			Leaf(RightParen, ")"),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, bodyCode),
+			bodyNode,
 		)
 	}
 	if elseCode != "" {
 		trimmed := strings.TrimLeft(elseCode, " \t\n")
 		if strings.HasPrefix(trimmed, "if ") || strings.HasPrefix(trimmed, "if(") {
+			// Else-if chain: strip leading whitespace from the inner IfStmt tree
+			elseIfNode := stripLeadingWhitespace(elseNode)
 			children = append(children,
 				Leaf(WhiteSpace, " "),
 				Leaf(ElseKeyword, "else"),
 				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, trimmed),
+				elseIfNode,
 			)
 		} else {
 			children = append(children,
 				Leaf(WhiteSpace, " "),
 				Leaf(ElseKeyword, "else"),
 				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, elseCode),
+				elseNode,
 			)
 		}
 	}
@@ -4495,37 +4601,48 @@ func (e *JavaEmitter) PreVisitForStmt(node *ast.ForStmt, indent int) {
 	e.forInitStack = append(e.forInitStack, "")
 	e.forCondStack = append(e.forCondStack, "")
 	e.forPostStack = append(e.forPostStack, "")
+	e.forCondNodes = append(e.forCondNodes, IRNode{})
+	e.forBodyNodes = append(e.forBodyNodes, IRNode{})
 }
 
 func (e *JavaEmitter) PostVisitForStmtInit(node ast.Stmt, indent int) {
-	initCode := e.fs.CollectText(string(PreVisitForStmtInit))
+	tokens := e.fs.CollectForest(string(PreVisitForStmtInit))
+	initCode := collectToNode(tokens).Serialize()
 	initCode = strings.TrimRight(initCode, ";\n \t")
 	initCode = strings.TrimLeft(initCode, " \t")
 	e.forInitStack[len(e.forInitStack)-1] = initCode
 }
 
 func (e *JavaEmitter) PostVisitForStmtCond(node ast.Expr, indent int) {
-	e.forCondStack[len(e.forCondStack)-1] = e.fs.CollectText(string(PreVisitForStmtCond))
+	tokens := e.fs.CollectForest(string(PreVisitForStmtCond))
+	e.forCondNodes[len(e.forCondNodes)-1] = collectToNode(tokens)
+	e.forCondStack[len(e.forCondStack)-1] = e.forCondNodes[len(e.forCondNodes)-1].Serialize()
 }
 
 func (e *JavaEmitter) PostVisitForStmtPost(node ast.Stmt, indent int) {
-	postCode := e.fs.CollectText(string(PreVisitForStmtPost))
+	tokens := e.fs.CollectForest(string(PreVisitForStmtPost))
+	postCode := collectToNode(tokens).Serialize()
 	postCode = strings.TrimRight(postCode, ";\n \t")
 	postCode = strings.TrimLeft(postCode, " \t")
 	e.forPostStack[len(e.forPostStack)-1] = postCode
 }
 
 func (e *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
-	bodyCode := e.fs.CollectText(string(PreVisitForStmt))
+	bodyTokens := e.fs.CollectForest(string(PreVisitForStmt))
+	bodyNode := collectToNode(bodyTokens)
+	_ = bodyNode.Serialize()
 	ind := javaIndent(indent / 2)
 
 	n := len(e.forInitStack)
 	initCode := e.forInitStack[n-1]
-	condCode := e.forCondStack[n-1]
+	_ = e.forCondStack[n-1]
+	condNode := e.forCondNodes[n-1]
 	postCode := e.forPostStack[n-1]
 	e.forInitStack = e.forInitStack[:n-1]
 	e.forCondStack = e.forCondStack[:n-1]
 	e.forPostStack = e.forPostStack[:n-1]
+	e.forCondNodes = e.forCondNodes[:n-1]
+	e.forBodyNodes = e.forBodyNodes[:n-1]
 
 	if node.Init == nil && node.Cond == nil && node.Post == nil {
 		e.fs.AddTree(IRTree(ForStatement, KindStmt,
@@ -4536,7 +4653,7 @@ func (e *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 			Leaf(BooleanLiteral, "true"),
 			Leaf(RightParen, ")"),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, bodyCode),
+			bodyNode,
 			Leaf(NewLine, "\n"),
 		))
 		return
@@ -4548,10 +4665,10 @@ func (e *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 			Leaf(WhileKeyword, "while"),
 			Leaf(WhiteSpace, " "),
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, condCode),
+			condNode,
 			Leaf(RightParen, ")"),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, bodyCode),
+			bodyNode,
 			Leaf(NewLine, "\n"),
 		))
 		return
@@ -4564,12 +4681,12 @@ func (e *JavaEmitter) PostVisitForStmt(node *ast.ForStmt, indent int) {
 		Leaf(LeftParen, "("),
 		Leaf(Identifier, initCode),
 		Leaf(Semicolon, "; "),
-		Leaf(Identifier, condCode),
+		condNode,
 		Leaf(Semicolon, "; "),
 		Leaf(Identifier, postCode),
 		Leaf(RightParen, ")"),
 		Leaf(WhiteSpace, " "),
-		Leaf(Identifier, bodyCode),
+		bodyNode,
 		Leaf(NewLine, "\n"),
 	))
 }
@@ -4583,18 +4700,27 @@ func (e *JavaEmitter) PreVisitRangeStmt(node *ast.RangeStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitRangeStmtKey(node ast.Expr, indent int) {
-	keyCode := e.fs.CollectText(string(PreVisitRangeStmtKey))
-	e.fs.AddLeaf(keyCode, TagIdent, nil)
+	tokens := e.fs.CollectForest(string(PreVisitRangeStmtKey))
+	for _, t := range tokens {
+		t.Kind = TagIdent
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitRangeStmtValue(node ast.Expr, indent int) {
-	valCode := e.fs.CollectText(string(PreVisitRangeStmtValue))
-	e.fs.AddLeaf(valCode, TagIdent, nil)
+	tokens := e.fs.CollectForest(string(PreVisitRangeStmtValue))
+	for _, t := range tokens {
+		t.Kind = TagIdent
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitRangeStmtX(node ast.Expr, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitRangeStmtX))
-	e.fs.AddLeaf(xCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitRangeStmtX))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
@@ -4604,7 +4730,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 	keyCode := ""
 	valCode := ""
 	xCode := ""
-	bodyCode := ""
+	bodyNode := Leaf(Identifier, "")
 
 	idx := 0
 	if node.Key != nil {
@@ -4624,7 +4750,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		idx++
 	}
 	if idx < len(tokens) {
-		bodyCode = tokens[idx].Serialize()
+		bodyNode = tokens[idx]
 	}
 	if node.Key == nil && valCode != "" {
 		keyCode = "_"
@@ -4742,7 +4868,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
 				Leaf(WhiteSpace, ind+"    "),
-				Leaf(Identifier, bodyCode),
+				bodyNode,
 				Leaf(NewLine, "\n"),
 				Leaf(WhiteSpace, ind+"  "),
 				Leaf(RightBrace, "}"),
@@ -4823,7 +4949,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			}
 			children = append(children,
 				Leaf(WhiteSpace, ind+"    "),
-				Leaf(Identifier, bodyCode),
+				bodyNode,
 				Leaf(NewLine, "\n"),
 				Leaf(WhiteSpace, ind+"  "),
 				Leaf(RightBrace, "}"),
@@ -4881,7 +5007,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			} else {
 				valDecl = fmt.Sprintf("%s      var %s = %s.get(%s);\n", ind, valCode, xCode, loopVar)
 			}
-			bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+			injectedBody := injectIntoBlock(bodyNode, Leaf(Identifier, valDecl))
 			children = append(children,
 				Leaf(WhiteSpace, ind+"  "),
 				Leaf(ForKeyword, "for"),
@@ -4906,7 +5032,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 				Leaf(Identifier, "++"),
 				Leaf(RightParen, ")"),
 				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, bodyWithDecl),
+				injectedBody,
 				Leaf(NewLine, "\n"),
 			)
 		} else {
@@ -4939,7 +5065,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 				Leaf(Identifier, "++"),
 				Leaf(RightParen, ")"),
 				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, bodyCode),
+				bodyNode,
 				Leaf(NewLine, "\n"),
 			)
 		}
@@ -4966,7 +5092,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		} else {
 			valDecl = fmt.Sprintf("%s    var %s = %s.get(%s);\n", ind, valCode, xCode, loopVar)
 		}
-		bodyWithDecl := strings.Replace(bodyCode, "{\n", "{\n"+valDecl, 1)
+		injectedBody := injectIntoBlock(bodyNode, Leaf(Identifier, valDecl))
 
 		e.fs.AddTree(IRTree(RangeStatement, KindStmt,
 			Leaf(WhiteSpace, ind),
@@ -4990,7 +5116,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			Leaf(UnaryOperator, "++"),
 			Leaf(RightParen, ")"),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, bodyWithDecl),
+			injectedBody,
 			Leaf(NewLine, "\n"),
 		))
 	} else {
@@ -5021,7 +5147,7 @@ func (e *JavaEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			Leaf(UnaryOperator, "++"),
 			Leaf(RightParen, ")"),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, bodyCode),
+			bodyNode,
 			Leaf(NewLine, "\n"),
 		))
 	}
@@ -5036,8 +5162,11 @@ func (e *JavaEmitter) PreVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitSwitchStmtTag(node ast.Expr, indent int) {
-	tagCode := e.fs.CollectText(string(PreVisitSwitchStmtTag))
-	e.fs.AddLeaf(tagCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitSwitchStmtTag))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
@@ -5064,7 +5193,7 @@ func (e *JavaEmitter) PostVisitSwitchStmt(node *ast.SwitchStmt, indent int) {
 		Leaf(NewLine, "\n"),
 	)
 	for i := idx; i < len(tokens); i++ {
-		children = append(children, Leaf(Identifier, tokens[i].Serialize()))
+		children = append(children, tokens[i])
 	}
 	children = append(children,
 		Leaf(WhiteSpace, ind),
@@ -5079,8 +5208,11 @@ func (e *JavaEmitter) PreVisitCaseClause(node *ast.CaseClause, indent int) {
 }
 
 func (e *JavaEmitter) PostVisitCaseClauseListExpr(node ast.Expr, index int, indent int) {
-	exprCode := e.fs.CollectText(string(PreVisitCaseClauseListExpr))
-	e.fs.AddLeaf(exprCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitCaseClauseListExpr))
+	for _, t := range tokens {
+		t.Kind = KindExpr
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *JavaEmitter) PostVisitCaseClauseList(node []ast.Expr, indent int) {
@@ -5126,7 +5258,7 @@ func (e *JavaEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 		}
 	}
 	for i := idx; i < len(tokens); i++ {
-		children = append(children, Leaf(Identifier, tokens[i].Serialize()))
+		children = append(children, tokens[i])
 	}
 	// Check if body already contains return or break
 	bodyStr := IRTree(CaseClauseStatement, KindStmt, children...).Serialize()
@@ -5146,7 +5278,9 @@ func (e *JavaEmitter) PostVisitCaseClause(node *ast.CaseClause, indent int) {
 // ============================================================
 
 func (e *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
-	xCode := e.fs.CollectText(string(PreVisitIncDecStmt))
+	tokens := e.fs.CollectForest(string(PreVisitIncDecStmt))
+	xNode := collectToNode(tokens)
+	xCode := xNode.Serialize()
 	ind := javaIndent(indent / 2)
 
 	// Handle closure-captured variables: ((Type)name[0])++ -> name[0] = ((Type)name[0]) + 1
@@ -5174,13 +5308,23 @@ func (e *JavaEmitter) PostVisitIncDecStmt(node *ast.IncDecStmt, indent int) {
 		return
 	}
 
-	e.fs.AddTree(IRTree(IncDecStatement, KindStmt,
-		Leaf(WhiteSpace, ind),
-		Leaf(Identifier, xCode),
-		Leaf(UnaryOperator, node.Tok.String()),
-		Leaf(Semicolon, ";"),
-		Leaf(NewLine, "\n"),
-	))
+	if node.Tok == token.INC {
+		e.fs.AddTree(IRTree(IncDecStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			xNode,
+			Leaf(UnaryOperator, "++"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
+	} else {
+		e.fs.AddTree(IRTree(IncDecStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			xNode,
+			Leaf(UnaryOperator, "--"),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
+	}
 }
 
 // ============================================================
