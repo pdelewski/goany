@@ -198,6 +198,7 @@ func main() {
 				OptimizeRefs:    optimizeRefs,
 			}},
 			IRPasses: []compiler.IRPass{
+				&compiler.CloneMovePass{Tag: compiler.TagCpp, Enabled: true},
 				&compiler.RefOptPass{Tag: compiler.TagCpp, Enabled: true},
 			},
 		})
@@ -236,7 +237,10 @@ func main() {
 					RefOptPass:    rustRefOpt,
 				},
 			}},
-			IRPasses: []compiler.IRPass{rustRefOpt},
+			IRPasses: []compiler.IRPass{
+				&compiler.CloneMovePass{Tag: compiler.TagRust, Enabled: true},
+				rustRefOpt,
+			},
 		})
 		programFiles = append(programFiles, "rs")
 	}

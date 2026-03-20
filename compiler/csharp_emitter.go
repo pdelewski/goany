@@ -1000,15 +1000,11 @@ func (e *CSharpEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
 
 func (e *CSharpEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitBinaryExpr))
-	left := ""
-	right := ""
 	var leftNode, rightNode IRNode
 	if len(tokens) >= 1 {
-		left = tokens[0].Serialize()
 		leftNode = tokens[0]
 	}
 	if len(tokens) >= 2 {
-		right = tokens[1].Serialize()
 		rightNode = tokens[1]
 	}
 	op := node.Op.String()
@@ -1016,22 +1012,27 @@ func (e *CSharpEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	goType := e.getExprGoType(node)
 	if goType != nil {
 		if basic, ok := goType.Underlying().(*types.Basic); ok {
+			castPrefix := ""
 			switch basic.Kind() {
 			case types.Int8:
-				expr := fmt.Sprintf("(sbyte)(%s %s %s)", left, op, right)
-				e.fs.AddTree(IRTree(BinaryExpression, KindExpr, Leaf(Identifier, expr)))
-				return
+				castPrefix = "(sbyte)("
 			case types.Uint8:
-				expr := fmt.Sprintf("(byte)(%s %s %s)", left, op, right)
-				e.fs.AddTree(IRTree(BinaryExpression, KindExpr, Leaf(Identifier, expr)))
-				return
+				castPrefix = "(byte)("
 			case types.Int16:
-				expr := fmt.Sprintf("(short)(%s %s %s)", left, op, right)
-				e.fs.AddTree(IRTree(BinaryExpression, KindExpr, Leaf(Identifier, expr)))
-				return
+				castPrefix = "(short)("
 			case types.Uint16:
-				expr := fmt.Sprintf("(ushort)(%s %s %s)", left, op, right)
-				e.fs.AddTree(IRTree(BinaryExpression, KindExpr, Leaf(Identifier, expr)))
+				castPrefix = "(ushort)("
+			}
+			if castPrefix != "" {
+				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+					Leaf(Identifier, castPrefix),
+					leftNode,
+					Leaf(WhiteSpace, " "),
+					Leaf(BinaryOperator, op),
+					Leaf(WhiteSpace, " "),
+					rightNode,
+					Leaf(RightParen, ")"),
+				))
 				return
 			}
 		}

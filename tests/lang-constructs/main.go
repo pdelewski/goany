@@ -250,7 +250,7 @@ func testLoopConstructs() {
 	}
 
 	// Compound condition with slice length check (common pattern)
-	// @test rust="if !(i < maxItems && i < len(&items.clone()))"
+	// @test rust="if !(i < maxItems && i < len(&items))"
 	items := []int{10, 20, 30}
 	maxItems := 5
 	sumItems := 0

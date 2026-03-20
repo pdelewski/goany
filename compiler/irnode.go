@@ -173,20 +173,31 @@ const (
 	ChanTypeNode
 	ScopeNode  // auto-collected scope wrapper
 	Preamble   // header/boilerplate content (includes, runtime, helpers)
+	MultiNode  // splice marker: children are spliced into parent during pass
 )
 
 // OptKind identifies what kind of optimizable construct a token represents.
 type OptKind int
 
 const (
-	OptNone        OptKind = iota
-	OptClone                 // .clone() on a call arg or return value
-	OptFuncParam             // function parameter declaration
-	OptCallArg               // function call argument (for ref-opt callee lookup)
-	OptMapOp                 // map operation (hashMapGet, hashMapLen, etc.)
-	OptReturnValue           // return value expression
-	OptAssignment            // full assignment statement
+	OptNone           OptKind = iota
+	OptClone                    // .clone() on a call arg or return value
+	OptFuncParam                // function parameter declaration
+	OptCallArg                  // function call argument (for ref-opt callee lookup)
+	OptMapOp                    // map operation (hashMapGet, hashMapLen, etc.)
+	OptReturnValue              // return value expression
+	OptAssignment               // full assignment statement
+	OptCompositeField           // composite literal field value
 )
+
+// TempExtraction describes an argument that must be extracted to a temp variable
+// before the enclosing call to avoid aliasing conflicts.
+type TempExtraction struct {
+	ArgIndex int    // which call arg to extract
+	TempName string // temp variable name (e.g., "__mv0")
+	TypeStr  string // type string for the binding
+	Expr     string // expression code to extract
+}
 
 // OptMeta carries optimization-relevant context from emitter to optimizer.
 // Attached as a pointer on IRNode so non-annotated tokens have zero overhead.
@@ -210,6 +221,44 @@ type OptMeta struct {
 	ResultIndex     int           // index in multi-return
 	NumResults      int           // total number of return results
 	MapContent      string        // map variable code (for &map vs map.clone())
+
+	// Ownership semantics (set by emitter analysis, consumed by CloneMovePass)
+
+	// NeedsCopy marks a value that must be deep-copied when passed to a function.
+	NeedsCopy bool
+
+	// CanTransfer marks a value whose ownership can be transferred to the callee
+	// because the source variable is immediately reassigned from this call's result.
+	CanTransfer bool
+
+	// IsOwnedValue marks an expression that already produces a fresh owned value
+	// (composite literal, function call result, string literal). No copy is needed.
+	IsOwnedValue bool
+
+	// IsReassignedSource marks an argument whose source location is the same as the
+	// assignment target of the enclosing statement. Used for std::mem::take / std::move.
+	IsReassignedSource bool
+
+	// ReassignedExpr is the source expression for IsReassignedSource (e.g., "state.cpu").
+	ReassignedExpr string
+
+	// IsExtractedArg marks an argument that was extracted to a temporary variable
+	// before the call to avoid aliasing conflicts.
+	IsExtractedArg bool
+
+	// ExtractedName is the temporary variable name for IsExtractedArg (e.g., "__mv0").
+	ExtractedName string
+
+	// IsElementCopy marks a collection element access that already produced an owned
+	// copy of the value. No additional copy is needed.
+	IsElementCopy bool
+
+	// NeedReturnCopy marks a return value that must be copied to avoid consuming a
+	// value that is still referenced by later return values in a multi-value return.
+	NeedReturnCopy bool
+
+	// TempExtractions holds args to extract to temp vars before assignment.
+	TempExtractions []TempExtraction
 }
 
 // IRNode represents a single token with its type and content
@@ -464,6 +513,7 @@ var IRNodeTypeNames = map[IRNodeType]string{
 	ChanTypeNode:      "ChanTypeNode",
 	ScopeNode:         "ScopeNode",
 	Preamble:          "Preamble",
+	MultiNode:         "MultiNode",
 }
 
 // String returns the string representation of a IRNodeType

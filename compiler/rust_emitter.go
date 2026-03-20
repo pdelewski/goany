@@ -522,23 +522,23 @@ func (e *RustEmitter) wrapSmallIntCastTree(fieldType types.Type, node IRNode) IR
 	return node
 }
 
-// cloneStructFieldValue adds .clone() to non-Copy struct field values that are
-// simple identifiers (variables). This prevents move-in-loop errors in Rust.
-func (e *RustEmitter) cloneStructFieldValue(fieldType types.Type, val string) string {
-	if !isCopyType(fieldType) {
-		// Don't clone values that are already calls (end with ")"), literals, or already cloned
-		trimmed := strings.TrimSpace(val)
-		if !strings.HasSuffix(trimmed, ")") &&
-			!strings.HasSuffix(trimmed, ".clone()") &&
-			!strings.HasPrefix(trimmed, "\"") &&
-			!strings.HasPrefix(trimmed, "vec![") &&
-			!strings.HasPrefix(trimmed, "Vec::") &&
-			trimmed != "Default::default()" &&
-			trimmed != "true" && trimmed != "false" {
-			return val + ".clone()"
-		}
+// needsFieldClone checks whether a struct field value needs .clone() for Rust ownership.
+// Returns true for non-Copy types that are simple identifiers/selectors (not already owned values).
+func (e *RustEmitter) needsFieldClone(fieldType types.Type, val string) bool {
+	if isCopyType(fieldType) {
+		return false
 	}
-	return val
+	trimmed := strings.TrimSpace(val)
+	if strings.HasSuffix(trimmed, ")") ||
+		strings.HasSuffix(trimmed, ".clone()") ||
+		strings.HasPrefix(trimmed, "\"") ||
+		strings.HasPrefix(trimmed, "vec![") ||
+		strings.HasPrefix(trimmed, "Vec::") ||
+		trimmed == "Default::default()" ||
+		trimmed == "true" || trimmed == "false" {
+		return false
+	}
+	return true
 }
 
 // getMapKeyTypeConst returns the integer constant for a map's key type.

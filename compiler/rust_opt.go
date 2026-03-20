@@ -60,6 +60,7 @@ type RustOptState struct {
 	moveOptModifiedCounts  map[string]int
 	moveOptReplacingArg    bool
 	moveOptArgStartIdx     int
+	moveOptTempExtractions []TempExtraction // structured extraction info for CloneMovePass
 
 	// Call expression extraction: capture function call args that reference a moved struct
 	// Pattern: c = func(c, ReadIndirectX(c, zp)) → let __mv0 = ReadIndirectX(&c, zp); c = func(c, __mv0);
@@ -194,6 +195,7 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 	o.moveOptTempBindings = nil
 	o.moveOptArgReplacements = nil
 	o.moveOptModifiedCounts = nil
+	o.moveOptTempExtractions = nil
 	o.moveOptActive = false
 
 	if !o.OptimizeMoves {
@@ -250,6 +252,7 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 	modifiedCounts := CollectCallArgIdentCounts(callExpr.Args, o.pkg)
 
 	var callExts []moveOptCallExt
+	var tempExtractions []TempExtraction
 
 	for i, arg := range callExpr.Args {
 		if i == structArgIdx {
@@ -275,6 +278,12 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 			binding := fmt.Sprintf("let %s: %s = %s;\n", tempName, rustType, exprStr)
 			bindings = append(bindings, binding)
 			replacements[i] = tempName
+			tempExtractions = append(tempExtractions, TempExtraction{
+				ArgIndex: i,
+				TempName: tempName,
+				TypeStr:  rustType,
+				Expr:     exprStr,
+			})
 			SubtractIdentsInExpr(arg, o.pkg, modifiedCounts)
 			continue
 		}
@@ -287,6 +296,11 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 				tempName: tempName,
 				rustType: rustType,
 			})
+			tempExtractions = append(tempExtractions, TempExtraction{
+				ArgIndex: i,
+				TempName: tempName,
+				TypeStr:  rustType,
+			})
 			SubtractIdentsInExpr(arg, o.pkg, modifiedCounts)
 			continue
 		}
@@ -298,6 +312,7 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 		o.moveOptModifiedCounts = modifiedCounts
 		o.moveOptActive = true
 		o.moveOptCallExts = callExts
+		o.moveOptTempExtractions = tempExtractions
 	}
 }
 

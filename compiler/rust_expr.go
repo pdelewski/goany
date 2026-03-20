@@ -134,16 +134,12 @@ func (e *RustEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
 
 func (e *RustEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitBinaryExpr))
-	left := ""
-	right := ""
 	var leftNode, rightNode IRNode
 	if len(tokens) >= 1 {
 		leftNode = tokens[0]
-		left = tokens[0].Serialize()
 	}
 	if len(tokens) >= 2 {
 		rightNode = tokens[1]
-		right = tokens[1].Serialize()
 	}
 	op := node.Op.String()
 
@@ -177,17 +173,33 @@ func (e *RustEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 			leftIsInt := leftBasic.Info()&types.IsInteger != 0
 			rightIsInt := rightBasic.Info()&types.IsInteger != 0
 			if leftIsFloat && rightIsInt {
+				castType := "f64"
 				if leftBasic.Kind() == types.Float32 {
-					right = fmt.Sprintf("(%s as f32)", right)
-				} else {
-					right = fmt.Sprintf("(%s as f64)", right)
+					castType = "f32"
 				}
+				rightNode = IRTree(CallExpression, KindExpr,
+					Leaf(LeftParen, "("),
+					rightNode,
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "as"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, castType),
+					Leaf(RightParen, ")"),
+				)
 			} else if rightIsFloat && leftIsInt {
+				castType := "f64"
 				if rightBasic.Kind() == types.Float32 {
-					left = fmt.Sprintf("(%s as f32)", left)
-				} else {
-					left = fmt.Sprintf("(%s as f64)", left)
+					castType = "f32"
 				}
+				leftNode = IRTree(CallExpression, KindExpr,
+					Leaf(LeftParen, "("),
+					leftNode,
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "as"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, castType),
+					Leaf(RightParen, ")"),
+				)
 			}
 		}
 	}
@@ -323,27 +335,15 @@ func (e *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) 
 func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth--
 
-	// Move extraction: replace arg with temp variable name (simple expression case)
-	if e.Opt.moveOptActive && e.Opt.moveOptArgReplacements != nil {
-		if replacement, ok := e.Opt.moveOptArgReplacements[index]; ok {
-			e.fs.CollectForest(string(PreVisitCallExprArg))
-			e.fs.AddLeaf(replacement, KindExpr, nil)
-			e.Opt.MoveOptCount++
-			return
-		}
-	}
-
-	// Call expression extraction: capture emitted code and replace with temp name
-	// Only at the outermost call arg level (callExprArgDepth == 0 means just decremented from 1)
-	if e.Opt.moveOptActive && len(e.Opt.moveOptCallExts) > 0 && e.callExprArgDepth == 0 {
-		for i := range e.Opt.moveOptCallExts {
-			if e.Opt.moveOptCallExts[i].argIdx == index {
+	// Move extraction: annotate for CloneMovePass instead of inline replacement
+	if e.Opt.moveOptActive && len(e.Opt.moveOptTempExtractions) > 0 && e.callExprArgDepth == 0 {
+		for _, ext := range e.Opt.moveOptTempExtractions {
+			if ext.ArgIndex == index {
 				tokens := e.fs.CollectForest(string(PreVisitCallExprArg))
 				argNode := collectToNode(tokens)
-				e.Opt.moveOptCallExts[i].code = argNode.Serialize()
-				e.Opt.moveOptCallExts[i].node = argNode
-				e.fs.AddLeaf(e.Opt.moveOptCallExts[i].tempName, KindExpr, nil)
+				argNode.OptMeta = &OptMeta{IsExtractedArg: true, ExtractedName: ext.TempName}
 				e.Opt.MoveOptCount++
+				e.fs.AddTree(argNode)
 				return
 			}
 		}
@@ -351,12 +351,12 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 
 	tokens := e.fs.CollectForest(string(PreVisitCallExprArg))
 	argNode := collectToNode(tokens)
-	argCode := argNode.Serialize()
 
-	// std::mem::take optimization: replace state.Field with std::mem::take(&mut state.Field)
+	// std::mem::take optimization: annotate for CloneMovePass
 	if e.Opt.memTakeActive && index == e.Opt.memTakeArgIdx && len(e.Opt.currentCallArgIdentsStack) <= 1 {
-		e.fs.AddLeaf("std::mem::take(&mut "+e.Opt.memTakeLhsExpr+")", KindExpr, nil)
+		argNode.OptMeta = &OptMeta{IsReassignedSource: true, ReassignedExpr: e.Opt.memTakeLhsExpr}
 		e.Opt.MoveOptCount++
+		e.fs.AddTree(argNode)
 		return
 	}
 
@@ -366,16 +366,16 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 		return
 	}
 
-	// Skip redundant .clone() when vec element access already produced an owned value
+	// Vec element already cloned — annotate to skip redundant clone
 	if e.Opt.argAlreadyCloned && e.Opt.OptimizeMoves {
 		e.Opt.argAlreadyCloned = false
 		e.Opt.MoveOptCount++
+		argNode.OptMeta = &OptMeta{IsElementCopy: true}
 		e.fs.AddTree(argNode)
 		return
 	}
 
-	// Add .clone() for non-Copy types passed as arguments
-	needsClone := false
+	// Annotate non-Copy types for CloneMovePass instead of inline .clone()
 	argType := e.getExprGoType(node)
 	if argType != nil && !isCopyType(argType) {
 		// Don't clone string literals (already .to_string())
@@ -388,22 +388,20 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 					if _, isFuncLit := node.(*ast.FuncLit); !isFuncLit {
 						// Move optimization: skip .clone() if the variable can be moved
 						if identNode, isIdent := node.(*ast.Ident); isIdent && e.Opt.canMoveArg(identNode.Name) {
+							argNode.OptMeta = &OptMeta{CanTransfer: true}
 							e.fs.AddTree(argNode)
 							return
 						}
-						argCode = argCode + ".clone()"
-						needsClone = true
+						argNode.OptMeta = &OptMeta{NeedsCopy: true}
+						e.fs.AddTree(argNode)
+						return
 					}
 				}
 			}
 		}
 	}
 
-	if needsClone {
-		e.fs.AddLeaf(argCode, KindExpr, nil)
-	} else {
-		e.fs.AddTree(argNode)
-	}
+	e.fs.AddTree(argNode)
 }
 
 func (e *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
@@ -423,12 +421,24 @@ func (e *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		if argIdx < len(node) {
 			_, isIdent = node[argIdx].(*ast.Ident)
 		}
+		// Merge ownership flags from PostVisitCallExprArg into OptCallArg metadata
+		existingMeta := t.OptMeta
 		t.OptMeta = &OptMeta{
 			Kind:       OptCallArg,
 			CalleeName: e.Opt.currentCalleeName,
 			FuncKey:    e.Opt.currentCalleeKey,
 			ParamIndex: argIdx,
 			IsIdentArg: isIdent,
+		}
+		if existingMeta != nil {
+			t.OptMeta.NeedsCopy = existingMeta.NeedsCopy
+			t.OptMeta.CanTransfer = existingMeta.CanTransfer
+			t.OptMeta.IsOwnedValue = existingMeta.IsOwnedValue
+			t.OptMeta.IsReassignedSource = existingMeta.IsReassignedSource
+			t.OptMeta.ReassignedExpr = existingMeta.ReassignedExpr
+			t.OptMeta.IsExtractedArg = existingMeta.IsExtractedArg
+			t.OptMeta.ExtractedName = existingMeta.ExtractedName
+			t.OptMeta.IsElementCopy = existingMeta.IsElementCopy
 		}
 		e.fs.AddTree(t)
 		first = false
@@ -536,12 +546,14 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		))
 		return
 	case "append":
-		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+		// Preserve arg tree nodes so CloneMovePass can add .clone() where needed
+		children := []IRNode{
 			Leaf(Identifier, "append"),
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, argsStr),
-			Leaf(RightParen, ")"),
-		))
+		}
+		children = append(children, tokens[1:]...)
+		children = append(children, Leaf(RightParen, ")"))
+		e.fs.AddTree(IRTree(CallExpression, KindExpr, children...))
 		return
 	case "delete":
 		if len(node.Args) >= 2 {
@@ -1402,28 +1414,29 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 							children = append(children, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 						}
 						castVal := e.castSmallIntFieldValue(u.Field(i).Type(), val)
-						cloneVal := e.cloneStructFieldValue(u.Field(i).Type(), val)
+						needsClone := e.needsFieldClone(u.Field(i).Type(), val)
 						children = append(children,
 							Leaf(Identifier, fieldName),
 							Leaf(Colon, ":"),
 							Leaf(WhiteSpace, " "),
 						)
-						// Use tree node when value wasn't modified (preserves OptCallArg metadata)
-						if castVal == val && cloneVal == val {
-							if valNode, ok := kvNodeMap[fieldName]; ok {
-								children = append(children, valNode)
+						if castVal != val {
+							// Cast modifies the value — use flat string
+							children = append(children, Leaf(Identifier, castVal))
+						} else if valNode, ok := kvNodeMap[fieldName]; ok {
+							// Use tree node, annotate for clone if needed
+							if needsClone {
+								valNode.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
+							}
+							children = append(children, valNode)
+						} else {
+							if needsClone {
+								valLeaf := Leaf(Identifier, val)
+								valLeaf.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
+								children = append(children, valLeaf)
 							} else {
 								children = append(children, Leaf(Identifier, val))
 							}
-						} else {
-							finalVal := val
-							if castVal != val {
-								finalVal = castVal
-							}
-							if cloneVal != val {
-								finalVal = cloneVal
-							}
-							children = append(children, Leaf(Identifier, finalVal))
 						}
 						first = false
 					}
@@ -1454,24 +1467,30 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 			}
 			if i < u.NumFields() {
 				castVal := e.castSmallIntFieldValue(u.Field(i).Type(), elt)
-				cloneVal := e.cloneStructFieldValue(u.Field(i).Type(), elt)
+				needsClone := e.needsFieldClone(u.Field(i).Type(), elt)
 				children = append(children,
 					Leaf(Identifier, u.Field(i).Name()),
 					Leaf(Colon, ":"),
 					Leaf(WhiteSpace, " "),
 				)
-				// Use tree node when value wasn't modified (preserves OptCallArg metadata)
-				if castVal == elt && cloneVal == elt && i < len(tokens) {
-					children = append(children, tokens[i])
+				if castVal != elt {
+					// Cast modifies the value — use flat string
+					children = append(children, Leaf(Identifier, castVal))
+				} else if i < len(tokens) {
+					// Use tree node, annotate for clone if needed
+					valNode := tokens[i]
+					if needsClone {
+						valNode.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
+					}
+					children = append(children, valNode)
 				} else {
-					finalVal := elt
-					if castVal != elt {
-						finalVal = castVal
+					if needsClone {
+						valLeaf := Leaf(Identifier, elt)
+						valLeaf.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
+						children = append(children, valLeaf)
+					} else {
+						children = append(children, Leaf(Identifier, elt))
 					}
-					if cloneVal != elt {
-						finalVal = cloneVal
-					}
-					children = append(children, Leaf(Identifier, finalVal))
 				}
 			}
 		}

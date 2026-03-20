@@ -123,9 +123,6 @@ func (e *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
-	// Save call extractions before cleanup resets them
-	callExts := e.Opt.moveOptCallExts
-
 	// Clean up move optimization tracking
 	defer func() {
 		e.Opt.currentAssignLhsNames = nil
@@ -137,6 +134,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		e.Opt.moveOptArgReplacements = nil
 		e.Opt.moveOptModifiedCounts = nil
 		e.Opt.moveOptCallExts = nil
+		e.Opt.moveOptTempExtractions = nil
 		e.Opt.memTakeActive = false
 		e.Opt.memTakeLhsExpr = ""
 		e.Opt.memTakeArgIdx = -1
@@ -468,34 +466,6 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 
 	// Multi-value return: a, b := func() -> let (mut a, mut b) = func()
 	if len(node.Lhs) > 1 && len(node.Rhs) == 1 {
-		// Emit temp bindings from move extraction before the assignment
-		if e.Opt.moveOptActive && len(e.Opt.moveOptTempBindings) > 0 {
-			for _, binding := range e.Opt.moveOptTempBindings {
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt, Leaf(Identifier, ind+binding)))
-			}
-		}
-		// Emit call extraction bindings before the assignment
-		if len(callExts) > 0 {
-			for _, ext := range callExts {
-				if ext.code != "" {
-					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
-						Leaf(WhiteSpace, ind),
-						LeafTag(Keyword, "let", TagRust),
-						Leaf(WhiteSpace, " "),
-						Leaf(Identifier, ext.tempName),
-						Leaf(Colon, ":"),
-						Leaf(WhiteSpace, " "),
-						Leaf(TypeKeyword, ext.rustType),
-						Leaf(WhiteSpace, " "),
-						Leaf(Assignment, "="),
-						Leaf(WhiteSpace, " "),
-						ext.node,
-						Leaf(Semicolon, ";"),
-						Leaf(NewLine, "\n"),
-					))
-				}
-			}
-		}
 		if tokStr == ":=" {
 			lhsParts := make([]string, len(node.Lhs))
 			for i, lhs := range node.Lhs {
@@ -516,7 +486,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			} else {
 				rhsNode = Leaf(Identifier, rhsStr)
 			}
-			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+			assignNode := IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "let", TagRust),
 				Leaf(WhiteSpace, " "),
@@ -527,7 +497,11 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				rhsNode,
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
-			))
+			)
+			if e.Opt.moveOptActive && len(e.Opt.moveOptTempExtractions) > 0 {
+				assignNode.OptMeta = &OptMeta{Kind: OptAssignment, TempExtractions: e.Opt.moveOptTempExtractions}
+			}
+			e.fs.AddTree(assignNode)
 		} else {
 			// For reassignment, don't use `mut`
 			lhsParts := make([]string, len(node.Lhs))
@@ -549,7 +523,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			} else {
 				rhsNode = Leaf(Identifier, rhsStr)
 			}
-			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+			assignNode := IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, destructured),
 				Leaf(WhiteSpace, " "),
@@ -558,7 +532,11 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				rhsNode,
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
-			))
+			)
+			if e.Opt.moveOptActive && len(e.Opt.moveOptTempExtractions) > 0 {
+				assignNode.OptMeta = &OptMeta{Kind: OptAssignment, TempExtractions: e.Opt.moveOptTempExtractions}
+			}
+			e.fs.AddTree(assignNode)
 		}
 		return
 	}
@@ -689,35 +667,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				Leaf(NewLine, "\n"),
 			))
 		default:
-			// Emit temp bindings from move extraction before the assignment
-			if e.Opt.moveOptActive && len(e.Opt.moveOptTempBindings) > 0 {
-				for _, binding := range e.Opt.moveOptTempBindings {
-					e.fs.AddTree(IRTree(AssignStatement, KindStmt, Leaf(Identifier, ind+binding)))
-				}
-			}
-			// Emit call extraction bindings before the assignment
-			if len(callExts) > 0 {
-				for _, ext := range callExts {
-					if ext.code != "" {
-						e.fs.AddTree(IRTree(AssignStatement, KindStmt,
-							Leaf(WhiteSpace, ind),
-							LeafTag(Keyword, "let", TagRust),
-							Leaf(WhiteSpace, " "),
-							Leaf(Identifier, ext.tempName),
-							Leaf(Colon, ":"),
-							Leaf(WhiteSpace, " "),
-							Leaf(TypeKeyword, ext.rustType),
-							Leaf(WhiteSpace, " "),
-							Leaf(Assignment, "="),
-							Leaf(WhiteSpace, " "),
-							ext.node,
-							Leaf(Semicolon, ";"),
-							Leaf(NewLine, "\n"),
-						))
-					}
-				}
-			}
-			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+			assignNode := IRTree(AssignStatement, KindStmt,
 				Leaf(WhiteSpace, ind),
 				Leaf(Identifier, lhsStr),
 				Leaf(WhiteSpace, " "),
@@ -726,7 +676,11 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				rhsNode,
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
-			))
+			)
+			if e.Opt.moveOptActive && len(e.Opt.moveOptTempExtractions) > 0 {
+				assignNode.OptMeta = &OptMeta{Kind: OptAssignment, TempExtractions: e.Opt.moveOptTempExtractions}
+			}
+			e.fs.AddTree(assignNode)
 		}
 	}
 }
@@ -987,9 +941,8 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 			Leaf(NewLine, "\n"),
 		))
 	} else {
-		// For multi-value returns, clone non-Copy values that might be referenced
-		// by other return values (avoids borrow-after-move)
-		var valNodes []IRNode // tree nodes for each return value
+		// For multi-value returns, annotate non-Copy values for CloneMovePass
+		var valNodes []IRNode
 
 		// Return temp extraction: try to extract later results that reference the first
 		// into temp variables so the first result can be moved instead of cloned.
@@ -1007,18 +960,16 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 				}
 			}
 			if i == 0 && len(node.Results) > 1 {
-				// Clone the first return value if it's a non-Copy type
-				// to avoid move-before-borrow issues
+				// Annotate the first return value if it's a non-Copy type
 				if len(node.Results) > 0 {
 					resultType := e.getExprGoType(node.Results[i])
 					if resultType != nil && !isCopyType(resultType) {
-						// Move optimization: check if later results reference the first
+						needsClone := true
 						if e.Opt.OptimizeMoves {
 							firstName := ""
 							if ident, ok := node.Results[0].(*ast.Ident); ok {
 								firstName = ident.Name
 							}
-							needsClone := true
 							if firstName != "" {
 								referencesFirst := false
 								for j := 1; j < len(node.Results); j++ {
@@ -1032,36 +983,31 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 									e.Opt.MoveOptCount++
 								}
 							}
-							if needsClone {
-								// Check if all conflicting results have been extracted to temps
-								if returnTempReplacements != nil {
-									allExtracted := true
-									if firstName != "" {
-										for j := 1; j < len(node.Results); j++ {
-											if ExprContainsIdent(node.Results[j], firstName) {
-												if _, replaced := returnTempReplacements[j]; !replaced {
-													allExtracted = false
-													break
-												}
+							if needsClone && returnTempReplacements != nil {
+								allExtracted := true
+								firstName := ""
+								if ident, ok := node.Results[0].(*ast.Ident); ok {
+									firstName = ident.Name
+								}
+								if firstName != "" {
+									for j := 1; j < len(node.Results); j++ {
+										if ExprContainsIdent(node.Results[j], firstName) {
+											if _, replaced := returnTempReplacements[j]; !replaced {
+												allExtracted = false
+												break
 											}
 										}
 									}
-									if allExtracted {
-										// All conflicting results extracted - no clone needed
-										needsClone = false
-										e.Opt.MoveOptCount++
-									}
 								}
-								if needsClone {
-									// Wrap tree node with .clone() while preserving inner OptCallArg metadata
-									valNodes = append(valNodes, IRTree(CallExpression, KindExpr, t, Leaf(Dot, ".clone()")))
-									continue
+								if allExtracted {
+									needsClone = false
+									e.Opt.MoveOptCount++
 								}
 							}
-						} else {
-							// Wrap tree node with .clone() while preserving inner OptCallArg metadata
-							valNodes = append(valNodes, IRTree(CallExpression, KindExpr, t, Leaf(Dot, ".clone()")))
-							continue
+						}
+						if needsClone {
+							// Annotate for CloneMovePass instead of inline .clone()
+							t.OptMeta = &OptMeta{Kind: OptReturnValue, NeedReturnCopy: true}
 						}
 					}
 				}

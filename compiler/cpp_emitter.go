@@ -683,7 +683,7 @@ func (e *CppEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) 
 	tokens := e.fs.CollectForest(string(PreVisitCallExprArg))
 	argNode := collectToNode(tokens)
 
-	// Move optimization for struct arguments
+	// Annotate struct args for ownership transfer (CloneMovePass applies std::move)
 	if e.OptimizeMoves && e.funcLitDepth == 0 {
 		if ident, isIdent := node.(*ast.Ident); isIdent {
 			tv := e.getExprGoType(node)
@@ -691,7 +691,8 @@ func (e *CppEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) 
 				if named, ok := tv.(*types.Named); ok {
 					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 						if e.canMoveArg(ident.Name) {
-							e.fs.AddLeaf("std::move("+argNode.Serialize()+")", KindExpr, nil)
+							argNode.OptMeta = &OptMeta{CanTransfer: true}
+							e.fs.AddTree(argNode)
 							return
 						}
 					}
@@ -726,12 +727,17 @@ func (e *CppEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 		if argIdx < len(node) {
 			_, isIdent = node[argIdx].(*ast.Ident)
 		}
+		// Merge ownership flags from PostVisitCallExprArg
+		existingMeta := t.OptMeta
 		t.OptMeta = &OptMeta{
 			Kind:       OptCallArg,
 			CalleeName: e.currentCalleeName,
 			FuncKey:    e.currentCalleeKey,
 			ParamIndex: argIdx,
 			IsIdentArg: isIdent,
+		}
+		if existingMeta != nil {
+			t.OptMeta.CanTransfer = existingMeta.CanTransfer
 		}
 		e.fs.AddTree(t)
 		first = false
