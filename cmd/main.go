@@ -186,6 +186,7 @@ func main() {
 	var programFiles []string
 
 	if useCpp {
+		cppRefOpt := &compiler.RefOptPass{Tag: compiler.TagCpp, Enabled: true}
 		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
 			CodeGen: &compiler.BasePass{PassName: "CppGen", Emitter: &compiler.CppEmitter{
 				Emitter:         &compiler.BaseEmitter{},
@@ -196,11 +197,17 @@ func main() {
 				OutputName:      outputName,
 				OptimizeMoves:   optimizeMoves,
 				OptimizeRefs:    optimizeRefs,
+				CppRefOptPass:   cppRefOpt,
 			}},
+			IRPasses: []compiler.IRPass{
+				&compiler.CloneMovePass{Tag: compiler.TagCpp, Enabled: true},
+				cppRefOpt,
+			},
 		})
 		programFiles = append(programFiles, "cpp")
 	}
 	if useCs {
+		csRefOpt := &compiler.RefOptPass{Tag: compiler.TagCSharp, Enabled: true}
 		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
 			CodeGen: &compiler.BasePass{PassName: "CsGen", Emitter: &compiler.CSharpEmitter{
 				Emitter:         &compiler.BaseEmitter{},
@@ -210,11 +217,14 @@ func main() {
 				OutputDir:       outputDir,
 				OutputName:      outputName,
 				OptimizeRefs:    optimizeRefs,
+				CsRefOptPass:    csRefOpt,
 			}},
+			IRPasses: []compiler.IRPass{csRefOpt},
 		})
 		programFiles = append(programFiles, "cs")
 	}
 	if useRust {
+		rustRefOpt := &compiler.RefOptPass{Tag: compiler.TagRust, Enabled: true}
 		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
 			CodeGen: &compiler.BasePass{PassName: "RustGen", Emitter: &compiler.RustEmitter{
 				Emitter:         &compiler.BaseEmitter{},
@@ -226,8 +236,13 @@ func main() {
 				Opt: compiler.RustOptState{
 					OptimizeMoves: optimizeMoves,
 					OptimizeRefs:  optimizeRefs,
+					RefOptPass:    rustRefOpt,
 				},
 			}},
+			IRPasses: []compiler.IRPass{
+				&compiler.CloneMovePass{Tag: compiler.TagRust, Enabled: true},
+				rustRefOpt,
+			},
 		})
 		programFiles = append(programFiles, "rs")
 	}

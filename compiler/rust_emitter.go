@@ -41,11 +41,18 @@ type RustEmitter struct {
 	forInitStack []string
 	forCondStack []string
 	forPostStack []string
+	forCondNodes []IRNode
+	forBodyNodes []IRNode
 	// If statement components (stacks for nesting)
 	ifInitStack []string
 	ifCondStack []string
 	ifBodyStack []string
 	ifElseStack []string
+	// Parallel node stacks for tree preservation
+	ifInitNodes []IRNode
+	ifCondNodes []IRNode
+	ifBodyNodes []IRNode
+	ifElseNodes []IRNode
 	// Rust-specific
 	forwardDecl      bool
 	nestedMapCounter int
@@ -224,10 +231,6 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 
 	// Build the hashMapGet chain to read the slice
 	getExpr := fmt.Sprintf("%s.clone()", rootMapName)
-	if e.Opt.OptimizeRefs {
-		getExpr = "&" + rootMapName
-		e.Opt.RefOptCount++
-	}
 	for i, lvl := range levels {
 		castType := "hmap::HashMap"
 		if i == len(levels)-1 {
@@ -235,12 +238,7 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 		}
 		innerGetExpr := fmt.Sprintf("hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone()",
 			getExpr, lvl.keyExpr, castType)
-		if e.Opt.OptimizeRefs && i < len(levels)-1 {
-			getExpr = "&" + innerGetExpr
-			e.Opt.RefOptCount++
-		} else {
-			getExpr = innerGetExpr
-		}
+		getExpr = innerGetExpr
 	}
 	sb.WriteString(fmt.Sprintf("%slet mut %s = %s;\n", ind, sliceTempVar, getExpr))
 
@@ -262,20 +260,12 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 		tempVars := make([]string, len(levels))
 		// Extract maps from outermost to one-before-innermost
 		extractExpr := fmt.Sprintf("%s.clone()", rootMapName)
-		if e.Opt.OptimizeRefs {
-			extractExpr = "&" + rootMapName
-			e.Opt.RefOptCount++
-		}
 		for i := 0; i < len(levels)-1; i++ {
 			e.nestedMapCounter++
 			tempVars[i] = fmt.Sprintf("__temp_%d", e.nestedMapCounter)
 			sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<hmap::HashMap>().unwrap().clone();\n",
 				ind, tempVars[i], extractExpr, levels[i].keyExpr))
 			extractExpr = fmt.Sprintf("%s.clone()", tempVars[i])
-			if e.Opt.OptimizeRefs {
-				extractExpr = "&" + tempVars[i]
-				e.Opt.RefOptCount++
-			}
 		}
 		// Set slice into innermost map
 		innermostMap := tempVars[len(levels)-2]
@@ -377,10 +367,6 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 
 	// Extract from root map
 	rootMapRef := rootMapName + ".clone()"
-	if e.Opt.OptimizeRefs {
-		rootMapRef = "&" + rootMapName
-		e.Opt.RefOptCount++
-	}
 	sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
 		ind, tempVar, rootMapRef, rootKeyExpr, rootValType))
 
@@ -407,10 +393,6 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 					e.nestedMapCounter++
 					innerTemp := fmt.Sprintf("__temp_%d", e.nestedMapCounter)
 					intermMapRef := indexPrefix + ".clone()"
-					if e.Opt.OptimizeRefs {
-						intermMapRef = "&" + indexPrefix
-						e.Opt.RefOptCount++
-					}
 					sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
 						ind, innerTemp, intermMapRef, intermKeyExpr, intermValType))
 					indexPrefix = innerTemp
@@ -484,23 +466,54 @@ func (e *RustEmitter) castSmallIntFieldValue(fieldType types.Type, val string) s
 	return val
 }
 
-// cloneStructFieldValue adds .clone() to non-Copy struct field values that are
-// simple identifiers (variables). This prevents move-in-loop errors in Rust.
-func (e *RustEmitter) cloneStructFieldValue(fieldType types.Type, val string) string {
-	if !isCopyType(fieldType) {
-		// Don't clone values that are already calls (end with ")"), literals, or already cloned
-		trimmed := strings.TrimSpace(val)
-		if !strings.HasSuffix(trimmed, ")") &&
-			!strings.HasSuffix(trimmed, ".clone()") &&
-			!strings.HasPrefix(trimmed, "\"") &&
-			!strings.HasPrefix(trimmed, "vec![") &&
-			!strings.HasPrefix(trimmed, "Vec::") &&
-			trimmed != "Default::default()" &&
-			trimmed != "true" && trimmed != "false" {
-			return val + ".clone()"
+// wrapSmallIntCastTree wraps an IRNode in a `(node as castType)` tree when the
+// target field type is a small integer (i8, u8, i16, u16). Unlike castSmallIntFieldValue
+// which returns a flat string, this preserves the inner tree structure (e.g., OptCallArg metadata).
+func (e *RustEmitter) wrapSmallIntCastTree(fieldType types.Type, node IRNode) IRNode {
+	if basic, ok := fieldType.Underlying().(*types.Basic); ok {
+		var castType string
+		switch basic.Kind() {
+		case types.Int8:
+			castType = "i8"
+		case types.Uint8:
+			castType = "u8"
+		case types.Int16:
+			castType = "i16"
+		case types.Uint16:
+			castType = "u16"
+		default:
+			return node
 		}
+		return IRTree(CallExpression, KindExpr,
+			Leaf(LeftParen, "("),
+			node,
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, "as"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, castType),
+			Leaf(RightParen, ")"),
+		)
 	}
-	return val
+	return node
+}
+
+// needsFieldClone checks whether a struct field value needs .clone() for Rust ownership.
+// Returns true for non-Copy types that are simple identifiers/selectors (not already owned values).
+func (e *RustEmitter) needsFieldClone(fieldType types.Type, val string) bool {
+	if isCopyType(fieldType) {
+		return false
+	}
+	trimmed := strings.TrimSpace(val)
+	if strings.HasSuffix(trimmed, ")") ||
+		strings.HasSuffix(trimmed, ".clone()") ||
+		strings.HasPrefix(trimmed, "\"") ||
+		strings.HasPrefix(trimmed, "vec![") ||
+		strings.HasPrefix(trimmed, "Vec::") ||
+		trimmed == "Default::default()" ||
+		trimmed == "true" || trimmed == "false" {
+		return false
+	}
+	return true
 }
 
 // getMapKeyTypeConst returns the integer constant for a map's key type.
@@ -1022,8 +1035,8 @@ func (e *RustEmitter) PostFileEmit() {
 	if e.Opt.OptimizeMoves && e.Opt.MoveOptCount > 0 {
 		fmt.Printf("  Rust: %d clone(s) removed by move optimization\n", e.Opt.MoveOptCount)
 	}
-	if e.Opt.OptimizeRefs && e.Opt.RefOptCount > 0 {
-		fmt.Printf("  Rust: %d clone(s) removed by reference optimization\n", e.Opt.RefOptCount)
+	if e.Opt.RefOptPass != nil && e.Opt.RefOptPass.TransformCount > 0 {
+		fmt.Printf("  Rust: %d ref(s) optimized by RefOptPass\n", e.Opt.RefOptPass.TransformCount)
 	}
 }
 
@@ -1036,6 +1049,32 @@ func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 	if e.Opt.OptimizeRefs {
 		e.Opt.AccumulateReadOnlyAnalysis(pkg)
+		// Emit synthetic OptFuncParam nodes for cross-package functions
+		// so RefOptPass Phase 1 collects them from the tree (no Analysis needed)
+		if e.Opt.refOptReadOnly != nil {
+			for key, flags := range e.Opt.refOptReadOnly.ReadOnly {
+				if strings.HasPrefix(key, pkg.Name+".") {
+					continue // local — covered by real param nodes
+				}
+				mutFlags := e.Opt.refOptReadOnly.MutRef[key]
+				for i, ro := range flags {
+					isMut := mutFlags != nil && i < len(mutFlags) && mutFlags[i]
+					if !ro && !isMut {
+						continue
+					}
+					e.fs.AddTree(IRNode{
+						Type: Identifier,
+						OptMeta: &OptMeta{
+							Kind:       OptFuncParam,
+							FuncKey:    key,
+							ParamIndex: i,
+							IsReadOnly: ro,
+							IsMutRef:   isMut,
+						},
+					})
+				}
+			}
+		}
 	}
 
 	if pkg.Name != "main" {
@@ -1129,8 +1168,6 @@ func (e *RustEmitter) PostVisitFuncDeclName(node *ast.Ident, indent int) {
 	// Track current function key for optimization
 	e.Opt.refOptCurrentFunc = e.Opt.refOptCurrentPkg + "." + node.Name
 	e.Opt.currentParamIndex = 0
-	e.Opt.refOptCurrentRefParams = make(map[string]bool)
-	e.Opt.refOptCurrentMutRefParams = make(map[string]bool)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsListType(node ast.Expr, argName *ast.Ident, index int, indent int) {
@@ -1156,9 +1193,18 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 		}
 	}
 	// Rust params: name: mut Type, name: &Type (ref-opt), or name: &mut Type (mut-ref-opt)
+	goType := e.getExprGoType(node.Type)
 	paramIdx := e.Opt.currentParamIndex
 	for _, name := range names {
 		escapedName := escapeRustKeyword(name)
+		optMeta := &OptMeta{
+			Kind:          OptFuncParam,
+			FuncKey:       e.Opt.refOptCurrentFunc,
+			ParamIndex:    paramIdx,
+			ParamName:     escapedName,
+			TypeStr:       typeStr,
+			IsRefEligible: isRefOptEligibleType(goType),
+		}
 		isRefOpt := false
 		isMutRefOpt := false
 		if e.Opt.OptimizeRefs && e.Opt.refOptReadOnly != nil {
@@ -1175,42 +1221,19 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 				}
 			}
 		}
-		if isRefOpt {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				Leaf(Identifier, escapedName),
-				Leaf(Colon, ":"),
-				Leaf(WhiteSpace, " "),
-				LeafTag(Keyword, "&", TagRust),
-				Leaf(Identifier, typeStr),
-			))
-			if e.Opt.refOptCurrentRefParams == nil {
-				e.Opt.refOptCurrentRefParams = make(map[string]bool)
-			}
-			e.Opt.refOptCurrentRefParams[escapedName] = true
-		} else if isMutRefOpt {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				Leaf(Identifier, escapedName),
-				Leaf(Colon, ":"),
-				Leaf(WhiteSpace, " "),
-				LeafTag(Keyword, "&mut", TagRust),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, typeStr),
-			))
-			if e.Opt.refOptCurrentMutRefParams == nil {
-				e.Opt.refOptCurrentMutRefParams = make(map[string]bool)
-			}
-			e.Opt.refOptCurrentMutRefParams[escapedName] = true
-			e.Opt.RefOptCount++
-		} else {
-			e.fs.AddTree(IRTree(Identifier, TagIdent,
-				LeafTag(Keyword, "mut", TagRust),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, escapedName),
-				Leaf(Colon, ":"),
-				Leaf(WhiteSpace, " "),
-				Leaf(Identifier, typeStr),
-			))
-		}
+		optMeta.IsReadOnly = isRefOpt
+		optMeta.IsMutRef = isMutRefOpt
+		// Always emit base form; RefOptPass transforms to &T / &mut T
+		paramNode := IRTree(Identifier, TagIdent,
+			LeafTag(Keyword, "mut", TagRust),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, escapedName),
+			Leaf(Colon, ":"),
+			Leaf(WhiteSpace, " "),
+			Leaf(Identifier, typeStr),
+		)
+		paramNode.OptMeta = optMeta
+		e.fs.AddTree(paramNode)
 		paramIdx++
 	}
 	e.Opt.currentParamIndex = paramIdx
@@ -1218,13 +1241,19 @@ func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, 
 
 func (e *RustEmitter) PostVisitFuncDeclSignatureTypeParams(node *ast.FuncDecl, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitFuncDeclSignatureTypeParams))
-	var paramDecls []string
+	// Build wrapper tree preserving individual param nodes (with OptMeta for RefOptPass)
+	var children []IRNode
+	first := true
 	for _, t := range tokens {
 		if t.Kind == TagIdent {
-			paramDecls = append(paramDecls, t.Serialize())
+			if !first {
+				children = append(children, IRNode{Type: Comma, Content: ", "})
+			}
+			children = append(children, t)
+			first = false
 		}
 	}
-	e.fs.AddLeaf(strings.Join(paramDecls, ", "), KindExpr, nil)
+	e.fs.AddTree(IRTree(Identifier, KindExpr, children...))
 }
 
 func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int) {
@@ -1266,8 +1295,10 @@ func (e *RustEmitter) PostVisitFuncDeclSignature(node *ast.FuncDecl, indent int)
 }
 
 func (e *RustEmitter) PostVisitFuncDeclBody(node *ast.BlockStmt, indent int) {
-	bodyCode := e.fs.CollectText(string(PreVisitFuncDeclBody))
-	e.fs.AddLeaf(bodyCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitFuncDeclBody))
+	for _, t := range tokens {
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *RustEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
@@ -1294,8 +1325,10 @@ func (e *RustEmitter) PreVisitBlockStmt(node *ast.BlockStmt, indent int) {
 }
 
 func (e *RustEmitter) PostVisitBlockStmtList(node ast.Stmt, index int, indent int) {
-	itemCode := e.fs.CollectText(string(PreVisitBlockStmtList))
-	e.fs.AddLeaf(itemCode, KindExpr, nil)
+	tokens := e.fs.CollectForest(string(PreVisitBlockStmtList))
+	for _, t := range tokens {
+		e.fs.AddTree(t)
+	}
 }
 
 func (e *RustEmitter) PostVisitBlockStmt(node *ast.BlockStmt, indent int) {

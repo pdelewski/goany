@@ -9,17 +9,6 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// moveOptCallExt tracks a function call arg that needs to be extracted
-// into a temp variable before the assignment to avoid borrow conflicts.
-// Pattern: c = doADC(c, ReadIndirectX(c, zp))
-// Becomes: let __mv0: u8 = ReadIndirectX(&c, zp); c = doADC(c, __mv0);
-type moveOptCallExt struct {
-	argIdx   int    // which argument index in the outer call
-	tempName string // temp variable name (e.g., "__mv0")
-	rustType string // Rust type of the result (e.g., "u8")
-	code     string // captured Rust code for the function call (filled during PostVisitCallExprArg)
-}
-
 // RustOptState holds all optimization-related state, separated from the core emitter.
 // Methods on this struct implement move optimization, reference optimization, and
 // related analysis. The emitter embeds this as Opt and wires up the pkg and
@@ -29,40 +18,31 @@ type RustOptState struct {
 	OptimizeMoves bool
 	OptimizeRefs  bool
 	MoveOptCount  int
-	RefOptCount   int
+	RefOptPass    *RefOptPass
 
 	// Dependencies (set by emitter during traversal)
 	pkg          *packages.Package
 	goTypeToRust func(string) string
 
 	// Ref optimization
-	refOptReadOnly            *ReadOnlyAnalysis
-	refOptCurrentFunc         string
-	refOptCurrentPkg          string
-	refOptCalleeReadOnly      [][]bool
-	refOptCalleeMutRef        [][]bool
-	refOptCurrentRefParams    map[string]bool
-	refOptCurrentMutRefParams map[string]bool
-
+	refOptReadOnly    *ReadOnlyAnalysis
+	refOptCurrentFunc string
+	refOptCurrentPkg  string
 	// Move optimization
 	currentAssignLhsNames     map[string]bool
 	funcLitDepth              int
 	currentCallArgIdentsStack []map[string]int
-	currentCalleeName         string
-	currentParamIndex         int
-	currentCallIsLen          bool
+	currentCalleeName string
+	currentCalleeKey  string
+	currentParamIndex int
+	// Callee info save/restore stacks for nested calls
+	calleeNameStack []string
+	calleeKeyStack  []string
 
 	// Move extraction (temp binding) state
 	moveOptActive          bool
-	moveOptTempBindings    []string
-	moveOptArgReplacements map[int]string
 	moveOptModifiedCounts  map[string]int
-	moveOptReplacingArg    bool
-	moveOptArgStartIdx     int
-
-	// Call expression extraction: capture function call args that reference a moved struct
-	// Pattern: c = func(c, ReadIndirectX(c, zp)) → let __mv0 = ReadIndirectX(&c, zp); c = func(c, __mv0);
-	moveOptCallExts []moveOptCallExt
+	moveOptTempExtractions []TempExtraction // structured extraction info for CloneMovePass
 
 	// Return temp extraction: extract later return results into temps so first result can be moved
 	// Pattern: return c, c.Memory[addr] → let __mv0: u8 = c.Memory[addr]; return (c, __mv0);
@@ -177,32 +157,6 @@ func (o *RustOptState) canMoveArg(varName string) bool {
 	return true
 }
 
-// isRefOptArg checks if the current call's argument at the given index corresponds
-// to a read-only parameter in the callee function.
-func (o *RustOptState) isRefOptArg(index int) bool {
-	if !o.OptimizeRefs || len(o.refOptCalleeReadOnly) == 0 {
-		return false
-	}
-	flags := o.refOptCalleeReadOnly[len(o.refOptCalleeReadOnly)-1]
-	if flags == nil || index >= len(flags) {
-		return false
-	}
-	return flags[index]
-}
-
-// isMutRefOptArg checks if the current call's argument at the given index corresponds
-// to a mutable-reference parameter in the callee function (slice-element mutations only).
-func (o *RustOptState) isMutRefOptArg(index int) bool {
-	if !o.OptimizeRefs || len(o.refOptCalleeMutRef) == 0 {
-		return false
-	}
-	flags := o.refOptCalleeMutRef[len(o.refOptCalleeMutRef)-1]
-	if flags == nil || index >= len(flags) {
-		return false
-	}
-	return flags[index]
-}
-
 // refOptFuncKey converts a Rust-style function name to the analysis key format.
 func (o *RustOptState) refOptFuncKey(rustFuncName string) string {
 	key := strings.ReplaceAll(rustFuncName, "::", ".")
@@ -216,9 +170,8 @@ func (o *RustOptState) refOptFuncKey(rustFuncName string) string {
 // on a struct being moved, and creates temp variable bindings to extract them.
 // Pattern: c = Func(c, c.Field) → let _v0 = c.Field; c = Func(c, _v0);
 func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
-	o.moveOptTempBindings = nil
-	o.moveOptArgReplacements = nil
 	o.moveOptModifiedCounts = nil
+	o.moveOptTempExtractions = nil
 	o.moveOptActive = false
 
 	if !o.OptimizeMoves {
@@ -270,11 +223,9 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 
 	// Check other args for field accesses on the same struct with Copy-type results
 	tempIdx := 0
-	replacements := make(map[int]string)
-	var bindings []string
 	modifiedCounts := CollectCallArgIdentCounts(callExpr.Args, o.pkg)
 
-	var callExts []moveOptCallExt
+	var tempExtractions []TempExtraction
 
 	for i, arg := range callExpr.Args {
 		if i == structArgIdx {
@@ -297,9 +248,12 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 		// Try string-based extraction first (for simple expressions like c.A)
 		exprStr := o.exprToRustCodeOpt(arg)
 		if exprStr != "" {
-			binding := fmt.Sprintf("let %s: %s = %s;\n", tempName, rustType, exprStr)
-			bindings = append(bindings, binding)
-			replacements[i] = tempName
+			tempExtractions = append(tempExtractions, TempExtraction{
+				ArgIndex: i,
+				TempName: tempName,
+				TypeStr:  rustType,
+				Expr:     exprStr,
+			})
 			SubtractIdentsInExpr(arg, o.pkg, modifiedCounts)
 			continue
 		}
@@ -307,22 +261,20 @@ func (o *RustOptState) analyzeMoveOptExtraction(node *ast.AssignStmt) {
 		// code capture. The arg will be emitted normally, then its code is
 		// captured in PostVisitCallExprArg and relocated before the assignment.
 		if _, isCall := arg.(*ast.CallExpr); isCall {
-			callExts = append(callExts, moveOptCallExt{
-				argIdx:   i,
-				tempName: tempName,
-				rustType: rustType,
+			tempExtractions = append(tempExtractions, TempExtraction{
+				ArgIndex: i,
+				TempName: tempName,
+				TypeStr:  rustType,
 			})
 			SubtractIdentsInExpr(arg, o.pkg, modifiedCounts)
 			continue
 		}
 	}
 
-	if len(replacements) > 0 || len(callExts) > 0 {
-		o.moveOptTempBindings = bindings
-		o.moveOptArgReplacements = replacements
+	if len(tempExtractions) > 0 {
 		o.moveOptModifiedCounts = modifiedCounts
 		o.moveOptActive = true
-		o.moveOptCallExts = callExts
+		o.moveOptTempExtractions = tempExtractions
 	}
 }
 

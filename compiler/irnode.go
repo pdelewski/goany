@@ -173,20 +173,31 @@ const (
 	ChanTypeNode
 	ScopeNode  // auto-collected scope wrapper
 	Preamble   // header/boilerplate content (includes, runtime, helpers)
+	MultiNode  // splice marker: children are spliced into parent during pass
 )
 
 // OptKind identifies what kind of optimizable construct a token represents.
 type OptKind int
 
 const (
-	OptNone        OptKind = iota
-	OptClone                 // .clone() on a call arg or return value
-	OptFuncParam             // function parameter declaration
-	OptCallArg               // function call argument (for ref-opt callee lookup)
-	OptMapOp                 // map operation (hashMapGet, hashMapLen, etc.)
-	OptReturnValue           // return value expression
-	OptAssignment            // full assignment statement
+	OptNone           OptKind = iota
+	OptClone                    // .clone() on a call arg or return value
+	OptFuncParam                // function parameter declaration
+	OptCallArg                  // function call argument (for ref-opt callee lookup)
+	OptMapOp                    // map operation (hashMapGet, hashMapLen, etc.)
+	OptReturnValue              // return value expression
+	OptAssignment               // full assignment statement
+	OptCompositeField           // composite literal field value
 )
+
+// TempExtraction describes an argument that must be extracted to a temp variable
+// before the enclosing call to avoid aliasing conflicts.
+type TempExtraction struct {
+	ArgIndex int    // which call arg to extract
+	TempName string // temp variable name (e.g., "__mv0")
+	TypeStr  string // type string for the binding
+	Expr     string // expression code to extract
+}
 
 // OptMeta carries optimization-relevant context from emitter to optimizer.
 // Attached as a pointer on IRNode so non-annotated tokens have zero overhead.
@@ -199,6 +210,10 @@ type OptMeta struct {
 	ParamName       string        // parameter name (for signature changes)
 	TypeStr         string        // type string (for signature changes)
 	IsInsideClosure bool          // whether this is inside a FuncLit
+	IsRefEligible   bool          // true if type is struct or slice (eligible for &T optimization)
+	IsReadOnly      bool          // param determined read-only by analysis (for RefOptPass)
+	IsMutRef        bool          // param determined mut-ref by analysis (for RefOptPass)
+	IsIdentArg      bool          // true if call arg is a simple identifier (lvalue — needed for C# in/ref)
 	NodeExpr        ast.Expr      // original Go AST expression
 	NodeStmt        ast.Stmt      // original Go AST statement
 	ReturnNode      *ast.ReturnStmt // for multi-return analysis
@@ -206,6 +221,44 @@ type OptMeta struct {
 	ResultIndex     int           // index in multi-return
 	NumResults      int           // total number of return results
 	MapContent      string        // map variable code (for &map vs map.clone())
+
+	// Ownership semantics (set by emitter analysis, consumed by CloneMovePass)
+
+	// NeedsCopy marks a value that must be deep-copied when passed to a function.
+	NeedsCopy bool
+
+	// CanTransfer marks a value whose ownership can be transferred to the callee
+	// because the source variable is immediately reassigned from this call's result.
+	CanTransfer bool
+
+	// IsOwnedValue marks an expression that already produces a fresh owned value
+	// (composite literal, function call result, string literal). No copy is needed.
+	IsOwnedValue bool
+
+	// IsReassignedSource marks an argument whose source location is the same as the
+	// assignment target of the enclosing statement. Used for std::mem::take / std::move.
+	IsReassignedSource bool
+
+	// ReassignedExpr is the source expression for IsReassignedSource (e.g., "state.cpu").
+	ReassignedExpr string
+
+	// IsExtractedArg marks an argument that was extracted to a temporary variable
+	// before the call to avoid aliasing conflicts.
+	IsExtractedArg bool
+
+	// ExtractedName is the temporary variable name for IsExtractedArg (e.g., "__mv0").
+	ExtractedName string
+
+	// IsElementCopy marks a collection element access that already produced an owned
+	// copy of the value. No additional copy is needed.
+	IsElementCopy bool
+
+	// NeedReturnCopy marks a return value that must be copied to avoid consuming a
+	// value that is still referenced by later return values in a multi-value return.
+	NeedReturnCopy bool
+
+	// TempExtractions holds args to extract to temp vars before assignment.
+	TempExtractions []TempExtraction
 }
 
 // IRNode represents a single token with its type and content
@@ -259,6 +312,91 @@ func LeafTag(tokenType IRNodeType, content string, tag int) IRNode {
 		Content: content,
 		Tag:     tag,
 	}
+}
+
+// collectToNode merges a forest of tokens into a single IRNode.
+// If the forest has one token, returns it directly. If multiple, wraps in an IRTree.
+// If empty, returns an empty Identifier leaf.
+func collectToNode(tokens []IRNode) IRNode {
+	if len(tokens) == 0 {
+		return Leaf(Identifier, "")
+	}
+	if len(tokens) == 1 {
+		return tokens[0]
+	}
+	return IRTree(Identifier, KindExpr, tokens...)
+}
+
+// stripLeadingWhitespace returns a copy of the node with any leading WhiteSpace
+// children removed. Used for else-if chain formatting where leading indent is stripped.
+func stripLeadingWhitespace(node IRNode) IRNode {
+	if len(node.Children) == 0 {
+		// Leaf node: strip leading whitespace from content
+		trimmed := strings.TrimLeft(node.Content, " \t\n")
+		return Leaf(node.Type, trimmed)
+	}
+	// Tree node: skip leading WhiteSpace children
+	start := 0
+	for start < len(node.Children) && node.Children[start].Type == WhiteSpace {
+		start++
+	}
+	if start == 0 {
+		return node
+	}
+	result := node
+	result.Children = make([]IRNode, len(node.Children)-start)
+	copy(result.Children, node.Children[start:])
+	result.Content = result.Serialize()
+	return result
+}
+
+// extractBlockChildren returns the inner children of a BlockStatement node,
+// stripping the opening { + \n and closing indent + }.
+// This preserves tree structure instead of flattening to a string.
+func extractBlockChildren(bodyNode IRNode) []IRNode {
+	ch := bodyNode.Children
+	if len(ch) == 0 {
+		return nil
+	}
+	// Find start: skip LeftBrace and following NewLine
+	start := 0
+	for start < len(ch) && (ch[start].Type == LeftBrace || ch[start].Type == NewLine) {
+		start++
+	}
+	// Find end: skip trailing RightBrace and preceding WhiteSpace
+	end := len(ch)
+	if end > 0 && ch[end-1].Type == RightBrace {
+		end--
+	}
+	if end > 0 && ch[end-1].Type == WhiteSpace {
+		end--
+	}
+	if start >= end {
+		return nil
+	}
+	return ch[start:end]
+}
+
+// injectIntoBlock inserts extra nodes at the beginning of a block body
+// (after the opening { and \n), preserving the tree structure.
+func injectIntoBlock(blockNode IRNode, extraNodes ...IRNode) IRNode {
+	ch := blockNode.Children
+	if len(ch) == 0 {
+		return blockNode
+	}
+	// Find insertion point: after { and \n
+	insertIdx := 0
+	for insertIdx < len(ch) && (ch[insertIdx].Type == LeftBrace || ch[insertIdx].Type == NewLine) {
+		insertIdx++
+	}
+	newChildren := make([]IRNode, 0, len(ch)+len(extraNodes))
+	newChildren = append(newChildren, ch[:insertIdx]...)
+	newChildren = append(newChildren, extraNodes...)
+	newChildren = append(newChildren, ch[insertIdx:]...)
+	result := blockNode
+	result.Children = newChildren
+	result.Content = result.Serialize()
+	return result
 }
 
 // IRNodeTypeNames provides string representations for token types
@@ -375,6 +513,7 @@ var IRNodeTypeNames = map[IRNodeType]string{
 	ChanTypeNode:      "ChanTypeNode",
 	ScopeNode:         "ScopeNode",
 	Preamble:          "Preamble",
+	MultiNode:         "MultiNode",
 }
 
 // String returns the string representation of a IRNodeType
