@@ -1480,7 +1480,7 @@ func (e *CSharpEmitter) PostVisitCompositeLitElts(node []ast.Expr, indent int) {
 	eltTokens := e.fs.CollectForest(string(PreVisitCompositeLitElts))
 	for _, t := range eltTokens {
 		if t.Serialize() != "" {
-			e.fs.AddLeaf(t.Serialize(), TagLiteral, nil)
+			e.fs.AddTree(t)
 		}
 	}
 }
@@ -1514,14 +1514,27 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 		if len(node.Elts) > 0 {
 			if _, isKV := node.Elts[0].(*ast.KeyValueExpr); isKV {
 				kvMap := make(map[string]string)
-				for _, elt := range elts {
-					parts := strings.SplitN(elt, ": ", 2)
-					if len(parts) == 2 {
-						key := parts[0]
+				kvNodeMap := make(map[string]IRNode) // preserves tree structure (OptCallArg metadata)
+				for _, t := range tokens {
+					// KV tree: Children[0]=key, Children[1]=": ", Children[2]=value
+					if t.Type == KeyValueExpression && len(t.Children) >= 3 {
+						key := t.Children[0].Serialize()
 						if dotIdx := strings.LastIndex(key, "."); dotIdx >= 0 {
 							key = key[dotIdx+1:]
 						}
-						kvMap[key] = parts[1]
+						kvMap[key] = t.Children[2].Serialize()
+						kvNodeMap[key] = t.Children[2]
+					} else {
+						// Fallback: parse from serialized string
+						s := t.Serialize()
+						parts := strings.SplitN(s, ": ", 2)
+						if len(parts) == 2 {
+							key := parts[0]
+							if dotIdx := strings.LastIndex(key, "."); dotIdx >= 0 {
+								key = key[dotIdx+1:]
+							}
+							kvMap[key] = parts[1]
+						}
 					}
 				}
 				var children []IRNode
@@ -1532,13 +1545,18 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 				first := true
 				for i := 0; i < u.NumFields(); i++ {
 					fieldName := u.Field(i).Name()
-					if val, ok := kvMap[fieldName]; ok {
+					if _, ok := kvMap[fieldName]; ok {
 						if !first {
 							children = append(children, Leaf(Comma, ", "))
 						}
 						children = append(children, Leaf(Identifier, fieldName))
 						children = append(children, Leaf(Assignment, " = "))
-						children = append(children, Leaf(Identifier, val))
+						// Use tree node to preserve OptCallArg metadata
+						if valNode, ok := kvNodeMap[fieldName]; ok {
+							children = append(children, valNode)
+						} else {
+							children = append(children, Leaf(Identifier, kvMap[fieldName]))
+						}
 						first = false
 					}
 				}
@@ -1561,7 +1579,12 @@ func (e *CSharpEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int
 			if i < u.NumFields() {
 				children = append(children, Leaf(Identifier, u.Field(i).Name()))
 				children = append(children, Leaf(Assignment, " = "))
-				children = append(children, Leaf(Identifier, elt))
+				// Use tree node to preserve OptCallArg metadata
+				if i < len(tokens) {
+					children = append(children, tokens[i])
+				} else {
+					children = append(children, Leaf(Identifier, elt))
+				}
 			}
 		}
 		children = append(children, Leaf(WhiteSpace, " "))
@@ -1681,15 +1704,18 @@ func (e *CSharpEmitter) PostVisitKeyValueExprValue(node ast.Expr, indent int) {
 
 func (e *CSharpEmitter) PostVisitKeyValueExpr(node *ast.KeyValueExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitKeyValueExpr))
-	keyCode := ""
-	valCode := ""
+	keyNode := Leaf(Identifier, "")
+	valNode := Leaf(Identifier, "")
 	if len(tokens) >= 1 {
-		keyCode = tokens[0].Serialize()
+		keyNode = tokens[0]
 	}
 	if len(tokens) >= 2 {
-		valCode = tokens[1].Serialize()
+		valNode = tokens[1]
 	}
-	e.fs.AddTree(IRTree(KeyValueExpression, KindExpr, Leaf(Identifier, keyCode+": "+valCode)))
+	// Preserve key and value as separate children so PostVisitCompositeLit
+	// can extract the value tree node (preserving OptCallArg metadata).
+	// Children: [0]=key, [1]=": ", [2]=value
+	e.fs.AddTree(IRTree(KeyValueExpression, KindExpr, keyNode, Leaf(Colon, ": "), valNode))
 }
 
 // ============================================================
