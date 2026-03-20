@@ -527,6 +527,29 @@ func (e *CppEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 				e.refOptReadOnly.FuncsAsValues[k] = v
 			}
 		}
+		// Emit synthetic OptFuncParam nodes for cross-package functions
+		for key, flags := range e.refOptReadOnly.ReadOnly {
+			if strings.HasPrefix(key, pkg.Name+".") {
+				continue
+			}
+			mutFlags := e.refOptReadOnly.MutRef[key]
+			for i, ro := range flags {
+				isMut := mutFlags != nil && i < len(mutFlags) && mutFlags[i]
+				if !ro && !isMut {
+					continue
+				}
+				e.fs.AddTree(IRNode{
+					Type: Identifier,
+					OptMeta: &OptMeta{
+						Kind:       OptFuncParam,
+						FuncKey:    key,
+						ParamIndex: i,
+						IsReadOnly: ro,
+						IsMutRef:   isMut,
+					},
+				})
+			}
+		}
 	}
 	if pkg.Name != "main" {
 		e.inNamespace = true

@@ -231,10 +231,6 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 
 	// Build the hashMapGet chain to read the slice
 	getExpr := fmt.Sprintf("%s.clone()", rootMapName)
-	if e.Opt.OptimizeRefs {
-		getExpr = "&" + rootMapName
-		e.Opt.RefOptPass.TransformCount++
-	}
 	for i, lvl := range levels {
 		castType := "hmap::HashMap"
 		if i == len(levels)-1 {
@@ -242,12 +238,7 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 		}
 		innerGetExpr := fmt.Sprintf("hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone()",
 			getExpr, lvl.keyExpr, castType)
-		if e.Opt.OptimizeRefs && i < len(levels)-1 {
-			getExpr = "&" + innerGetExpr
-			e.Opt.RefOptPass.TransformCount++
-		} else {
-			getExpr = innerGetExpr
-		}
+		getExpr = innerGetExpr
 	}
 	sb.WriteString(fmt.Sprintf("%slet mut %s = %s;\n", ind, sliceTempVar, getExpr))
 
@@ -269,20 +260,12 @@ func (e *RustEmitter) emitMapSliceAssign(outerIdx *ast.IndexExpr, rhsStr string,
 		tempVars := make([]string, len(levels))
 		// Extract maps from outermost to one-before-innermost
 		extractExpr := fmt.Sprintf("%s.clone()", rootMapName)
-		if e.Opt.OptimizeRefs {
-			extractExpr = "&" + rootMapName
-			e.Opt.RefOptPass.TransformCount++
-		}
 		for i := 0; i < len(levels)-1; i++ {
 			e.nestedMapCounter++
 			tempVars[i] = fmt.Sprintf("__temp_%d", e.nestedMapCounter)
 			sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<hmap::HashMap>().unwrap().clone();\n",
 				ind, tempVars[i], extractExpr, levels[i].keyExpr))
 			extractExpr = fmt.Sprintf("%s.clone()", tempVars[i])
-			if e.Opt.OptimizeRefs {
-				extractExpr = "&" + tempVars[i]
-				e.Opt.RefOptPass.TransformCount++
-			}
 		}
 		// Set slice into innermost map
 		innermostMap := tempVars[len(levels)-2]
@@ -384,10 +367,6 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 
 	// Extract from root map
 	rootMapRef := rootMapName + ".clone()"
-	if e.Opt.OptimizeRefs {
-		rootMapRef = "&" + rootMapName
-		e.Opt.RefOptPass.TransformCount++
-	}
 	sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
 		ind, tempVar, rootMapRef, rootKeyExpr, rootValType))
 
@@ -414,10 +393,6 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 					e.nestedMapCounter++
 					innerTemp := fmt.Sprintf("__temp_%d", e.nestedMapCounter)
 					intermMapRef := indexPrefix + ".clone()"
-					if e.Opt.OptimizeRefs {
-						intermMapRef = "&" + indexPrefix
-						e.Opt.RefOptPass.TransformCount++
-					}
 					sb.WriteString(fmt.Sprintf("%slet mut %s = hmap::hashMapGet(%s, %s).downcast_ref::<%s>().unwrap().clone();\n",
 						ind, innerTemp, intermMapRef, intermKeyExpr, intermValType))
 					indexPrefix = innerTemp
@@ -1071,8 +1046,31 @@ func (e *RustEmitter) PreVisitPackage(pkg *packages.Package, indent int) {
 
 	if e.Opt.OptimizeRefs {
 		e.Opt.AccumulateReadOnlyAnalysis(pkg)
-		if e.Opt.RefOptPass != nil {
-			e.Opt.RefOptPass.Analysis = e.Opt.refOptReadOnly
+		// Emit synthetic OptFuncParam nodes for cross-package functions
+		// so RefOptPass Phase 1 collects them from the tree (no Analysis needed)
+		if e.Opt.refOptReadOnly != nil {
+			for key, flags := range e.Opt.refOptReadOnly.ReadOnly {
+				if strings.HasPrefix(key, pkg.Name+".") {
+					continue // local — covered by real param nodes
+				}
+				mutFlags := e.Opt.refOptReadOnly.MutRef[key]
+				for i, ro := range flags {
+					isMut := mutFlags != nil && i < len(mutFlags) && mutFlags[i]
+					if !ro && !isMut {
+						continue
+					}
+					e.fs.AddTree(IRNode{
+						Type: Identifier,
+						OptMeta: &OptMeta{
+							Kind:       OptFuncParam,
+							FuncKey:    key,
+							ParamIndex: i,
+							IsReadOnly: ro,
+							IsMutRef:   isMut,
+						},
+					})
+				}
+			}
 		}
 	}
 

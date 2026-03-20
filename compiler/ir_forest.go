@@ -57,7 +57,7 @@ func (fb *IRForestBuilder) AddTree(token IRNode) {
 	if len(token.Children) > 0 && token.Content == "" {
 		token.Content = token.Serialize()
 	}
-	if token.Content == "" {
+	if token.Content == "" && token.OptMeta == nil {
 		return
 	}
 	top := &fb.stack[len(fb.stack)-1]

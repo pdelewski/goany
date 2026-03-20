@@ -20,10 +20,9 @@ import (
 //   - C++:   Type name → const Type& name (read-only) or Type& name (mut-ref)
 //   - C#:    Type name → in Type name (read-only) or ref Type name (mut-ref)
 type RefOptPass struct {
-	Tag            int              // TagRust, TagCpp, TagCSharp
-	Enabled        bool             // when false, Transform is a no-op (coexists with inline ref-opt)
-	TransformCount int              // number of nodes transformed by the pass
-	Analysis       *ReadOnlyAnalysis // cross-package read-only/mut-ref data (set by emitter)
+	Tag            int  // TagRust, TagCpp, TagCSharp
+	Enabled        bool // when false, Transform is a no-op (coexists with inline ref-opt)
+	TransformCount int  // number of nodes transformed by the pass
 }
 
 func (p *RefOptPass) Name() string { return "RefOpt" }
@@ -35,34 +34,9 @@ func (p *RefOptPass) Transform(root IRNode) IRNode {
 	}
 
 	// Phase 1: Collect function param info from OptFuncParam annotations
+	// (includes both local params and synthetic cross-package nodes emitted by emitters)
 	funcParams := make(map[string][]paramInfo) // funcKey → params
 	p.collectFuncParams(root, funcParams)
-
-	// Phase 1b: Seed funcParams from cross-package ReadOnlyAnalysis
-	// OptFuncParam annotations only exist for functions defined in the current
-	// file's IR tree. For cross-package calls, the callee's params are in a
-	// different tree. Use the accumulated ReadOnlyAnalysis to fill in the gaps.
-	if p.Analysis != nil {
-		for key, flags := range p.Analysis.ReadOnly {
-			if _, exists := funcParams[key]; exists {
-				continue // already have from tree annotations
-			}
-			mutFlags := p.Analysis.MutRef[key]
-			for i, ro := range flags {
-				isMut := false
-				if mutFlags != nil && i < len(mutFlags) {
-					isMut = mutFlags[i]
-				}
-				if ro || isMut {
-					funcParams[key] = append(funcParams[key], paramInfo{
-						ParamIndex: i,
-						IsReadOnly: ro,
-						IsMutRef:   isMut,
-					})
-				}
-			}
-		}
-	}
 
 	// Phase 2: Transform param nodes and call arg nodes
 	return p.transformTree(root, funcParams)
@@ -115,6 +89,8 @@ func (p *RefOptPass) transformTree(node IRNode, funcParams map[string][]paramInf
 			node = p.transformParam(node)
 		case OptCallArg:
 			node = p.transformCallArg(node, funcParams)
+		case OptMapOp:
+			node = p.transformMapOp(node)
 		}
 	}
 
@@ -125,6 +101,10 @@ func (p *RefOptPass) transformTree(node IRNode, funcParams map[string][]paramInf
 func (p *RefOptPass) transformParam(node IRNode) IRNode {
 	m := node.OptMeta
 	if !m.IsReadOnly && !m.IsMutRef {
+		return node
+	}
+	// Skip synthetic metadata-only nodes (no actual param to transform)
+	if m.ParamName == "" {
 		return node
 	}
 
@@ -222,6 +202,64 @@ func (p *RefOptPass) transformCSharpParam(node IRNode) IRNode {
 		}
 		node.Content = node.Serialize()
 	}
+	return node
+}
+
+// transformMapOp replaces mapVar.clone() with &mapVar as the first argument
+// to hmap:: read functions (hashMapGet, hashMapLen, hashMapContains, hashMapKeys).
+func (p *RefOptPass) transformMapOp(node IRNode) IRNode {
+	if p.Tag != TagRust {
+		return node
+	}
+	content := node.Content
+	fns := []string{"hmap::hashMapGet(", "hmap::hashMapLen(", "hmap::hashMapContains(", "hmap::hashMapKeys("}
+	changed := true
+	for changed {
+		changed = false
+		for _, fn := range fns {
+			searchFrom := 0
+			for {
+				idx := strings.Index(content[searchFrom:], fn)
+				if idx < 0 {
+					break
+				}
+				argStart := searchFrom + idx + len(fn)
+				// Find end of first argument by tracking paren depth
+				depth := 1
+				pos := argStart
+				for pos < len(content) {
+					ch := content[pos]
+					if ch == '(' {
+						depth++
+					}
+					if ch == ')' {
+						depth--
+					}
+					if depth == 1 && ch == ',' {
+						break
+					}
+					if depth == 0 {
+						break
+					}
+					pos++
+				}
+				firstArg := content[argStart:pos]
+				if strings.HasSuffix(firstArg, ".clone()") {
+					varPart := firstArg[:len(firstArg)-len(".clone()")]
+					content = content[:argStart] + "&" + varPart + content[pos:]
+					p.TransformCount++
+					changed = true
+					break // restart all searches since content changed
+				}
+				searchFrom = argStart
+			}
+			if changed {
+				break
+			}
+		}
+	}
+	node.Content = content
+	node.Children = nil
 	return node
 }
 

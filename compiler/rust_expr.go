@@ -307,18 +307,14 @@ func (e *RustEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 	// Save current callee state before overwriting (for nested calls)
 	e.Opt.calleeNameStack = append(e.Opt.calleeNameStack, e.Opt.currentCalleeName)
 	e.Opt.calleeKeyStack = append(e.Opt.calleeKeyStack, e.Opt.currentCalleeKey)
-	e.Opt.callIsLenStack = append(e.Opt.callIsLenStack, e.Opt.currentCallIsLen)
 
 	// Track callee name and push read-only flags for ref optimization
 	if ident, ok := node.(*ast.Ident); ok {
 		e.Opt.currentCalleeName = ident.Name
-		e.Opt.currentCallIsLen = (ident.Name == "len")
 	} else if sel, ok := node.(*ast.SelectorExpr); ok {
 		e.Opt.currentCalleeName = sel.Sel.Name
-		e.Opt.currentCallIsLen = false
 	} else {
 		e.Opt.currentCalleeName = ""
-		e.Opt.currentCallIsLen = false
 	}
 
 	// Track callee key for OptMeta annotations on call args
@@ -356,12 +352,6 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 	if e.Opt.memTakeActive && index == e.Opt.memTakeArgIdx && len(e.Opt.currentCallArgIdentsStack) <= 1 {
 		argNode.OptMeta = &OptMeta{IsReassignedSource: true, ReassignedExpr: e.Opt.memTakeLhsExpr}
 		e.Opt.MoveOptCount++
-		e.fs.AddTree(argNode)
-		return
-	}
-
-	// len() is read-only — skip all cloning for its arguments
-	if e.Opt.currentCallIsLen && e.Opt.OptimizeMoves {
 		e.fs.AddTree(argNode)
 		return
 	}
@@ -468,11 +458,8 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 			e.Opt.calleeNameStack = e.Opt.calleeNameStack[:n-1]
 			e.Opt.currentCalleeKey = e.Opt.calleeKeyStack[n-1]
 			e.Opt.calleeKeyStack = e.Opt.calleeKeyStack[:n-1]
-			e.Opt.currentCallIsLen = e.Opt.callIsLenStack[n-1]
-			e.Opt.callIsLenStack = e.Opt.callIsLenStack[:n-1]
 		} else {
 			e.Opt.currentCalleeName = ""
-			e.Opt.currentCallIsLen = false
 			e.Opt.currentCalleeKey = ""
 		}
 	}()
@@ -496,27 +483,14 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	case "len":
 		if len(node.Args) > 0 {
 			if e.isMapTypeExpr(node.Args[0]) {
-				if e.Opt.OptimizeRefs {
-					// Ref opt: use &map instead of map.clone()
-					e.fs.AddTree(IRTree(CallExpression, KindExpr,
-						Leaf(Identifier, "hmap::hashMapLen"),
-						Leaf(LeftParen, "("),
-						Leaf(Identifier, "&"+argsStr),
-						Leaf(RightParen, ")"),
-					))
-					e.Opt.RefOptPass.TransformCount++
-				} else {
-					e.fs.AddTree(IRTree(CallExpression, KindExpr,
-						Leaf(Identifier, "hmap::hashMapLen"),
-						Leaf(LeftParen, "("),
-						Leaf(Identifier, argsStr),
-						Leaf(Dot, "."),
-						Leaf(Identifier, "clone"),
-						Leaf(LeftParen, "("),
-						Leaf(RightParen, ")"),
-						Leaf(RightParen, ")"),
-					))
-				}
+				lenNode := IRTree(CallExpression, KindExpr,
+					Leaf(Identifier, "hmap::hashMapLen"),
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, argsStr+".clone()"),
+					Leaf(RightParen, ")"),
+				)
+				lenNode.OptMeta = &OptMeta{Kind: OptMapOp}
+				e.fs.AddTree(lenNode)
 				return
 			}
 			// Check for string len
@@ -927,8 +901,10 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitIndexExpr))
 	xCode := ""
 	idxCode := ""
+	xNode := Leaf(Identifier, "")
 	if len(tokens) >= 1 {
 		xCode = tokens[0].Serialize()
+		xNode = tokens[0]
 	}
 	if len(tokens) >= 2 {
 		idxCode = tokens[1].Serialize()
@@ -958,10 +934,6 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			castExpr = fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType)
 		}
 		mapRef := xCode + ".clone()"
-		if e.Opt.OptimizeRefs {
-			mapRef = "&" + xCode
-			e.Opt.RefOptPass.TransformCount++
-		}
 		token := IRTree(IndexExpression, KindExpr,
 			Leaf(Identifier, "hmap::hashMapGet"),
 			Leaf(LeftParen, "("),
@@ -973,6 +945,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			Leaf(Identifier, castExpr),
 		)
 		token.GoType = e.getExprGoType(node)
+		token.OptMeta = &OptMeta{Kind: OptMapOp}
 		e.fs.AddTree(token)
 	} else {
 		// Check for string indexing
@@ -980,7 +953,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		if xType != nil {
 			if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 				e.fs.AddTree(IRTree(IndexExpression, KindExpr,
-					Leaf(Identifier, xCode),
+					xNode,
 					Leaf(Dot, "."),
 					Leaf(Identifier, "as_bytes"),
 					Leaf(LeftParen, "("),
@@ -1006,7 +979,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		elemType := e.getExprGoType(node)
 		if elemType != nil && !isCopyType(elemType) && !e.inAssignLhs {
 			e.fs.AddTree(IRTree(IndexExpression, KindExpr,
-				Leaf(Identifier, xCode),
+				xNode,
 				Leaf(LeftBracket, "["),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, idxCode),
@@ -1026,7 +999,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			}
 		} else {
 			e.fs.AddTree(IRTree(IndexExpression, KindExpr,
-				Leaf(Identifier, xCode),
+				xNode,
 				Leaf(LeftBracket, "["),
 				Leaf(LeftParen, "("),
 				Leaf(Identifier, idxCode),

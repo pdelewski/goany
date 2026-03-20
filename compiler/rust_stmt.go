@@ -130,10 +130,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 			e.Opt.currentCallArgIdentsStack = e.Opt.currentCallArgIdentsStack[:len(e.Opt.currentCallArgIdentsStack)-1]
 		}
 		e.Opt.moveOptActive = false
-		e.Opt.moveOptTempBindings = nil
-		e.Opt.moveOptArgReplacements = nil
 		e.Opt.moveOptModifiedCounts = nil
-		e.Opt.moveOptCallExts = nil
 		e.Opt.moveOptTempExtractions = nil
 		e.Opt.memTakeActive = false
 		e.Opt.memTakeLhsExpr = ""
@@ -191,7 +188,9 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		if outerIdx, ok := node.Lhs[0].(*ast.IndexExpr); ok {
 			code := e.emitMapSliceAssign(outerIdx, rhsStr, ind)
 			if code != "" {
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt, Leaf(Identifier, code)))
+				mapSliceNode := IRTree(AssignStatement, KindStmt, Leaf(Identifier, code))
+				mapSliceNode.OptMeta = &OptMeta{Kind: OptMapOp}
+				e.fs.AddTree(mapSliceNode)
 				e.mapAssignVar = ""
 				e.mapAssignKey = ""
 				return
@@ -202,7 +201,9 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Map assignment: m[k] = v -> m = hmap::hashMapSet(m, Rc::new(k), Rc::new(v))
 	if e.mapAssignVar != "" && e.mapAssignKey != "" {
 		code := e.emitMapAssign(node, rhsStr, ind)
-		e.fs.AddTree(IRTree(AssignStatement, KindStmt, Leaf(Identifier, code)))
+		mapAssignNode := IRTree(AssignStatement, KindStmt, Leaf(Identifier, code))
+		mapAssignNode.OptMeta = &OptMeta{Kind: OptMapOp}
+		e.fs.AddTree(mapAssignNode)
 		e.mapAssignVar = ""
 		e.mapAssignKey = ""
 		return
@@ -243,12 +244,9 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 
 				mapRef := mapName + ".clone()"
-				if e.Opt.OptimizeRefs {
-					mapRef = "&" + mapName
-					e.Opt.RefOptPass.TransformCount += 2 // hashMapContains + hashMapGet
-				}
+				mapOptMeta := &OptMeta{Kind: OptMapOp}
 				if tokStr == ":=" {
-					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					containsNode := IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						LeafTag(Keyword, "let", TagRust),
 						Leaf(WhiteSpace, " "),
@@ -261,8 +259,10 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(Identifier, "hmap::hashMapContains("+mapRef+", "+keyExpr+")"),
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
-					))
-					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					)
+					containsNode.OptMeta = mapOptMeta
+					e.fs.AddTree(containsNode)
+					getNode := IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						LeafTag(Keyword, "let", TagRust),
 						Leaf(WhiteSpace, " "),
@@ -291,9 +291,11 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(RightBrace, "}"),
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
-					))
+					)
+					getNode.OptMeta = mapOptMeta
+					e.fs.AddTree(getNode)
 				} else {
-					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					containsNode := IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, okName),
 						Leaf(WhiteSpace, " "),
@@ -302,8 +304,10 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(Identifier, "hmap::hashMapContains("+mapRef+", "+keyExpr+")"),
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
-					))
-					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+					)
+					containsNode.OptMeta = mapOptMeta
+					e.fs.AddTree(containsNode)
+					getNode := IRTree(AssignStatement, KindStmt,
 						Leaf(WhiteSpace, ind),
 						Leaf(Identifier, valName),
 						Leaf(WhiteSpace, " "),
@@ -328,7 +332,9 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 						Leaf(RightBrace, "}"),
 						Leaf(Semicolon, ";"),
 						Leaf(NewLine, "\n"),
-					))
+					)
+					getNode.OptMeta = mapOptMeta
+					e.fs.AddTree(getNode)
 				}
 				return
 			}
@@ -1640,10 +1646,6 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 		}
 
 		mapKeysRef := xCode + ".clone()"
-		if e.Opt.OptimizeRefs {
-			mapKeysRef = "&" + xCode
-			e.Opt.RefOptPass.TransformCount++
-		}
 		ind4 := ind + "    "
 		ind8 := ind + "        "
 		var children []IRNode
@@ -1752,7 +1754,9 @@ func (e *RustEmitter) PostVisitRangeStmt(node *ast.RangeStmt, indent int) {
 			Leaf(RightBrace, "}"),
 			Leaf(NewLine, "\n"),
 		)
-		e.fs.AddTree(IRTree(RangeStatement, KindStmt, children...))
+		rangeNode := IRTree(RangeStatement, KindStmt, children...)
+		rangeNode.OptMeta = &OptMeta{Kind: OptMapOp}
+		e.fs.AddTree(rangeNode)
 		return
 	}
 
