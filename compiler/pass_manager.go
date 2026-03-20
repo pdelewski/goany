@@ -101,16 +101,6 @@ func (pm *PassManager) RunPasses() {
 
 		// Report IR pass stats
 		for _, irPass := range backend.IRPasses {
-			if cmp, ok := irPass.(*CloneMovePass); ok && cmp.TransformCount > 0 {
-				lang := ""
-				switch cmp.Tag {
-				case TagRust:
-					lang = "Rust"
-				case TagCpp:
-					lang = "C++"
-				}
-				fmt.Printf("  %s: %d clone/move(s) applied by CloneMovePass\n", lang, cmp.TransformCount)
-			}
 			if rop, ok := irPass.(*RefOptPass); ok && rop.TransformCount > 0 {
 				lang := ""
 				switch rop.Tag {
