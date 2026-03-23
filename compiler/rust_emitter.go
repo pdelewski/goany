@@ -1753,6 +1753,9 @@ edition = "2021"
 		}
 	}
 
+	// Go wraps on integer overflow; match that in Rust debug builds
+	cargoToml += "\n[profile.dev]\noverflow-checks = false\n"
+
 	_, err = file.WriteString(cargoToml)
 	return err
 }
