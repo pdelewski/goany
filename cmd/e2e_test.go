@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,38 +25,40 @@ type TestCase struct {
 	JsRunnable     bool // Can run with Node.js (false for graphics apps that need browser)
 	JavaEnabled    bool
 	JavaRunnable   bool // Can run standalone (false for apps that need special setup)
+	GoEnabled      bool
+	GoRunnable     bool // Can compile and run as Go (false for apps with runtime deps)
 }
 
 const runtimePath = "../runtime"
 
 var e2eTestCases = []TestCase{
-	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true},
-	{"containers", "../examples/containers", true, true, true, true, true, true, true, false},
-	{"uql", "../examples/uql", true, true, true, true, true, true, true, false},
-	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false},
-	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true},
-	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true},
-	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false},
-	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false},
-	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false},
-	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false},
-	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false},
-	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false},
-	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false},
-	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false},
-	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false},
-	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false},
-	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true},
-	{"gguf-demo", "../examples/gguf-demo", true, true, false, true, true, false, true, false},
-	{"llm-demo", "../examples/llm-demo", true, true, false, true, true, false, true, false},
-	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false},
-	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false},
-	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false},
-	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true},
-	{"method-receiver", "../tests/method-receiver", true, true, true, true, true, true, true, true},
-	{"ptr-escape", "../tests/ptr-escape", true, true, true, true, true, true, true, true},
-	{"rust-parser-demo", "../examples/rust-parser-demo", true, true, true, true, true, true, true, true},
-	{"graph-demo", "../examples/graph-demo", true, true, true, true, true, true, true, true},
+	{"lang-constructs", "../tests/lang-constructs", true, true, true, true, true, true, true, true, true, true},
+	{"containers", "../examples/containers", true, true, true, true, true, true, true, false, true, false},
+	{"uql", "../examples/uql", true, true, true, true, true, true, true, false, true, false},
+	{"ast-demo", "../examples/ast-demo", true, true, true, true, true, true, true, false, true, false},
+	{"python-parser-demo", "../examples/python-parser-demo", true, true, true, true, true, true, true, true, true, true},
+	{"go-parser-demo", "../examples/go-parser-demo", true, true, true, true, true, true, true, true, true, true},
+	{"graphics-minimal", "../examples/graphics-minimal", true, true, false, true, true, false, true, false, true, false},
+	{"graphics-demo", "../examples/graphics-demo", true, true, false, true, true, false, true, false, true, false},
+	{"gui-demo", "../examples/gui-demo", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-graphic", "../examples/mos6502/cmd/graphic", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-text", "../examples/mos6502/cmd/text", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-textscroll", "../examples/mos6502/cmd/textscroll", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-c64", "../examples/mos6502/cmd/c64", true, true, false, true, true, false, true, false, true, false},
+	{"mos6502-c64-v2", "../examples/mos6502/cmd/c64-v2", true, true, false, true, true, false, true, false, true, false},
+	{"http-client", "../examples/http/client", true, true, false, true, true, false, true, false, true, false},
+	{"http-server", "../examples/http/server", true, true, false, true, true, false, true, false, true, false},
+	{"fs-demo", "../examples/fs-demo", true, true, true, true, true, true, true, true, true, true},
+	{"gguf-demo", "../examples/gguf-demo", true, true, false, true, true, false, true, false, true, false},
+	{"llm-demo", "../examples/llm-demo", true, true, false, true, true, false, true, false, true, false},
+	{"net-demo", "../examples/net/demo", true, true, false, true, true, false, true, false, true, false},
+	{"net-echo-server", "../examples/net/echo-server", true, true, false, true, true, false, true, false, true, false},
+	{"net-echo-client", "../examples/net/echo-client", true, true, false, true, true, false, true, false, true, false},
+	{"python-interp-demo", "../examples/python-interp-demo", true, true, true, true, true, true, true, true, true, true},
+	{"method-receiver", "../tests/method-receiver", true, true, true, true, true, true, true, true, true, true},
+	{"ptr-escape", "../tests/ptr-escape", true, true, true, true, true, true, true, true, true, true},
+	{"rust-parser-demo", "../examples/rust-parser-demo", true, true, true, true, true, true, true, true, true, true},
+	{"graph-demo", "../examples/graph-demo", true, true, true, true, true, true, true, true, true, true},
 }
 
 func TestE2E(t *testing.T) {
@@ -119,6 +122,9 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 	}
 	if tc.JavaEnabled {
 		optInBackends = append(optInBackends, "java")
+	}
+	if tc.GoEnabled {
+		optInBackends = append(optInBackends, "go")
 	}
 	if len(optInBackends) > 0 {
 		args = append(args, fmt.Sprintf("--backend=all,%s", joinStrings(optInBackends, ",")))
@@ -232,6 +238,35 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 				t.Fatalf("Java execution failed: %v\nOutput: %s", err, output)
 			}
 			t.Logf("Java execution output: %s", output)
+		}
+	}
+
+	// Step 7: Compile and run Go (go.mod is generated by the emitter)
+	if tc.GoEnabled {
+		goGenFile := filepath.Join(outputDir, tc.Name+"_gen.go")
+		goExeSuffix := ""
+		if runtime.GOOS == "windows" {
+			goExeSuffix = ".exe"
+		}
+		goBinary := filepath.Join(outputDir, tc.Name+"_go"+goExeSuffix)
+		t.Logf("Compiling Go for %s", tc.Name)
+		cmd = exec.Command("go", "build", "-o", goBinary, goGenFile)
+		cmd.Dir = outputDir
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Go compilation failed: %v\nOutput: %s", err, output)
+		}
+		t.Logf("Go compilation output: %s", output)
+
+		if tc.GoRunnable {
+			t.Logf("Running Go for %s", tc.Name)
+			cmd = exec.Command(goBinary)
+			cmd.Dir = outputDir
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("Go execution failed: %v\nOutput: %s", err, output)
+			}
+			t.Logf("Go execution output: %s", output)
 		}
 	}
 

@@ -131,6 +131,7 @@ func main() {
 	useRust := useAll || backendSet["rust"]
 	useJs := backendSet["js"]             // JS is opt-in, not included in "all"
 	useJava := backendSet["java"] // Java is opt-in, not included in "all"
+	useGo := backendSet["go"]             // Go is opt-in, not included in "all"
 
 	// Build shared frontend passes
 	var frontendPasses []compiler.FrontendPass
@@ -271,6 +272,20 @@ func main() {
 			}},
 		})
 		programFiles = append(programFiles, "java")
+	}
+	if useGo {
+		backendPipelines = append(backendPipelines, compiler.BackendPipeline{
+			CodeGen: &compiler.BasePass{PassName: "GoGen", Emitter: &compiler.GoEmitter{
+				Emitter:         &compiler.BaseEmitter{},
+				Output:          output + "_gen.go",
+				LinkRuntime:     linkRuntime,
+				RuntimePackages: runtimePackages,
+				Pkgs:            allPkgs,
+				OutputDir:       outputDir,
+				OutputName:      outputName,
+			}},
+		})
+		programFiles = append(programFiles, "go")
 	}
 	passManager := &compiler.PassManager{
 		Pkgs:           allPkgs,
