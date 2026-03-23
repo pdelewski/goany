@@ -2,6 +2,8 @@ package gomath
 
 /*
 #cgo CFLAGS: -O3
+#cgo linux LDFLAGS: -lm
+#cgo windows LDFLAGS: -lm
 #include "../c/math_simd.h"
 */
 import "C"
