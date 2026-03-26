@@ -9,7 +9,7 @@ import (
 )
 
 // MethodReceiverLoweringPass transforms method declarations and method calls
-// into standalone functions. This runs between SemaChecker and PointerTransformPass.
+// into standalone functions. This runs between SemaChecker and PointerLoweringPass.
 //
 // Example:
 //
@@ -216,7 +216,7 @@ func (v *methodLoweringVisitor) rewriteCallSites(block *ast.BlockStmt) {
 		newFunIdent := &ast.Ident{Name: info.loweredName}
 		call.Fun = newFunIdent
 
-		// Register in TypesInfo.Uses so PointerTransformPass can find the function
+		// Register in TypesInfo.Uses so PointerLoweringPass can find the function
 		if info.funcObj != nil {
 			v.pkg.TypesInfo.Uses[newFunIdent] = info.funcObj
 		}

@@ -70,7 +70,7 @@ type SemaValidTestCase struct {
 }
 
 var semaValidTestCases = []SemaValidTestCase{
-	// Patterns now handled by CanonicalizePass transforms (previously sema errors)
+	// Patterns now handled by LangSemaLoweringPass transforms (previously sema errors)
 	{
 		Name: "iota_now_valid",
 		Code: `package main

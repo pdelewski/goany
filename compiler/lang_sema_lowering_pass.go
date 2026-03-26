@@ -10,7 +10,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// CanonicalizePass rewrites Go AST patterns that lack direct equivalents
+// LangSemaLoweringPass rewrites Go AST patterns that lack direct equivalents
 // in one or more target backends. It runs between the first SemaChecker
 // and MethodReceiverLoweringPass.
 //
@@ -24,21 +24,21 @@ import (
 //   - ShadowingRename       (C# forbids variable shadowing in same function)
 //   - FieldNameConflict     (C++ -Wchanges-meaning when field name == type name)
 //   - RustOwnership         (Rust move/borrow semantics — 7 sub-patterns)
-type CanonicalizePass struct {
+type LangSemaLoweringPass struct {
 	Backends BackendSet
 }
 
-func (p *CanonicalizePass) Name() string { return "Canonicalize" }
-func (p *CanonicalizePass) ProLog()      {}
-func (p *CanonicalizePass) EpiLog()      {}
+func (p *LangSemaLoweringPass) Name() string { return "LangSemaLowering" }
+func (p *LangSemaLoweringPass) ProLog()      {}
+func (p *LangSemaLoweringPass) EpiLog()      {}
 
-func (p *CanonicalizePass) Visitors(pkg *packages.Package) []ast.Visitor {
+func (p *LangSemaLoweringPass) Visitors(pkg *packages.Package) []ast.Visitor {
 	return []ast.Visitor{&canonicalizeVisitor{pkg: pkg, backends: p.Backends}}
 }
 
-func (p *CanonicalizePass) PreVisit(visitor ast.Visitor) {}
+func (p *LangSemaLoweringPass) PreVisit(visitor ast.Visitor) {}
 
-func (p *CanonicalizePass) PostVisit(visitor ast.Visitor, visited map[string]struct{}) {
+func (p *LangSemaLoweringPass) PostVisit(visitor ast.Visitor, visited map[string]struct{}) {
 	v := visitor.(*canonicalizeVisitor)
 	v.transform()
 }

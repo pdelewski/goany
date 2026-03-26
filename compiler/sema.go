@@ -30,7 +30,7 @@ import (
 // - Type switch statements
 // - Package-level variable declarations
 //
-// Moved to CanonicalizePass transforms:
+// Moved to LangSemaLoweringPass transforms:
 // - Named return values → transformNamedReturns
 // - iota constant enumeration → transformIotaExpansion
 // - Variadic functions (...T) → transformVariadics
@@ -47,8 +47,8 @@ import (
 //
 // Note: Many Rust ownership checks (string reuse, slice self-reference,
 // same variable in multiple args/expressions, multiple closures) have been
-// moved to CanonicalizePass which rewrites the AST instead of rejecting.
-// Variable shadowing is also handled by CanonicalizePass.
+// moved to LangSemaLoweringPass which rewrites the AST instead of rejecting.
+// Variable shadowing is also handled by LangSemaLoweringPass.
 //
 // ============================================
 // SECTION 3: Supported with Limitations
@@ -540,7 +540,7 @@ func (sema *SemaChecker) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	}
 
 	// Named return values and variadic parameters are handled by
-	// CanonicalizePass transforms (transformNamedReturns, transformVariadics).
+	// LangSemaLoweringPass transforms (transformNamedReturns, transformVariadics).
 
 	// Check for mutable reference parameters (slice/map) not returned
 	// Skip runtime files — they're internal transpiler infrastructure with hardcoded calling conventions
@@ -599,13 +599,13 @@ func (sema *SemaChecker) PreVisitFuncDecl(node *ast.FuncDecl, indent int) {
 
 func (sema *SemaChecker) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
 	// iota and untyped const warnings are no longer needed here.
-	// CanonicalizePass.transformIotaExpansion handles iota expansion
+	// LangSemaLoweringPass.transformIotaExpansion handles iota expansion
 	// and sets explicit types for all iota-based constants.
 }
 
 func (sema *SemaChecker) PreVisitIdent(node *ast.Ident, indent int) {
-	// iota is handled by CanonicalizePass.transformIotaExpansion.
-	// String variable reuse is handled by CanonicalizePass.transformStringReuseAfterConcat.
+	// iota is handled by LangSemaLoweringPass.transformIotaExpansion.
+	// String variable reuse is handled by LangSemaLoweringPass.transformStringReuseAfterConcat.
 
 	// Block unsupported types
 	unsupportedTypes := map[string]string{
@@ -901,7 +901,7 @@ func (sema *SemaChecker) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	}
 
 	// Note: String concatenation consumption tracking has been moved to
-	// CanonicalizePass.transformStringReuseAfterConcat which rewrites the AST.
+	// LangSemaLoweringPass.transformStringReuseAfterConcat which rewrites the AST.
 }
 
 // PreVisitAssignStmt checks for problematic patterns like: x += x + a
@@ -909,7 +909,7 @@ func (sema *SemaChecker) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 // Also checks for slice self-assignment: slice[i] = slice[j]
 //
 // Note: Multi-assign split and variable shadowing checks have been moved
-// to the CanonicalizePass which rewrites the AST instead of rejecting.
+// to the LangSemaLoweringPass which rewrites the AST instead of rejecting.
 func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Track variables assigned &s.field (pointer to struct field)
 	if (node.Tok == token.DEFINE || node.Tok == token.ASSIGN) && len(node.Lhs) == 1 && len(node.Rhs) == 1 {
@@ -923,18 +923,18 @@ func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 
 	// Note: checkSliceSelfAssignment, self-ref concat, and checkBinaryExprWithSameVar
-	// have been moved to CanonicalizePass which rewrites the AST instead of rejecting.
+	// have been moved to LangSemaLoweringPass which rewrites the AST instead of rejecting.
 
 	// Check for mutation of variable after closure capture
 	sema.checkClosureCaptureMutation(node)
 }
 
 // Note: rhsContainsStringConcatWithVar and PostVisitAssignStmt have been removed.
-// Self-referencing string concatenation is now handled by CanonicalizePass.transformSelfRefConcat
-// and string reuse after concatenation by CanonicalizePass.transformStringReuseAfterConcat.
+// Self-referencing string concatenation is now handled by LangSemaLoweringPass.transformSelfRefConcat
+// and string reuse after concatenation by LangSemaLoweringPass.transformStringReuseAfterConcat.
 
 // Note: checkVariableShadowing has been removed.
-// Variable shadowing is now handled by CanonicalizePass.transformShadowedVars
+// Variable shadowing is now handled by LangSemaLoweringPass.transformShadowedVars
 // which renames the inner variable instead of rejecting the code.
 
 // PreVisitInterfaceType checks for interface types - only empty interface{} is supported
@@ -993,7 +993,7 @@ func (sema *SemaChecker) checkStructEmbedding(node *ast.StructType) {
 }
 
 // Note: checkFieldNameMatchesType has been removed.
-// Field name conflicts are now handled by CanonicalizePass.transformFieldConflicts
+// Field name conflicts are now handled by LangSemaLoweringPass.transformFieldConflicts
 // which renames the field instead of rejecting the code.
 
 // PreVisitTypeSwitchStmt checks for type switch statements (not supported)
@@ -1149,18 +1149,18 @@ func (sema *SemaChecker) collectCapturedIdentsForMutation(funcLit *ast.FuncLit) 
 }
 
 // Note: getDirectFunctionArgs has been removed from SemaChecker.
-// The equivalent is now in CanonicalizePass (canonicalize_pass.go).
+// The equivalent is now in LangSemaLoweringPass (lang_sema_lowering_pass.go).
 
 // Note: checkBinaryExprWithSameVar has been removed.
-// Same-variable binary expressions are now handled by CanonicalizePass.transformBinaryExprSameVar
+// Same-variable binary expressions are now handled by LangSemaLoweringPass.transformBinaryExprSameVar
 // which rewrites the AST instead of rejecting.
 
 // Note: checkNestedCallArgSharing has been removed.
-// Nested call sharing is now handled by CanonicalizePass.transformNestedCallSharing
+// Nested call sharing is now handled by LangSemaLoweringPass.transformNestedCallSharing
 // which rewrites the AST instead of rejecting.
 
 // Note: collectDirectCallArgIdents has been removed from SemaChecker.
-// The equivalent is now in CanonicalizePass (canonicalize_pass.go).
+// The equivalent is now in LangSemaLoweringPass (lang_sema_lowering_pass.go).
 
 // checkClosureCaptureMutation checks if a variable captured by a closure is mutated after capture
 func (sema *SemaChecker) checkClosureCaptureMutation(node *ast.AssignStmt) {
@@ -1204,19 +1204,19 @@ func (sema *SemaChecker) checkClosureCaptureMutation(node *ast.AssignStmt) {
 }
 
 // Note: checkSliceSelfAssignment has been removed.
-// Slice self-reference is now handled by CanonicalizePass.transformSliceSelfRef
+// Slice self-reference is now handled by LangSemaLoweringPass.transformSliceSelfRef
 // which rewrites the AST instead of rejecting.
 
 // Note: exprContainsSliceAccess has been removed from SemaChecker.
-// The equivalent is now in CanonicalizePass (canonicalize_pass.go).
+// The equivalent is now in LangSemaLoweringPass (lang_sema_lowering_pass.go).
 
 // Note: isCopyType has been removed from SemaChecker.
-// The equivalent is now in CanonicalizePass (canonicalize_pass.go).
+// The equivalent is now in LangSemaLoweringPass (lang_sema_lowering_pass.go).
 
 // PreVisitFuncLit tracks closure depth and captures for mutation-after-capture detection.
 //
 // Note: Multiple-closures-same-variable check has been moved to
-// CanonicalizePass.transformMultiClosureSameVar which rewrites the AST instead of rejecting.
+// LangSemaLoweringPass.transformMultiClosureSameVar which rewrites the AST instead of rejecting.
 func (sema *SemaChecker) PreVisitFuncLit(node *ast.FuncLit, indent int) {
 	// Track that we're inside a closure (for mutation-after-capture check)
 	sema.insideClosureDepth++
@@ -1302,5 +1302,5 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 	}
 
 	// Note: Same-variable-multiple-args and nested-call-sharing checks
-	// have been moved to CanonicalizePass which rewrites the AST instead of rejecting.
+	// have been moved to LangSemaLoweringPass which rewrites the AST instead of rejecting.
 }

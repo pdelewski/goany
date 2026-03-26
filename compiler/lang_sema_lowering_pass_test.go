@@ -14,7 +14,7 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// runCanonicalize parses Go source, type-checks it, runs the CanonicalizePass
+// runCanonicalize parses Go source, type-checks it, runs the LangSemaLoweringPass
 // with the given backends, and returns the transformed source as a string.
 func runCanonicalize(t *testing.T, src string, backends BackendSet) string {
 	t.Helper()
@@ -47,7 +47,7 @@ func runCanonicalize(t *testing.T, src string, backends BackendSet) string {
 		Types:     typePkg,
 	}
 
-	pass := &CanonicalizePass{Backends: backends}
+	pass := &LangSemaLoweringPass{Backends: backends}
 	visitors := pass.Visitors(pkg)
 	for _, visitor := range visitors {
 		pass.PreVisit(visitor)
