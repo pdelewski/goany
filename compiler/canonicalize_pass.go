@@ -69,6 +69,8 @@ func (v *canonicalizeVisitor) transform() {
 		v.transformNamedReturns(file)
 		v.transformIotaExpansion(file)
 		v.transformVariadics(file)
+		v.transformMakeCapacity(file)
+		v.transformIntegerRange(file)
 
 		// Backend-conditional transforms (preserve 1:1 where target supports it)
 		if v.backends.Has(BackendCpp) {
@@ -444,6 +446,131 @@ func (v *canonicalizeVisitor) transformVariadics(file *ast.File) {
 		}
 
 		return true
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Make Capacity Stripping
+// ---------------------------------------------------------------------------
+
+// transformMakeCapacity strips the capacity argument from make([]T, len, cap).
+//
+// Pattern matched:
+//
+//	make([]int, 5, 10)
+//
+// Why: No target language has a direct equivalent to Go's slice capacity hint.
+// The capacity is a performance optimization that doesn't affect semantics.
+//
+// Transform:
+//
+//	make([]int, 5, 10)  →  make([]int, 5)
+//
+// Skipped:
+//   - make(map[K]V) — maps don't have a 3rd arg
+//   - make([]T, n) — already 2-arg, nothing to strip
+func (v *canonicalizeVisitor) transformMakeCapacity(file *ast.File) {
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) != 3 {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok || ident.Name != "make" {
+			return true
+		}
+		// Only strip for slice types (not maps)
+		if _, ok := call.Args[0].(*ast.ArrayType); ok {
+			call.Args = call.Args[:2] // drop capacity arg
+		}
+		return true
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Integer Range Lowering
+// ---------------------------------------------------------------------------
+
+// transformIntegerRange lowers `for i := range N` (Go 1.22) to a classic
+// three-clause for loop.
+//
+// Pattern matched:
+//
+//	for i := range 10 { ... }
+//
+// Why: All emitters expect range over slices/maps/strings. An integer range
+// expression has no equivalent in target languages.
+//
+// Transform:
+//
+//	for i := range 10 { ... }  →  for i := 0; i < 10; i++ { ... }
+//	for range 5 { ... }       →  for _0 := 0; _0 < 5; _0++ { ... }
+func (v *canonicalizeVisitor) transformIntegerRange(file *ast.File) {
+	if v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+	v.applyBlockTransform(file, func(list *[]ast.Stmt) {
+		var newList []ast.Stmt
+		changed := false
+		for _, stmt := range *list {
+			rangeStmt, ok := stmt.(*ast.RangeStmt)
+			if !ok {
+				newList = append(newList, stmt)
+				continue
+			}
+			tv, ok := v.pkg.TypesInfo.Types[rangeStmt.X]
+			if !ok {
+				newList = append(newList, stmt)
+				continue
+			}
+			basic, ok := tv.Type.Underlying().(*types.Basic)
+			if !ok || basic.Info()&types.IsInteger == 0 {
+				newList = append(newList, stmt)
+				continue
+			}
+
+			// This is `for key := range N` — build a classic for loop
+			// Determine the loop variable
+			var keyIdent *ast.Ident
+			tok := rangeStmt.Tok
+			if rangeStmt.Key != nil {
+				if ident, ok := rangeStmt.Key.(*ast.Ident); ok && ident.Name != "_" {
+					keyIdent = ident
+				}
+			}
+			if keyIdent == nil {
+				// No key or blank key — generate a temp variable
+				tmpName := v.nextTempName()
+				keyIdent = &ast.Ident{Name: tmpName, NamePos: rangeStmt.Pos()}
+				tok = token.DEFINE
+			}
+
+			// Build: for key := 0; key < N; key++ { body }
+			forStmt := &ast.ForStmt{
+				For: rangeStmt.Pos(),
+				Init: &ast.AssignStmt{
+					Lhs:    []ast.Expr{keyIdent},
+					Tok:    tok,
+					TokPos: rangeStmt.TokPos,
+					Rhs:    []ast.Expr{&ast.BasicLit{Kind: token.INT, Value: "0"}},
+				},
+				Cond: &ast.BinaryExpr{
+					X:  &ast.Ident{Name: keyIdent.Name, NamePos: rangeStmt.Pos()},
+					Op: token.LSS,
+					Y:  rangeStmt.X,
+				},
+				Post: &ast.IncDecStmt{
+					X:   &ast.Ident{Name: keyIdent.Name, NamePos: rangeStmt.Pos()},
+					Tok: token.INC,
+				},
+				Body: rangeStmt.Body,
+			}
+			newList = append(newList, forStmt)
+			changed = true
+		}
+		if changed {
+			*list = newList
+		}
 	})
 }
 
@@ -1391,6 +1518,7 @@ func isBuiltinCall(call *ast.CallExpr) bool {
 		"make": true, "new": true, "delete": true, "close": true,
 		"panic": true, "recover": true, "print": true, "println": true,
 		"complex": true, "real": true, "imag": true,
+		"min": true, "max": true, "clear": true,
 		"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
 		"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
 		"string": true, "byte": true, "rune": true,

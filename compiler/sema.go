@@ -189,6 +189,8 @@ func (sema *SemaChecker) PreVisitPackage(pkg *packages.Package, indent int) {
 
 	// Check for package-level variable declarations (not supported by transpiler)
 	sema.checkPackageLevelVars(pkg)
+	// Check for unsupported imports
+	sema.checkBlockedImports(pkg)
 }
 
 // checkPackageLevelVars detects package-level variable declarations which are not supported
@@ -217,6 +219,23 @@ func (sema *SemaChecker) checkPackageLevelVars(pkg *packages.Package) {
 							"  }",
 						})
 				}
+			}
+		}
+	}
+}
+
+// checkBlockedImports detects imports of unsupported packages
+func (sema *SemaChecker) checkBlockedImports(pkg *packages.Package) {
+	blockedImports := map[string]string{
+		"unsafe": "The unsafe package is not supported. Use safe alternatives.",
+	}
+	for _, file := range pkg.Syntax {
+		for _, imp := range file.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			if msg, blocked := blockedImports[path]; blocked {
+				sema.reportSemaError(imp.Pos(),
+					fmt.Sprintf("unsupported import '%s'", path),
+					msg, nil)
 			}
 		}
 	}
@@ -587,6 +606,25 @@ func (sema *SemaChecker) PreVisitGenDeclConstName(node *ast.Ident, indent int) {
 func (sema *SemaChecker) PreVisitIdent(node *ast.Ident, indent int) {
 	// iota is handled by CanonicalizePass.transformIotaExpansion.
 	// String variable reuse is handled by CanonicalizePass.transformStringReuseAfterConcat.
+
+	// Block unsupported types
+	unsupportedTypes := map[string]string{
+		"complex64":  "Complex number types are not supported by the transpiler backends.",
+		"complex128": "Complex number types are not supported by the transpiler backends.",
+	}
+	if msg, blocked := unsupportedTypes[node.Name]; blocked {
+		// Only report if this is actually a type reference (not a variable named complex64)
+		if sema.pkg != nil && sema.pkg.TypesInfo != nil {
+			if obj := sema.pkg.TypesInfo.Uses[node]; obj != nil {
+				if _, isTypeName := obj.(*types.TypeName); isTypeName {
+					sema.reportSemaError(node.Pos(),
+						fmt.Sprintf("unsupported type '%s'", node.Name),
+						msg,
+						[]string{"Use float64 for numeric computations instead."})
+				}
+			}
+		}
+	}
 }
 
 func (sema *SemaChecker) PostVisitGenDeclConstName(node *ast.Ident, indent int) {
@@ -1220,6 +1258,7 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 			"complex": "Complex numbers are not supported in transpiled code.",
 			"real":    "Complex numbers are not supported in transpiled code.",
 			"imag":    "Complex numbers are not supported in transpiled code.",
+			"new":     "Use &T{} (address of zero-value literal) instead of new(T).",
 		}
 		if suggestion, unsupported := unsupportedBuiltins[ident.Name]; unsupported {
 			sema.reportSemaError(node.Pos(),
@@ -1233,8 +1272,31 @@ func (sema *SemaChecker) PreVisitCallExpr(node *ast.CallExpr, indent int) {
 		supportedBuiltins := map[string]bool{
 			"len": true, "append": true, "make": true, "delete": true,
 			"panic": true, "print": true, "println": true,
+			"min": true, "max": true, "clear": true,
 		}
 		if supportedBuiltins[ident.Name] {
+			// Validate min/max: only 2 args supported
+			if (ident.Name == "min" || ident.Name == "max") && len(node.Args) > 2 {
+				sema.reportSemaError(node.Pos(),
+					fmt.Sprintf("%s() with more than 2 arguments is not supported", ident.Name),
+					fmt.Sprintf("The transpiler only supports %s(a, b) with exactly 2 arguments.", ident.Name),
+					[]string{fmt.Sprintf("Use nested calls: %s(%s(a, b), c)", ident.Name, ident.Name)})
+				return
+			}
+			// Validate clear: only maps supported, not slices
+			if ident.Name == "clear" {
+				if len(node.Args) == 1 && sema.pkg != nil && sema.pkg.TypesInfo != nil {
+					if tv, ok := sema.pkg.TypesInfo.Types[node.Args[0]]; ok && tv.Type != nil {
+						if _, isSlice := tv.Type.Underlying().(*types.Slice); isSlice {
+							sema.reportSemaError(node.Pos(),
+								"clear() on slices is not supported",
+								"The transpiler only supports clear() on maps, not slices.",
+								[]string{"Use a loop to zero slice elements, or reassign with make()."})
+							return
+						}
+					}
+				}
+			}
 			return
 		}
 	}

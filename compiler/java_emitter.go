@@ -1625,6 +1625,37 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 			))
 		}
 		return
+	case "min":
+		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+			Leaf(Identifier, "Math.min"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, argsStr),
+			Leaf(RightParen, ")"),
+		))
+		return
+	case "max":
+		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+			Leaf(Identifier, "Math.max"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, argsStr),
+			Leaf(RightParen, ")"),
+		))
+		return
+	case "clear":
+		if len(node.Args) >= 1 {
+			mapName := exprToJavaString(node.Args[0])
+			e.fs.AddTree(IRTree(CallExpression, KindExpr,
+				Leaf(Identifier, mapName),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap.hashMapClear"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, mapName),
+				Leaf(RightParen, ")"),
+			))
+		}
+		return
 	case "make":
 		if len(node.Args) >= 1 {
 			if mapType, ok := node.Args[0].(*ast.MapType); ok {

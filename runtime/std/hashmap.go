@@ -290,6 +290,10 @@ func hashMapDelete(m HashMap, key interface{}) HashMap {
 	return m
 }
 
+func hashMapClear(m HashMap) HashMap {
+	return newHashMap(m.KeyType)
+}
+
 func hashMapContains(m HashMap, key interface{}) bool {
 	if m.Capacity == 0 {
 		return false

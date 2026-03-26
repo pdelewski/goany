@@ -2274,6 +2274,101 @@ func testMapPtrValue() {
 	fmt.Println("All map pointer value tests passed!")
 }
 
+func testMinMax() {
+	a := 3
+	b := 7
+	if min(a, b) == 3 {
+		fmt.Println("PASS: min(3,7)")
+	} else {
+		panic("FAIL: min(3,7)")
+	}
+	if max(a, b) == 7 {
+		fmt.Println("PASS: max(3,7)")
+	} else {
+		panic("FAIL: max(3,7)")
+	}
+
+	x := -5
+	y := 2
+	if min(x, y) == -5 {
+		fmt.Println("PASS: min(-5,2)")
+	} else {
+		panic("FAIL: min(-5,2)")
+	}
+	if max(x, y) == 2 {
+		fmt.Println("PASS: max(-5,2)")
+	} else {
+		panic("FAIL: max(-5,2)")
+	}
+}
+
+func testForRangeInt() {
+	sum := 0
+	for i := range 5 {
+		sum += i
+	}
+	if sum == 10 {
+		fmt.Println("PASS: for range 5 sum")
+	} else {
+		panic("FAIL: for range 5 sum")
+	}
+
+	count := 0
+	for range 3 {
+		count += 1
+	}
+	if count == 3 {
+		fmt.Println("PASS: for range 3 count")
+	} else {
+		panic("FAIL: for range 3 count")
+	}
+
+	n := 4
+	product := 1
+	for i := range n {
+		product *= (i + 1)
+	}
+	if product == 24 {
+		fmt.Println("PASS: for range n factorial")
+	} else {
+		panic("FAIL: for range n factorial")
+	}
+}
+
+func testMakeWithCap() {
+	s := make([]int, 3, 10)
+	s[0] = 10
+	s[1] = 20
+	s[2] = 30
+	if s[0] == 10 && s[1] == 20 && s[2] == 30 {
+		fmt.Println("PASS: make with cap values")
+	} else {
+		panic("FAIL: make with cap values")
+	}
+	if len(s) == 3 {
+		fmt.Println("PASS: make with cap len")
+	} else {
+		panic("FAIL: make with cap len")
+	}
+}
+
+func testClearMap() {
+	m := make(map[string]int)
+	m["a"] = 1
+	m["b"] = 2
+	if len(m) == 2 {
+		fmt.Println("PASS: map len before clear")
+	} else {
+		panic("FAIL: map len before clear")
+	}
+	clear(m)
+	if len(m) == 0 {
+		fmt.Println("PASS: map len after clear")
+	} else {
+		panic("FAIL: map len after clear")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2348,6 +2443,10 @@ func main() {
 	testPtrFieldRead()
 	testPtrFieldString()
 	testMapPtrValue()
+	testMinMax()
+	testForRangeInt()
+	testMakeWithCap()
+	testClearMap()
 
 	fmt.Println("=== Done ===")
 }

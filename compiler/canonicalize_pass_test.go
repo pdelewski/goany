@@ -1236,3 +1236,140 @@ func main() {
 	assertValidGo(t, result)
 	assertContains(t, result, wantCall)
 }
+
+// =============================================
+// Make Capacity Stripping tests
+// =============================================
+
+func TestCanonicalizeMakeCapacity_SliceWithCap(t *testing.T) {
+	src := `package test
+
+func main() {
+	s := make([]int, 5, 10)
+	_ = s
+}
+`
+	// Reference: expected code after transform
+	//   make([]int, 5, 10) → make([]int, 5)
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "make([]int, 5)")
+	assertNotContains(t, result, "10")
+}
+
+func TestCanonicalizeMakeCapacity_SliceZeroCap(t *testing.T) {
+	src := `package test
+
+func main() {
+	s := make([]string, 0, 100)
+	_ = s
+}
+`
+	// Reference: expected code after transform
+	//   make([]string, 0, 100) → make([]string, 0)
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "make([]string, 0)")
+	assertNotContains(t, result, "100")
+}
+
+func TestCanonicalizeMakeCapacity_MapUnchanged(t *testing.T) {
+	src := `package test
+
+func main() {
+	m := make(map[string]int)
+	_ = m
+}
+`
+	// Reference: no transform (maps don't have a capacity arg)
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "make(map[string]int)")
+}
+
+func TestCanonicalizeMakeCapacity_SliceNoCap(t *testing.T) {
+	src := `package test
+
+func main() {
+	s := make([]int, 5)
+	_ = s
+}
+`
+	// Reference: no transform (already 2-arg form)
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "make([]int, 5)")
+}
+
+// =============================================
+// Integer Range Lowering tests
+// =============================================
+
+func TestCanonicalizeIntegerRange_Basic(t *testing.T) {
+	src := `package test
+
+func main() {
+	for i := range 10 {
+		_ = i
+	}
+}
+`
+	// Reference: expected code after transform
+	//   for i := range 10 → for i := 0; i < 10; i++
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "i := 0; i < 10; i++")
+	assertNotContains(t, result, "range 10")
+}
+
+func TestCanonicalizeIntegerRange_Variable(t *testing.T) {
+	src := `package test
+
+func main() {
+	n := 5
+	for i := range n {
+		_ = i
+	}
+}
+`
+	// Reference: expected code after transform
+	//   for i := range n → for i := 0; i < n; i++
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "i := 0; i < n; i++")
+	assertNotContains(t, result, "range n")
+}
+
+func TestCanonicalizeIntegerRange_NoKey(t *testing.T) {
+	src := `package test
+
+func main() {
+	for range 5 {
+		println("hello")
+	}
+}
+`
+	// Reference: expected code after transform
+	//   for range 5 → for _t0 := 0; _t0 < 5; _t0++
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "< 5")
+	assertNotContains(t, result, "range 5")
+}
+
+func TestCanonicalizeIntegerRange_SliceNotTransformed(t *testing.T) {
+	src := `package test
+
+func main() {
+	s := []int{1, 2, 3}
+	for i, v := range s {
+		_ = i
+		_ = v
+	}
+}
+`
+	// Reference: no transform (slice range stays as range)
+	result := runCanonicalize(t, src, BackendAll)
+	assertValidGo(t, result)
+	assertContains(t, result, "range s")
+}
