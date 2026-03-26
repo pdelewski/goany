@@ -102,9 +102,8 @@ func (sc *SyntaxChecker) PreVisitChanType(node *ast.ChanType, indent int) {
 		"Channel types are not supported.\n  Channels have no equivalent in target languages.")
 }
 
+// Variadic parameters (...T) are handled by CanonicalizePass.transformVariadics.
 func (sc *SyntaxChecker) PreVisitEllipsis(node *ast.Ellipsis, indent int) {
-	sc.reportSyntaxError(node.Pos(), "unsupported construct",
-		"Variadic parameters (...T) are not supported.\n  Use a slice parameter instead.")
 }
 
 func (sc *SyntaxChecker) PreVisitBranchStmt(node *ast.BranchStmt, indent int) {
