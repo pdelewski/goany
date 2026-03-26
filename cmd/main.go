@@ -136,6 +136,27 @@ func main() {
 	// Build shared frontend passes
 	var frontendPasses []compiler.FrontendPass
 
+	// Compute backend set for the canonicalize pass
+	var enabledBackends compiler.BackendSet
+	if useCpp {
+		enabledBackends |= compiler.BackendCpp
+	}
+	if useCs {
+		enabledBackends |= compiler.BackendCSharp
+	}
+	if useRust {
+		enabledBackends |= compiler.BackendRust
+	}
+	if useJs {
+		enabledBackends |= compiler.BackendJs
+	}
+	if useJava {
+		enabledBackends |= compiler.BackendJava
+	}
+	if useGo {
+		enabledBackends |= compiler.BackendGo
+	}
+
 	// Pass 1: Syntax checking (rejects unsupported Go constructs)
 	syntaxChecker := &compiler.SyntaxChecker{Emitter: &compiler.BaseEmitter{}}
 	syntaxPass := &compiler.BasePass{PassName: "SyntaxCheck", Emitter: syntaxChecker}
@@ -146,18 +167,22 @@ func main() {
 	sema := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker}
 	frontendPasses = append(frontendPasses, sema)
 
-	// Pass 3: Method receiver lowering
+	// Pass 3: Lang/sema lowering (rewrite AST patterns that lack 1:1 equivalents)
+	langSemaLowering := &compiler.LangSemaLoweringPass{Backends: enabledBackends}
+	frontendPasses = append(frontendPasses, langSemaLowering)
+
+	// Pass 4: Method receiver lowering
 	methodLowering := &compiler.MethodReceiverLoweringPass{}
 	frontendPasses = append(frontendPasses, methodLowering)
 
-	// Pass 4: Semantic analysis (after method receiver lowering)
+	// Pass 5: Semantic analysis (after method receiver lowering)
 	semaChecker2 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema2 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker2}
 	frontendPasses = append(frontendPasses, sema2)
 
-	// Pass 5: Pointer-to-array transformation
-	ptrTransform := &compiler.PointerTransformPass{}
-	frontendPasses = append(frontendPasses, ptrTransform)
+	// Pass 6: Pointer lowering
+	ptrLowering := &compiler.PointerLoweringPass{}
+	frontendPasses = append(frontendPasses, ptrLowering)
 
 	// Pass 6: Semantic analysis (after pointer transform)
 	semaChecker3 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}

@@ -47,6 +47,11 @@ jobs:
           cd cmd
           make
 
+      - name: Run unit tests
+        run: |
+          go test -v ./compiler/...
+          cd cmd && go test -v -skip TestE2E
+
       - name: Run E2E tests
         run: |
           cd cmd
@@ -90,6 +95,11 @@ jobs:
           cd cmd
           make
 
+      - name: Run unit tests
+        run: |
+          go test -v ./compiler/...
+          cd cmd && go test -v -skip TestE2E
+
       - name: Run E2E tests
         run: |
           cd cmd
@@ -132,6 +142,11 @@ jobs:
       - name: Build
         shell: cmd
         run: build.bat
+
+      - name: Run unit tests
+        run: |
+          go test -v ./compiler/...
+          cd cmd && go test -v -skip TestE2E
 
       - name: Run E2E tests
         shell: cmd

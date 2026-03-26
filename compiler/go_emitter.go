@@ -28,7 +28,7 @@ var goStdlibPackages = map[string]bool{
 
 // GoEmitter implements the Emitter interface for Go→Go round-trip emission.
 // It preserves Go types and syntax, producing valid (non-idiomatic) Go output
-// after MethodReceiverLowering and PointerTransform frontend passes.
+// after MethodReceiverLowering and PointerLowering frontend passes.
 type GoEmitter struct {
 	fs              *IRForestBuilder
 	Output          string
@@ -898,7 +898,7 @@ func (e *GoEmitter) PostVisitStarExprX(node ast.Expr, indent int) {
 
 func (e *GoEmitter) PostVisitStarExpr(node *ast.StarExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitStarExpr))
-	// After PointerTransform, *T is lowered to pool index (int).
+	// After PointerLowering, *T is lowered to pool index (int).
 	// Discard the inner type and emit "int".
 	_ = tokens
 	e.fs.AddLeaf("int", TagType, nil)

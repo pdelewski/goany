@@ -15,21 +15,21 @@ import (
 // Populated by the transform, consumed by emitters to emit comments instead of code.
 var PtrLocalComments = map[token.Pos]string{}
 
-// PointerTransformPass transforms pointer operations into pool-based indexing
+// PointerLoweringPass transforms pointer operations into pool-based indexing
 // for cross-backend compatibility. This runs between SemaChecker and emitter passes.
-type PointerTransformPass struct{}
+type PointerLoweringPass struct{}
 
-func (p *PointerTransformPass) Name() string { return "PointerTransform" }
-func (p *PointerTransformPass) ProLog()      {}
-func (p *PointerTransformPass) EpiLog()      {}
+func (p *PointerLoweringPass) Name() string { return "PointerLowering" }
+func (p *PointerLoweringPass) ProLog()      {}
+func (p *PointerLoweringPass) EpiLog()      {}
 
-func (p *PointerTransformPass) Visitors(pkg *packages.Package) []ast.Visitor {
+func (p *PointerLoweringPass) Visitors(pkg *packages.Package) []ast.Visitor {
 	return []ast.Visitor{&ptrTransformVisitor{pkg: pkg}}
 }
 
-func (p *PointerTransformPass) PreVisit(visitor ast.Visitor) {}
+func (p *PointerLoweringPass) PreVisit(visitor ast.Visitor) {}
 
-func (p *PointerTransformPass) PostVisit(visitor ast.Visitor, visited map[string]struct{}) {
+func (p *PointerLoweringPass) PostVisit(visitor ast.Visitor, visited map[string]struct{}) {
 	v := visitor.(*ptrTransformVisitor)
 	v.transform()
 }

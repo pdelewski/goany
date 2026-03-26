@@ -831,6 +831,37 @@ func (e *JSEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 			Leaf(RightParen, ")"),
 		))
 		return
+	case "min":
+		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+			Leaf(Identifier, "Math.min"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, argsStr),
+			Leaf(RightParen, ")"),
+		))
+		return
+	case "max":
+		e.fs.AddTree(IRTree(CallExpression, KindExpr,
+			Leaf(Identifier, "Math.max"),
+			Leaf(LeftParen, "("),
+			Leaf(Identifier, argsStr),
+			Leaf(RightParen, ")"),
+		))
+		return
+	case "clear":
+		if len(node.Args) >= 1 {
+			mapName := exprToString(node.Args[0])
+			e.fs.AddTree(IRTree(CallExpression, KindExpr,
+				Leaf(Identifier, mapName),
+				Leaf(WhiteSpace, " "),
+				Leaf(Assignment, "="),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, "hmap.hashMapClear"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, mapName),
+				Leaf(RightParen, ")"),
+			))
+		}
+		return
 	case "make":
 		// Detect make(map[K]V) vs make([]T, n)
 		if len(node.Args) >= 1 {

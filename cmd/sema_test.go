@@ -17,21 +17,6 @@ type SemaTestCase struct {
 
 var semaTestCases = []SemaTestCase{
 	{
-		Name: "iota",
-		Code: `package main
-
-const (
-	A = iota
-	B
-	C
-)
-
-func main() {
-}
-`,
-		ExpectedError: "iota is not allowed",
-	},
-	{
 		Name: "nil_comparison_eq",
 		Code: `package main
 
@@ -55,34 +40,6 @@ func main() {
 `,
 		ExpectedError: "nil comparison",
 	},
-	// Note: empty_interface and slice_of_empty_interface tests removed
-	// interface{} is now supported (maps to std::any/Box<dyn Any>/object)
-	{
-		Name: "string_variable_reuse_after_concat",
-		Code: `package main
-
-func main() {
-	indent := "  "
-	result := indent + "hello"
-	result = result + indent
-	_ = result
-}
-`,
-		ExpectedError: "string variable reuse after concatenation",
-	},
-	{
-		Name: "string_plusequal_self_concat",
-		Code: `package main
-
-func main() {
-	result := "hello"
-	indent := "  "
-	result += result + indent
-	_ = result
-}
-`,
-		ExpectedError: "self-referencing string concatenation",
-	},
 	{
 		Name: "struct_field_init_order",
 		Code: `package main
@@ -104,9 +61,56 @@ func main() {
 `,
 		ExpectedError: "struct field initialization order does not match declaration order",
 	},
-	// Rust ownership pattern checks
+}
+
+// SemaValidTestCase represents code that SHOULD compile successfully
+type SemaValidTestCase struct {
+	Name string
+	Code string
+}
+
+var semaValidTestCases = []SemaValidTestCase{
+	// Patterns now handled by LangSemaLoweringPass transforms (previously sema errors)
 	{
-		Name: "same_var_multiple_times_in_expr_string",
+		Name: "iota_now_valid",
+		Code: `package main
+
+const (
+	A = iota
+	B
+	C
+)
+
+func main() {
+}
+`,
+	},
+	{
+		Name: "string_variable_reuse_after_concat_now_valid",
+		Code: `package main
+
+func main() {
+	indent := "  "
+	result := indent + "hello"
+	result = result + indent
+	_ = result
+}
+`,
+	},
+	{
+		Name: "string_plusequal_self_concat_now_valid",
+		Code: `package main
+
+func main() {
+	result := "hello"
+	indent := "  "
+	result += result + indent
+	_ = result
+}
+`,
+	},
+	{
+		Name: "same_var_multiple_times_in_expr_string_now_valid",
 		Code: `package main
 
 func process(s string) string { return s }
@@ -117,10 +121,9 @@ func main() {
 	_ = result
 }
 `,
-		ExpectedError: "same variable used multiple times in expression",
 	},
 	{
-		Name: "slice_self_assignment",
+		Name: "slice_self_assignment_now_valid",
 		Code: `package main
 
 func main() {
@@ -131,10 +134,9 @@ func main() {
 	_ = slice
 }
 `,
-		ExpectedError: "slice self-reference pattern",
 	},
 	{
-		Name: "multiple_closures_capture_same_var",
+		Name: "multiple_closures_capture_same_var_now_valid",
 		Code: `package main
 
 func main() {
@@ -145,10 +147,9 @@ func main() {
 	_ = fn2
 }
 `,
-		ExpectedError: "multiple closures capture same variable",
 	},
 	{
-		Name: "variable_shadowing_in_nested_block",
+		Name: "variable_shadowing_in_nested_block_now_valid",
 		Code: `package main
 
 func main() {
@@ -163,10 +164,9 @@ func main() {
 	_ = col
 }
 `,
-		ExpectedError: "variable shadowing is not supported",
 	},
 	{
-		Name: "variable_shadowing_in_if_block",
+		Name: "variable_shadowing_in_if_block_now_valid",
 		Code: `package main
 
 func main() {
@@ -178,17 +178,7 @@ func main() {
 	_ = x
 }
 `,
-		ExpectedError: "variable shadowing is not supported",
 	},
-}
-
-// SemaValidTestCase represents code that SHOULD compile successfully
-type SemaValidTestCase struct {
-	Name string
-	Code string
-}
-
-var semaValidTestCases = []SemaValidTestCase{
 	{
 		Name: "string_reassign_then_reuse",
 		Code: `package main

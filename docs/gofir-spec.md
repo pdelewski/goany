@@ -131,7 +131,7 @@ Source Code (Go syntax, goany semantics)
               │                   passes lowerable features through
               ▼
 ┌─────────────────────────────┐
-│  Lowering Passes (desugar)  │  PointerTransformPass, etc.
+│  Lowering Passes (desugar)  │  PointerLoweringPass, etc.
 └─────────────┬───────────────┘  Converts high-level constructs
               │                   to common-denominator GoFIR
               ▼
@@ -205,7 +205,7 @@ This allows each backend to intercept and transform any subtree during reduction
 
 | Pass | Input | Output | Status |
 |------|-------|--------|--------|
-| `PointerTransformPass` | `*T`, `&x`, pointer fields | Pool-based indexing, `RefParam` annotations | Implemented |
+| `PointerLoweringPass` | `*T`, `&x`, pointer fields | Pool-based indexing, `RefParam` annotations | Implemented |
 | `MethodReceiverLoweringPass` | `func (t T) Method()` | `func T_Method(t T)` + `DesugaredMethod` annotation | Planned |
 
 **Lifting passes** are per-backend and optional. They run after analysis passes, before token generation. A lifting pass consumes lowering annotations and rewrites the AST back toward native constructs for backends that support them. If no lifting pass is registered, the lowered form is emitted as-is—it is already valid GoFIR.

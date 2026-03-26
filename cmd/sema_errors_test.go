@@ -23,10 +23,7 @@ func TestSemaErrors(t *testing.T) {
 	}
 
 	// Test cases that expect warnings instead of errors
-	warningOnlyTests := map[string]bool{
-		"const-no-type": true,
-		"iota":          true,
-	}
+	warningOnlyTests := map[string]bool{}
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
