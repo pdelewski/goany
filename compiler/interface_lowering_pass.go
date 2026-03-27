@@ -203,6 +203,19 @@ func (v *ifaceLoweringVisitor) replaceInterfaceDecls(file *ast.File, ifaceDecls 
 			ts.Type = &ast.StructType{
 				Fields: &ast.FieldList{List: fields},
 			}
+
+			// Update the named type's underlying from interface to struct so that
+			// downstream emitters (C++, Rust, etc.) see Expr as a struct, not interface.
+			// Without this, getCppTypeName falls through to std::any for []Expr elements.
+			if v.pkg != nil && v.pkg.TypesInfo != nil {
+				if obj := v.pkg.TypesInfo.Defs[ts.Name]; obj != nil {
+					if typeName, ok := obj.(*types.TypeName); ok {
+						if named, ok := typeName.Type().(*types.Named); ok {
+							named.SetUnderlying(info.structType)
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -463,6 +476,7 @@ func (v *ifaceLoweringVisitor) rewriteCallExpr(call *ast.CallExpr, ifaceDecls ma
 		X:   deepCopyExpr(selExpr.X),
 		Sel: ast.NewIdent("_data"),
 	}
+	v.registerAsEmptyInterface(dataArg)
 	newArgs := make([]ast.Expr, 0, len(call.Args)+1)
 	newArgs = append(newArgs, dataArg)
 	newArgs = append(newArgs, call.Args...)

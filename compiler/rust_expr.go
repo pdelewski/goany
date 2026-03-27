@@ -1432,6 +1432,7 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 						castVal := e.castSmallIntFieldValue(u.Field(i).Type(), val)
 						// Wrap interface{} field values in Rc::new() (for lowered interface structs).
 						// Skip wrapping if value is already Rc (e.g. rhs._data from interface-to-interface).
+						needsRcWrap := false
 						if iface, isIface := u.Field(i).Type().Underlying().(*types.Interface); isIface && iface.NumMethods() == 0 {
 							if val == "Vec::new()" || val == "None" {
 								// nil → Rc::new(0_i32) as Rc<dyn Any> (sentinel for nil interface data)
@@ -1439,8 +1440,7 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 							} else {
 								alreadyRc := strings.HasPrefix(val, "Rc::new(") || strings.Contains(val, "._data")
 								if castVal == val && !alreadyRc {
-									// Clone to prevent move errors when value is used multiple times
-									castVal = "Rc::new(" + val + ".clone())"
+									needsRcWrap = true
 								}
 							}
 						}
@@ -1451,8 +1451,21 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 							Leaf(WhiteSpace, " "),
 						)
 						if castVal != val {
-							// Cast modifies the value — use flat string
+							// Simple cast (nil sentinel, small int, etc.) — flat string is fine
 							children = append(children, Leaf(Identifier, castVal))
+						} else if needsRcWrap {
+							// Wrap in Rc::new(...clone()) preserving the inner tree structure
+							// so that OptMeta annotations (e.g. NeedsCopy on nested fields)
+							// survive for the CloneMovePass.
+							if valNode, ok := kvNodeMap[fieldName]; ok {
+								children = append(children, IRTree(Identifier, KindExpr,
+									Leaf(Identifier, "Rc::new("),
+									valNode,
+									Leaf(Identifier, ".clone())"),
+								))
+							} else {
+								children = append(children, Leaf(Identifier, "Rc::new("+val+".clone())"))
+							}
 						} else if valNode, ok := kvNodeMap[fieldName]; ok {
 							// Use tree node, annotate for clone if needed
 							if needsClone {

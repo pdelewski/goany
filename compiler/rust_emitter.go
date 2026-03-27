@@ -735,8 +735,18 @@ func (e *RustEmitter) structHasInterfaceFieldsRecursive(structName string, visit
 	return false
 }
 
-// structHasFunctionFields checks if a struct has function/closure fields
+// structHasFunctionFields checks if a struct has function/closure fields (recursively).
+// This detects both direct function fields and nested structs containing function fields
+// (e.g., BinOp containing Expr which has Rc<dyn Fn(...)> fields).
 func (e *RustEmitter) structHasFunctionFields(structName string) bool {
+	return e.structHasFunctionFieldsRecursive(structName, make(map[string]bool))
+}
+
+func (e *RustEmitter) structHasFunctionFieldsRecursive(structName string, visited map[string]bool) bool {
+	if visited[structName] {
+		return false
+	}
+	visited[structName] = true
 	for _, file := range e.pkg.Syntax {
 		for _, decl := range file.Decls {
 			if genDecl, ok := decl.(*ast.GenDecl); ok {
@@ -756,6 +766,14 @@ func (e *RustEmitter) structHasFunctionFields(structName string) bool {
 										}
 										if _, isSig := fieldType.Underlying().(*types.Signature); isSig {
 											return true
+										}
+										// Recurse into named struct fields
+										if named, ok2 := fieldType.(*types.Named); ok2 {
+											if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+												if e.structHasFunctionFieldsRecursive(named.Obj().Name(), visited) {
+													return true
+												}
+											}
 										}
 									}
 								}
