@@ -1441,15 +1441,18 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		_, rhsIsLit := node.Y.(*ast.BasicLit)
 		if e.isByteTypeJ(leftType) && !lhsIsLit {
 			left = e.maskByteValueJ(left)
+			leftNode = Leaf(Identifier, left)
 		}
 		if e.isByteTypeJ(rightType) && !rhsIsLit {
 			right = e.maskByteValueJ(right)
+			rightNode = Leaf(Identifier, right)
 		}
 	}
 
 	// Right shift on byte: need & 0xFF for logical (unsigned) shift
 	if op == ">>" && e.isByteTypeJ(leftType) {
 		left = e.maskByteValueJ(left)
+		leftNode = Leaf(Identifier, left)
 	}
 
 	// Bitwise AND with byte operands compared against non-zero: mask result
@@ -1491,15 +1494,33 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	}
 
 	if castPrefix != "" {
-		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-			Leaf(Identifier, castPrefix),
-			leftNode,
-			Leaf(WhiteSpace, " "),
-			Leaf(BinaryOperator, op),
-			Leaf(WhiteSpace, " "),
-			rightNode,
-			Leaf(Identifier, castSuffix),
-		))
+		if op == ">>" && (castPrefix == "(byte)(" || castPrefix == "(short)(") {
+			e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+				Leaf(Identifier, castPrefix),
+				Leaf(LeftParen, "("),
+				leftNode,
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, "&"),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0xFF"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, op),
+				Leaf(WhiteSpace, " "),
+				rightNode,
+				Leaf(Identifier, castSuffix),
+			))
+		} else {
+			e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+				Leaf(Identifier, castPrefix),
+				leftNode,
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, op),
+				Leaf(WhiteSpace, " "),
+				rightNode,
+				Leaf(Identifier, castSuffix),
+			))
+		}
 	} else {
 		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
 			leftNode,
