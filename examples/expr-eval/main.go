@@ -52,6 +52,39 @@ func (u UnaryOp) Eval() int {
 	return v
 }
 
+// --- Multi-method interface with void + string return ---
+
+type Logger interface {
+	Log(msg string)
+	Name() string
+}
+
+type ConsoleLogger struct {
+	prefix  string
+	counter int
+}
+
+func (c ConsoleLogger) Log(msg string) {
+	// void method — no return
+	fmt.Println(c.prefix + ": " + msg)
+}
+
+func (c ConsoleLogger) Name() string {
+	return c.prefix
+}
+
+type SilentLogger struct {
+	name string
+}
+
+func (s SilentLogger) Log(msg string) {
+	// intentionally does nothing
+}
+
+func (s SilentLogger) Name() string {
+	return s.name
+}
+
 // --- Helper functions ---
 
 func evalExpr(e Expr) int {
@@ -231,6 +264,83 @@ func testExprSlice() {
 	}
 }
 
+// --- Void method test ---
+
+func testVoidMethod() {
+	var l Logger = ConsoleLogger{prefix: "TEST", counter: 0}
+	l.Log("hello void")
+	fmt.Println("PASS: void method")
+}
+
+// --- String return test ---
+
+func testStringReturn() {
+	var l Logger = ConsoleLogger{prefix: "mylogger", counter: 0}
+	n := l.Name()
+	if n == "mylogger" {
+		fmt.Println("PASS: string return")
+	} else {
+		panic("FAIL: string return")
+	}
+}
+
+// --- Multi-method dispatch test ---
+
+func testMultiMethodDispatch() {
+	var l Logger = ConsoleLogger{prefix: "MULTI", counter: 0}
+	l.Log("step1")
+	n := l.Name()
+	if n == "MULTI" {
+		fmt.Println("PASS: multi-method dispatch")
+	} else {
+		panic("FAIL: multi-method dispatch")
+	}
+}
+
+// --- Interface reassignment test ---
+
+func testReassignment() {
+	var e Expr = Number{value: 10}
+	if e.Eval() != 10 {
+		panic("FAIL: reassignment before")
+	}
+	// Reassign to different concrete type
+	var left Expr = Number{value: 3}
+	var right Expr = Number{value: 7}
+	e = BinOp{op: "+", left: left, right: right}
+	if e.Eval() == 10 {
+		fmt.Println("PASS: reassignment")
+	} else {
+		panic("FAIL: reassignment")
+	}
+}
+
+// --- Logger reassignment to different concrete type ---
+
+func testLoggerReassignment() {
+	var l Logger = ConsoleLogger{prefix: "FIRST", counter: 0}
+	if l.Name() != "FIRST" {
+		panic("FAIL: logger reassignment before")
+	}
+	l = SilentLogger{name: "SILENT"}
+	if l.Name() == "SILENT" {
+		fmt.Println("PASS: logger reassignment")
+	} else {
+		panic("FAIL: logger reassignment")
+	}
+}
+
+// --- Nil logger test (void method on nil) ---
+
+func testNilLogger() {
+	var l Logger
+	if l == nil {
+		fmt.Println("PASS: nil logger")
+	} else {
+		panic("FAIL: nil logger")
+	}
+}
+
 func main() {
 	testBasicEval()
 	testBinOpAdd()
@@ -244,4 +354,10 @@ func main() {
 	testExprAsReturn()
 	testNilExpr()
 	testExprSlice()
+	testVoidMethod()
+	testStringReturn()
+	testMultiMethodDispatch()
+	testReassignment()
+	testLoggerReassignment()
+	testNilLogger()
 }

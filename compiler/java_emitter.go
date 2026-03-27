@@ -1847,7 +1847,22 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		// These have selector names starting with "_" and won't be in TypesInfo.Selections.
 		if !isFieldFunc && strings.HasPrefix(selExpr.Sel.Name, "_") {
 			isFieldFunc = true
-			javaMethod = "apply" // BiFunction/Function use .apply()
+			javaMethod = "apply" // default: BiFunction/Function use .apply()
+			// Determine correct method by looking up the field's function signature
+			if e.pkg != nil && e.pkg.TypesInfo != nil {
+				if xType := e.getExprGoTypeJ(selExpr.X); xType != nil {
+					if st, ok := xType.Underlying().(*types.Struct); ok {
+						for i := 0; i < st.NumFields(); i++ {
+							if st.Field(i).Name() == selExpr.Sel.Name {
+								if sig, ok := st.Field(i).Type().Underlying().(*types.Signature); ok {
+									javaMethod = getJavaFuncInterfaceMethod(sig)
+								}
+								break
+							}
+						}
+					}
+				}
+			}
 		}
 		if isFieldFunc && javaMethod != "" {
 			e.fs.AddTree(IRTree(CallExpression, KindExpr,
