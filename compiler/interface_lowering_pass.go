@@ -120,7 +120,9 @@ func (v *ifaceLoweringVisitor) collectInterfaceDecls(file *ast.File, ifaceDecls 
 			info := &ifaceInfo{name: ts.Name.Name}
 			for _, method := range ifaceType.Methods.List {
 				if len(method.Names) == 0 {
-					continue // embedded interface — skip for now
+					// Embedded interface — resolve via TypesInfo and merge methods
+					v.resolveEmbeddedInterface(method.Type, info)
+					continue
 				}
 				ft, ok := method.Type.(*ast.FuncType)
 				if !ok {
@@ -145,6 +147,82 @@ func (v *ifaceLoweringVisitor) collectInterfaceDecls(file *ast.File, ifaceDecls 
 			}
 		}
 	}
+}
+
+// resolveEmbeddedInterface resolves an embedded interface type expression and
+// merges its methods into the parent ifaceInfo.
+func (v *ifaceLoweringVisitor) resolveEmbeddedInterface(typeExpr ast.Expr, info *ifaceInfo) {
+	if v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+	tv, ok := v.pkg.TypesInfo.Types[typeExpr]
+	if !ok || tv.Type == nil {
+		return
+	}
+	embIface, ok := tv.Type.Underlying().(*types.Interface)
+	if !ok {
+		return
+	}
+	for i := 0; i < embIface.NumMethods(); i++ {
+		m := embIface.Method(i)
+		sig, ok := m.Type().(*types.Signature)
+		if !ok {
+			continue
+		}
+		params := v.tupleToASTFields(sig.Params())
+		results := v.tupleToASTFields(sig.Results())
+		info.methods = append(info.methods, ifaceMethod{
+			name:    m.Name(),
+			params:  params,
+			results: results,
+		})
+	}
+}
+
+// tupleToASTFields converts a types.Tuple to a slice of AST fields,
+// registering each type expression in TypesInfo for downstream resolution.
+func (v *ifaceLoweringVisitor) tupleToASTFields(tuple *types.Tuple) []*ast.Field {
+	if tuple == nil || tuple.Len() == 0 {
+		return nil
+	}
+	var fields []*ast.Field
+	for i := 0; i < tuple.Len(); i++ {
+		param := tuple.At(i)
+		typeExpr := v.typeToASTExpr(param.Type())
+		f := &ast.Field{Type: typeExpr}
+		if param.Name() != "" {
+			f.Names = []*ast.Ident{ast.NewIdent(param.Name())}
+		}
+		fields = append(fields, f)
+	}
+	return fields
+}
+
+// typeToASTExpr converts a types.Type to an ast.Expr and registers it in TypesInfo.
+func (v *ifaceLoweringVisitor) typeToASTExpr(t types.Type) ast.Expr {
+	var expr ast.Expr
+	switch t := t.(type) {
+	case *types.Basic:
+		expr = ast.NewIdent(t.Name())
+	case *types.Named:
+		expr = ast.NewIdent(t.Obj().Name())
+	case *types.Interface:
+		expr = &ast.InterfaceType{Methods: &ast.FieldList{}}
+	case *types.Slice:
+		expr = &ast.ArrayType{Elt: v.typeToASTExpr(t.Elem())}
+	case *types.Map:
+		expr = &ast.MapType{Key: v.typeToASTExpr(t.Key()), Value: v.typeToASTExpr(t.Elem())}
+	case *types.Pointer:
+		expr = &ast.StarExpr{X: v.typeToASTExpr(t.Elem())}
+	default:
+		expr = &ast.InterfaceType{Methods: &ast.FieldList{}}
+		t = types.NewInterfaceType(nil, nil)
+	}
+	// Register in TypesInfo so resolveFieldType can look it up
+	if v.pkg != nil && v.pkg.TypesInfo != nil {
+		v.pkg.TypesInfo.Types[expr] = types.TypeAndValue{Type: t}
+	}
+	return expr
 }
 
 // replaceInterfaceDecls replaces interface type specs with struct type specs.
@@ -422,8 +500,87 @@ func (v *ifaceLoweringVisitor) rewriteExpr(expr ast.Expr, ifaceDecls map[string]
 	case *ast.UnaryExpr:
 		e.X = v.rewriteExpr(e.X, ifaceDecls)
 		return e
+	case *ast.CompositeLit:
+		return v.rewriteCompositeLit(e, ifaceDecls)
 	}
 	return expr
+}
+
+// rewriteCompositeLit handles composite literals whose elements may be interface-typed.
+// For slice literals like []Expr{Number{1}, nil}, each element is wrapped.
+// For map literals like map[string]Expr{"a": Number{1}}, each value is wrapped.
+func (v *ifaceLoweringVisitor) rewriteCompositeLit(lit *ast.CompositeLit, ifaceDecls map[string]*ifaceInfo) ast.Expr {
+	// Determine the element interface type (if any) from the composite lit's type
+	elemIfaceName := ""
+	var elemInfo *ifaceInfo
+
+	if lit.Type != nil {
+		switch ct := lit.Type.(type) {
+		case *ast.ArrayType:
+			// []Expr or [N]Expr — element type is ct.Elt
+			if name := v.exprToTypeName(ct.Elt); name != "" {
+				if info, ok := ifaceDecls[name]; ok {
+					elemIfaceName = name
+					elemInfo = info
+				}
+			}
+		case *ast.MapType:
+			// map[K]Expr — value type is ct.Value
+			if name := v.exprToTypeName(ct.Value); name != "" {
+				if info, ok := ifaceDecls[name]; ok {
+					elemIfaceName = name
+					elemInfo = info
+				}
+			}
+		}
+	}
+
+	if elemIfaceName == "" || elemInfo == nil {
+		// Not an interface-element container — still recurse into elements
+		for i, elt := range lit.Elts {
+			if kv, ok := elt.(*ast.KeyValueExpr); ok {
+				kv.Value = v.rewriteExpr(kv.Value, ifaceDecls)
+			} else {
+				lit.Elts[i] = v.rewriteExpr(elt, ifaceDecls)
+			}
+		}
+		return lit
+	}
+
+	// Rewrite each element for interface-typed containers
+	for i, elt := range lit.Elts {
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			// Map literal: rewrite the value
+			kv.Value = v.wrapIfaceElement(kv.Value, elemIfaceName, elemInfo, ifaceDecls)
+		} else {
+			// Slice/array literal: rewrite the element
+			lit.Elts[i] = v.wrapIfaceElement(elt, elemIfaceName, elemInfo, ifaceDecls)
+		}
+	}
+	return lit
+}
+
+// wrapIfaceElement wraps an expression as an interface-typed element.
+// Handles nil, concrete-to-interface, and interface-to-interface cases.
+func (v *ifaceLoweringVisitor) wrapIfaceElement(expr ast.Expr, ifaceName string, info *ifaceInfo, ifaceDecls map[string]*ifaceInfo) ast.Expr {
+	if isNilIdent(expr) {
+		return v.buildNilIfaceLit(ifaceName, info)
+	}
+
+	// Check if already an interface type (interface-to-interface)
+	rhsTypeName := v.resolveIfaceTypeName(expr, ifaceDecls)
+	if rhsTypeName != "" {
+		if rhsTypeName == ifaceName {
+			// Same interface type — no rewriting needed
+			return expr
+		}
+		if rhsInfo, ok := ifaceDecls[rhsTypeName]; ok {
+			return v.buildIfaceToIfaceAssign(ifaceName, info, expr, rhsInfo)
+		}
+	}
+
+	// Concrete-to-interface
+	return v.buildConcreteToIfaceAssign(ifaceName, info, expr)
 }
 
 // rewriteCallExpr rewrites method dispatch on interface types:
@@ -433,6 +590,9 @@ func (v *ifaceLoweringVisitor) rewriteCallExpr(call *ast.CallExpr, ifaceDecls ma
 	for i, arg := range call.Args {
 		call.Args[i] = v.rewriteExpr(arg, ifaceDecls)
 	}
+
+	// Check for cross-interface argument conversions (e.g., ExprFull → Evaler)
+	v.rewriteCallArgsIfaceConversion(call, ifaceDecls)
 
 	selExpr, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
@@ -484,6 +644,60 @@ func (v *ifaceLoweringVisitor) rewriteCallExpr(call *ast.CallExpr, ifaceDecls ma
 	call.Fun = newFun
 	call.Args = newArgs
 	return call
+}
+
+// rewriteCallArgsIfaceConversion checks each argument against the called function's
+// parameter types. When an argument is interface A and the parameter expects interface B
+// (where A != B), it inserts a conversion (e.g., ExprFull → Evaler).
+func (v *ifaceLoweringVisitor) rewriteCallArgsIfaceConversion(call *ast.CallExpr, ifaceDecls map[string]*ifaceInfo) {
+	if v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+
+	// Resolve the function's signature
+	var sig *types.Signature
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		if obj := v.pkg.TypesInfo.ObjectOf(fun); obj != nil {
+			if fn, ok := obj.(*types.Func); ok {
+				sig, _ = fn.Type().(*types.Signature)
+			}
+		}
+	case *ast.SelectorExpr:
+		if obj := v.pkg.TypesInfo.ObjectOf(fun.Sel); obj != nil {
+			if fn, ok := obj.(*types.Func); ok {
+				sig, _ = fn.Type().(*types.Signature)
+			}
+		}
+	}
+	if sig == nil {
+		return
+	}
+
+	params := sig.Params()
+	for i, arg := range call.Args {
+		if i >= params.Len() {
+			break
+		}
+		paramType := params.At(i).Type()
+
+		// Get parameter's interface name (must be a lowered interface)
+		paramIfaceName := v.typeToIfaceName(paramType, ifaceDecls)
+		if paramIfaceName == "" {
+			continue
+		}
+
+		// Get argument's interface name
+		argIfaceName := v.resolveIfaceTypeName(arg, ifaceDecls)
+		if argIfaceName == "" || argIfaceName == paramIfaceName {
+			continue
+		}
+
+		// Different interfaces — insert conversion
+		paramInfo := ifaceDecls[paramIfaceName]
+		argInfo := ifaceDecls[argIfaceName]
+		call.Args[i] = v.buildIfaceToIfaceAssign(paramIfaceName, paramInfo, arg, argInfo)
+	}
 }
 
 // rewriteTypeAssertExpr rewrites type assertions on interface types:
@@ -578,6 +792,10 @@ func (v *ifaceLoweringVisitor) rewriteAssignStmt(s *ast.AssignStmt, ifaceDecls m
 		// Case 2: Interface-to-interface assignment
 		rhsTypeName := v.resolveIfaceTypeName(rhs, ifaceDecls)
 		if rhsTypeName != "" {
+			if rhsTypeName == lhsTypeName {
+				// Same interface type — no rewriting needed, already correct struct
+				continue
+			}
 			if rhsInfo, ok := ifaceDecls[rhsTypeName]; ok {
 				s.Rhs[i] = v.buildIfaceToIfaceAssign(lhsTypeName, info, rhs, rhsInfo)
 				continue
@@ -631,6 +849,11 @@ func (v *ifaceLoweringVisitor) rewriteDeclStmt(s *ast.DeclStmt, ifaceDecls map[s
 			// Check interface-to-interface
 			rhsTypeName := v.resolveIfaceTypeName(val, ifaceDecls)
 			if rhsTypeName != "" {
+				if rhsTypeName == typeName {
+					// Same interface type — no rewriting needed
+					vs.Values[i] = val
+					continue
+				}
 				if rhsInfo, ok := ifaceDecls[rhsTypeName]; ok {
 					vs.Values[i] = v.buildIfaceToIfaceAssign(typeName, info, val, rhsInfo)
 					continue

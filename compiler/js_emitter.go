@@ -918,6 +918,25 @@ func (e *JSEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		return
 	}
 
+	// Check if this is a type conversion (e.g., int(x), ConstExpr(42))
+	// In JS, basic type conversions are identity — just emit the value.
+	if ident, ok := node.Fun.(*ast.Ident); ok && e.pkg != nil && e.pkg.TypesInfo != nil {
+		if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+			if _, isTypeName := obj.(*types.TypeName); isTypeName {
+				underlying := obj.Type().Underlying()
+				if _, isBasic := underlying.(*types.Basic); isBasic {
+					// Basic type conversion: int(x) or ConstExpr(42) → just x or 42
+					if len(tokens) > 1 {
+						for _, t := range tokens[1:] {
+							e.fs.AddTree(t)
+						}
+						return
+					}
+				}
+			}
+		}
+	}
+
 	// Lower builtins (fmt.Println → console.log, etc.)
 	lowered := jsLowerBuiltin(funName)
 	if lowered != funName {

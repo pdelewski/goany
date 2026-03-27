@@ -1551,12 +1551,27 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 			children := []IRNode{Leaf(Identifier, "Vec::"), Leaf(LeftAngle, "<"), Leaf(Identifier, elemRustType), Leaf(RightAngle, ">"), Leaf(Identifier, "::new"), Leaf(LeftParen, "("), Leaf(RightParen, ")")}
 			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr, children...))
 		} else {
-			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr,
+			// Preserve tree nodes for vec! elements so optimization passes
+			// (RefOptPass, CloneMovePass) can process nested expressions
+			// like wrapper lambdas in interface struct literals.
+			vecChildren := []IRNode{
 				Leaf(Identifier, "vec!"),
 				Leaf(LeftBracket, "["),
-				Leaf(Identifier, eltsStr),
-				Leaf(RightBracket, "]"),
-			))
+			}
+			first := true
+			for _, t := range tokens {
+				s := t.Serialize()
+				if s == "" {
+					continue
+				}
+				if !first {
+					vecChildren = append(vecChildren, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
+				}
+				vecChildren = append(vecChildren, t)
+				first = false
+			}
+			vecChildren = append(vecChildren, Leaf(RightBracket, "]"))
+			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr, vecChildren...))
 		}
 	case *types.Map:
 		keyTypeConst := 1

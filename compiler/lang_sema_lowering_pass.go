@@ -443,17 +443,37 @@ func (v *canonicalizeVisitor) transformVariadics(file *ast.File) {
 				Type: &ast.ArrayType{Elt: info.elemType},
 				Elts: varArgs,
 			}
+			v.registerVariadicSliceLit(sliceLit, info.elemType)
 			call.Args = append(call.Args[:idx], sliceLit)
 		} else if len(call.Args) == idx {
 			// Zero variadic args: insert []T{}
 			sliceLit := &ast.CompositeLit{
 				Type: &ast.ArrayType{Elt: info.elemType},
 			}
+			v.registerVariadicSliceLit(sliceLit, info.elemType)
 			call.Args = append(call.Args, sliceLit)
 		}
 
 		return true
 	})
+}
+
+// registerVariadicSliceLit registers a variadic slice literal in TypesInfo so
+// downstream emitters can resolve the slice element type (e.g., List<Expr>
+// instead of List<object> in C#).
+func (v *canonicalizeVisitor) registerVariadicSliceLit(lit *ast.CompositeLit, elemTypeExpr ast.Expr) {
+	if v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+	// Resolve the element type from TypesInfo
+	if tv, ok := v.pkg.TypesInfo.Types[elemTypeExpr]; ok && tv.Type != nil {
+		sliceType := types.NewSlice(tv.Type)
+		v.pkg.TypesInfo.Types[lit] = types.TypeAndValue{Type: sliceType}
+		// Also register the ArrayType node
+		if arrType, ok := lit.Type.(*ast.ArrayType); ok {
+			v.pkg.TypesInfo.Types[arrType] = types.TypeAndValue{Type: sliceType}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2293,18 +2313,17 @@ func (v *canonicalizeVisitor) lowerTypeSwitch(ts *ast.TypeSwitchStmt) ast.Stmt {
 			continue
 		}
 
-		if i == len(typeCases)-1 {
-			// Last type case gets the default else block
-			ifStmt.Else = elseBlock
-		} else {
-			// All others chain to the next if
-			// elseBlock was set in the previous iteration
+		// For multi-type cases, buildTypeCaseIf returns a chain of if/else ifs.
+		// We need to attach the elseBlock to the LAST if in that chain, not the first.
+		lastIf := ifStmt
+		for {
+			next, ok := lastIf.Else.(*ast.IfStmt)
+			if !ok {
+				break
+			}
+			lastIf = next
 		}
-
-		// For non-last cases, set the else to the previous ifStmt
-		if i < len(typeCases)-1 {
-			ifStmt.Else = elseBlock
-		}
+		lastIf.Else = elseBlock
 
 		elseBlock = ifStmt
 	}
@@ -2342,16 +2361,23 @@ func (v *canonicalizeVisitor) buildTypeCaseIf(switchExpr ast.Expr, varName strin
 	}
 
 	// Multi-type case: case T1, T2: body
-	// Generate: if _, _ok := x.(T1); _ok { body } else if _, _ok := x.(T2); _ok { body }
-	// But this duplicates body. Instead, use a combined approach:
-	// We can't easily combine without || on ok vars, so generate chained if/else
-	// sharing the same body.
-	// For simplicity and correctness, handle multi-type as: first match wins
+	// In Go, multi-type case gives the variable the interface type (not concrete).
+	// We generate: if _, _ok := x.(T1); _ok { body } else if _, _ok := x.(T2); _ok { body }
+	// With no typed variable — if the original code used `v`, we rename it to the
+	// switch expression ident so it keeps its interface type.
 	var result *ast.IfStmt
 	for i := len(cc.List) - 1; i >= 0; i-- {
-		ifStmt := v.buildSingleTypeCaseIf(switchExpr, varName, cc.List[i], cc.Body)
+		// Pass "" for varName: multi-type case uses blank identifier for assertion
+		ifStmt := v.buildSingleTypeCaseIf(switchExpr, "", cc.List[i], cc.Body)
 		if ifStmt == nil {
 			continue
+		}
+		// If there was a variable name, rename it to the switch expression in the body.
+		// In Go multi-type case, the variable has interface type = same as switch expr.
+		if varName != "" {
+			if switchIdent, ok := switchExpr.(*ast.Ident); ok {
+				v.renameIdentInStmts(ifStmt.Body.List, varName, switchIdent.Name)
+			}
 		}
 		if result != nil {
 			ifStmt.Else = result

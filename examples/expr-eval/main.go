@@ -421,6 +421,216 @@ func testTypeSwitchDefault() {
 	}
 }
 
+// --- Multi-value type switch test ---
+
+func classifyExpr(e Expr) string {
+	switch e.(type) {
+	case Number, UnaryOp:
+		return "simple"
+	case BinOp:
+		return "compound"
+	default:
+		return "unknown"
+	}
+}
+
+func testTypeSwitchMultiCase() {
+	var e1 Expr = Number{value: 5}
+	if classifyExpr(e1) == "simple" {
+		fmt.Println("PASS: type switch multi-case number")
+	} else {
+		panic("FAIL: type switch multi-case number")
+	}
+
+	var operand Expr = Number{value: 3}
+	var e2 Expr = UnaryOp{op: "-", operand: operand}
+	if classifyExpr(e2) == "simple" {
+		fmt.Println("PASS: type switch multi-case unaryop")
+	} else {
+		panic("FAIL: type switch multi-case unaryop")
+	}
+
+	var left Expr = Number{value: 1}
+	var right Expr = Number{value: 2}
+	var e3 Expr = BinOp{op: "+", left: left, right: right}
+	if classifyExpr(e3) == "compound" {
+		fmt.Println("PASS: type switch multi-case binop")
+	} else {
+		panic("FAIL: type switch multi-case binop")
+	}
+}
+
+// --- Interface slice with nil elements test ---
+
+func testInterfaceSliceWithNil() {
+	exprs := []Expr{Number{value: 1}, nil, Number{value: 3}}
+	if safeEval(exprs[0]) == 1 {
+		fmt.Println("PASS: slice nil elem 0")
+	} else {
+		panic("FAIL: slice nil elem 0")
+	}
+	if safeEval(exprs[1]) == 0 {
+		fmt.Println("PASS: slice nil elem 1")
+	} else {
+		panic("FAIL: slice nil elem 1")
+	}
+	if safeEval(exprs[2]) == 3 {
+		fmt.Println("PASS: slice nil elem 2")
+	} else {
+		panic("FAIL: slice nil elem 2")
+	}
+}
+
+// --- Interface map value test ---
+
+func testInterfaceMap() {
+	m := make(map[string]Expr)
+	var ea Expr = Number{value: 10}
+	var eb Expr = Number{value: 20}
+	m["a"] = ea
+	m["b"] = eb
+	a := m["a"]
+	if a.Eval() == 10 {
+		fmt.Println("PASS: map value a")
+	} else {
+		panic("FAIL: map value a")
+	}
+	b := m["b"]
+	if b.Eval() == 20 {
+		fmt.Println("PASS: map value b")
+	} else {
+		panic("FAIL: map value b")
+	}
+}
+
+// --- Methods on non-struct types ---
+
+type ConstExpr int
+
+func (c ConstExpr) Eval() int {
+	return int(c)
+}
+
+func testNonStructMethod() {
+	var e Expr = ConstExpr(42)
+	if e.Eval() == 42 {
+		fmt.Println("PASS: non-struct method")
+	} else {
+		panic("FAIL: non-struct method")
+	}
+}
+
+// --- Interface variadic params test ---
+
+func sumExprs(exprs ...Expr) int {
+	total := 0
+	for i := 0; i < len(exprs); i++ {
+		total = total + exprs[i].Eval()
+	}
+	return total
+}
+
+func testVariadicInterface() {
+	var a Expr = Number{value: 10}
+	var b Expr = Number{value: 20}
+	var c Expr = Number{value: 30}
+	result := sumExprs(a, b, c)
+	if result == 60 {
+		fmt.Println("PASS: variadic interface")
+	} else {
+		panic("FAIL: variadic interface")
+	}
+}
+
+// --- Interface composition (embedded interfaces) ---
+
+type Evaler interface {
+	Eval() int
+}
+
+type Stringer interface {
+	String() string
+}
+
+type ExprFull interface {
+	Evaler
+	Stringer
+}
+
+type RichNumber struct {
+	value int
+	label string
+}
+
+func (r RichNumber) Eval() int {
+	return r.value
+}
+
+func (r RichNumber) String() string {
+	return r.label
+}
+
+func testInterfaceComposition() {
+	var ef ExprFull = RichNumber{value: 100, label: "hundred"}
+	if ef.Eval() == 100 {
+		fmt.Println("PASS: composition eval")
+	} else {
+		panic("FAIL: composition eval")
+	}
+	if ef.String() == "hundred" {
+		fmt.Println("PASS: composition string")
+	} else {
+		panic("FAIL: composition string")
+	}
+}
+
+func testComposedAsParam(ef ExprFull) int {
+	return ef.Eval()
+}
+
+func testComposedParam() {
+	var ef ExprFull = RichNumber{value: 55, label: "fifty-five"}
+	result := testComposedAsParam(ef)
+	if result == 55 {
+		fmt.Println("PASS: composed as param")
+	} else {
+		panic("FAIL: composed as param")
+	}
+}
+
+func makeExprFull(val int, lbl string) ExprFull {
+	var ef ExprFull = RichNumber{value: val, label: lbl}
+	return ef
+}
+
+func testComposedReturn() {
+	ef := makeExprFull(77, "seventy-seven")
+	if ef.Eval() == 77 {
+		fmt.Println("PASS: composed return eval")
+	} else {
+		panic("FAIL: composed return eval")
+	}
+	if ef.String() == "seventy-seven" {
+		fmt.Println("PASS: composed return string")
+	} else {
+		panic("FAIL: composed return string")
+	}
+}
+
+func evalAny(e Evaler) int {
+	return e.Eval()
+}
+
+func testComposedToEmbedded() {
+	var ef ExprFull = RichNumber{value: 33, label: "thirty-three"}
+	result := evalAny(ef)
+	if result == 33 {
+		fmt.Println("PASS: composed to embedded")
+	} else {
+		panic("FAIL: composed to embedded")
+	}
+}
+
 func main() {
 	testBasicEval()
 	testBinOpAdd()
@@ -443,4 +653,13 @@ func main() {
 	testTypeSwitch()
 	testTypeSwitchNoVar()
 	testTypeSwitchDefault()
+	testTypeSwitchMultiCase()
+	testInterfaceSliceWithNil()
+	testInterfaceMap()
+	testVariadicInterface()
+	testNonStructMethod()
+	testInterfaceComposition()
+	testComposedParam()
+	testComposedReturn()
+	testComposedToEmbedded()
 }
