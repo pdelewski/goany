@@ -696,6 +696,9 @@ func (e *RustEmitter) structHasInterfaceFieldsRecursive(structName string, visit
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
 										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										if fieldType == nil {
+											return true // unknown type from lowering — treat as interface-like
+										}
 										typeStr := fieldType.String()
 										if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") {
 											return true
@@ -744,6 +747,9 @@ func (e *RustEmitter) structHasFunctionFields(structName string) bool {
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
 										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										if fieldType == nil {
+											return true // unknown type from lowering — treat as func-like
+										}
 										typeStr := fieldType.String()
 										if strings.HasPrefix(typeStr, "func(") {
 											return true
@@ -793,6 +799,9 @@ func (e *RustEmitter) structCanDeriveCopy(structName string) bool {
 }
 
 func (e *RustEmitter) isCopyableType(t types.Type, visited map[string]bool) bool {
+	if t == nil {
+		return false
+	}
 	if named, ok := t.(*types.Named); ok {
 		name := named.Obj().Name()
 		if named.Obj().Pkg() != nil {
@@ -850,6 +859,9 @@ func (e *RustEmitter) structCanDeriveHash(structName string) bool {
 }
 
 func (e *RustEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
+	if t == nil {
+		return false
+	}
 	if named, ok := t.(*types.Named); ok {
 		name := named.Obj().Name()
 		if named.Obj().Pkg() != nil {
@@ -1486,7 +1498,12 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 			}
 			fieldName := field.Names[0].Name
 			fieldType := e.pkg.TypesInfo.Types[field.Type].Type
-			defaultVal := e.rustDefaultForGoType(fieldType)
+			var defaultVal string
+			if fieldType != nil {
+				defaultVal = e.rustDefaultForGoType(fieldType)
+			} else {
+				defaultVal = "None" // lowered interface field — use None as default
+			}
 			children = append(children, Leaf(WhiteSpace, "            "))
 			children = append(children, Leaf(Identifier, fieldName))
 			children = append(children, Leaf(Colon, ":"))

@@ -2426,6 +2426,141 @@ func deferReturnHelper(cond bool) int {
 	return 2
 }
 
+// --- Interface tests ---
+
+// Writer interface for testing interface lowering
+type Writer interface {
+	Write(data []byte) int
+}
+
+// Reader interface for testing interface lowering
+type Reader interface {
+	Read(buf []byte) int
+}
+
+// ReadWriter interface (superset of Writer and Reader)
+type ReadWriter interface {
+	Read(buf []byte) int
+	Write(data []byte) int
+}
+
+// File is a concrete type implementing Writer, Reader, and ReadWriter
+type File struct {
+	name    string
+	content []byte
+}
+
+func (f File) Write(data []byte) int {
+	return len(data)
+}
+
+func (f File) Read(buf []byte) int {
+	return len(buf)
+}
+
+// testInterfaceBasic tests basic interface dispatch
+func testInterfaceBasic() {
+	fmt.Println("=== Interface Basic ===")
+	f := File{name: "test.txt"}
+	var w Writer = f
+	result := w.Write([]byte{1, 2, 3})
+	if result == 3 {
+		fmt.Println("PASS: interface basic dispatch")
+	} else {
+		panic("FAIL: interface basic dispatch")
+	}
+}
+
+// testInterfaceMultiple tests multiple interfaces
+func testInterfaceMultiple() {
+	fmt.Println("=== Interface Multiple ===")
+	f := File{name: "test.txt"}
+	var w Writer = f
+	var r Reader = f
+	wResult := w.Write([]byte{1, 2, 3, 4})
+	rResult := r.Read([]byte{10, 20})
+	if wResult == 4 && rResult == 2 {
+		fmt.Println("PASS: interface multiple dispatch")
+	} else {
+		panic("FAIL: interface multiple dispatch")
+	}
+}
+
+// testInterfaceTypeAssert tests type assertion from interface to concrete
+func testInterfaceTypeAssert() {
+	fmt.Println("=== Interface Type Assert ===")
+	f := File{name: "assert.txt"}
+	var w Writer = f
+	f2 := w.(File)
+	if f2.name == "assert.txt" {
+		fmt.Println("PASS: interface type assert")
+	} else {
+		panic("FAIL: interface type assert")
+	}
+}
+
+// testInterfaceCommaOk tests comma-ok type assertion
+func testInterfaceCommaOk() {
+	fmt.Println("=== Interface Comma-Ok ===")
+	f := File{name: "commaok.txt"}
+	var w Writer = f
+	f2, ok := w.(File)
+	if ok && f2.name == "commaok.txt" {
+		fmt.Println("PASS: interface comma-ok success")
+	} else {
+		panic("FAIL: interface comma-ok success")
+	}
+}
+
+// testInterfaceNil tests nil interface handling
+func testInterfaceNil() {
+	fmt.Println("=== Interface Nil ===")
+	var w Writer
+	if w == nil {
+		fmt.Println("PASS: interface nil check")
+	} else {
+		panic("FAIL: interface nil check")
+	}
+
+	f := File{name: "nil.txt"}
+	w = f
+	if w != nil {
+		fmt.Println("PASS: interface not nil check")
+	} else {
+		panic("FAIL: interface not nil check")
+	}
+}
+
+// nilWriterHelper returns nil Writer
+func nilWriterHelper() Writer {
+	return nil
+}
+
+// testInterfaceNilReturn tests nil return for interface types
+func testInterfaceNilReturn() {
+	fmt.Println("=== Interface Nil Return ===")
+	w := nilWriterHelper()
+	if w == nil {
+		fmt.Println("PASS: interface nil return")
+	} else {
+		panic("FAIL: interface nil return")
+	}
+}
+
+// testInterfaceToInterface tests interface-to-interface assignment (superset to subset)
+func testInterfaceToInterface() {
+	fmt.Println("=== Interface to Interface ===")
+	f := File{name: "iface2iface.txt"}
+	var rw ReadWriter = f
+	var w Writer = rw
+	result := w.Write([]byte{1, 2, 3, 4, 5})
+	if result == 5 {
+		fmt.Println("PASS: interface to interface dispatch")
+	} else {
+		panic("FAIL: interface to interface dispatch")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2507,6 +2642,13 @@ func main() {
 	testDeferSingle()
 	testDeferLIFO()
 	testDeferWithReturn()
+	testInterfaceBasic()
+	testInterfaceMultiple()
+	testInterfaceTypeAssert()
+	testInterfaceCommaOk()
+	testInterfaceNil()
+	testInterfaceNilReturn()
+	testInterfaceToInterface()
 
 	fmt.Println("=== Done ===")
 }

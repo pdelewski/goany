@@ -175,16 +175,20 @@ func main() {
 	methodLowering := &compiler.MethodReceiverLoweringPass{}
 	frontendPasses = append(frontendPasses, methodLowering)
 
-	// Pass 5: Semantic analysis (after method receiver lowering)
+	// Pass 5: Interface lowering (after method receiver lowering, before pointer lowering)
+	ifaceLowering := &compiler.InterfaceLoweringPass{Backends: enabledBackends}
+	frontendPasses = append(frontendPasses, ifaceLowering)
+
+	// Pass 6: Semantic analysis (after method receiver + interface lowering)
 	semaChecker2 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema2 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker2}
 	frontendPasses = append(frontendPasses, sema2)
 
-	// Pass 6: Pointer lowering
+	// Pass 7: Pointer lowering
 	ptrLowering := &compiler.PointerLoweringPass{}
 	frontendPasses = append(frontendPasses, ptrLowering)
 
-	// Pass 6: Semantic analysis (after pointer transform)
+	// Pass 8: Semantic analysis (after pointer transform)
 	semaChecker3 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema3 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker3}
 	frontendPasses = append(frontendPasses, sema3)
