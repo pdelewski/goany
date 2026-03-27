@@ -341,6 +341,86 @@ func testNilLogger() {
 	}
 }
 
+// --- Type switch tests ---
+
+func describeExpr(e Expr) string {
+	switch v := e.(type) {
+	case Number:
+		if v.value >= 0 {
+			return "positive-or-zero number"
+		}
+		return "negative number"
+	case BinOp:
+		return "binop:" + v.op
+	case UnaryOp:
+		return "unaryop:" + v.op
+	default:
+		return "unknown"
+	}
+}
+
+func testTypeSwitch() {
+	var e1 Expr = Number{value: 42}
+	if describeExpr(e1) == "positive-or-zero number" {
+		fmt.Println("PASS: type switch number")
+	} else {
+		panic("FAIL: type switch number")
+	}
+
+	var left Expr = Number{value: 1}
+	var right Expr = Number{value: 2}
+	var e2 Expr = BinOp{op: "+", left: left, right: right}
+	if describeExpr(e2) == "binop:+" {
+		fmt.Println("PASS: type switch binop")
+	} else {
+		panic("FAIL: type switch binop")
+	}
+
+	var operand Expr = Number{value: 5}
+	var e3 Expr = UnaryOp{op: "-", operand: operand}
+	if describeExpr(e3) == "unaryop:-" {
+		fmt.Println("PASS: type switch unaryop")
+	} else {
+		panic("FAIL: type switch unaryop")
+	}
+}
+
+func testTypeSwitchNoVar() {
+	var e Expr = Number{value: 10}
+	result := ""
+	switch e.(type) {
+	case Number:
+		result = "number"
+	case BinOp:
+		result = "binop"
+	default:
+		result = "other"
+	}
+	if result == "number" {
+		fmt.Println("PASS: type switch no var")
+	} else {
+		panic("FAIL: type switch no var")
+	}
+}
+
+func testTypeSwitchDefault() {
+	var left Expr = Number{value: 1}
+	var right Expr = Number{value: 2}
+	var e Expr = BinOp{op: "+", left: left, right: right}
+	result := ""
+	switch e.(type) {
+	case Number:
+		result = "number"
+	default:
+		result = "not-number"
+	}
+	if result == "not-number" {
+		fmt.Println("PASS: type switch default")
+	} else {
+		panic("FAIL: type switch default")
+	}
+}
+
 func main() {
 	testBasicEval()
 	testBinOpAdd()
@@ -360,4 +440,7 @@ func main() {
 	testReassignment()
 	testLoggerReassignment()
 	testNilLogger()
+	testTypeSwitch()
+	testTypeSwitchNoVar()
+	testTypeSwitchDefault()
 }

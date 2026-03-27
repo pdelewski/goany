@@ -1010,12 +1010,9 @@ func (sema *SemaChecker) checkStructEmbedding(node *ast.StructType) {
 // Field name conflicts are now handled by LangSemaLoweringPass.transformFieldConflicts
 // which renames the field instead of rejecting the code.
 
-// PreVisitTypeSwitchStmt checks for type switch statements (not supported)
+// PreVisitTypeSwitchStmt — type switch is now supported via lowering to if/else chains.
 func (sema *SemaChecker) PreVisitTypeSwitchStmt(node *ast.TypeSwitchStmt, indent int) {
-	sema.reportSemaError(node.Pos(),
-		"type switch statement is not allowed",
-		"Type switch statements are not supported in goany.",
-		[]string{"Use explicit type assertions or redesign without type switches."})
+	// No-op: type switch is lowered by LangSemaLoweringPass before sema runs on the result.
 }
 
 // isNilIdent checks if an expression is the nil identifier

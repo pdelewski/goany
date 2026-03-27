@@ -2833,25 +2833,29 @@ func (e *CSharpEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
-					Leaf(WhiteSpace, ind),
-					LeafTag(Keyword, "var ", TagCSharp),
-					Leaf(Identifier, valName),
-					Leaf(Assignment, " = "),
-					Leaf(Identifier, okName),
-					Leaf(Identifier, " ? "),
-					Leaf(LeftParen, "("),
-					Leaf(Identifier, assertType),
-					Leaf(RightParen, ")"),
-					Leaf(Identifier, xExpr),
-					Leaf(Identifier, " : "),
-					LeafTag(Keyword, "default", TagCSharp),
-					Leaf(LeftParen, "("),
-					Leaf(Identifier, assertType),
-					Leaf(RightParen, ")"),
-					Leaf(Semicolon, ";"),
-					Leaf(NewLine, "\n"),
-				))
+				// Skip value declaration for blank identifier _ (Go discard)
+				// C# treats _ as a real variable that can't be redeclared in nested scopes
+				if valName != "_" {
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						LeafTag(Keyword, "var ", TagCSharp),
+						Leaf(Identifier, valName),
+						Leaf(Assignment, " = "),
+						Leaf(Identifier, okName),
+						Leaf(Identifier, " ? "),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, assertType),
+						Leaf(RightParen, ")"),
+						Leaf(Identifier, xExpr),
+						Leaf(Identifier, " : "),
+						LeafTag(Keyword, "default", TagCSharp),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, assertType),
+						Leaf(RightParen, ")"),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
+				}
 			} else {
 				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
