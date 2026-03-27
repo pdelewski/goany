@@ -1373,3 +1373,170 @@ func main() {
 	assertValidGo(t, result)
 	assertContains(t, result, "range s")
 }
+
+// =============================================
+// Defer Lowering tests
+// =============================================
+
+func TestCanonicalizeDefer_Basic(t *testing.T) {
+	src := `package test
+
+func cleanup() {}
+
+func f() int {
+	defer cleanup()
+	return 1
+}
+`
+	result := runCanonicalize(t, src, BackendCpp)
+	assertValidGo(t, result)
+	assertNotContains(t, result, "defer")
+	assertContains(t, result, "cleanup()")
+	assertContains(t, result, "return 1")
+}
+
+func TestCanonicalizeDefer_MultipleLIFO(t *testing.T) {
+	src := `package test
+
+func a() {}
+func b() {}
+
+func f() int {
+	defer a()
+	defer b()
+	return 0
+}
+`
+	result := runCanonicalize(t, src, BackendCpp)
+	assertValidGo(t, result)
+	assertNotContains(t, result, "defer")
+	// b() should appear before a() (LIFO) — use indented calls to avoid matching decls
+	bIdx := strings.Index(result, "\tb()")
+	aIdx := strings.Index(result, "\ta()")
+	retIdx := strings.Index(result, "return 0")
+	if bIdx < 0 || aIdx < 0 || retIdx < 0 || bIdx >= aIdx || aIdx >= retIdx {
+		t.Errorf("expected LIFO order b() then a() then return 0, got:\n%s", result)
+	}
+}
+
+func TestCanonicalizeDefer_MultipleReturns(t *testing.T) {
+	src := `package test
+
+func cleanup() {}
+
+func f(x int) int {
+	defer cleanup()
+	if x > 0 {
+		return 1
+	}
+	return 2
+}
+`
+	result := runCanonicalize(t, src, BackendCpp)
+	assertValidGo(t, result)
+	assertNotContains(t, result, "defer")
+	// cleanup() should appear before both returns — check ordering
+	// Find cleanup before "return 1" inside the if block
+	ret1Idx := strings.Index(result, "return 1")
+	cleanup1Idx := strings.LastIndex(result[:ret1Idx], "cleanup()")
+	if ret1Idx < 0 || cleanup1Idx < 0 {
+		t.Errorf("expected cleanup() before return 1, got:\n%s", result)
+	}
+	// Find cleanup before "return 2"
+	ret2Idx := strings.Index(result, "return 2")
+	cleanup2Idx := strings.LastIndex(result[:ret2Idx], "cleanup()")
+	if ret2Idx < 0 || cleanup2Idx < 0 || cleanup2Idx == cleanup1Idx {
+		t.Errorf("expected separate cleanup() before return 2, got:\n%s", result)
+	}
+}
+
+func TestCanonicalizeDefer_ImplicitReturn(t *testing.T) {
+	src := `package test
+
+func cleanup() {}
+
+func f() {
+	defer cleanup()
+	println("hello")
+}
+`
+	result := runCanonicalize(t, src, BackendCpp)
+	assertValidGo(t, result)
+	assertNotContains(t, result, "defer")
+	// cleanup() should be appended at end (no explicit return)
+	assertContains(t, result, "cleanup()")
+}
+
+func TestCanonicalizeDefer_ArgCapture(t *testing.T) {
+	src := `package test
+
+func use(x int) {}
+
+func f() {
+	x := 10
+	defer use(x)
+	x = 20
+	return
+}
+`
+	result := runCanonicalize(t, src, BackendCpp)
+	assertValidGo(t, result)
+	assertNotContains(t, result, "defer")
+	// Should have a temp capture like _t0 := x
+	assertContains(t, result, "_t")
+	assertContains(t, result, ":= x")
+}
+
+func TestCanonicalizeDefer_LiteralArgs(t *testing.T) {
+	src := `package test
+
+func use(x int, s string) {}
+
+func f() int {
+	defer use(1, "hi")
+	return 0
+}
+`
+	result := runCanonicalize(t, src, BackendCpp)
+	assertValidGo(t, result)
+	assertNotContains(t, result, "defer")
+	// Literals should NOT be captured to temps
+	assertContains(t, result, `use(1, "hi")`)
+	assertNotContains(t, result, "_t")
+}
+
+func TestCanonicalizeDefer_SkipGoBackend(t *testing.T) {
+	src := `package test
+
+func cleanup() {}
+
+func f() int {
+	defer cleanup()
+	return 1
+}
+`
+	result := runCanonicalize(t, src, BackendGo)
+	assertValidGo(t, result)
+	// With only Go backend, defer should be preserved
+	assertContains(t, result, "defer cleanup()")
+}
+
+func TestCanonicalizeDefer_MethodCall(t *testing.T) {
+	src := `package test
+
+type Obj struct{}
+
+func (o Obj) Close() {}
+
+func f() int {
+	obj := Obj{}
+	defer obj.Close()
+	return 0
+}
+`
+	result := runCanonicalize(t, src, BackendCpp)
+	assertValidGo(t, result)
+	assertNotContains(t, result, "defer")
+	assertContains(t, result, "obj.Close()")
+	assertContains(t, result, "return 0")
+}

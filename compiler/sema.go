@@ -18,7 +18,7 @@ import (
 // SECTION 1: Unsupported Go Features (Errors)
 // ============================================
 // - Pointers (*T, &x)
-// - Defer statements
+// - Defer inside loops (anti-pattern)
 // - Goroutines (go keyword)
 // - Channels (chan T)
 // - Select statements
@@ -485,7 +485,19 @@ func baseExprReferencesIdent(expr ast.Expr, name string) bool {
 	return false
 }
 
-// Note: Structural checks for DeferStmt, GoStmt, ChanType, SelectStmt, LabeledStmt
+// PreVisitDeferStmt checks for defer statements inside loops (anti-pattern, incorrect lowering)
+func (sema *SemaChecker) PreVisitDeferStmt(node *ast.DeferStmt, indent int) {
+	if sema.insideLoopDepth > 0 {
+		sema.reportSemaError(node.Pos(),
+			"defer inside loop is not supported",
+			"Defer statements inside for/range loops are not allowed.\n  The transpiler lowers defer to explicit cleanup calls, which cannot correctly\n  replicate per-iteration defer semantics.",
+			[]string{
+				"Move the defer outside the loop, or call the cleanup function explicitly.",
+			})
+	}
+}
+
+// Note: Structural checks for GoStmt, ChanType, SelectStmt, LabeledStmt
 // are handled by the SyntaxChecker (handwritten rules in syntax_checker.go).
 
 // PreVisitBranchStmt checks for goto statements which are not supported

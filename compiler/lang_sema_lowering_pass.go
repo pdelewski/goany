@@ -72,6 +72,12 @@ func (v *canonicalizeVisitor) transform() {
 		v.transformMakeCapacity(file)
 		v.transformIntegerRange(file)
 
+		// Defer lowering — skip when ONLY Go backend is enabled (Go has native defer).
+		// Must run after transformNamedReturns so bare returns are already explicit.
+		if v.backends & ^BackendGo != 0 {
+			v.transformDefer(file)
+		}
+
 		// Backend-conditional transforms (preserve 1:1 where target supports it)
 		if v.backends.Has(BackendCpp) {
 			v.transformMultiAssigns(file)
@@ -572,6 +578,248 @@ func (v *canonicalizeVisitor) transformIntegerRange(file *ast.File) {
 			*list = newList
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Defer Lowering
+// ---------------------------------------------------------------------------
+
+// transformDefer lowers `defer f(args...)` to explicit cleanup calls inserted
+// before every return point (LIFO order). Arguments are captured at the defer
+// site into temp variables when they are not simple literals or constants.
+//
+// Pattern matched:
+//
+//	func foo() int {
+//	    defer cleanup()
+//	    if cond { return 1 }
+//	    return 2
+//	}
+//
+// Transform:
+//
+//	func foo() int {
+//	    if cond { cleanup(); return 1 }
+//	    cleanup()
+//	    return 2
+//	}
+//
+// Multiple defers are inserted in LIFO order (last defer first).
+//
+// Argument capture:
+//
+//	x := compute()
+//	defer f(x)       →   _t0 := x        // capture at defer site
+//	x = other()          x = other()
+//	return               f(_t0); return   // use captured value
+func (v *canonicalizeVisitor) transformDefer(file *ast.File) {
+	for _, decl := range file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if !ok || funcDecl.Body == nil {
+			continue
+		}
+		v.lowerDeferInFunc(funcDecl)
+	}
+}
+
+// deferInfo holds a collected defer statement's captured call and any
+// temp variable assignments needed to capture arguments.
+type deferInfo struct {
+	captures []*ast.AssignStmt // temp := arg assignments (inserted at defer site)
+	call     *ast.CallExpr     // the call with args replaced by temps where needed
+}
+
+// lowerDeferInFunc processes a single function declaration:
+// 1. Collect defer statements and build argument captures.
+// 2. Remove defer stmts, insert captures at original sites.
+// 3. Insert deferred calls (LIFO) before every return statement.
+func (v *canonicalizeVisitor) lowerDeferInFunc(funcDecl *ast.FuncDecl) {
+	body := funcDecl.Body
+	if body == nil {
+		return
+	}
+
+	// Phase 1: Collect defers from the top-level body.
+	var defers []deferInfo
+	var newBody []ast.Stmt
+	for _, stmt := range body.List {
+		deferStmt, ok := stmt.(*ast.DeferStmt)
+		if !ok {
+			newBody = append(newBody, stmt)
+			continue
+		}
+		// Build captures for non-trivial arguments
+		di := v.buildDeferInfo(deferStmt)
+		defers = append(defers, di)
+		// Insert capture assignments at the defer site (if any)
+		for _, cap := range di.captures {
+			newBody = append(newBody, cap)
+		}
+	}
+
+	if len(defers) == 0 {
+		return // no defers to lower
+	}
+
+	body.List = newBody
+
+	// Phase 2: Build the LIFO call list (reverse order).
+	var lifoCalls []*ast.CallExpr
+	for i := len(defers) - 1; i >= 0; i-- {
+		lifoCalls = append(lifoCalls, defers[i].call)
+	}
+
+	// Phase 3: Insert deferred calls before every return statement.
+	v.insertDeferredBeforeReturns(&body.List, lifoCalls)
+
+	// Phase 4: If the function doesn't end with a return, append cleanup at end.
+	if len(body.List) == 0 || !v.endsWithReturn(body.List) {
+		for _, call := range lifoCalls {
+			body.List = append(body.List, &ast.ExprStmt{X: v.cloneCall(call)})
+		}
+	}
+}
+
+// buildDeferInfo creates capture assignments and a rewritten call for a defer stmt.
+func (v *canonicalizeVisitor) buildDeferInfo(deferStmt *ast.DeferStmt) deferInfo {
+	call := deferStmt.Call
+	di := deferInfo{}
+
+	// Clone the call's args, replacing non-trivial ones with temp captures.
+	newArgs := make([]ast.Expr, len(call.Args))
+	for i, arg := range call.Args {
+		if v.needsCapture(arg) {
+			tmpAssign, tmpObj := v.createTempAssign(arg, deferStmt.Pos())
+			di.captures = append(di.captures, tmpAssign)
+			newArgs[i] = v.createTempRef(tmpObj, deferStmt.Pos())
+		} else {
+			newArgs[i] = arg
+		}
+	}
+
+	di.call = &ast.CallExpr{
+		Fun:    call.Fun,
+		Args:   newArgs,
+		Lparen: call.Lparen,
+		Rparen: call.Rparen,
+	}
+	return di
+}
+
+// needsCapture returns true if an argument expression needs to be captured
+// into a temp variable at the defer site. Literals, function names, and
+// composite literals don't need capture.
+func (v *canonicalizeVisitor) needsCapture(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return false // literal: 1, "hi", etc.
+	case *ast.FuncLit:
+		return false // closure literal
+	case *ast.CompositeLit:
+		return false // []int{1,2,3}, Struct{}, etc.
+	case *ast.Ident:
+		// Constants and function names don't need capture.
+		if v.pkg != nil && v.pkg.TypesInfo != nil {
+			if obj := v.pkg.TypesInfo.Uses[e]; obj != nil {
+				if _, isConst := obj.(*types.Const); isConst {
+					return false
+				}
+				if _, isFunc := obj.(*types.Func); isFunc {
+					return false
+				}
+			}
+		}
+		return true // variable — needs capture
+	default:
+		return true // selector, call, index, etc. — needs capture
+	}
+}
+
+// cloneCall creates a shallow copy of a CallExpr so each insertion site
+// has its own AST node (required since a single node cannot appear at
+// multiple positions in the tree).
+func (v *canonicalizeVisitor) cloneCall(call *ast.CallExpr) *ast.CallExpr {
+	argsCopy := make([]ast.Expr, len(call.Args))
+	copy(argsCopy, call.Args)
+	return &ast.CallExpr{
+		Fun:    call.Fun,
+		Args:   argsCopy,
+		Lparen: call.Lparen,
+		Rparen: call.Rparen,
+	}
+}
+
+// insertDeferredBeforeReturns walks a statement list recursively and splices
+// deferred calls (as ExprStmts) before every *ast.ReturnStmt. It does NOT
+// recurse into *ast.FuncLit (nested functions have their own defer scope).
+func (v *canonicalizeVisitor) insertDeferredBeforeReturns(list *[]ast.Stmt, calls []*ast.CallExpr) {
+	var newList []ast.Stmt
+	changed := false
+	for _, stmt := range *list {
+		// Recurse into sub-blocks (if/else/switch/for) but NOT FuncLit.
+		switch s := stmt.(type) {
+		case *ast.IfStmt:
+			v.insertDeferredBeforeReturns(&s.Body.List, calls)
+			if s.Else != nil {
+				v.insertDeferredInElse(s, calls)
+			}
+		case *ast.SwitchStmt:
+			if s.Body != nil {
+				for _, cc := range s.Body.List {
+					if clause, ok := cc.(*ast.CaseClause); ok {
+						v.insertDeferredBeforeReturns(&clause.Body, calls)
+					}
+				}
+			}
+		case *ast.ForStmt:
+			if s.Body != nil {
+				v.insertDeferredBeforeReturns(&s.Body.List, calls)
+			}
+		case *ast.RangeStmt:
+			if s.Body != nil {
+				v.insertDeferredBeforeReturns(&s.Body.List, calls)
+			}
+		case *ast.BlockStmt:
+			v.insertDeferredBeforeReturns(&s.List, calls)
+		}
+
+		if ret, ok := stmt.(*ast.ReturnStmt); ok {
+			// Insert deferred calls before this return.
+			for _, call := range calls {
+				newList = append(newList, &ast.ExprStmt{X: v.cloneCall(call)})
+			}
+			newList = append(newList, ret)
+			changed = true
+		} else {
+			newList = append(newList, stmt)
+		}
+	}
+	if changed {
+		*list = newList
+	}
+}
+
+// insertDeferredInElse handles the else branch of an if statement, which can be
+// either a *ast.BlockStmt or another *ast.IfStmt (else-if chain).
+func (v *canonicalizeVisitor) insertDeferredInElse(ifStmt *ast.IfStmt, calls []*ast.CallExpr) {
+	switch e := ifStmt.Else.(type) {
+	case *ast.BlockStmt:
+		v.insertDeferredBeforeReturns(&e.List, calls)
+	case *ast.IfStmt:
+		v.insertDeferredBeforeReturns(&e.Body.List, calls)
+		if e.Else != nil {
+			v.insertDeferredInElse(e, calls)
+		}
+	}
+}
+
+// endsWithReturn checks if the last statement in a list is a return statement.
+func (v *canonicalizeVisitor) endsWithReturn(list []ast.Stmt) bool {
+	if len(list) == 0 {
+		return false
+	}
+	_, ok := list[len(list)-1].(*ast.ReturnStmt)
+	return ok
 }
 
 // ===========================================================================
