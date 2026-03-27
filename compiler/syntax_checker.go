@@ -82,10 +82,8 @@ func (sc *SyntaxChecker) PreVisitGoStmt(node *ast.GoStmt, indent int) {
 		"Goroutines (go keyword) are not supported.\n  GoAny targets languages without built-in goroutine equivalents.")
 }
 
-func (sc *SyntaxChecker) PreVisitDeferStmt(node *ast.DeferStmt, indent int) {
-	sc.reportSyntaxError(node.Pos(), "unsupported construct",
-		"Defer statements are not supported.\n  Defer has no direct equivalent in all target languages.")
-}
+// Defer statements are handled by LangSemaLoweringPass.transformDefer.
+// func (sc *SyntaxChecker) PreVisitDeferStmt — intentionally removed.
 
 func (sc *SyntaxChecker) PreVisitSelectStmt(node *ast.SelectStmt, indent int) {
 	sc.reportSyntaxError(node.Pos(), "unsupported construct",

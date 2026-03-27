@@ -1,6 +1,8 @@
 package main
 
-// ERROR: Defer statements are not supported
+// ERROR: defer inside loop is not supported
 func main() {
-	defer println("cleanup") // error: defer not allowed
+	for i := 0; i < 10; i++ {
+		defer println(i) // error: defer inside loop
+	}
 }

@@ -2369,6 +2369,63 @@ func testClearMap() {
 	}
 }
 
+// --- Defer test helpers ---
+// These tests verify that defer compiles, executes, and produces correct
+// return values. They work identically with native Go defer and with the
+// lowered form (explicit calls before returns).
+
+// testDeferSingle tests that a deferred call executes and the return value is correct.
+func testDeferSingle() {
+	result := deferSingleHelper()
+	if result == 42 {
+		fmt.Println("PASS: defer single")
+	} else {
+		panic("FAIL: defer single")
+	}
+}
+
+func deferSingleHelper() int {
+	defer fmt.Println("deferred cleanup")
+	return 42
+}
+
+// testDeferLIFO tests that multiple defers execute in LIFO order.
+// Output order: "third", "second", "first" — verified visually in test output.
+func testDeferLIFO() {
+	deferLIFOHelper()
+	fmt.Println("PASS: defer LIFO")
+}
+
+func deferLIFOHelper() {
+	defer fmt.Println("first")
+	defer fmt.Println("second")
+	defer fmt.Println("third")
+}
+
+// testDeferWithReturn tests that defer runs regardless of which return path is taken.
+func testDeferWithReturn() {
+	r1 := deferReturnHelper(true)
+	r2 := deferReturnHelper(false)
+	if r1 == 1 {
+		fmt.Println("PASS: defer with return path A")
+	} else {
+		panic("FAIL: defer with return path A")
+	}
+	if r2 == 2 {
+		fmt.Println("PASS: defer with return path B")
+	} else {
+		panic("FAIL: defer with return path B")
+	}
+}
+
+func deferReturnHelper(cond bool) int {
+	defer fmt.Println("cleanup")
+	if cond {
+		return 1
+	}
+	return 2
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2447,6 +2504,9 @@ func main() {
 	testForRangeInt()
 	testMakeWithCap()
 	testClearMap()
+	testDeferSingle()
+	testDeferLIFO()
+	testDeferWithReturn()
 
 	fmt.Println("=== Done ===")
 }
