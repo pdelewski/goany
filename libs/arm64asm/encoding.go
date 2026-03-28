@@ -115,17 +115,18 @@ func encodeCBZ(sf int, op int, imm19 int, rt int) []byte {
 
 // encodeInstruction encodes a single parsed instruction into bytes
 func encodeInstruction(instr ParsedInstr) ([]byte, string) {
+	mnemonic := instr.Mnemonic
 	ops := instr.Operands
 	condCode := instr.CondCode
 	nops := len(ops)
 
 	// --- System instructions ---
-	if strEqual(instr.Mnemonic, "NOP") {
+	if strEqual(mnemonic, "NOP") {
 		// NOP = 0xD503201F, built from smaller parts to avoid C# int overflow
 		return emitLE32((0xD5 << 24) | (0x03 << 16) | (0x20 << 8) | 0x1F), ""
 	}
 
-	if strEqual(instr.Mnemonic, "SVC") {
+	if strEqual(mnemonic, "SVC") {
 		imm := 0
 		if nops > 0 && ops[0].Kind == OpndImm {
 			imm = ops[0].Imm
@@ -135,7 +136,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 		return emitLE32(word), ""
 	}
 
-	if strEqual(instr.Mnemonic, "BRK") {
+	if strEqual(mnemonic, "BRK") {
 		imm := 0
 		if nops > 0 && ops[0].Kind == OpndImm {
 			imm = ops[0].Imm
@@ -146,7 +147,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- Branches ---
-	if strEqual(instr.Mnemonic, "B") {
+	if strEqual(mnemonic, "B") {
 		if nops > 0 {
 			if ops[0].Kind == OpndImm {
 				pcRel := ops[0].Imm
@@ -157,7 +158,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 		return []byte{}, "B: expected label or immediate operand"
 	}
 
-	if strEqual(instr.Mnemonic, "BL") {
+	if strEqual(mnemonic, "BL") {
 		if nops > 0 {
 			if ops[0].Kind == OpndImm {
 				pcRel := ops[0].Imm
@@ -168,7 +169,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 		return []byte{}, "BL: expected label or immediate operand"
 	}
 
-	if strEqual(instr.Mnemonic, "B.COND") {
+	if strEqual(mnemonic, "B.COND") {
 		if nops > 0 && ops[0].Kind == OpndImm {
 			pcRel := ops[0].Imm
 			imm19 := (pcRel >> 2) & 0x7FFFF
@@ -177,21 +178,21 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 		return []byte{}, "B.cond: expected label or immediate operand"
 	}
 
-	if strEqual(instr.Mnemonic, "BR") {
+	if strEqual(mnemonic, "BR") {
 		if nops > 0 && ops[0].Kind == OpndReg {
 			return encodeBranchReg(0, ops[0].Reg), ""
 		}
 		return []byte{}, "BR: expected register operand"
 	}
 
-	if strEqual(instr.Mnemonic, "BLR") {
+	if strEqual(mnemonic, "BLR") {
 		if nops > 0 && ops[0].Kind == OpndReg {
 			return encodeBranchReg(1, ops[0].Reg), ""
 		}
 		return []byte{}, "BLR: expected register operand"
 	}
 
-	if strEqual(instr.Mnemonic, "RET") {
+	if strEqual(mnemonic, "RET") {
 		rn := 30 // default X30
 		if nops > 0 && ops[0].Kind == OpndReg {
 			rn = ops[0].Reg
@@ -200,7 +201,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- CBZ/CBNZ ---
-	if strEqual(instr.Mnemonic, "CBZ") {
+	if strEqual(mnemonic, "CBZ") {
 		if nops >= 2 && ops[0].Kind == OpndReg && ops[1].Kind == OpndImm {
 			sf := 1
 			if ops[0].Is32 {
@@ -213,7 +214,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 		return []byte{}, "CBZ: expected Rt, label"
 	}
 
-	if strEqual(instr.Mnemonic, "CBNZ") {
+	if strEqual(mnemonic, "CBNZ") {
 		if nops >= 2 && ops[0].Kind == OpndReg && ops[1].Kind == OpndImm {
 			sf := 1
 			if ops[0].Is32 {
@@ -227,33 +228,33 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- MOV aliases ---
-	if strEqual(instr.Mnemonic, "MOV") {
+	if strEqual(mnemonic, "MOV") {
 		return encodeMov(ops, nops)
 	}
 
 	// --- MOVZ, MOVK, MOVN ---
-	if strEqual(instr.Mnemonic, "MOVZ") {
+	if strEqual(mnemonic, "MOVZ") {
 		return encodeMoveWideInstr(0x02, ops, nops) // opc=10
 	}
-	if strEqual(instr.Mnemonic, "MOVK") {
+	if strEqual(mnemonic, "MOVK") {
 		return encodeMoveWideInstr(0x03, ops, nops) // opc=11
 	}
-	if strEqual(instr.Mnemonic, "MOVN") {
+	if strEqual(mnemonic, "MOVN") {
 		return encodeMoveWideInstr(0x00, ops, nops) // opc=00
 	}
 
 	// --- CMP alias (SUBS with ZR dest) ---
-	if strEqual(instr.Mnemonic, "CMP") {
+	if strEqual(mnemonic, "CMP") {
 		return encodeCmp(ops, nops)
 	}
 
 	// --- CMN alias (ADDS with ZR dest) ---
-	if strEqual(instr.Mnemonic, "CMN") {
+	if strEqual(mnemonic, "CMN") {
 		return encodeCmn(ops, nops)
 	}
 
 	// --- TST alias (ANDS with ZR dest) ---
-	if strEqual(instr.Mnemonic, "TST") {
+	if strEqual(mnemonic, "TST") {
 		if nops >= 2 && ops[0].Kind == OpndReg && ops[1].Kind == OpndReg {
 			sf := 1
 			if ops[0].Is32 {
@@ -272,7 +273,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- NEG alias (SUB from ZR) ---
-	if strEqual(instr.Mnemonic, "NEG") {
+	if strEqual(mnemonic, "NEG") {
 		if nops >= 2 && ops[0].Kind == OpndReg && ops[1].Kind == OpndReg {
 			sf := 1
 			if ops[0].Is32 {
@@ -284,7 +285,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- MVN alias (ORN from ZR) ---
-	if strEqual(instr.Mnemonic, "MVN") {
+	if strEqual(mnemonic, "MVN") {
 		if nops >= 2 && ops[0].Kind == OpndReg && ops[1].Kind == OpndReg {
 			sf := 1
 			if ops[0].Is32 {
@@ -297,39 +298,39 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- ADD/ADDS ---
-	if strEqual(instr.Mnemonic, "ADD") || strEqual(instr.Mnemonic, "ADDS") {
+	if strEqual(mnemonic, "ADD") || strEqual(mnemonic, "ADDS") {
 		s := 0
-		if strEqual(instr.Mnemonic, "ADDS") {
+		if strEqual(mnemonic, "ADDS") {
 			s = 1
 		}
 		return encodeAddSub(0, s, ops, nops)
 	}
 
 	// --- SUB/SUBS ---
-	if strEqual(instr.Mnemonic, "SUB") || strEqual(instr.Mnemonic, "SUBS") {
+	if strEqual(mnemonic, "SUB") || strEqual(mnemonic, "SUBS") {
 		s := 0
-		if strEqual(instr.Mnemonic, "SUBS") {
+		if strEqual(mnemonic, "SUBS") {
 			s = 1
 		}
 		return encodeAddSub(1, s, ops, nops)
 	}
 
 	// --- Logical register: AND, ORR, EOR, ANDS ---
-	if strEqual(instr.Mnemonic, "AND") {
+	if strEqual(mnemonic, "AND") {
 		return encodeLogical(0, ops, nops) // opc=00
 	}
-	if strEqual(instr.Mnemonic, "ORR") {
+	if strEqual(mnemonic, "ORR") {
 		return encodeLogical(1, ops, nops) // opc=01
 	}
-	if strEqual(instr.Mnemonic, "EOR") {
+	if strEqual(mnemonic, "EOR") {
 		return encodeLogical(2, ops, nops) // opc=10
 	}
-	if strEqual(instr.Mnemonic, "ANDS") {
+	if strEqual(mnemonic, "ANDS") {
 		return encodeLogical(3, ops, nops) // opc=11
 	}
 
 	// --- MUL ---
-	if strEqual(instr.Mnemonic, "MUL") {
+	if strEqual(mnemonic, "MUL") {
 		if nops >= 3 && ops[0].Kind == OpndReg && ops[1].Kind == OpndReg && ops[2].Kind == OpndReg {
 			sf := 1
 			if ops[0].Is32 {
@@ -341,7 +342,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- SDIV ---
-	if strEqual(instr.Mnemonic, "SDIV") {
+	if strEqual(mnemonic, "SDIV") {
 		if nops >= 3 && ops[0].Kind == OpndReg && ops[1].Kind == OpndReg && ops[2].Kind == OpndReg {
 			sf := 1
 			if ops[0].Is32 {
@@ -353,7 +354,7 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- UDIV ---
-	if strEqual(instr.Mnemonic, "UDIV") {
+	if strEqual(mnemonic, "UDIV") {
 		if nops >= 3 && ops[0].Kind == OpndReg && ops[1].Kind == OpndReg && ops[2].Kind == OpndReg {
 			sf := 1
 			if ops[0].Is32 {
@@ -365,45 +366,45 @@ func encodeInstruction(instr ParsedInstr) ([]byte, string) {
 	}
 
 	// --- Shift instructions (register-register): LSL, LSR, ASR ---
-	if strEqual(instr.Mnemonic, "LSL") {
+	if strEqual(mnemonic, "LSL") {
 		return encodeShiftInstr(0, ops, nops) // op2=00
 	}
-	if strEqual(instr.Mnemonic, "LSR") {
+	if strEqual(mnemonic, "LSR") {
 		return encodeShiftInstr(1, ops, nops) // op2=01
 	}
-	if strEqual(instr.Mnemonic, "ASR") {
+	if strEqual(mnemonic, "ASR") {
 		return encodeShiftInstr(2, ops, nops) // op2=10
 	}
 
 	// --- Load/Store ---
-	if strEqual(instr.Mnemonic, "LDR") {
+	if strEqual(mnemonic, "LDR") {
 		return encodeLdrStr(1, 0, ops, nops) // opc=01 for LDR
 	}
-	if strEqual(instr.Mnemonic, "STR") {
+	if strEqual(mnemonic, "STR") {
 		return encodeLdrStr(0, 0, ops, nops) // opc=00 for STR
 	}
-	if strEqual(instr.Mnemonic, "LDRB") {
+	if strEqual(mnemonic, "LDRB") {
 		return encodeLdrStrBH(0, 1, ops, nops) // size=0, opc=01 for LDRB
 	}
-	if strEqual(instr.Mnemonic, "STRB") {
+	if strEqual(mnemonic, "STRB") {
 		return encodeLdrStrBH(0, 0, ops, nops) // size=0, opc=00 for STRB
 	}
-	if strEqual(instr.Mnemonic, "LDRH") {
+	if strEqual(mnemonic, "LDRH") {
 		return encodeLdrStrBH(1, 1, ops, nops) // size=1, opc=01 for LDRH
 	}
-	if strEqual(instr.Mnemonic, "STRH") {
+	if strEqual(mnemonic, "STRH") {
 		return encodeLdrStrBH(1, 0, ops, nops) // size=1, opc=00 for STRH
 	}
 
 	// --- LDP/STP ---
-	if strEqual(instr.Mnemonic, "LDP") {
+	if strEqual(mnemonic, "LDP") {
 		return encodeLdpStpInstr(1, ops, nops) // L=1 for LDP
 	}
-	if strEqual(instr.Mnemonic, "STP") {
+	if strEqual(mnemonic, "STP") {
 		return encodeLdpStpInstr(0, ops, nops) // L=0 for STP
 	}
 
-	return []byte{}, "unknown instruction: " + instr.Mnemonic
+	return []byte{}, "unknown instruction: " + mnemonic
 }
 
 // --- Helper encoding functions ---

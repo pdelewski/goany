@@ -1463,7 +1463,7 @@ func (e *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 				e.fs.AddTree(IRTree(IndexExpression, KindExpr,
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, "int"),
+					Leaf(Identifier, "byte"),
 					Leaf(RightParen, ")"),
 					Leaf(Identifier, xCode),
 					Leaf(LeftBracket, "["),
