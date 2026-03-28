@@ -198,6 +198,11 @@ public static class fs {
         }
     }
 
+    // Write writes data to the file (List<byte> overload for transpiled code).
+    public static (int, string) Write(int handle, List<byte> data) {
+        return Write(handle, data.ToArray());
+    }
+
     // Seek sets the file position for the next read/write.
     public static (long, string) Seek(int handle, long offset, int whence) {
         try {

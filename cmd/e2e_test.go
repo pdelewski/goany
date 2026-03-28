@@ -61,6 +61,7 @@ var e2eTestCases = []TestCase{
 	{"graph-demo", "../examples/graph-demo", true, true, true, true, true, true, true, true, true, true},
 	{"expr-eval", "../examples/expr-eval", true, true, true, true, true, true, true, true, true, true},
 	{"macho-reader", "../examples/macho-reader", true, true, false, true, true, false, true, false, true, false},
+	{"macho-writer", "../examples/macho-writer", true, true, false, true, true, false, true, false, true, false},
 }
 
 func TestE2E(t *testing.T) {

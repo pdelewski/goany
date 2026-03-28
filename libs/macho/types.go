@@ -25,6 +25,12 @@ const LCSegment64 int = 25
 const LCUUID int = 27
 const LCBuildVersion int = 50
 
+// Flags
+const MHSubsectionsViaSymbols int = 0x20 << 8 // 0x2000
+
+// Symbol table entry types
+const NlistExtSect int = 0x0F // N_SECT | N_EXT
+
 // VM protection flags
 const VMProtRead int = 1
 const VMProtWrite int = 2
