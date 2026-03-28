@@ -2561,6 +2561,92 @@ func testInterfaceToInterface() {
 	}
 }
 
+// Test byte/uint8 arithmetic — Java's byte is signed, so operations like
+// right-shift, comparison, and bitwise AND need & 0xFF masking to match
+// Go's unsigned uint8 semantics.
+func testByteArithmetic() {
+	fmt.Println("=== Byte Arithmetic ===")
+
+	// Right shift: uint8(0x80) >> 1 must be 0x40 (logical shift), not 0xC0 (arithmetic shift)
+	mask := uint8(128) // 0x80
+	mask = mask >> 1
+	if mask == 64 { // 0x40
+		fmt.Println("PASS: byte right shift 0x80>>1")
+	} else {
+		panic("FAIL: byte right shift 0x80>>1")
+	}
+
+	// Chained right shifts
+	v := uint8(128) // 0x80
+	v = v >> 1      // 0x40
+	v = v >> 1      // 0x20
+	v = v >> 1      // 0x10
+	if v == 16 {
+		fmt.Println("PASS: byte chained right shift")
+	} else {
+		panic("FAIL: byte chained right shift")
+	}
+
+	// Right shift in loop (the C64 rendering pattern)
+	m := uint8(128) // 0x80
+	count := 0
+	for m != 0 {
+		count++
+		m = m >> 1
+	}
+	if count == 8 {
+		fmt.Println("PASS: byte right shift loop")
+	} else {
+		panic("FAIL: byte right shift loop")
+	}
+
+	// Bitwise AND with byte values
+	a := uint8(255) // 0xFF
+	b := uint8(15)  // 0x0F
+	andResult := a & b
+	if andResult == 15 {
+		fmt.Println("PASS: byte bitwise AND")
+	} else {
+		panic("FAIL: byte bitwise AND")
+	}
+
+	// Byte comparison: 128 > 127 must be true (unsigned semantics)
+	high := uint8(128) // 0x80
+	low := uint8(127)  // 0x7F
+	if high > low {
+		fmt.Println("PASS: byte unsigned comparison")
+	} else {
+		panic("FAIL: byte unsigned comparison")
+	}
+
+	// Left shift
+	ls := uint8(1)
+	ls = ls << 7
+	if ls == 128 { // 0x80
+		fmt.Println("PASS: byte left shift")
+	} else {
+		panic("FAIL: byte left shift")
+	}
+
+	// OR operation
+	orVal := uint8(240) // 0xF0
+	orVal = orVal | 15  // 0x0F
+	if orVal == 255 {   // 0xFF
+		fmt.Println("PASS: byte OR")
+	} else {
+		panic("FAIL: byte OR")
+	}
+
+	// XOR operation
+	xorVal := uint8(255) // 0xFF
+	xorVal = xorVal ^ 15 // 0x0F
+	if xorVal == 240 {   // 0xF0
+		fmt.Println("PASS: byte XOR")
+	} else {
+		panic("FAIL: byte XOR")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2649,6 +2735,7 @@ func main() {
 	testInterfaceNil()
 	testInterfaceNilReturn()
 	testInterfaceToInterface()
+	testByteArithmetic()
 
 	fmt.Println("=== Done ===")
 }

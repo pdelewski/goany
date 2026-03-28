@@ -1387,18 +1387,32 @@ func (e *JavaEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
 	}
 }
 
+// binOperand keeps the string and IRNode representations of a binary
+// expression operand in sync.  Every mutation goes through set() so the
+// two views can never diverge — which was the root cause of the byte-shift
+// regression where `left` was masked but `leftNode` was not.
+type binOperand struct {
+	str  string
+	node IRNode
+}
+
+func newBinOperand(n IRNode) binOperand {
+	return binOperand{str: n.Serialize(), node: n}
+}
+
+func (b *binOperand) set(s string) {
+	b.str = s
+	b.node = Leaf(Identifier, s)
+}
+
 func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitBinaryExpr))
-	left := ""
-	right := ""
-	var leftNode, rightNode IRNode
+	var lhs, rhs binOperand
 	if len(tokens) >= 1 {
-		left = tokens[0].Serialize()
-		leftNode = tokens[0]
+		lhs = newBinOperand(tokens[0])
 	}
 	if len(tokens) >= 2 {
-		right = tokens[1].Serialize()
-		rightNode = tokens[1]
+		rhs = newBinOperand(tokens[1])
 	}
 	op := node.Op.String()
 
@@ -1409,11 +1423,11 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		if basic, ok := leftType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 			if op == "==" {
 				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-					Leaf(Identifier, left),
+					Leaf(Identifier, lhs.str),
 					Leaf(Dot, "."),
 					Leaf(Identifier, "equals"),
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, right),
+					Leaf(Identifier, rhs.str),
 					Leaf(RightParen, ")"),
 				))
 				return
@@ -1421,11 +1435,11 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 			if op == "!=" {
 				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
 					Leaf(UnaryOperator, "!"),
-					Leaf(Identifier, left),
+					Leaf(Identifier, lhs.str),
 					Leaf(Dot, "."),
 					Leaf(Identifier, "equals"),
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, right),
+					Leaf(Identifier, rhs.str),
 					Leaf(RightParen, ")"),
 				))
 				return
@@ -1440,19 +1454,16 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		_, lhsIsLit := node.X.(*ast.BasicLit)
 		_, rhsIsLit := node.Y.(*ast.BasicLit)
 		if e.isByteTypeJ(leftType) && !lhsIsLit {
-			left = e.maskByteValueJ(left)
-			leftNode = Leaf(Identifier, left)
+			lhs.set(e.maskByteValueJ(lhs.str))
 		}
 		if e.isByteTypeJ(rightType) && !rhsIsLit {
-			right = e.maskByteValueJ(right)
-			rightNode = Leaf(Identifier, right)
+			rhs.set(e.maskByteValueJ(rhs.str))
 		}
 	}
 
 	// Right shift on byte: need & 0xFF for logical (unsigned) shift
 	if op == ">>" && e.isByteTypeJ(leftType) {
-		left = e.maskByteValueJ(left)
-		leftNode = Leaf(Identifier, left)
+		lhs.set(e.maskByteValueJ(lhs.str))
 	}
 
 	// Bitwise AND with byte operands compared against non-zero: mask result
@@ -1462,11 +1473,11 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	if op == "&" && e.isByteTypeJ(leftType) && e.isByteTypeJ(rightType) {
 		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, left),
+			Leaf(Identifier, lhs.str),
 			Leaf(WhiteSpace, " "),
 			Leaf(BinaryOperator, op),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, right),
+			Leaf(Identifier, rhs.str),
 			Leaf(WhiteSpace, " "),
 			Leaf(BinaryOperator, "&"),
 			Leaf(WhiteSpace, " "),
@@ -1498,7 +1509,7 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 			e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
 				Leaf(Identifier, castPrefix),
 				Leaf(LeftParen, "("),
-				leftNode,
+				lhs.node,
 				Leaf(WhiteSpace, " "),
 				Leaf(BinaryOperator, "&"),
 				Leaf(WhiteSpace, " "),
@@ -1507,27 +1518,27 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 				Leaf(WhiteSpace, " "),
 				Leaf(BinaryOperator, op),
 				Leaf(WhiteSpace, " "),
-				rightNode,
+				rhs.node,
 				Leaf(Identifier, castSuffix),
 			))
 		} else {
 			e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
 				Leaf(Identifier, castPrefix),
-				leftNode,
+				lhs.node,
 				Leaf(WhiteSpace, " "),
 				Leaf(BinaryOperator, op),
 				Leaf(WhiteSpace, " "),
-				rightNode,
+				rhs.node,
 				Leaf(Identifier, castSuffix),
 			))
 		}
 	} else {
 		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-			leftNode,
+			lhs.node,
 			Leaf(WhiteSpace, " "),
 			Leaf(BinaryOperator, op),
 			Leaf(WhiteSpace, " "),
-			rightNode,
+			rhs.node,
 		))
 	}
 }
