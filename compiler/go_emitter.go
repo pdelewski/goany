@@ -43,8 +43,9 @@ type GoEmitter struct {
 	currentPackage string
 	skipPackage    bool
 	usedImports    map[string]bool
-	declaredFuncs  map[string]bool
-	declaredConsts map[string]bool
+	declaredFuncs   map[string]bool
+	declaredConsts  map[string]bool
+	declaredStructs map[string]bool
 	// nameRenames maps "pkg::name" -> renamed name for collision resolution
 	// (covers both functions and constants with same name but different signatures/values)
 	nameRenames map[string]string
@@ -157,6 +158,7 @@ func (e *GoEmitter) PreVisitProgram(indent int) {
 	e.usedImports = make(map[string]bool)
 	e.declaredFuncs = make(map[string]bool)
 	e.declaredConsts = make(map[string]bool)
+	e.declaredStructs = make(map[string]bool)
 	e.nameRenames = e.preScanCollisions()
 }
 
@@ -2199,6 +2201,18 @@ func (e *GoEmitter) PostVisitGenStructInfos(node []GenTypeInfo, indent int) {
 	i := 0
 	for i < len(tokens) {
 		if tokens[i].Type == StructTypeNode {
+			// Deduplicate: extract struct name from Children[3] (NewLine, type, space, name)
+			structName := ""
+			if len(tokens[i].Children) > 3 {
+				structName = tokens[i].Children[3].Content
+			}
+			if structName != "" && e.declaredStructs[structName] {
+				i++
+				continue
+			}
+			if structName != "" {
+				e.declaredStructs[structName] = true
+			}
 			e.fs.AddTree(tokens[i])
 			i++
 		} else if tokens[i].Kind == TagIdent {

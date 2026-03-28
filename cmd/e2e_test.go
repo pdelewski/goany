@@ -60,6 +60,7 @@ var e2eTestCases = []TestCase{
 	{"rust-parser-demo", "../examples/rust-parser-demo", true, true, true, true, true, true, true, true, true, true},
 	{"graph-demo", "../examples/graph-demo", true, true, true, true, true, true, true, true, true, true},
 	{"expr-eval", "../examples/expr-eval", true, true, true, true, true, true, true, true, true, true},
+	{"macho-reader", "../examples/macho-reader", true, true, false, true, true, false, true, false, true, false},
 }
 
 func TestE2E(t *testing.T) {
