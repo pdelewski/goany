@@ -918,6 +918,25 @@ func (e *JSEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		return
 	}
 
+	// Check if this is a type conversion (e.g., int(x), ConstExpr(42))
+	// In JS, basic type conversions are identity — just emit the value.
+	if ident, ok := node.Fun.(*ast.Ident); ok && e.pkg != nil && e.pkg.TypesInfo != nil {
+		if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+			if _, isTypeName := obj.(*types.TypeName); isTypeName {
+				underlying := obj.Type().Underlying()
+				if _, isBasic := underlying.(*types.Basic); isBasic {
+					// Basic type conversion: int(x) or ConstExpr(42) → just x or 42
+					if len(tokens) > 1 {
+						for _, t := range tokens[1:] {
+							e.fs.AddTree(t)
+						}
+						return
+					}
+				}
+			}
+		}
+	}
+
 	// Lower builtins (fmt.Println → console.log, etc.)
 	lowered := jsLowerBuiltin(funName)
 	if lowered != funName {
@@ -1850,10 +1869,54 @@ func (e *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 
 	// Comma-ok type assertion: val, ok := x.(Type) (must be checked before generic multi-value)
 	if len(node.Lhs) == 2 && len(node.Rhs) == 1 {
-		if _, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
+		if taExpr, ok := node.Rhs[0].(*ast.TypeAssertExpr); ok {
 			valName := exprToString(node.Lhs[0])
 			okName := exprToString(node.Lhs[1])
-			// Type assertions are no-ops in JS; just check if value is not null/undefined
+			// Determine the target type for instanceof check
+			targetTypeName := ""
+			if taExpr.Type != nil {
+				targetTypeName = exprToString(taExpr.Type)
+			}
+			// Check if the target type is a struct (JS class) — use instanceof
+			useInstanceof := false
+			if targetTypeName != "" {
+				if targetGoType := e.getExprGoType(taExpr.Type); targetGoType != nil {
+					if _, isStruct := targetGoType.Underlying().(*types.Struct); isStruct {
+						useInstanceof = true
+					}
+				}
+			}
+			// Build the ok-check nodes
+			var okCheckNodes []IRNode
+			if useInstanceof {
+				okCheckNodes = []IRNode{
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, valName),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "instanceof"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, targetTypeName),
+					Leaf(RightParen, ")"),
+				}
+			} else {
+				okCheckNodes = []IRNode{
+					Leaf(LeftParen, "("),
+					Leaf(Identifier, valName),
+					Leaf(WhiteSpace, " "),
+					Leaf(ComparisonOperator, "!=="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "null"),
+					Leaf(WhiteSpace, " "),
+					Leaf(LogicalOperator, "&&"),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, valName),
+					Leaf(WhiteSpace, " "),
+					Leaf(ComparisonOperator, "!=="),
+					Leaf(WhiteSpace, " "),
+					Leaf(Identifier, "undefined"),
+					Leaf(RightParen, ")"),
+				}
+			}
 			if tokStr == ":=" {
 				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
@@ -1867,7 +1930,7 @@ func (e *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				okStmtNodes := []IRNode{
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, "let"),
 					Leaf(WhiteSpace, " "),
@@ -1875,24 +1938,10 @@ func (e *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
 					Leaf(WhiteSpace, " "),
-					Leaf(LeftParen, "("),
-					Leaf(Identifier, valName),
-					Leaf(WhiteSpace, " "),
-					Leaf(ComparisonOperator, "!=="),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "null"),
-					Leaf(WhiteSpace, " "),
-					Leaf(LogicalOperator, "&&"),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, valName),
-					Leaf(WhiteSpace, " "),
-					Leaf(ComparisonOperator, "!=="),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "undefined"),
-					Leaf(RightParen, ")"),
-					Leaf(Semicolon, ";"),
-					Leaf(NewLine, "\n"),
-				))
+				}
+				okStmtNodes = append(okStmtNodes, okCheckNodes...)
+				okStmtNodes = append(okStmtNodes, Leaf(Semicolon, ";"), Leaf(NewLine, "\n"))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt, okStmtNodes...))
 			} else {
 				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
@@ -1904,30 +1953,16 @@ func (e *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				okStmtNodes := []IRNode{
 					Leaf(WhiteSpace, ind),
 					Leaf(Identifier, okName),
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
 					Leaf(WhiteSpace, " "),
-					Leaf(LeftParen, "("),
-					Leaf(Identifier, valName),
-					Leaf(WhiteSpace, " "),
-					Leaf(ComparisonOperator, "!=="),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "null"),
-					Leaf(WhiteSpace, " "),
-					Leaf(LogicalOperator, "&&"),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, valName),
-					Leaf(WhiteSpace, " "),
-					Leaf(ComparisonOperator, "!=="),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "undefined"),
-					Leaf(RightParen, ")"),
-					Leaf(Semicolon, ";"),
-					Leaf(NewLine, "\n"),
-				))
+				}
+				okStmtNodes = append(okStmtNodes, okCheckNodes...)
+				okStmtNodes = append(okStmtNodes, Leaf(Semicolon, ";"), Leaf(NewLine, "\n"))
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt, okStmtNodes...))
 			}
 			return
 		}

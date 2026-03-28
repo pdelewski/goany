@@ -2426,6 +2426,254 @@ func deferReturnHelper(cond bool) int {
 	return 2
 }
 
+// --- Interface tests ---
+
+// Writer interface for testing interface lowering
+type Writer interface {
+	Write(data []byte) int
+}
+
+// Reader interface for testing interface lowering
+type Reader interface {
+	Read(buf []byte) int
+}
+
+// ReadWriter interface (superset of Writer and Reader)
+type ReadWriter interface {
+	Read(buf []byte) int
+	Write(data []byte) int
+}
+
+// File is a concrete type implementing Writer, Reader, and ReadWriter
+type File struct {
+	name    string
+	content []byte
+}
+
+func (f File) Write(data []byte) int {
+	return len(data)
+}
+
+func (f File) Read(buf []byte) int {
+	return len(buf)
+}
+
+// testInterfaceBasic tests basic interface dispatch
+func testInterfaceBasic() {
+	fmt.Println("=== Interface Basic ===")
+	f := File{name: "test.txt"}
+	var w Writer = f
+	result := w.Write([]byte{1, 2, 3})
+	if result == 3 {
+		fmt.Println("PASS: interface basic dispatch")
+	} else {
+		panic("FAIL: interface basic dispatch")
+	}
+}
+
+// testInterfaceMultiple tests multiple interfaces
+func testInterfaceMultiple() {
+	fmt.Println("=== Interface Multiple ===")
+	f := File{name: "test.txt"}
+	var w Writer = f
+	var r Reader = f
+	wResult := w.Write([]byte{1, 2, 3, 4})
+	rResult := r.Read([]byte{10, 20})
+	if wResult == 4 && rResult == 2 {
+		fmt.Println("PASS: interface multiple dispatch")
+	} else {
+		panic("FAIL: interface multiple dispatch")
+	}
+}
+
+// testInterfaceTypeAssert tests type assertion from interface to concrete
+func testInterfaceTypeAssert() {
+	fmt.Println("=== Interface Type Assert ===")
+	f := File{name: "assert.txt"}
+	var w Writer = f
+	f2 := w.(File)
+	if f2.name == "assert.txt" {
+		fmt.Println("PASS: interface type assert")
+	} else {
+		panic("FAIL: interface type assert")
+	}
+}
+
+// testInterfaceCommaOk tests comma-ok type assertion
+func testInterfaceCommaOk() {
+	fmt.Println("=== Interface Comma-Ok ===")
+	f := File{name: "commaok.txt"}
+	var w Writer = f
+	f2, ok := w.(File)
+	if ok && f2.name == "commaok.txt" {
+		fmt.Println("PASS: interface comma-ok success")
+	} else {
+		panic("FAIL: interface comma-ok success")
+	}
+}
+
+// testInterfaceNil tests nil interface handling
+func testInterfaceNil() {
+	fmt.Println("=== Interface Nil ===")
+	var w Writer
+	if w == nil {
+		fmt.Println("PASS: interface nil check")
+	} else {
+		panic("FAIL: interface nil check")
+	}
+
+	f := File{name: "nil.txt"}
+	w = f
+	if w != nil {
+		fmt.Println("PASS: interface not nil check")
+	} else {
+		panic("FAIL: interface not nil check")
+	}
+}
+
+// nilWriterHelper returns nil Writer
+func nilWriterHelper() Writer {
+	return nil
+}
+
+// testInterfaceNilReturn tests nil return for interface types
+func testInterfaceNilReturn() {
+	fmt.Println("=== Interface Nil Return ===")
+	w := nilWriterHelper()
+	if w == nil {
+		fmt.Println("PASS: interface nil return")
+	} else {
+		panic("FAIL: interface nil return")
+	}
+}
+
+// testInterfaceToInterface tests interface-to-interface assignment (superset to subset)
+func testInterfaceToInterface() {
+	fmt.Println("=== Interface to Interface ===")
+	f := File{name: "iface2iface.txt"}
+	var rw ReadWriter = f
+	var w Writer = rw
+	result := w.Write([]byte{1, 2, 3, 4, 5})
+	if result == 5 {
+		fmt.Println("PASS: interface to interface dispatch")
+	} else {
+		panic("FAIL: interface to interface dispatch")
+	}
+}
+
+// Test byte/uint8 arithmetic — Java's byte is signed, so operations like
+// right-shift, comparison, and bitwise AND need & 0xFF masking to match
+// Go's unsigned uint8 semantics.
+func testByteArithmetic() {
+	fmt.Println("=== Byte Arithmetic ===")
+
+	// Right shift: uint8(0x80) >> 1 must be 0x40 (logical shift), not 0xC0 (arithmetic shift)
+	mask := uint8(128) // 0x80
+	mask = mask >> 1
+	if mask == 64 { // 0x40
+		fmt.Println("PASS: byte right shift 0x80>>1")
+	} else {
+		panic("FAIL: byte right shift 0x80>>1")
+	}
+
+	// Chained right shifts
+	v := uint8(128) // 0x80
+	v = v >> 1      // 0x40
+	v = v >> 1      // 0x20
+	v = v >> 1      // 0x10
+	if v == 16 {
+		fmt.Println("PASS: byte chained right shift")
+	} else {
+		panic("FAIL: byte chained right shift")
+	}
+
+	// Right shift in loop (the C64 rendering pattern)
+	m := uint8(128) // 0x80
+	count := 0
+	for m != 0 {
+		count++
+		m = m >> 1
+	}
+	if count == 8 {
+		fmt.Println("PASS: byte right shift loop")
+	} else {
+		panic("FAIL: byte right shift loop")
+	}
+
+	// Bitwise AND with byte values
+	a := uint8(255) // 0xFF
+	b := uint8(15)  // 0x0F
+	andResult := a & b
+	if andResult == 15 {
+		fmt.Println("PASS: byte bitwise AND")
+	} else {
+		panic("FAIL: byte bitwise AND")
+	}
+
+	// Byte comparison: 128 > 127 must be true (unsigned semantics)
+	high := uint8(128) // 0x80
+	low := uint8(127)  // 0x7F
+	if high > low {
+		fmt.Println("PASS: byte unsigned comparison")
+	} else {
+		panic("FAIL: byte unsigned comparison")
+	}
+
+	// Left shift
+	ls := uint8(1)
+	ls = ls << 7
+	if ls == 128 { // 0x80
+		fmt.Println("PASS: byte left shift")
+	} else {
+		panic("FAIL: byte left shift")
+	}
+
+	// OR operation
+	orVal := uint8(240) // 0xF0
+	orVal = orVal | 15  // 0x0F
+	if orVal == 255 {   // 0xFF
+		fmt.Println("PASS: byte OR")
+	} else {
+		panic("FAIL: byte OR")
+	}
+
+	// XOR operation
+	xorVal := uint8(255) // 0xFF
+	xorVal = xorVal ^ 15 // 0x0F
+	if xorVal == 240 {   // 0xF0
+		fmt.Println("PASS: byte XOR")
+	} else {
+		panic("FAIL: byte XOR")
+	}
+
+	// byte-to-float64 conversion: uint8(200) -> float64 must be 200.0, not -56.0
+	colorVal := uint8(200)
+	fVal := float64(colorVal)
+	if fVal > 199.0 && fVal < 201.0 {
+		fmt.Println("PASS: byte to float64")
+	} else {
+		panic("FAIL: byte to float64")
+	}
+
+	// byte-to-int conversion: uint8(200) -> int must be 200, not -56
+	intVal := int(colorVal)
+	if intVal == 200 {
+		fmt.Println("PASS: byte to int")
+	} else {
+		panic("FAIL: byte to int")
+	}
+
+	// float64-to-byte round-trip (the color picker pattern)
+	origColor := uint8(200)
+	asFloat := float64(origColor)
+	backToByte := uint8(asFloat)
+	if backToByte == 200 {
+		fmt.Println("PASS: byte float64 round-trip")
+	} else {
+		panic("FAIL: byte float64 round-trip")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2507,6 +2755,14 @@ func main() {
 	testDeferSingle()
 	testDeferLIFO()
 	testDeferWithReturn()
+	testInterfaceBasic()
+	testInterfaceMultiple()
+	testInterfaceTypeAssert()
+	testInterfaceCommaOk()
+	testInterfaceNil()
+	testInterfaceNilReturn()
+	testInterfaceToInterface()
+	testByteArithmetic()
 
 	fmt.Println("=== Done ===")
 }

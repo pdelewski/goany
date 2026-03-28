@@ -3789,7 +3789,7 @@ func (e *CppEmitter) structHasOnlyPrimitiveFields(structName string) bool {
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
 										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
-										if !e.isHashableType(fieldType, make(map[string]bool)) {
+										if fieldType == nil || !e.isHashableType(fieldType, make(map[string]bool)) {
 											return false
 										}
 									}
@@ -3806,6 +3806,9 @@ func (e *CppEmitter) structHasOnlyPrimitiveFields(structName string) bool {
 }
 
 func (e *CppEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
+	if t == nil {
+		return false
+	}
 	if named, ok := t.(*types.Named); ok {
 		name := named.Obj().Name()
 		if named.Obj().Pkg() != nil {

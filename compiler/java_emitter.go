@@ -1387,18 +1387,32 @@ func (e *JavaEmitter) PostVisitBinaryExprRight(node ast.Expr, indent int) {
 	}
 }
 
+// binOperand keeps the string and IRNode representations of a binary
+// expression operand in sync.  Every mutation goes through set() so the
+// two views can never diverge — which was the root cause of the byte-shift
+// regression where `left` was masked but `leftNode` was not.
+type binOperand struct {
+	str  string
+	node IRNode
+}
+
+func newBinOperand(n IRNode) binOperand {
+	return binOperand{str: n.Serialize(), node: n}
+}
+
+func (b *binOperand) set(s string) {
+	b.str = s
+	b.node = Leaf(Identifier, s)
+}
+
 func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitBinaryExpr))
-	left := ""
-	right := ""
-	var leftNode, rightNode IRNode
+	var lhs, rhs binOperand
 	if len(tokens) >= 1 {
-		left = tokens[0].Serialize()
-		leftNode = tokens[0]
+		lhs = newBinOperand(tokens[0])
 	}
 	if len(tokens) >= 2 {
-		right = tokens[1].Serialize()
-		rightNode = tokens[1]
+		rhs = newBinOperand(tokens[1])
 	}
 	op := node.Op.String()
 
@@ -1409,11 +1423,11 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		if basic, ok := leftType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 			if op == "==" {
 				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-					Leaf(Identifier, left),
+					Leaf(Identifier, lhs.str),
 					Leaf(Dot, "."),
 					Leaf(Identifier, "equals"),
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, right),
+					Leaf(Identifier, rhs.str),
 					Leaf(RightParen, ")"),
 				))
 				return
@@ -1421,11 +1435,11 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 			if op == "!=" {
 				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
 					Leaf(UnaryOperator, "!"),
-					Leaf(Identifier, left),
+					Leaf(Identifier, lhs.str),
 					Leaf(Dot, "."),
 					Leaf(Identifier, "equals"),
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, right),
+					Leaf(Identifier, rhs.str),
 					Leaf(RightParen, ")"),
 				))
 				return
@@ -1440,16 +1454,16 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		_, lhsIsLit := node.X.(*ast.BasicLit)
 		_, rhsIsLit := node.Y.(*ast.BasicLit)
 		if e.isByteTypeJ(leftType) && !lhsIsLit {
-			left = e.maskByteValueJ(left)
+			lhs.set(e.maskByteValueJ(lhs.str))
 		}
 		if e.isByteTypeJ(rightType) && !rhsIsLit {
-			right = e.maskByteValueJ(right)
+			rhs.set(e.maskByteValueJ(rhs.str))
 		}
 	}
 
 	// Right shift on byte: need & 0xFF for logical (unsigned) shift
 	if op == ">>" && e.isByteTypeJ(leftType) {
-		left = e.maskByteValueJ(left)
+		lhs.set(e.maskByteValueJ(lhs.str))
 	}
 
 	// Bitwise AND with byte operands compared against non-zero: mask result
@@ -1459,11 +1473,11 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	if op == "&" && e.isByteTypeJ(leftType) && e.isByteTypeJ(rightType) {
 		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, left),
+			Leaf(Identifier, lhs.str),
 			Leaf(WhiteSpace, " "),
 			Leaf(BinaryOperator, op),
 			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, right),
+			Leaf(Identifier, rhs.str),
 			Leaf(WhiteSpace, " "),
 			Leaf(BinaryOperator, "&"),
 			Leaf(WhiteSpace, " "),
@@ -1491,22 +1505,40 @@ func (e *JavaEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	}
 
 	if castPrefix != "" {
-		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-			Leaf(Identifier, castPrefix),
-			leftNode,
-			Leaf(WhiteSpace, " "),
-			Leaf(BinaryOperator, op),
-			Leaf(WhiteSpace, " "),
-			rightNode,
-			Leaf(Identifier, castSuffix),
-		))
+		if op == ">>" && (castPrefix == "(byte)(" || castPrefix == "(short)(") {
+			e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+				Leaf(Identifier, castPrefix),
+				Leaf(LeftParen, "("),
+				lhs.node,
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, "&"),
+				Leaf(WhiteSpace, " "),
+				Leaf(NumberLiteral, "0xFF"),
+				Leaf(RightParen, ")"),
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, op),
+				Leaf(WhiteSpace, " "),
+				rhs.node,
+				Leaf(Identifier, castSuffix),
+			))
+		} else {
+			e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
+				Leaf(Identifier, castPrefix),
+				lhs.node,
+				Leaf(WhiteSpace, " "),
+				Leaf(BinaryOperator, op),
+				Leaf(WhiteSpace, " "),
+				rhs.node,
+				Leaf(Identifier, castSuffix),
+			))
+		}
 	} else {
 		e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-			leftNode,
+			lhs.node,
 			Leaf(WhiteSpace, " "),
 			Leaf(BinaryOperator, op),
 			Leaf(WhiteSpace, " "),
-			rightNode,
+			rhs.node,
 		))
 	}
 }
@@ -1769,18 +1801,21 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 						))
 						return
 					}
-					// byte-to-int/long: int(byteVar) -> (byteVar & 0xFF), int64(byteVar) -> (long)(byteVar & 0xFF)
-					if (javaType == "int" || javaType == "long") && len(node.Args) > 0 {
+					// byte-to-wider-type: mask with & 0xFF to preserve unsigned semantics.
+					// int(byteVar) -> (byteVar & 0xFF)
+					// int64(byteVar) -> (long)(byteVar & 0xFF)
+					// float64(byteVar) -> (double)(byteVar & 0xFF)
+					if (javaType == "int" || javaType == "long" || javaType == "double" || javaType == "float") && len(node.Args) > 0 {
 						argType := e.getExprGoTypeJ(node.Args[0])
 						if e.isByteTypeJ(argType) {
-							if javaType == "long" {
-								e.fs.AddTree(IRTree(CallExpression, KindExpr,
-								Leaf(LeftParen, "(long)("),
-								Leaf(Identifier, e.maskByteValueJ(argsStr)),
-								Leaf(RightParen, ")"),
-							))
-							} else {
+							if javaType == "int" {
 								e.fs.AddTree(IRTree(CallExpression, KindExpr, Leaf(Identifier, e.maskByteValueJ(argsStr))))
+							} else {
+								e.fs.AddTree(IRTree(CallExpression, KindExpr,
+									Leaf(LeftParen, "("+javaType+")("),
+									Leaf(Identifier, e.maskByteValueJ(argsStr)),
+									Leaf(RightParen, ")"),
+								))
 							}
 							return
 						}
@@ -1831,23 +1866,49 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 	// Check if calling a struct field that is a function type
 	// e.g., visitor.PreVisitFrom(args) -> visitor.PreVisitFrom.apply(args)
 	if selExpr, ok := node.Fun.(*ast.SelectorExpr); ok {
+		isFieldFunc := false
+		javaMethod := ""
 		if e.pkg != nil && e.pkg.TypesInfo != nil {
 			if sel := e.pkg.TypesInfo.Selections[selExpr]; sel != nil {
 				if sig, ok := sel.Type().Underlying().(*types.Signature); ok {
-					method := getJavaFuncInterfaceMethod(sig)
-					if method != "" {
-						e.fs.AddTree(IRTree(CallExpression, KindExpr,
-							Leaf(Identifier, funName),
-							Leaf(Dot, "."),
-							Leaf(Identifier, method),
-							Leaf(LeftParen, "("),
-							Leaf(Identifier, argsStr),
-							Leaf(RightParen, ")"),
-						))
-						return
+					javaMethod = getJavaFuncInterfaceMethod(sig)
+					if javaMethod != "" {
+						isFieldFunc = true
 					}
 				}
 			}
+		}
+		// Fallback for lowered interface method fields (generated by InterfaceLoweringPass).
+		// These have selector names starting with "_" and won't be in TypesInfo.Selections.
+		if !isFieldFunc && strings.HasPrefix(selExpr.Sel.Name, "_") {
+			isFieldFunc = true
+			javaMethod = "apply" // default: BiFunction/Function use .apply()
+			// Determine correct method by looking up the field's function signature
+			if e.pkg != nil && e.pkg.TypesInfo != nil {
+				if xType := e.getExprGoTypeJ(selExpr.X); xType != nil {
+					if st, ok := xType.Underlying().(*types.Struct); ok {
+						for i := 0; i < st.NumFields(); i++ {
+							if st.Field(i).Name() == selExpr.Sel.Name {
+								if sig, ok := st.Field(i).Type().Underlying().(*types.Signature); ok {
+									javaMethod = getJavaFuncInterfaceMethod(sig)
+								}
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		if isFieldFunc && javaMethod != "" {
+			e.fs.AddTree(IRTree(CallExpression, KindExpr,
+				Leaf(Identifier, funName),
+				Leaf(Dot, "."),
+				Leaf(Identifier, javaMethod),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, argsStr),
+				Leaf(RightParen, ")"),
+			))
+			return
 		}
 	}
 
@@ -3792,28 +3853,31 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
-					Leaf(WhiteSpace, ind),
-					LeafTag(Keyword, "var ", TagJava),
-					Leaf(Identifier, valName),
-					Leaf(WhiteSpace, " "),
-					Leaf(Assignment, "="),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, okName),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "?"),
-					Leaf(WhiteSpace, " "),
-					Leaf(LeftParen, "("),
-					Leaf(TypeKeyword, assertType),
-					Leaf(RightParen, ")"),
-					Leaf(Identifier, xExpr),
-					Leaf(WhiteSpace, " "),
-					Leaf(Colon, ":"),
-					Leaf(WhiteSpace, " "),
-					LeafTag(Keyword, "null", TagJava),
-					Leaf(Semicolon, ";"),
-					Leaf(NewLine, "\n"),
-				))
+				// Skip value declaration for blank identifier _ (Java doesn't support unnamed variables without --enable-preview)
+				if valName != "_" {
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						LeafTag(Keyword, "var ", TagJava),
+						Leaf(Identifier, valName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, okName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "?"),
+						Leaf(WhiteSpace, " "),
+						Leaf(LeftParen, "("),
+						Leaf(TypeKeyword, assertType),
+						Leaf(RightParen, ")"),
+						Leaf(Identifier, xExpr),
+						Leaf(WhiteSpace, " "),
+						Leaf(Colon, ":"),
+						Leaf(WhiteSpace, " "),
+						LeafTag(Keyword, "null", TagJava),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
+				}
 			} else {
 				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),
@@ -3829,27 +3893,30 @@ func (e *JavaEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
-					Leaf(WhiteSpace, ind),
-					Leaf(Identifier, valName),
-					Leaf(WhiteSpace, " "),
-					Leaf(Assignment, "="),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, okName),
-					Leaf(WhiteSpace, " "),
-					Leaf(Identifier, "?"),
-					Leaf(WhiteSpace, " "),
-					Leaf(LeftParen, "("),
-					Leaf(TypeKeyword, assertType),
-					Leaf(RightParen, ")"),
-					Leaf(Identifier, xExpr),
-					Leaf(WhiteSpace, " "),
-					Leaf(Colon, ":"),
-					Leaf(WhiteSpace, " "),
-					LeafTag(Keyword, "null", TagJava),
-					Leaf(Semicolon, ";"),
-					Leaf(NewLine, "\n"),
-				))
+				// Skip value declaration for blank identifier _
+				if valName != "_" {
+					e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+						Leaf(WhiteSpace, ind),
+						Leaf(Identifier, valName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Assignment, "="),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, okName),
+						Leaf(WhiteSpace, " "),
+						Leaf(Identifier, "?"),
+						Leaf(WhiteSpace, " "),
+						Leaf(LeftParen, "("),
+						Leaf(TypeKeyword, assertType),
+						Leaf(RightParen, ")"),
+						Leaf(Identifier, xExpr),
+						Leaf(WhiteSpace, " "),
+						Leaf(Colon, ":"),
+						Leaf(WhiteSpace, " "),
+						LeafTag(Keyword, "null", TagJava),
+						Leaf(Semicolon, ";"),
+						Leaf(NewLine, "\n"),
+					))
+				}
 			}
 			return
 		}

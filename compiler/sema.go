@@ -870,11 +870,17 @@ func (sema *SemaChecker) PreVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 					if _, isPtr := tv.Type.(*types.Pointer); isPtr {
 						isPointerNil = true
 					}
+					if _, isIface := tv.Type.Underlying().(*types.Interface); isIface {
+						isPointerNil = true
+					}
 				}
 				if !isPointerNil {
 					if ident, ok := nonNilExpr.(*ast.Ident); ok {
 						if obj := sema.pkg.TypesInfo.Uses[ident]; obj != nil {
 							if _, isPtr := obj.Type().(*types.Pointer); isPtr {
+								isPointerNil = true
+							}
+							if _, isIface := obj.Type().Underlying().(*types.Interface); isIface {
 								isPointerNil = true
 							}
 						}
@@ -949,17 +955,13 @@ func (sema *SemaChecker) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 // Variable shadowing is now handled by LangSemaLoweringPass.transformShadowedVars
 // which renames the inner variable instead of rejecting the code.
 
-// PreVisitInterfaceType checks for interface types - only empty interface{} is supported
+// PreVisitInterfaceType checks for interface types.
+// Non-empty interfaces are allowed — InterfaceLoweringPass will transform them
+// into structs with function pointer fields before they reach any backend.
 func (sema *SemaChecker) PreVisitInterfaceType(node *ast.InterfaceType, indent int) {
-	// Empty interface (interface{} / any) is supported
-	// Maps to: C++ std::any, Rust Box<dyn Any>, C# object
-	// Non-empty interfaces are NOT supported
-	if node.Methods != nil && len(node.Methods.List) > 0 {
-		sema.reportSemaError(node.Pos(),
-			"non-empty interfaces are not supported",
-			"Only empty interface (interface{} / any) is allowed.\n  Interfaces with methods have no direct equivalent in all target languages.",
-			[]string{"Use concrete types or interface{} with type assertions."})
-	}
+	// Both empty interface{} and non-empty interfaces are supported.
+	// Empty: maps to C++ std::any, Rust Box<dyn Any>, C# object
+	// Non-empty: lowered to structs by InterfaceLoweringPass
 }
 
 // PreVisitGenStructInfo checks struct type declarations for embedding (anonymous fields)
@@ -1008,12 +1010,9 @@ func (sema *SemaChecker) checkStructEmbedding(node *ast.StructType) {
 // Field name conflicts are now handled by LangSemaLoweringPass.transformFieldConflicts
 // which renames the field instead of rejecting the code.
 
-// PreVisitTypeSwitchStmt checks for type switch statements (not supported)
+// PreVisitTypeSwitchStmt — type switch is now supported via lowering to if/else chains.
 func (sema *SemaChecker) PreVisitTypeSwitchStmt(node *ast.TypeSwitchStmt, indent int) {
-	sema.reportSemaError(node.Pos(),
-		"type switch statement is not allowed",
-		"Type switch statements are not supported in goany.",
-		[]string{"Use explicit type assertions or redesign without type switches."})
+	// No-op: type switch is lowered by LangSemaLoweringPass before sema runs on the result.
 }
 
 // isNilIdent checks if an expression is the nil identifier

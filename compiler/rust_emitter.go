@@ -578,15 +578,24 @@ func (e *RustEmitter) rustDefaultForGoType(t types.Type) string {
 	if t == nil {
 		return "Default::default()"
 	}
+	// Check function signatures first (before interface{} check, because
+	// func(interface{}, ...) contains "interface{}" in its string representation)
+	if sig, ok := t.Underlying().(*types.Signature); ok {
+		return e.rustDefaultForFuncSig(sig)
+	}
 	typeStr := t.String()
 	if strings.HasPrefix(typeStr, "[]") {
 		return "Vec::new()"
 	}
-	if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") || typeStr == "any" {
-		return "Rc::new(0_i32)"
-	}
 	if strings.HasPrefix(typeStr, "func(") {
 		return "Rc::new(|_| {})"
+	}
+	// Check for pure interface{} type (not contained in func signatures)
+	if iface, ok := t.(*types.Interface); ok && iface.Empty() {
+		return "Rc::new(0_i32)"
+	}
+	if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") || typeStr == "any" {
+		return "Rc::new(0_i32)"
 	}
 	switch typeStr {
 	case "int", "int8", "int16", "int32", "int64":
@@ -636,6 +645,24 @@ func rustDefaultForRustType(rustType string) string {
 		return "hmap::newHashMap(1)"
 	}
 	return "Default::default()"
+}
+
+// rustDefaultForFuncSig generates a proper Rust default closure for a function signature.
+// e.g., func(interface{}) int → Rc::new(|_: Rc<dyn Any>| -> i32 { 0 })
+func (e *RustEmitter) rustDefaultForFuncSig(sig *types.Signature) string {
+	params := sig.Params()
+	var paramParts []string
+	for i := 0; i < params.Len(); i++ {
+		paramType := getRustValueTypeCast(params.At(i).Type())
+		paramParts = append(paramParts, fmt.Sprintf("_: %s", paramType))
+	}
+	results := sig.Results()
+	if results.Len() == 0 {
+		return fmt.Sprintf("Rc::new(|%s| {})", strings.Join(paramParts, ", "))
+	}
+	retType := getRustValueTypeCast(results.At(0).Type())
+	retDefault := e.rustDefaultForGoType(results.At(0).Type())
+	return fmt.Sprintf("Rc::new(|%s| -> %s { %s })", strings.Join(paramParts, ", "), retType, retDefault)
 }
 
 // isTypeConversion checks if a function name represents a type conversion.
@@ -696,6 +723,9 @@ func (e *RustEmitter) structHasInterfaceFieldsRecursive(structName string, visit
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
 										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										if fieldType == nil {
+											return true // unknown type from lowering — treat as interface-like
+										}
 										typeStr := fieldType.String()
 										if strings.Contains(typeStr, "interface{}") || strings.Contains(typeStr, "interface {") {
 											return true
@@ -732,8 +762,18 @@ func (e *RustEmitter) structHasInterfaceFieldsRecursive(structName string, visit
 	return false
 }
 
-// structHasFunctionFields checks if a struct has function/closure fields
+// structHasFunctionFields checks if a struct has function/closure fields (recursively).
+// This detects both direct function fields and nested structs containing function fields
+// (e.g., BinOp containing Expr which has Rc<dyn Fn(...)> fields).
 func (e *RustEmitter) structHasFunctionFields(structName string) bool {
+	return e.structHasFunctionFieldsRecursive(structName, make(map[string]bool))
+}
+
+func (e *RustEmitter) structHasFunctionFieldsRecursive(structName string, visited map[string]bool) bool {
+	if visited[structName] {
+		return false
+	}
+	visited[structName] = true
 	for _, file := range e.pkg.Syntax {
 		for _, decl := range file.Decls {
 			if genDecl, ok := decl.(*ast.GenDecl); ok {
@@ -744,12 +784,23 @@ func (e *RustEmitter) structHasFunctionFields(structName string) bool {
 								if structType.Fields != nil {
 									for _, field := range structType.Fields.List {
 										fieldType := e.pkg.TypesInfo.Types[field.Type].Type
+										if fieldType == nil {
+											return true // unknown type from lowering — treat as func-like
+										}
 										typeStr := fieldType.String()
 										if strings.HasPrefix(typeStr, "func(") {
 											return true
 										}
 										if _, isSig := fieldType.Underlying().(*types.Signature); isSig {
 											return true
+										}
+										// Recurse into named struct fields
+										if named, ok2 := fieldType.(*types.Named); ok2 {
+											if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+												if e.structHasFunctionFieldsRecursive(named.Obj().Name(), visited) {
+													return true
+												}
+											}
 										}
 									}
 								}
@@ -793,6 +844,9 @@ func (e *RustEmitter) structCanDeriveCopy(structName string) bool {
 }
 
 func (e *RustEmitter) isCopyableType(t types.Type, visited map[string]bool) bool {
+	if t == nil {
+		return false
+	}
 	if named, ok := t.(*types.Named); ok {
 		name := named.Obj().Name()
 		if named.Obj().Pkg() != nil {
@@ -850,6 +904,9 @@ func (e *RustEmitter) structCanDeriveHash(structName string) bool {
 }
 
 func (e *RustEmitter) isHashableType(t types.Type, visited map[string]bool) bool {
+	if t == nil {
+		return false
+	}
 	if named, ok := t.(*types.Named); ok {
 		name := named.Obj().Name()
 		if named.Obj().Pkg() != nil {
@@ -1447,8 +1504,9 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 	children = append(children, Leaf(RightBrace, "}"))
 	children = append(children, Leaf(NewLine, "\n"))
 
-	// Manual impl Default for structs with interface{} fields
-	if hasInterfaceFields && !hasFunctionFields && node.Struct != nil && node.Struct.Fields != nil {
+	// Manual impl Default for structs with interface{} or function fields
+	// (these can't auto-derive Default because Rc<dyn Any>/Rc<dyn Fn(...)> lack Default)
+	if (hasInterfaceFields || hasFunctionFields) && node.Struct != nil && node.Struct.Fields != nil {
 		children = append(children, Leaf(NewLine, "\n"))
 		children = append(children, LeafTag(Keyword, "impl", TagRust))
 		children = append(children, Leaf(WhiteSpace, " "))
@@ -1480,13 +1538,37 @@ func (e *RustEmitter) PostVisitGenStructInfo(node GenTypeInfo, indent int) {
 		children = append(children, Leaf(WhiteSpace, " "))
 		children = append(children, Leaf(LeftBrace, "{"))
 		children = append(children, Leaf(NewLine, "\n"))
-		for _, field := range node.Struct.Fields.List {
+		// Look up the struct type from TypesInfo.Defs for field type resolution
+		var structType *types.Struct
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			for id, obj := range e.pkg.TypesInfo.Defs {
+				if id.Name == node.Name {
+					if tn, ok := obj.(*types.TypeName); ok {
+						if named, ok := tn.Type().(*types.Named); ok {
+							if st, ok := named.Underlying().(*types.Struct); ok {
+								structType = st
+							}
+						}
+					}
+				}
+			}
+		}
+		for i, field := range node.Struct.Fields.List {
 			if len(field.Names) == 0 {
 				continue
 			}
 			fieldName := field.Names[0].Name
+			// Try TypesInfo.Types first, then fall back to the struct type info
 			fieldType := e.pkg.TypesInfo.Types[field.Type].Type
-			defaultVal := e.rustDefaultForGoType(fieldType)
+			if fieldType == nil && structType != nil && i < structType.NumFields() {
+				fieldType = structType.Field(i).Type()
+			}
+			var defaultVal string
+			if fieldType != nil {
+				defaultVal = e.rustDefaultForGoType(fieldType)
+			} else {
+				defaultVal = "Default::default()"
+			}
 			children = append(children, Leaf(WhiteSpace, "            "))
 			children = append(children, Leaf(Identifier, fieldName))
 			children = append(children, Leaf(Colon, ":"))

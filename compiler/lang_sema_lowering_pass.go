@@ -66,6 +66,7 @@ func (v *canonicalizeVisitor) Visit(node ast.Node) ast.Visitor {
 func (v *canonicalizeVisitor) transform() {
 	for _, file := range v.files {
 		// Always-run transforms (no 1:1 equivalent in any target language)
+		v.transformTypeSwitch(file)
 		v.transformNamedReturns(file)
 		v.transformIotaExpansion(file)
 		v.transformVariadics(file)
@@ -442,17 +443,37 @@ func (v *canonicalizeVisitor) transformVariadics(file *ast.File) {
 				Type: &ast.ArrayType{Elt: info.elemType},
 				Elts: varArgs,
 			}
+			v.registerVariadicSliceLit(sliceLit, info.elemType)
 			call.Args = append(call.Args[:idx], sliceLit)
 		} else if len(call.Args) == idx {
 			// Zero variadic args: insert []T{}
 			sliceLit := &ast.CompositeLit{
 				Type: &ast.ArrayType{Elt: info.elemType},
 			}
+			v.registerVariadicSliceLit(sliceLit, info.elemType)
 			call.Args = append(call.Args, sliceLit)
 		}
 
 		return true
 	})
+}
+
+// registerVariadicSliceLit registers a variadic slice literal in TypesInfo so
+// downstream emitters can resolve the slice element type (e.g., List<Expr>
+// instead of List<object> in C#).
+func (v *canonicalizeVisitor) registerVariadicSliceLit(lit *ast.CompositeLit, elemTypeExpr ast.Expr) {
+	if v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+	// Resolve the element type from TypesInfo
+	if tv, ok := v.pkg.TypesInfo.Types[elemTypeExpr]; ok && tv.Type != nil {
+		sliceType := types.NewSlice(tv.Type)
+		v.pkg.TypesInfo.Types[lit] = types.TypeAndValue{Type: sliceType}
+		// Also register the ArrayType node
+		if arrType, ok := lit.Type.(*ast.ArrayType); ok {
+			v.pkg.TypesInfo.Types[arrType] = types.TypeAndValue{Type: sliceType}
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -930,9 +951,11 @@ func (v *canonicalizeVisitor) shouldSplitAssign(assign *ast.AssignStmt) bool {
 //	}                 }
 //
 // Skipped (not transformed):
-//   - Blank identifier _
 //   - Redeclarations in the same scope (x, err := f(); y, err := g())
 //   - Variables that shadow package-level names (only function-local shadowing)
+//
+// Note: blank identifier `_` is skipped (not renamed). C# handles discards
+// through special-casing in the emitter (not declaring `_` as a variable).
 func (v *canonicalizeVisitor) transformShadowedVars(file *ast.File) {
 	if v.pkg == nil || v.pkg.TypesInfo == nil || v.pkg.Types == nil {
 		return
@@ -2152,4 +2175,325 @@ func (v *canonicalizeVisitor) collectCapturedIdents(funcLit *ast.FuncLit, funcSt
 		return true
 	})
 	return result
+}
+
+// ===========================================================================
+// Type Switch Lowering
+// ===========================================================================
+
+// transformTypeSwitch rewrites type switch statements into chained if/else
+// with comma-ok type assertions, which all backends already support.
+//
+// Pattern matched:
+//
+//	switch v := x.(type) {
+//	case Number:
+//	    // use v as Number
+//	case BinOp:
+//	    // use v as BinOp
+//	default:
+//	    // default body
+//	}
+//
+// Transform:
+//
+//	if v, _ok := x.(Number); _ok {
+//	    // use v as Number
+//	} else if v, _ok := x.(BinOp); _ok {
+//	    // use v as BinOp
+//	} else {
+//	    // default body
+//	}
+//
+// Also handles the no-variable form:
+//
+//	switch x.(type) {
+//	case int:
+//	    // body
+//	}
+//
+// Transform (no-variable form):
+//
+//	if _, _ok := x.(int); _ok {
+//	    // body
+//	}
+func (v *canonicalizeVisitor) transformTypeSwitch(file *ast.File) {
+	v.applyBlockTransform(file, func(list *[]ast.Stmt) {
+		var newList []ast.Stmt
+		changed := false
+		for _, stmt := range *list {
+			ts, ok := stmt.(*ast.TypeSwitchStmt)
+			if !ok {
+				newList = append(newList, stmt)
+				continue
+			}
+
+			result := v.lowerTypeSwitch(ts)
+			if result != nil {
+				newList = append(newList, result)
+				changed = true
+			} else {
+				newList = append(newList, stmt)
+			}
+		}
+		if changed {
+			*list = newList
+		}
+	})
+}
+
+// lowerTypeSwitch converts a single TypeSwitchStmt into an if/else chain.
+func (v *canonicalizeVisitor) lowerTypeSwitch(ts *ast.TypeSwitchStmt) ast.Stmt {
+	// Extract the switched expression and optional variable name.
+	// Two forms:
+	//   switch v := x.(type) { ... }   →  AssignStmt with x.(type) on RHS
+	//   switch x.(type) { ... }         →  ExprStmt with x.(type)
+	var switchExpr ast.Expr // the expression being type-switched (x)
+	var varName string      // the variable name (v), empty if no variable
+
+	switch a := ts.Assign.(type) {
+	case *ast.AssignStmt:
+		// v := x.(type)
+		if len(a.Lhs) >= 1 {
+			if ident, ok := a.Lhs[0].(*ast.Ident); ok {
+				varName = ident.Name
+			}
+		}
+		if len(a.Rhs) >= 1 {
+			if ta, ok := a.Rhs[0].(*ast.TypeAssertExpr); ok {
+				switchExpr = ta.X
+			}
+		}
+	case *ast.ExprStmt:
+		if ta, ok := a.X.(*ast.TypeAssertExpr); ok {
+			switchExpr = ta.X
+		}
+	}
+
+	if switchExpr == nil {
+		return nil
+	}
+
+	if ts.Body == nil || len(ts.Body.List) == 0 {
+		return nil
+	}
+
+	// Collect case clauses
+	var typeCases []*ast.CaseClause
+	var defaultCase *ast.CaseClause
+
+	for _, c := range ts.Body.List {
+		cc, ok := c.(*ast.CaseClause)
+		if !ok {
+			continue
+		}
+		if cc.List == nil || len(cc.List) == 0 {
+			defaultCase = cc
+		} else {
+			typeCases = append(typeCases, cc)
+		}
+	}
+
+	if len(typeCases) == 0 && defaultCase == nil {
+		return nil
+	}
+
+	// Build the if/else chain from the bottom up.
+	// Start with the default (else) block, then prepend each type case.
+	var elseBlock ast.Stmt
+	if defaultCase != nil && len(defaultCase.Body) > 0 {
+		elseBlock = &ast.BlockStmt{List: defaultCase.Body}
+	}
+
+	// Build from last case to first, chaining else clauses
+	for i := len(typeCases) - 1; i >= 0; i-- {
+		cc := typeCases[i]
+		ifStmt := v.buildTypeCaseIf(switchExpr, varName, cc)
+		if ifStmt == nil {
+			continue
+		}
+
+		// For multi-type cases, buildTypeCaseIf returns a chain of if/else ifs.
+		// We need to attach the elseBlock to the LAST if in that chain, not the first.
+		lastIf := ifStmt
+		for {
+			next, ok := lastIf.Else.(*ast.IfStmt)
+			if !ok {
+				break
+			}
+			lastIf = next
+		}
+		lastIf.Else = elseBlock
+
+		elseBlock = ifStmt
+	}
+
+	if elseBlock == nil {
+		return nil
+	}
+
+	// If there was an Init statement, wrap in a block:
+	// { init; if ... }
+	if ts.Init != nil {
+		return &ast.BlockStmt{
+			List: []ast.Stmt{ts.Init, elseBlock},
+		}
+	}
+
+	return elseBlock
+}
+
+// buildTypeCaseIf builds a single if-statement for one type case:
+//
+//	if v, _ok := x.(T); _ok { body }
+//
+// For multi-type cases like `case int, string:`, it generates OR conditions:
+//
+//	if _, _ok1 := x.(int); _ok1 { body } (picks first match)
+func (v *canonicalizeVisitor) buildTypeCaseIf(switchExpr ast.Expr, varName string, cc *ast.CaseClause) *ast.IfStmt {
+	if len(cc.List) == 0 {
+		return nil
+	}
+
+	// Single type case (most common): if v, _ok := x.(T); _ok { body }
+	if len(cc.List) == 1 {
+		return v.buildSingleTypeCaseIf(switchExpr, varName, cc.List[0], cc.Body)
+	}
+
+	// Multi-type case: case T1, T2: body
+	// In Go, multi-type case gives the variable the interface type (not concrete).
+	// We generate: if _, _ok := x.(T1); _ok { body } else if _, _ok := x.(T2); _ok { body }
+	// With no typed variable — if the original code used `v`, we rename it to the
+	// switch expression ident so it keeps its interface type.
+	var result *ast.IfStmt
+	for i := len(cc.List) - 1; i >= 0; i-- {
+		// Pass "" for varName: multi-type case uses blank identifier for assertion
+		ifStmt := v.buildSingleTypeCaseIf(switchExpr, "", cc.List[i], cc.Body)
+		if ifStmt == nil {
+			continue
+		}
+		// If there was a variable name, rename it to the switch expression in the body.
+		// In Go multi-type case, the variable has interface type = same as switch expr.
+		if varName != "" {
+			if switchIdent, ok := switchExpr.(*ast.Ident); ok {
+				v.renameIdentInStmts(ifStmt.Body.List, varName, switchIdent.Name)
+			}
+		}
+		if result != nil {
+			ifStmt.Else = result
+		}
+		result = ifStmt
+	}
+	return result
+}
+
+// buildSingleTypeCaseIf builds: if _tsv_N, _tsok_N := x.(T); _tsok_N { body }
+// Each case gets a unique variable name to avoid C# CS0136 (variable shadowing
+// across if/else branches). References to the original varName in the body are
+// renamed to the unique name.
+func (v *canonicalizeVisitor) buildSingleTypeCaseIf(switchExpr ast.Expr, varName string, caseType ast.Expr, body []ast.Stmt) *ast.IfStmt {
+	idx := v.tmpCounter
+	v.tmpCounter++
+	okName := fmt.Sprintf("_tsok_%d", idx)
+
+	// Generate unique variable name per case to avoid C# scoping issues.
+	// If the original code uses `v`, generate `_tsv_0`, `_tsv_1`, etc.
+	// If no variable (switch x.(type)), use Go's blank identifier `_`.
+	var uniqueVarName string
+	if varName != "" {
+		uniqueVarName = fmt.Sprintf("_tsv_%d", idx)
+	} else {
+		uniqueVarName = "_"
+	}
+
+	lhsVar := ast.NewIdent(uniqueVarName)
+	okIdent := ast.NewIdent(okName)
+
+	// Build the type assertion: x.(T)
+	typeAssert := &ast.TypeAssertExpr{
+		X:    switchExpr,
+		Type: caseType,
+	}
+
+	// Deep-copy the body and rename references from varName to uniqueVarName
+	bodyCopy := make([]ast.Stmt, len(body))
+	copy(bodyCopy, body)
+	if varName != "" {
+		v.renameIdentInStmts(bodyCopy, varName, uniqueVarName)
+	}
+
+	// Register the type assertion result type in TypesInfo if possible
+	if v.pkg != nil && v.pkg.TypesInfo != nil {
+		if tv, ok := v.pkg.TypesInfo.Types[caseType]; ok && tv.Type != nil {
+			v.pkg.TypesInfo.Types[typeAssert] = types.TypeAndValue{
+				Type: tv.Type,
+			}
+			// Register the unique variable in Defs for downstream emitters
+			obj := types.NewVar(lhsVar.Pos(), v.pkg.Types, uniqueVarName, tv.Type)
+			v.pkg.TypesInfo.Defs[lhsVar] = obj
+			// Also register Uses for any renamed references in the body
+			v.registerRenamedUses(bodyCopy, uniqueVarName, obj)
+		}
+		// Register ok var
+		okObj := types.NewVar(okIdent.Pos(), v.pkg.Types, okName, types.Typ[types.Bool])
+		v.pkg.TypesInfo.Defs[okIdent] = okObj
+
+		// Register the ok condition reference
+		okRef := ast.NewIdent(okName)
+		v.pkg.TypesInfo.Uses[okRef] = okObj
+
+		// Build the init: _tsv_N, _tsok_N := x.(T)
+		initAssign := &ast.AssignStmt{
+			Lhs: []ast.Expr{lhsVar, okIdent},
+			Tok: token.DEFINE,
+			Rhs: []ast.Expr{typeAssert},
+		}
+
+		return &ast.IfStmt{
+			Init: initAssign,
+			Cond: okRef,
+			Body: &ast.BlockStmt{List: bodyCopy},
+		}
+	}
+
+	// Fallback without TypesInfo (shouldn't happen in practice)
+	initAssign := &ast.AssignStmt{
+		Lhs: []ast.Expr{lhsVar, okIdent},
+		Tok: token.DEFINE,
+		Rhs: []ast.Expr{typeAssert},
+	}
+
+	okRef := ast.NewIdent(okName)
+	return &ast.IfStmt{
+		Init: initAssign,
+		Cond: okRef,
+		Body: &ast.BlockStmt{List: bodyCopy},
+	}
+}
+
+// renameIdentInStmts renames all occurrences of oldName to newName in the given statements.
+func (v *canonicalizeVisitor) renameIdentInStmts(stmts []ast.Stmt, oldName, newName string) {
+	for _, stmt := range stmts {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			if ident, ok := n.(*ast.Ident); ok && ident.Name == oldName {
+				ident.Name = newName
+			}
+			return true
+		})
+	}
+}
+
+// registerRenamedUses registers TypesInfo.Uses for all identifiers matching name in the statements.
+func (v *canonicalizeVisitor) registerRenamedUses(stmts []ast.Stmt, name string, obj types.Object) {
+	if v.pkg == nil || v.pkg.TypesInfo == nil {
+		return
+	}
+	for _, stmt := range stmts {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			if ident, ok := n.(*ast.Ident); ok && ident.Name == name {
+				v.pkg.TypesInfo.Uses[ident] = obj
+			}
+			return true
+		})
+	}
 }

@@ -377,12 +377,16 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
 				))
-				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+				// Build let binding for the value; skip "mut" for blank identifier "_"
+				valLetNodes := []IRNode{
 					Leaf(WhiteSpace, ind),
 					LeafTag(Keyword, "let", TagRust),
 					Leaf(WhiteSpace, " "),
-					LeafTag(Keyword, "mut", TagRust),
-					Leaf(WhiteSpace, " "),
+				}
+				if valName != "_" {
+					valLetNodes = append(valLetNodes, LeafTag(Keyword, "mut", TagRust), Leaf(WhiteSpace, " "))
+				}
+				valLetNodes = append(valLetNodes,
 					Leaf(Identifier, valName),
 					Leaf(WhiteSpace, " "),
 					Leaf(Assignment, "="),
@@ -413,7 +417,8 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 					Leaf(RightBrace, "}"),
 					Leaf(Semicolon, ";"),
 					Leaf(NewLine, "\n"),
-				))
+				)
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt, valLetNodes...))
 			} else {
 				e.fs.AddTree(IRTree(AssignStatement, KindStmt,
 					Leaf(WhiteSpace, ind),

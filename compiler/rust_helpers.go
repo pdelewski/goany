@@ -102,6 +102,11 @@ func getRustValueTypeCast(t types.Type) string {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()
 		}
+		// Named types with basic underlying (e.g., type ConstExpr int)
+		// map to their Rust type alias name.
+		if _, isBasic := named.Underlying().(*types.Basic); isBasic {
+			return named.Obj().Name()
+		}
 	}
 	return "Rc<dyn Any>"
 }

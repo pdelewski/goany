@@ -88,13 +88,15 @@ func AnalyzeReadOnlyParams(pkg *packages.Package) *ReadOnlyAnalysis {
 					isReadOnly := isEligible &&
 						!mutatedVars[paramName] &&
 						!returnedVars[paramName] &&
-						!assignedFromVars[paramName]
+						!assignedFromVars[paramName] &&
+						!hasNonCopyFieldUsage(paramName, body, pkg)
 					// MutRef: mutated only via slice element access, not direct field assignment
 					isMutRef := isEligible &&
 						mutatedVars[paramName] &&
 						!directMutatedVars[paramName] &&
 						!returnedVars[paramName] &&
-						!assignedFromVars[paramName]
+						!assignedFromVars[paramName] &&
+						!hasNonCopyFieldUsage(paramName, body, pkg)
 					readOnly = append(readOnly, isReadOnly)
 					mutRef = append(mutRef, isMutRef)
 				}
@@ -662,4 +664,39 @@ func isRefOptEligibleType(t types.Type) bool {
 		return false
 	}
 	return false
+}
+
+// hasNonCopyFieldUsage checks if a struct parameter's String fields are accessed
+// in the function body. When a struct is passed by &T in Rust, String field access
+// gives &String instead of String, which breaks ownership contexts (return, concatenation,
+// assignment). Only checks String fields — Slice/Map/Struct fields accessed through
+// indexing or method calls work fine through references.
+func hasNonCopyFieldUsage(paramName string, body *ast.BlockStmt, pkg *packages.Package) bool {
+	if body == nil || pkg == nil || pkg.TypesInfo == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok || ident.Name != paramName {
+			return true
+		}
+		// Check if field type is String (non-Copy in Rust, breaks ownership through &T)
+		if selection, ok := pkg.TypesInfo.Selections[sel]; ok {
+			if ft := selection.Type(); ft != nil {
+				if basic, ok := ft.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+					found = true
+				}
+			}
+		}
+		return true
+	})
+	return found
 }
