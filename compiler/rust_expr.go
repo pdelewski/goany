@@ -688,7 +688,32 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				if _, isTypeName := obj.(*types.TypeName); isTypeName {
 					rustType := e.qualifiedRustTypeName(obj.Type())
 					if rustType == "String" {
-						// string(x) -> format!("{}", x) - preserve arg tree
+						// Check if argument is a byte/rune/int type
+						// string(byte) in Go creates a 1-char string from the code point
+						if len(node.Args) > 0 {
+							argType := e.getExprGoType(node.Args[0])
+							if argType != nil {
+								if basic, ok := argType.Underlying().(*types.Basic); ok {
+									if basic.Kind() == types.Uint8 || basic.Kind() == types.Int32 ||
+										basic.Kind() == types.Int || basic.Kind() == types.Int8 {
+										// string(byte) or string(rune) -> String::from(x as u8 as char)
+										charChildren := []IRNode{
+											Leaf(Identifier, "String::from"),
+											Leaf(LeftParen, "("),
+										}
+										charChildren = append(charChildren, tokens[1:]...)
+										charChildren = append(charChildren,
+											Leaf(WhiteSpace, " "),
+											Leaf(Identifier, "as u8 as char"),
+											Leaf(RightParen, ")"),
+										)
+										e.fs.AddTree(IRTree(CallExpression, KindExpr, charChildren...))
+										return
+									}
+								}
+							}
+						}
+						// Fallback: string(x) -> format!("{}", x)
 						fmtChildren := []IRNode{
 							Leaf(Identifier, "format!"),
 							Leaf(LeftParen, "("),

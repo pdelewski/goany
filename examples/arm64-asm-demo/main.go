@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"libs/arm64asm"
 	"libs/macho"
+	"os"
 )
 
 func main() {
@@ -46,6 +47,9 @@ fib_base:
 		}
 
 		objPath := "/tmp/fib_arm64.o"
+		if len(os.Args) > 1 {
+			objPath = os.Args[1]
+		}
 		writeErr := macho.WriteObjectFile(objPath, code, symbolName)
 		if writeErr == "" {
 			fmt.Println("ARM64 assembler demo: recursive fibonacci")
