@@ -599,6 +599,19 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 	}
 
+	// Clone RHS for non-Copy selector expressions (struct field access) to prevent partial move
+	if len(node.Lhs) == 1 && len(node.Rhs) == 1 && !needsRcWrap && (tokStr == ":=" || tokStr == "=") {
+		if _, ok := node.Rhs[0].(*ast.SelectorExpr); ok {
+			rhsType := e.getExprGoType(node.Rhs[0])
+			if rhsType != nil && !isCopyType(rhsType) {
+				if !strings.HasSuffix(rhsStr, ".clone()") {
+					rhsStr = rhsStr + ".clone()"
+					rhsNode = Leaf(Identifier, rhsStr)
+				}
+			}
+		}
+	}
+
 	if needsRcWrap {
 		wrappedRhs := "Rc::new(" + rhsStr + ")"
 		switch tokStr {

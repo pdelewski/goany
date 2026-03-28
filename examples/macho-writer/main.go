@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"libs/macho"
+	"os"
 )
 
 func main() {
@@ -11,12 +12,16 @@ func main() {
 		0x40, 0x05, 0x80, 0x52, // mov w0, #42
 		0xC0, 0x03, 0x5F, 0xD6, // ret
 	}
-	err := macho.WriteObjectFile("/tmp/tiny_arm64.o", code, "_main")
+	objPath := "/tmp/tiny_arm64.o"
+	if len(os.Args) > 1 {
+		objPath = os.Args[1]
+	}
+	err := macho.WriteObjectFile(objPath, code, "_main")
 	if err != "" {
 		fmt.Println("Error: " + err)
 	} else {
-		fmt.Println("Written: /tmp/tiny_arm64.o")
-		fmt.Println("Link:    cc -o /tmp/tiny_arm64 /tmp/tiny_arm64.o")
+		fmt.Println("Written: " + objPath)
+		fmt.Println("Link:    cc -o /tmp/tiny_arm64 " + objPath)
 		fmt.Println("Run:     /tmp/tiny_arm64; echo $?")
 	}
 }

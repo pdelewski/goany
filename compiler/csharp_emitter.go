@@ -1303,12 +1303,34 @@ func (e *CSharpEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				if _, isTypeName := obj.(*types.TypeName); isTypeName {
 					csType := e.qualifiedCsTypeName(obj.Type())
 					if csType == "string" {
-						e.fs.AddTree(IRTree(CallExpression, KindExpr,
-							Leaf(Identifier, "Convert.ToString"),
-							Leaf(LeftParen, "("),
-							Leaf(Identifier, argsStr),
-							Leaf(RightParen, ")"),
-						))
+						// Check if argument is byte/rune/int — string(byte) creates char string
+						charConv := false
+						if len(node.Args) > 0 {
+							argType := e.getExprGoType(node.Args[0])
+							if argType != nil {
+								if basic, ok := argType.Underlying().(*types.Basic); ok {
+									if basic.Kind() == types.Uint8 || basic.Kind() == types.Int32 ||
+										basic.Kind() == types.Int || basic.Kind() == types.Int8 {
+										charConv = true
+									}
+								}
+							}
+						}
+						if charConv {
+							// string(byte) -> ((char)(x)).ToString()
+							e.fs.AddTree(IRTree(CallExpression, KindExpr,
+								Leaf(Identifier, "((char)("),
+								Leaf(Identifier, argsStr),
+								Leaf(Identifier, ")).ToString()"),
+							))
+						} else {
+							e.fs.AddTree(IRTree(CallExpression, KindExpr,
+								Leaf(Identifier, "Convert.ToString"),
+								Leaf(LeftParen, "("),
+								Leaf(Identifier, argsStr),
+								Leaf(RightParen, ")"),
+							))
+						}
 					} else {
 						e.fs.AddTree(IRTree(CallExpression, KindExpr,
 							Leaf(LeftParen, "("),
@@ -1463,7 +1485,7 @@ func (e *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 			if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 				e.fs.AddTree(IRTree(IndexExpression, KindExpr,
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, "int"),
+					Leaf(Identifier, "byte"),
 					Leaf(RightParen, ")"),
 					Leaf(Identifier, xCode),
 					Leaf(LeftBracket, "["),

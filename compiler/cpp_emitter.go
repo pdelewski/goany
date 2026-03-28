@@ -469,6 +469,14 @@ std::vector<std::string>& append(std::vector<std::string> &vec, const char *elem
   result.push_back(std::string(element));
   return result;
 }
+
+// Convert byte/int to single-char string
+inline std::string goStringFromByte(std::uint8_t ch) {
+  return std::string(1, static_cast<char>(ch));
+}
+inline std::string goStringFromByte(int ch) {
+  return std::string(1, static_cast<char>(ch));
+}
 `})
 	e.fs.AddTree(IRNode{Type: Preamble, Kind: KindDecl, Content: "\n\n"})
 }
@@ -951,6 +959,66 @@ func (e *CppEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 			Leaf(RightParen, ")"),
 		))
 		return
+	}
+
+	// Check if this is a type conversion (e.g., int(x), string(x), byte(x))
+	if ident, ok := node.Fun.(*ast.Ident); ok {
+		if e.pkg != nil && e.pkg.TypesInfo != nil {
+			if obj := e.pkg.TypesInfo.ObjectOf(ident); obj != nil {
+				if _, isTypeName := obj.(*types.TypeName); isTypeName {
+					cppType := getCppTypeName(obj.Type())
+					if cppType == "std::string" {
+						// string(x) — check argument type
+						if len(node.Args) > 0 {
+							argType := e.getExprGoType(node.Args[0])
+							if argType != nil {
+								if basic, ok := argType.Underlying().(*types.Basic); ok {
+									if basic.Kind() == types.Uint8 || basic.Kind() == types.Int32 ||
+										basic.Kind() == types.Int || basic.Kind() == types.Int8 {
+										// string(byte) or string(rune) → goStringFromByte(x)
+										e.fs.AddTree(IRTree(CallExpression, KindExpr,
+											Leaf(Identifier, "goStringFromByte"),
+											Leaf(LeftParen, "("),
+											Leaf(Identifier, argsStr),
+											Leaf(RightParen, ")"),
+										))
+										return
+									}
+								}
+								// string([]byte{...}) → std::string({...}.begin(), {...}.end())
+								if sl, ok := argType.(*types.Slice); ok {
+									if basic, ok := sl.Elem().Underlying().(*types.Basic); ok && basic.Kind() == types.Uint8 {
+										e.fs.AddTree(IRTree(CallExpression, KindExpr,
+											Leaf(Identifier, "std::string"),
+											Leaf(LeftParen, "("),
+											Leaf(Identifier, argsStr+".begin(), "+argsStr+".end()"),
+											Leaf(RightParen, ")"),
+										))
+										return
+									}
+								}
+							}
+						}
+						// Fallback: std::to_string(x)
+						e.fs.AddTree(IRTree(CallExpression, KindExpr,
+							Leaf(Identifier, "std::to_string"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, argsStr),
+							Leaf(RightParen, ")"),
+						))
+						return
+					}
+					// Non-string type conversions: static_cast<T>(x)
+					e.fs.AddTree(IRTree(CallExpression, KindExpr,
+						Leaf(Identifier, "static_cast<"+cppType+">"),
+						Leaf(LeftParen, "("),
+						Leaf(Identifier, argsStr),
+						Leaf(RightParen, ")"),
+					))
+					return
+				}
+			}
+		}
 	}
 
 	// Lower builtins
