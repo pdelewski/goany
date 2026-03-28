@@ -2645,6 +2645,33 @@ func testByteArithmetic() {
 	} else {
 		panic("FAIL: byte XOR")
 	}
+
+	// byte-to-float64 conversion: uint8(200) -> float64 must be 200.0, not -56.0
+	colorVal := uint8(200)
+	fVal := float64(colorVal)
+	if fVal > 199.0 && fVal < 201.0 {
+		fmt.Println("PASS: byte to float64")
+	} else {
+		panic("FAIL: byte to float64")
+	}
+
+	// byte-to-int conversion: uint8(200) -> int must be 200, not -56
+	intVal := int(colorVal)
+	if intVal == 200 {
+		fmt.Println("PASS: byte to int")
+	} else {
+		panic("FAIL: byte to int")
+	}
+
+	// float64-to-byte round-trip (the color picker pattern)
+	origColor := uint8(200)
+	asFloat := float64(origColor)
+	backToByte := uint8(asFloat)
+	if backToByte == 200 {
+		fmt.Println("PASS: byte float64 round-trip")
+	} else {
+		panic("FAIL: byte float64 round-trip")
+	}
 }
 
 func main() {

@@ -1801,18 +1801,21 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 						))
 						return
 					}
-					// byte-to-int/long: int(byteVar) -> (byteVar & 0xFF), int64(byteVar) -> (long)(byteVar & 0xFF)
-					if (javaType == "int" || javaType == "long") && len(node.Args) > 0 {
+					// byte-to-wider-type: mask with & 0xFF to preserve unsigned semantics.
+					// int(byteVar) -> (byteVar & 0xFF)
+					// int64(byteVar) -> (long)(byteVar & 0xFF)
+					// float64(byteVar) -> (double)(byteVar & 0xFF)
+					if (javaType == "int" || javaType == "long" || javaType == "double" || javaType == "float") && len(node.Args) > 0 {
 						argType := e.getExprGoTypeJ(node.Args[0])
 						if e.isByteTypeJ(argType) {
-							if javaType == "long" {
-								e.fs.AddTree(IRTree(CallExpression, KindExpr,
-								Leaf(LeftParen, "(long)("),
-								Leaf(Identifier, e.maskByteValueJ(argsStr)),
-								Leaf(RightParen, ")"),
-							))
-							} else {
+							if javaType == "int" {
 								e.fs.AddTree(IRTree(CallExpression, KindExpr, Leaf(Identifier, e.maskByteValueJ(argsStr))))
+							} else {
+								e.fs.AddTree(IRTree(CallExpression, KindExpr,
+									Leaf(LeftParen, "("+javaType+")("),
+									Leaf(Identifier, e.maskByteValueJ(argsStr)),
+									Leaf(RightParen, ")"),
+								))
 							}
 							return
 						}
