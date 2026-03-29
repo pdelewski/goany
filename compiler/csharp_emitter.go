@@ -106,6 +106,9 @@ func getCsTypeName(t types.Type) string {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()
 		}
+		// For type aliases with basic underlying types (e.g., type MyInt int),
+		// resolve to the underlying type's C# name.
+		return getCsTypeName(named.Underlying())
 	}
 	return "object"
 }
