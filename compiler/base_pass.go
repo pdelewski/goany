@@ -640,12 +640,14 @@ func (v *BasePassVisitor) traverseStmt(stmt ast.Stmt, indent int) {
 	case *ast.SwitchStmt:
 		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSwitchStmt)
 		v.emitter.PreVisitSwitchStmt(stmt, indent)
-		v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSwitchStmtTag)
-		v.emitter.PreVisitSwitchStmtTag(stmt.Tag, indent)
-		v.traverseExpression(stmt.Tag, 0)
-		v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSwitchStmtTag)
-		v.emitter.PostVisitSwitchStmtTag(stmt.Tag, indent)
-		v.emitter.GetForestBuilder().AutoCollect(PostVisitSwitchStmtTag)
+		if stmt.Tag != nil {
+			v.emitter.GetForestBuilder().AddVisitMarker(PreVisitSwitchStmtTag)
+			v.emitter.PreVisitSwitchStmtTag(stmt.Tag, indent)
+			v.traverseExpression(stmt.Tag, 0)
+			v.emitter.GetForestBuilder().AddVisitMarker(PostVisitSwitchStmtTag)
+			v.emitter.PostVisitSwitchStmtTag(stmt.Tag, indent)
+			v.emitter.GetForestBuilder().AutoCollect(PostVisitSwitchStmtTag)
+		}
 
 		for _, stmt := range stmt.Body.List {
 			v.traverseStmt(stmt, indent+2)

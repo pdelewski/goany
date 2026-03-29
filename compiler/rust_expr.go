@@ -464,11 +464,9 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 	}()
 
-	// Local closure inlining: replace call with inline body block
+	// Local closure inlining: replace parameterless closure call with inline body block
 	if ident, ok := node.Fun.(*ast.Ident); ok {
 		if body, found := e.localClosureBodies[ident.Name]; found {
-			// Extract the body from the closure code: "|| { body }" -> "{ body }"
-			// Find the first '{' and wrap the body in a block
 			if braceIdx := strings.Index(body, "{"); braceIdx >= 0 {
 				e.fs.AddTree(IRTree(CallExpression, KindExpr, Leaf(Identifier, body[braceIdx:])))
 			} else {

@@ -1,27 +1,29 @@
 package main
 
 // This file contains all supported Go language constructs that compile
-// successfully across all backends (C++, C#, Rust).
+// successfully across all backends (C++, C#, Rust, Java, JS, Go).
 //
 // UNSUPPORTED CONSTRUCTS (not included in this file):
 //
 // 1. if slice == nil - Nil comparison for slices
 //    C++ std::vector cannot be compared to nullptr
 //
-// 2. len(string) - String length
-//    C++ backend uses std::size() which doesn't work on C-style strings
-//
-// 3. iota - Constant enumeration
-//    Not yet implemented
-//
-// 4. fmt.Sprintf - String formatting
+// 2. fmt.Sprintf - String formatting
 //    Rust backend has type mismatch issues with string_format2
 //
-// 5. []interface{} - Slice of empty interface (any type)
+// 3. []interface{} - Slice of empty interface (any type)
 //    Not supported across backends
 //
-// SUPPORTED WITH LIMITATIONS:
-// - interface{} (empty interface) - works for assignment, no type assertions
+// SUPPORTED (tested in this file):
+// - interface{} (empty interface) + type assertions + comma-ok
+// - Named interfaces with method dispatch
+// - Type switch (lowered to if/else chains)
+// - Value switch (int, string, multi-case, default, tagless)
+// - len(string), string indexing, string slicing
+// - iota (lowered to integer literals)
+// - Closures with capture
+// - uint16, uint32, uint64, float32 types
+// - Rune literals
 
 import (
 	"alltests/types"
@@ -2674,6 +2676,274 @@ func testByteArithmetic() {
 	}
 }
 
+// --- Switch statement tests ---
+
+func testSwitchInt() {
+	fmt.Println("=== Switch Int ===")
+	x := 2
+	result := ""
+	switch x {
+	case 1:
+		result = "one"
+	case 2:
+		result = "two"
+	case 3:
+		result = "three"
+	default:
+		result = "unknown"
+	}
+	if result == "two" {
+		fmt.Println("PASS: switch int")
+	} else {
+		panic("FAIL: switch int")
+	}
+}
+
+func testSwitchString() {
+	fmt.Println("=== Switch String ===")
+	s := "hello"
+	result := 0
+	switch s {
+	case "hello":
+		result = 1
+	case "world":
+		result = 2
+	}
+	if result == 1 {
+		fmt.Println("PASS: switch string")
+	} else {
+		panic("FAIL: switch string")
+	}
+}
+
+func testSwitchMultiCase() {
+	fmt.Println("=== Switch Multi-Case ===")
+	x := 3
+	result := ""
+	switch x {
+	case 1, 2, 3:
+		result = "low"
+	case 4, 5, 6:
+		result = "mid"
+	default:
+		result = "high"
+	}
+	if result == "low" {
+		fmt.Println("PASS: switch multi-case")
+	} else {
+		panic("FAIL: switch multi-case")
+	}
+}
+
+func testSwitchDefault() {
+	fmt.Println("=== Switch Default ===")
+	x := 99
+	result := ""
+	switch x {
+	case 1:
+		result = "one"
+	case 2:
+		result = "two"
+	default:
+		result = "other"
+	}
+	if result == "other" {
+		fmt.Println("PASS: switch default")
+	} else {
+		panic("FAIL: switch default")
+	}
+}
+
+func testEmptySwitch() {
+	fmt.Println("=== Tagless Switch ===")
+	x := 5
+	result := ""
+	switch {
+	case x > 10:
+		result = "big"
+	case x > 0:
+		result = "positive"
+	default:
+		result = "non-positive"
+	}
+	if result == "positive" {
+		fmt.Println("PASS: tagless switch")
+	} else {
+		panic("FAIL: tagless switch")
+	}
+}
+
+// --- String operation tests ---
+
+func testStringIndexing() {
+	fmt.Println("=== String Indexing ===")
+	s := "Hello"
+	b := s[0]
+	if b == byte(72) { // 'H' = 72
+		fmt.Println("PASS: string indexing")
+	} else {
+		panic("FAIL: string indexing")
+	}
+	b2 := s[4]
+	if b2 == byte(111) { // 'o' = 111
+		fmt.Println("PASS: string indexing last")
+	} else {
+		panic("FAIL: string indexing last")
+	}
+}
+
+func testStringLen() {
+	fmt.Println("=== String Len ===")
+	s := "hello"
+	if len(s) == 5 {
+		fmt.Println("PASS: string len")
+	} else {
+		panic("FAIL: string len")
+	}
+	empty := ""
+	if len(empty) == 0 {
+		fmt.Println("PASS: string len empty")
+	} else {
+		panic("FAIL: string len empty")
+	}
+}
+
+func testStringSlicing() {
+	fmt.Println("=== String Slicing ===")
+	s := "Hello, World!"
+	sub := s[7:12]
+	if sub == "World" {
+		fmt.Println("PASS: string slicing mid")
+	} else {
+		panic("FAIL: string slicing mid")
+	}
+	prefix := s[:5]
+	if prefix == "Hello" {
+		fmt.Println("PASS: string slicing prefix")
+	} else {
+		panic("FAIL: string slicing prefix")
+	}
+	suffix := s[7:]
+	if suffix == "World!" {
+		fmt.Println("PASS: string slicing suffix")
+	} else {
+		panic("FAIL: string slicing suffix")
+	}
+}
+
+// --- Closure tests ---
+
+func testClosureBasic() {
+	fmt.Println("=== Closure Basic ===")
+	add := func(a int, b int) int {
+		return a + b
+	}
+	result := add(3, 4)
+	if result == 7 {
+		fmt.Println("PASS: closure basic")
+	} else {
+		panic("FAIL: closure basic")
+	}
+}
+
+func testClosureCapture() {
+	fmt.Println("=== Closure Capture ===")
+	x := 10
+	addX := func(a int) int {
+		return a + x
+	}
+	result := addX(5)
+	if result == 15 {
+		fmt.Println("PASS: closure capture")
+	} else {
+		panic("FAIL: closure capture")
+	}
+}
+
+// --- Numeric type tests ---
+
+func testUintTypes() {
+	fmt.Println("=== Uint Types ===")
+	var a uint16
+	a = 65535
+	if a == 65535 {
+		fmt.Println("PASS: uint16 max")
+	} else {
+		panic("FAIL: uint16 max")
+	}
+
+	var b uint32
+	b = 4294967295
+	if b == 4294967295 {
+		fmt.Println("PASS: uint32 max")
+	} else {
+		panic("FAIL: uint32 max")
+	}
+
+	var c uint64
+	c = 1000000000000
+	if c == 1000000000000 {
+		fmt.Println("PASS: uint64 large")
+	} else {
+		panic("FAIL: uint64 large")
+	}
+
+	// Arithmetic
+	x := uint16(100)
+	y := uint16(200)
+	sum := x + y
+	if sum == 300 {
+		fmt.Println("PASS: uint16 arithmetic")
+	} else {
+		panic("FAIL: uint16 arithmetic")
+	}
+}
+
+func testFloat32() {
+	fmt.Println("=== Float32 ===")
+	var a float32
+	a = 3.14
+	if a > 3.0 && a < 4.0 {
+		fmt.Println("PASS: float32 value")
+	} else {
+		panic("FAIL: float32 value")
+	}
+
+	b := float32(2.0)
+	c := a + b
+	if c > 5.0 && c < 6.0 {
+		fmt.Println("PASS: float32 arithmetic")
+	} else {
+		panic("FAIL: float32 arithmetic")
+	}
+
+	// Conversion float32 -> float64
+	d := float64(a)
+	if d > 3.0 && d < 4.0 {
+		fmt.Println("PASS: float32 to float64")
+	} else {
+		panic("FAIL: float32 to float64")
+	}
+}
+
+func testRuneLiterals() {
+	fmt.Println("=== Rune Literals ===")
+	var r int32
+	r = 'a'
+	if r == 97 {
+		fmt.Println("PASS: rune literal a")
+	} else {
+		panic("FAIL: rune literal a")
+	}
+
+	r2 := 'Z'
+	if r2 == 90 {
+		fmt.Println("PASS: rune literal Z")
+	} else {
+		panic("FAIL: rune literal Z")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2763,6 +3033,19 @@ func main() {
 	testInterfaceNilReturn()
 	testInterfaceToInterface()
 	testByteArithmetic()
+	testSwitchInt()
+	testSwitchString()
+	testSwitchMultiCase()
+	testSwitchDefault()
+	testEmptySwitch()
+	testStringIndexing()
+	testStringLen()
+	testStringSlicing()
+	testClosureBasic()
+	testClosureCapture()
+	testUintTypes()
+	testFloat32()
+	testRuneLiterals()
 
 	fmt.Println("=== Done ===")
 }
