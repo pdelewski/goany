@@ -1259,6 +1259,41 @@ func (e *CppEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 		lowCode = "0"
 	}
 
+	// Check if slicing a string
+	xType := e.getExprGoType(node.X)
+	isString := false
+	if xType != nil {
+		if basic, ok := xType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+			isString = true
+		}
+	}
+
+	if isString {
+		// C++ string slice: x.substr(low, high - low) or x.substr(low)
+		if highCode == "" {
+			e.fs.AddTree(IRTree(SliceExpression, KindExpr,
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "substr"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, lowCode),
+				Leaf(RightParen, ")"),
+			))
+		} else {
+			e.fs.AddTree(IRTree(SliceExpression, KindExpr,
+				Leaf(Identifier, xCode),
+				Leaf(Dot, "."),
+				Leaf(Identifier, "substr"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, lowCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, highCode+" - "+lowCode),
+				Leaf(RightParen, ")"),
+			))
+		}
+		return
+	}
+
 	// C++ slice: std::vector<T>(x.begin() + low, x.begin() + high) or x.end()
 	beginExpr := xCode + ".begin() + " + lowCode
 	endExpr := ""

@@ -689,14 +689,20 @@ func (v *ifaceLoweringVisitor) rewriteCallArgsIfaceConversion(call *ast.CallExpr
 
 		// Get argument's interface name
 		argIfaceName := v.resolveIfaceTypeName(arg, ifaceDecls)
-		if argIfaceName == "" || argIfaceName == paramIfaceName {
+		if argIfaceName == paramIfaceName {
+			// Already the correct interface type
 			continue
 		}
 
-		// Different interfaces — insert conversion
 		paramInfo := ifaceDecls[paramIfaceName]
-		argInfo := ifaceDecls[argIfaceName]
-		call.Args[i] = v.buildIfaceToIfaceAssign(paramIfaceName, paramInfo, arg, argInfo)
+		if argIfaceName != "" {
+			// Different interfaces — insert interface-to-interface conversion
+			argInfo := ifaceDecls[argIfaceName]
+			call.Args[i] = v.buildIfaceToIfaceAssign(paramIfaceName, paramInfo, arg, argInfo)
+		} else {
+			// Concrete-to-interface conversion
+			call.Args[i] = v.buildConcreteToIfaceAssign(paramIfaceName, paramInfo, arg)
+		}
 	}
 }
 
@@ -866,7 +872,8 @@ func (v *ifaceLoweringVisitor) rewriteDeclStmt(s *ast.DeclStmt, ifaceDecls map[s
 	}
 }
 
-// rewriteReturnStmt rewrites return nil in functions returning an interface type.
+// rewriteReturnStmt rewrites return statements in functions returning an interface type.
+// Handles both nil returns and concrete-to-interface returns.
 func (v *ifaceLoweringVisitor) rewriteReturnStmt(s *ast.ReturnStmt, ifaceDecls map[string]*ifaceInfo, returnIfaceName string) {
 	for i, result := range s.Results {
 		s.Results[i] = v.rewriteExpr(result, ifaceDecls)
@@ -875,12 +882,30 @@ func (v *ifaceLoweringVisitor) rewriteReturnStmt(s *ast.ReturnStmt, ifaceDecls m
 	if returnIfaceName == "" {
 		return
 	}
-	if info, ok := ifaceDecls[returnIfaceName]; ok {
-		for i, result := range s.Results {
-			if isNilIdent(result) {
-				s.Results[i] = v.buildNilIfaceLit(returnIfaceName, info)
+	info, ok := ifaceDecls[returnIfaceName]
+	if !ok {
+		return
+	}
+	for i, result := range s.Results {
+		if isNilIdent(result) {
+			// Nil return → nil interface struct
+			s.Results[i] = v.buildNilIfaceLit(returnIfaceName, info)
+			continue
+		}
+		// Check if RHS is already the interface type
+		rhsTypeName := v.resolveIfaceTypeName(result, ifaceDecls)
+		if rhsTypeName == returnIfaceName {
+			continue
+		}
+		// Interface-to-interface
+		if rhsTypeName != "" {
+			if rhsInfo, ok := ifaceDecls[rhsTypeName]; ok {
+				s.Results[i] = v.buildIfaceToIfaceAssign(returnIfaceName, info, result, rhsInfo)
+				continue
 			}
 		}
+		// Concrete-to-interface return
+		s.Results[i] = v.buildConcreteToIfaceAssign(returnIfaceName, info, result)
 	}
 }
 

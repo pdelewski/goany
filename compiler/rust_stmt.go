@@ -165,20 +165,23 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 
 	tokStr := node.Tok.String()
 
-	// Local closure inlining: save closure body for later call-site inlining
-	// This avoids Rust borrow checker issues with closures that capture mutable variables
+	// Local closure inlining for parameterless closures that capture mutable variables.
+	// Closures WITH parameters are emitted as normal Rust closures.
+	// Parameterless closures (e.g., addToken := func() { ... }) are inlined at the call
+	// site to avoid Rust borrow checker issues with captured mutable variables.
 	if tokStr == ":=" && len(node.Lhs) == 1 && len(node.Rhs) == 1 {
-		if _, isFuncLit := node.Rhs[0].(*ast.FuncLit); isFuncLit {
-			varName := exprToString(node.Lhs[0])
-			if e.localClosureBodies == nil {
-				e.localClosureBodies = make(map[string]string)
+		if funcLit, isFuncLit := node.Rhs[0].(*ast.FuncLit); isFuncLit {
+			hasParams := funcLit.Type.Params != nil && funcLit.Type.Params.NumFields() > 0
+			if !hasParams {
+				varName := exprToString(node.Lhs[0])
+				if e.localClosureBodies == nil {
+					e.localClosureBodies = make(map[string]string)
+				}
+				e.localClosureBodies[varName] = rhsStr
+				// Don't emit the assignment
+				e.fs.AddTree(IRTree(AssignStatement, KindStmt, Leaf(Identifier, "")))
+				return
 			}
-			// The RHS is a closure like "|| { body }" or "|params| -> ret { body }"
-			// Save the entire closure code for inlining
-			e.localClosureBodies[varName] = rhsStr
-			// Don't emit the assignment
-			e.fs.AddTree(IRTree(AssignStatement, KindStmt, Leaf(Identifier, "")))
-			return
 		}
 	}
 

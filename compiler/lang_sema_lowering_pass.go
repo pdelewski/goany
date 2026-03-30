@@ -67,6 +67,8 @@ func (v *canonicalizeVisitor) transform() {
 	for _, file := range v.files {
 		// Always-run transforms (no 1:1 equivalent in any target language)
 		v.transformTypeSwitch(file)
+		v.transformTaglessSwitch(file)
+		v.transformStringSwitch(file)
 		v.transformNamedReturns(file)
 		v.transformIotaExpansion(file)
 		v.transformVariadics(file)
@@ -2240,6 +2242,230 @@ func (v *canonicalizeVisitor) transformTypeSwitch(file *ast.File) {
 			*list = newList
 		}
 	})
+}
+
+// transformTaglessSwitch rewrites tagless switch statements (switch { case cond: ... })
+// into chained if/else statements. This is needed because C++/Java switch statements
+// require a tag expression and cannot have boolean condition cases.
+//
+// Input:
+//
+//	switch {
+//	case x > 0:
+//	    // body1
+//	case x < 0:
+//	    // body2
+//	default:
+//	    // body3
+//	}
+//
+// Output:
+//
+//	if x > 0 {
+//	    // body1
+//	} else if x < 0 {
+//	    // body2
+//	} else {
+//	    // body3
+//	}
+func (v *canonicalizeVisitor) transformTaglessSwitch(file *ast.File) {
+	v.applyBlockTransform(file, func(list *[]ast.Stmt) {
+		var newList []ast.Stmt
+		changed := false
+		for _, stmt := range *list {
+			sw, ok := stmt.(*ast.SwitchStmt)
+			if !ok || sw.Tag != nil {
+				newList = append(newList, stmt)
+				continue
+			}
+
+			result := v.lowerTaglessSwitch(sw)
+			if result != nil {
+				newList = append(newList, result)
+				changed = true
+			} else {
+				newList = append(newList, stmt)
+			}
+		}
+		if changed {
+			*list = newList
+		}
+	})
+}
+
+// lowerTaglessSwitch converts a tagless SwitchStmt into an if/else chain.
+func (v *canonicalizeVisitor) lowerTaglessSwitch(sw *ast.SwitchStmt) ast.Stmt {
+	if sw.Body == nil || len(sw.Body.List) == 0 {
+		return nil
+	}
+
+	var condCases []*ast.CaseClause
+	var defaultCase *ast.CaseClause
+
+	for _, c := range sw.Body.List {
+		cc, ok := c.(*ast.CaseClause)
+		if !ok {
+			continue
+		}
+		if cc.List == nil || len(cc.List) == 0 {
+			defaultCase = cc
+		} else {
+			condCases = append(condCases, cc)
+		}
+	}
+
+	if len(condCases) == 0 && defaultCase == nil {
+		return nil
+	}
+
+	// Build the if/else chain from the bottom up.
+	var elseBlock ast.Stmt
+	if defaultCase != nil && len(defaultCase.Body) > 0 {
+		elseBlock = &ast.BlockStmt{List: defaultCase.Body}
+	}
+
+	for i := len(condCases) - 1; i >= 0; i-- {
+		cc := condCases[i]
+		// Build condition: for multi-case (case a, b:), use a || b
+		var cond ast.Expr
+		for _, expr := range cc.List {
+			if cond == nil {
+				cond = expr
+			} else {
+				cond = &ast.BinaryExpr{
+					X:  cond,
+					Op: token.LOR,
+					Y:  expr,
+				}
+			}
+		}
+
+		ifStmt := &ast.IfStmt{
+			Cond: cond,
+			Body: &ast.BlockStmt{List: cc.Body},
+			Else: elseBlock,
+		}
+		elseBlock = ifStmt
+	}
+
+	if elseBlock == nil {
+		return nil
+	}
+	return elseBlock
+}
+
+// transformStringSwitch rewrites switch statements with string tags into
+// if/else chains. C++ cannot switch on std::string, so we lower these
+// to chained if/else with == comparisons.
+func (v *canonicalizeVisitor) transformStringSwitch(file *ast.File) {
+	v.applyBlockTransform(file, func(list *[]ast.Stmt) {
+		var newList []ast.Stmt
+		changed := false
+		for _, stmt := range *list {
+			sw, ok := stmt.(*ast.SwitchStmt)
+			if !ok || sw.Tag == nil {
+				newList = append(newList, stmt)
+				continue
+			}
+
+			// Check if the tag is a string type
+			tv := v.pkg.TypesInfo.Types[sw.Tag]
+			if tv.Type == nil {
+				newList = append(newList, stmt)
+				continue
+			}
+			basic, ok := tv.Type.Underlying().(*types.Basic)
+			if !ok || basic.Kind() != types.String {
+				newList = append(newList, stmt)
+				continue
+			}
+
+			result := v.lowerStringSwitch(sw)
+			if result != nil {
+				newList = append(newList, result)
+				changed = true
+			} else {
+				newList = append(newList, stmt)
+			}
+		}
+		if changed {
+			*list = newList
+		}
+	})
+}
+
+// lowerStringSwitch converts a string-tagged SwitchStmt into an if/else chain.
+func (v *canonicalizeVisitor) lowerStringSwitch(sw *ast.SwitchStmt) ast.Stmt {
+	if sw.Body == nil || len(sw.Body.List) == 0 {
+		return nil
+	}
+
+	var condCases []*ast.CaseClause
+	var defaultCase *ast.CaseClause
+
+	for _, c := range sw.Body.List {
+		cc, ok := c.(*ast.CaseClause)
+		if !ok {
+			continue
+		}
+		if cc.List == nil || len(cc.List) == 0 {
+			defaultCase = cc
+		} else {
+			condCases = append(condCases, cc)
+		}
+	}
+
+	if len(condCases) == 0 && defaultCase == nil {
+		return nil
+	}
+
+	// Build the if/else chain from the bottom up.
+	var elseBlock ast.Stmt
+	if defaultCase != nil && len(defaultCase.Body) > 0 {
+		elseBlock = &ast.BlockStmt{List: defaultCase.Body}
+	}
+
+	for i := len(condCases) - 1; i >= 0; i-- {
+		cc := condCases[i]
+		// Build condition: tag == val1 || tag == val2 || ...
+		var cond ast.Expr
+		for _, expr := range cc.List {
+			eq := &ast.BinaryExpr{
+				X:  sw.Tag,
+				Op: token.EQL,
+				Y:  expr,
+			}
+			// Register type info for the comparison
+			v.pkg.TypesInfo.Types[eq] = types.TypeAndValue{
+				Type: types.Typ[types.Bool],
+			}
+			if cond == nil {
+				cond = eq
+			} else {
+				or := &ast.BinaryExpr{
+					X:  cond,
+					Op: token.LOR,
+					Y:  eq,
+				}
+				v.pkg.TypesInfo.Types[or] = types.TypeAndValue{
+					Type: types.Typ[types.Bool],
+				}
+				cond = or
+			}
+		}
+
+		ifStmt := &ast.IfStmt{
+			Cond: cond,
+			Body: &ast.BlockStmt{List: cc.Body},
+			Else: elseBlock,
+		}
+		elseBlock = ifStmt
+	}
+
+	if elseBlock == nil {
+		return nil
+	}
+	return elseBlock
 }
 
 // lowerTypeSwitch converts a single TypeSwitchStmt into an if/else chain.

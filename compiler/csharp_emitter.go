@@ -106,6 +106,9 @@ func getCsTypeName(t types.Type) string {
 		if _, isStruct := named.Underlying().(*types.Struct); isStruct {
 			return named.Obj().Name()
 		}
+		// For type aliases with basic underlying types (e.g., type MyInt int),
+		// resolve to the underlying type's C# name.
+		return getCsTypeName(named.Underlying())
 	}
 	return "object"
 }
@@ -938,6 +941,15 @@ func (e *CSharpEmitter) PreVisitBasicLit(node *ast.BasicLit, indent int) {
 		// Raw string literal -> C# verbatim string
 		content := val[1 : len(val)-1]
 		val = "@\"" + content + "\""
+	}
+	// Add 'f' suffix for float32 literals in C#
+	if node.Kind == token.FLOAT {
+		tv := e.pkg.TypesInfo.Types[node]
+		if tv.Type != nil {
+			if basic, ok := tv.Type.(*types.Basic); ok && basic.Kind() == types.Float32 {
+				val = val + "f"
+			}
+		}
 	}
 	// Convert Go character literals to numeric values
 	if node.Kind == token.CHAR && len(val) >= 3 && val[0] == '\'' {

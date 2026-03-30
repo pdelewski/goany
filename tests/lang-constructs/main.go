@@ -1,27 +1,35 @@
 package main
 
 // This file contains all supported Go language constructs that compile
-// successfully across all backends (C++, C#, Rust).
+// successfully across all backends (C++, C#, Rust, Java, JS, Go).
 //
 // UNSUPPORTED CONSTRUCTS (not included in this file):
 //
 // 1. if slice == nil - Nil comparison for slices
 //    C++ std::vector cannot be compared to nullptr
 //
-// 2. len(string) - String length
-//    C++ backend uses std::size() which doesn't work on C-style strings
-//
-// 3. iota - Constant enumeration
-//    Not yet implemented
-//
-// 4. fmt.Sprintf - String formatting
+// 2. fmt.Sprintf - String formatting
 //    Rust backend has type mismatch issues with string_format2
 //
-// 5. []interface{} - Slice of empty interface (any type)
+// 3. []interface{} - Slice of empty interface (any type)
 //    Not supported across backends
 //
-// SUPPORTED WITH LIMITATIONS:
-// - interface{} (empty interface) - works for assignment, no type assertions
+// SUPPORTED (tested in this file):
+// - interface{} (empty interface) + type assertions + comma-ok
+// - Named interfaces with method dispatch
+// - Type switch (lowered to if/else chains)
+// - Value switch (int, string, multi-case, default, tagless)
+// - len(string), string indexing, string slicing
+// - iota (lowered to integer literals)
+// - Closures with capture
+// - uint16, uint32, uint64, float32 types
+// - Rune literals
+// - Direct method calls (value + pointer receivers)
+// - Method calling method on same receiver
+// - Interface as function parameter and return type
+// - Multi-method interface dispatch
+// - Methods on type aliases (type MyInt int)
+// - Interface reassignment to different concrete type
 
 import (
 	"alltests/types"
@@ -2674,6 +2682,480 @@ func testByteArithmetic() {
 	}
 }
 
+// --- Switch statement tests ---
+
+func testSwitchInt() {
+	fmt.Println("=== Switch Int ===")
+	x := 2
+	result := ""
+	switch x {
+	case 1:
+		result = "one"
+	case 2:
+		result = "two"
+	case 3:
+		result = "three"
+	default:
+		result = "unknown"
+	}
+	if result == "two" {
+		fmt.Println("PASS: switch int")
+	} else {
+		panic("FAIL: switch int")
+	}
+}
+
+func testSwitchString() {
+	fmt.Println("=== Switch String ===")
+	s := "hello"
+	result := 0
+	switch s {
+	case "hello":
+		result = 1
+	case "world":
+		result = 2
+	}
+	if result == 1 {
+		fmt.Println("PASS: switch string")
+	} else {
+		panic("FAIL: switch string")
+	}
+}
+
+func testSwitchMultiCase() {
+	fmt.Println("=== Switch Multi-Case ===")
+	x := 3
+	result := ""
+	switch x {
+	case 1, 2, 3:
+		result = "low"
+	case 4, 5, 6:
+		result = "mid"
+	default:
+		result = "high"
+	}
+	if result == "low" {
+		fmt.Println("PASS: switch multi-case")
+	} else {
+		panic("FAIL: switch multi-case")
+	}
+}
+
+func testSwitchDefault() {
+	fmt.Println("=== Switch Default ===")
+	x := 99
+	result := ""
+	switch x {
+	case 1:
+		result = "one"
+	case 2:
+		result = "two"
+	default:
+		result = "other"
+	}
+	if result == "other" {
+		fmt.Println("PASS: switch default")
+	} else {
+		panic("FAIL: switch default")
+	}
+}
+
+func testEmptySwitch() {
+	fmt.Println("=== Tagless Switch ===")
+	x := 5
+	result := ""
+	switch {
+	case x > 10:
+		result = "big"
+	case x > 0:
+		result = "positive"
+	default:
+		result = "non-positive"
+	}
+	if result == "positive" {
+		fmt.Println("PASS: tagless switch")
+	} else {
+		panic("FAIL: tagless switch")
+	}
+}
+
+// --- String operation tests ---
+
+func testStringIndexing() {
+	fmt.Println("=== String Indexing ===")
+	s := "Hello"
+	b := s[0]
+	if b == byte(72) { // 'H' = 72
+		fmt.Println("PASS: string indexing")
+	} else {
+		panic("FAIL: string indexing")
+	}
+	b2 := s[4]
+	if b2 == byte(111) { // 'o' = 111
+		fmt.Println("PASS: string indexing last")
+	} else {
+		panic("FAIL: string indexing last")
+	}
+}
+
+func testStringLen() {
+	fmt.Println("=== String Len ===")
+	s := "hello"
+	if len(s) == 5 {
+		fmt.Println("PASS: string len")
+	} else {
+		panic("FAIL: string len")
+	}
+	empty := ""
+	if len(empty) == 0 {
+		fmt.Println("PASS: string len empty")
+	} else {
+		panic("FAIL: string len empty")
+	}
+}
+
+func testStringSlicing() {
+	fmt.Println("=== String Slicing ===")
+	s := "Hello, World!"
+	sub := s[7:12]
+	if sub == "World" {
+		fmt.Println("PASS: string slicing mid")
+	} else {
+		panic("FAIL: string slicing mid")
+	}
+	prefix := s[:5]
+	if prefix == "Hello" {
+		fmt.Println("PASS: string slicing prefix")
+	} else {
+		panic("FAIL: string slicing prefix")
+	}
+	suffix := s[7:]
+	if suffix == "World!" {
+		fmt.Println("PASS: string slicing suffix")
+	} else {
+		panic("FAIL: string slicing suffix")
+	}
+}
+
+// --- Closure tests ---
+
+func testClosureBasic() {
+	fmt.Println("=== Closure Basic ===")
+	add := func(a int, b int) int {
+		return a + b
+	}
+	result := add(3, 4)
+	if result == 7 {
+		fmt.Println("PASS: closure basic")
+	} else {
+		panic("FAIL: closure basic")
+	}
+}
+
+func testClosureCapture() {
+	fmt.Println("=== Closure Capture ===")
+	x := 10
+	addX := func(a int) int {
+		return a + x
+	}
+	result := addX(5)
+	if result == 15 {
+		fmt.Println("PASS: closure capture")
+	} else {
+		panic("FAIL: closure capture")
+	}
+}
+
+// --- Numeric type tests ---
+
+func testUintTypes() {
+	fmt.Println("=== Uint Types ===")
+	var a uint16
+	a = 65535
+	if a == 65535 {
+		fmt.Println("PASS: uint16 max")
+	} else {
+		panic("FAIL: uint16 max")
+	}
+
+	var b uint32
+	b = 4294967295
+	if b == 4294967295 {
+		fmt.Println("PASS: uint32 max")
+	} else {
+		panic("FAIL: uint32 max")
+	}
+
+	var c uint64
+	c = 1000000000000
+	if c == 1000000000000 {
+		fmt.Println("PASS: uint64 large")
+	} else {
+		panic("FAIL: uint64 large")
+	}
+
+	// Arithmetic
+	x := uint16(100)
+	y := uint16(200)
+	sum := x + y
+	if sum == 300 {
+		fmt.Println("PASS: uint16 arithmetic")
+	} else {
+		panic("FAIL: uint16 arithmetic")
+	}
+}
+
+func testFloat32() {
+	fmt.Println("=== Float32 ===")
+	var a float32
+	a = 3.14
+	if a > 3.0 && a < 4.0 {
+		fmt.Println("PASS: float32 value")
+	} else {
+		panic("FAIL: float32 value")
+	}
+
+	b := float32(2.0)
+	c := a + b
+	if c > 5.0 && c < 6.0 {
+		fmt.Println("PASS: float32 arithmetic")
+	} else {
+		panic("FAIL: float32 arithmetic")
+	}
+
+	// Conversion float32 -> float64
+	d := float64(a)
+	if d > 3.0 && d < 4.0 {
+		fmt.Println("PASS: float32 to float64")
+	} else {
+		panic("FAIL: float32 to float64")
+	}
+}
+
+func testRuneLiterals() {
+	fmt.Println("=== Rune Literals ===")
+	var r int32
+	r = 'a'
+	if r == 97 {
+		fmt.Println("PASS: rune literal a")
+	} else {
+		panic("FAIL: rune literal a")
+	}
+
+	r2 := 'Z'
+	if r2 == 90 {
+		fmt.Println("PASS: rune literal Z")
+	} else {
+		panic("FAIL: rune literal Z")
+	}
+}
+
+// --- Method and interface tests ---
+
+// Counter struct for method tests
+type Counter struct {
+	count int
+}
+
+// Value receiver method
+func (c Counter) Value() int {
+	return c.count
+}
+
+// Pointer receiver method (mutates receiver)
+func (c *Counter) Inc() {
+	c.count = c.count + 1
+}
+
+// Pointer receiver method with parameter
+func (c *Counter) Add(n int) {
+	c.count = c.count + n
+}
+
+// Method calling another method on same receiver
+func (c *Counter) Reset() {
+	c.count = 0
+}
+
+func (c *Counter) ResetAndAdd(n int) {
+	c.Reset()
+	c.Add(n)
+}
+
+func testDirectMethodCall() {
+	fmt.Println("=== Direct Method Call ===")
+	c := Counter{count: 42}
+	v := c.Value()
+	if v == 42 {
+		fmt.Println("PASS: direct method call value receiver")
+	} else {
+		panic("FAIL: direct method call value receiver")
+	}
+}
+
+func testPointerReceiverMethod() {
+	fmt.Println("=== Pointer Receiver Method ===")
+	c := Counter{count: 0}
+	c.Inc()
+	c.Inc()
+	c.Inc()
+	if c.Value() == 3 {
+		fmt.Println("PASS: pointer receiver inc")
+	} else {
+		panic("FAIL: pointer receiver inc")
+	}
+
+	c.Add(10)
+	if c.Value() == 13 {
+		fmt.Println("PASS: pointer receiver add")
+	} else {
+		panic("FAIL: pointer receiver add")
+	}
+}
+
+func testMethodCallingMethod() {
+	fmt.Println("=== Method Calling Method ===")
+	c := Counter{count: 100}
+	c.ResetAndAdd(7)
+	if c.Value() == 7 {
+		fmt.Println("PASS: method calling method")
+	} else {
+		panic("FAIL: method calling method")
+	}
+}
+
+// Describer interface for multi-method + param/return tests
+type Describer interface {
+	Name() string
+	Describe() string
+}
+
+// Dog implements Describer
+type Dog struct {
+	breed string
+}
+
+func (d Dog) Name() string {
+	return "Dog"
+}
+
+func (d Dog) Describe() string {
+	return "breed:" + d.breed
+}
+
+// Cat implements Describer
+type Cat struct {
+	color string
+}
+
+func (c Cat) Name() string {
+	return "Cat"
+}
+
+func (c Cat) Describe() string {
+	return "color:" + c.color
+}
+
+// Function taking interface parameter
+func getDescription(d Describer) string {
+	return d.Name() + " - " + d.Describe()
+}
+
+// Function returning interface
+func makeAnimal(kind string) Describer {
+	if kind == "dog" {
+		return Dog{breed: "Labrador"}
+	}
+	return Cat{color: "black"}
+}
+
+func testInterfaceAsParam() {
+	fmt.Println("=== Interface As Param ===")
+	d := Dog{breed: "Poodle"}
+	desc := getDescription(d)
+	if desc == "Dog - breed:Poodle" {
+		fmt.Println("PASS: interface as param")
+	} else {
+		panic("FAIL: interface as param")
+	}
+}
+
+func testInterfaceAsReturn() {
+	fmt.Println("=== Interface As Return ===")
+	animal := makeAnimal("dog")
+	if animal.Name() == "Dog" {
+		fmt.Println("PASS: interface return dog")
+	} else {
+		panic("FAIL: interface return dog")
+	}
+
+	animal2 := makeAnimal("cat")
+	if animal2.Name() == "Cat" {
+		fmt.Println("PASS: interface return cat")
+	} else {
+		panic("FAIL: interface return cat")
+	}
+}
+
+func testMultiMethodDispatch() {
+	fmt.Println("=== Multi-Method Dispatch ===")
+	var d Describer = Dog{breed: "Husky"}
+	n := d.Name()
+	desc := d.Describe()
+	if n == "Dog" && desc == "breed:Husky" {
+		fmt.Println("PASS: multi-method dispatch")
+	} else {
+		panic("FAIL: multi-method dispatch")
+	}
+}
+
+// Type alias with methods
+type MyInt int
+
+func (m MyInt) IsPositive() bool {
+	return m > 0
+}
+
+func (m MyInt) Double() MyInt {
+	return m * 2
+}
+
+func testTypeAliasMethod() {
+	fmt.Println("=== Type Alias Method ===")
+	x := MyInt(5)
+	if x.IsPositive() {
+		fmt.Println("PASS: type alias method bool")
+	} else {
+		panic("FAIL: type alias method bool")
+	}
+
+	doubled := x.Double()
+	if doubled == 10 {
+		fmt.Println("PASS: type alias method return")
+	} else {
+		panic("FAIL: type alias method return")
+	}
+}
+
+func testInterfaceReassignment() {
+	fmt.Println("=== Interface Reassignment ===")
+	var d Describer = Dog{breed: "Boxer"}
+	first := d.Name()
+	if first == "Dog" {
+		fmt.Println("PASS: interface reassign first")
+	} else {
+		panic("FAIL: interface reassign first")
+	}
+
+	d = Cat{color: "white"}
+	second := d.Name()
+	if second == "Cat" {
+		fmt.Println("PASS: interface reassign second")
+	} else {
+		panic("FAIL: interface reassign second")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -2763,6 +3245,27 @@ func main() {
 	testInterfaceNilReturn()
 	testInterfaceToInterface()
 	testByteArithmetic()
+	testSwitchInt()
+	testSwitchString()
+	testSwitchMultiCase()
+	testSwitchDefault()
+	testEmptySwitch()
+	testStringIndexing()
+	testStringLen()
+	testStringSlicing()
+	testClosureBasic()
+	testClosureCapture()
+	testUintTypes()
+	testFloat32()
+	testRuneLiterals()
+	testDirectMethodCall()
+	testPointerReceiverMethod()
+	testMethodCallingMethod()
+	testInterfaceAsParam()
+	testInterfaceAsReturn()
+	testMultiMethodDispatch()
+	testTypeAliasMethod()
+	testInterfaceReassignment()
 
 	fmt.Println("=== Done ===")
 }
