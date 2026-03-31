@@ -1050,8 +1050,10 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 							}
 						}
 						if needsClone {
-							// Annotate for CloneMovePass instead of inline .clone()
-							t.OptMeta = &OptMeta{Kind: OptReturnValue, NeedReturnCopy: true}
+							// Wrap with .clone() preserving inner tree structure
+							// so that OptMeta annotations on children survive for passes.
+							t = IRTree(CallExpression, KindExpr, t, Leaf(Dot, ".clone()"))
+							t.Content = t.Serialize()
 						}
 					}
 				}
