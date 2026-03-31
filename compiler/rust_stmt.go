@@ -44,6 +44,21 @@ func (e *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	e.mapAssignVar = ""
 	e.mapAssignKey = ""
 
+	// Track LHS name for compound assignment clone insertion
+	switch node.Tok {
+	case token.ADD_ASSIGN, token.SUB_ASSIGN, token.MUL_ASSIGN, token.QUO_ASSIGN,
+		token.REM_ASSIGN, token.AND_ASSIGN, token.OR_ASSIGN, token.XOR_ASSIGN,
+		token.SHL_ASSIGN, token.SHR_ASSIGN:
+		if len(node.Lhs) == 1 {
+			if ident, ok := node.Lhs[0].(*ast.Ident); ok {
+				lhsType := e.getExprGoType(node.Lhs[0])
+				if lhsType != nil && !isCopyType(lhsType) {
+					e.compoundAssignLhsName = ident.Name
+				}
+			}
+		}
+	}
+
 	// Track LHS names for move optimization
 	if e.Opt.OptimizeMoves && len(node.Lhs) >= 1 && len(node.Rhs) == 1 {
 		e.Opt.currentAssignLhsNames = make(map[string]bool)
@@ -125,6 +140,7 @@ func (e *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Clean up move optimization tracking
 	defer func() {
+		e.compoundAssignLhsName = ""
 		e.Opt.currentAssignLhsNames = nil
 		if len(e.Opt.currentCallArgIdentsStack) > 0 {
 			e.Opt.currentCallArgIdentsStack = e.Opt.currentCallArgIdentsStack[:len(e.Opt.currentCallArgIdentsStack)-1]
@@ -674,8 +690,9 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 							Leaf(WhiteSpace, " "),
 							Leaf(ArithmeticOperator, "+="),
 							Leaf(WhiteSpace, " "),
-							Leaf(UnaryOperator, "&"),
+							Leaf(Identifier, "&("),
 							rhsNode,
+							Leaf(Identifier, ")"),
 							Leaf(Semicolon, ";"),
 							Leaf(NewLine, "\n"),
 						))

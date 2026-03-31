@@ -109,6 +109,11 @@ func (e *RustEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 	// Escape Rust keywords
 	name = escapeRustKeyword(name)
 	goType := e.getExprGoType(node)
+	// Clone non-Copy LHS variable when it reappears in RHS of compound assignment
+	if e.compoundAssignLhsName != "" && name == e.compoundAssignLhsName && !e.inAssignLhs {
+		e.fs.AddLeaf(name+".clone()", TagIdent, goType)
+		return
+	}
 	e.fs.AddLeaf(name, TagIdent, goType)
 }
 

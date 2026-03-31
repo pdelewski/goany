@@ -3156,6 +3156,35 @@ func testInterfaceReassignment() {
 	}
 }
 
+func testCompoundAssignSelfRef() {
+	// x += x + a — self-referencing compound string concat
+	x := "hello"
+	x += x + " world"
+	if x == "hellohello world" {
+		fmt.Println("PASS: compound assign self ref")
+	} else {
+		panic("FAIL: compound assign self ref")
+	}
+
+	// x += a (no self-ref, just basic compound concat)
+	y := "abc"
+	y += "def"
+	if y == "abcdef" {
+		fmt.Println("PASS: compound assign simple")
+	} else {
+		panic("FAIL: compound assign simple")
+	}
+
+	// x += x (self-ref without additional concat)
+	z := "ha"
+	z += z
+	if z == "haha" {
+		fmt.Println("PASS: compound assign self only")
+	} else {
+		panic("FAIL: compound assign self only")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -3266,6 +3295,7 @@ func main() {
 	testMultiMethodDispatch()
 	testTypeAliasMethod()
 	testInterfaceReassignment()
+	testCompoundAssignSelfRef()
 
 	fmt.Println("=== Done ===")
 }

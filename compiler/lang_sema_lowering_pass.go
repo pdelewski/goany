@@ -1172,7 +1172,6 @@ func (v *canonicalizeVisitor) transformRustOwnership(file *ast.File) {
 		return
 	}
 	// Single-statement transforms (extract to temp, applied per-block)
-	v.transformSelfRefConcat(file)
 	v.transformSliceSelfRef(file)
 	v.transformSameVarMultipleArgs(file)
 	v.transformBinaryExprSameVar(file)
@@ -1308,76 +1307,8 @@ func (v *canonicalizeVisitor) applyBlockTransform(file *ast.File, fn func(*[]ast
 // 1. Self-referencing += concatenation
 // ---------------------------------------------------------------------------
 
-// transformSelfRefConcat rewrites `x += x + a` into `tmp := x + a; x = tmp`.
-//
-// Pattern matched:
-//
-//	x += x + a
-//
-// Why: In Rust, `x += x + a` borrows x mutably (for +=) and also moves x
-// (in x + a) in the same expression, which the borrow checker rejects.
-//
-// Transform:
-//
-//	x += x + a   →   _t0 := x + a
-//	                  x = _t0
-//
-// Skipped:
-//   - += where RHS does not contain LHS variable in a + sub-expression
-//   - += on non-string types (only string concat causes moves)
-func (v *canonicalizeVisitor) transformSelfRefConcat(file *ast.File) {
-	v.applyBlockTransform(file, func(list *[]ast.Stmt) {
-		var newList []ast.Stmt
-		changed := false
-		for _, stmt := range *list {
-			assign, ok := stmt.(*ast.AssignStmt)
-			if !ok || assign.Tok != token.ADD_ASSIGN || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
-				newList = append(newList, stmt)
-				continue
-			}
-			lhsIdent, ok := assign.Lhs[0].(*ast.Ident)
-			if !ok || !v.isStringType(assign.Lhs[0]) {
-				newList = append(newList, stmt)
-				continue
-			}
-			if !rhsContainsStringConcatWithVar(assign.Rhs[0], lhsIdent.Name) {
-				newList = append(newList, stmt)
-				continue
-			}
-			// Transform: x += x + a  →  tmp := x + a; x = tmp
-			tmpAssign, tmpObj := v.createTempAssign(assign.Rhs[0], assign.TokPos)
-			newList = append(newList, tmpAssign)
-			assign.Tok = token.ASSIGN
-			assign.Rhs[0] = v.createTempRef(tmpObj, assign.TokPos)
-			newList = append(newList, assign)
-			changed = true
-		}
-		if changed {
-			*list = newList
-		}
-	})
-}
-
-// rhsContainsStringConcatWithVar checks if an expression contains a binary +
-// with varName on the left side.
-func rhsContainsStringConcatWithVar(expr ast.Expr, varName string) bool {
-	switch e := expr.(type) {
-	case *ast.BinaryExpr:
-		if e.Op == token.ADD {
-			if ident, ok := e.X.(*ast.Ident); ok && ident.Name == varName {
-				return true
-			}
-		}
-		return rhsContainsStringConcatWithVar(e.X, varName) ||
-			rhsContainsStringConcatWithVar(e.Y, varName)
-	case *ast.ParenExpr:
-		return rhsContainsStringConcatWithVar(e.X, varName)
-	}
-	return false
-}
-
 // ---------------------------------------------------------------------------
-// 2. Slice self-reference
+// 1. Slice self-reference
 // ---------------------------------------------------------------------------
 
 // transformSliceSelfRef rewrites slice self-reference patterns that cause

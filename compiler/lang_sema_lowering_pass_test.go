@@ -516,45 +516,7 @@ func main() {
 // Rust Ownership Transform tests
 // =============================================
 
-// --- 1. Self-referencing += concatenation ---
-
-func TestCanonicalizeRust_SelfRefConcat(t *testing.T) {
-	src := `package test
-
-func main() {
-	x := "hello"
-	x += x + " world"
-	_ = x
-}
-`
-	// Reference: expected code after transform (Rust can't borrow x mutably and immutably)
-	//   x += x + " world"
-	// → _t0 := x + " world"
-	//   x += _t0
-	wantTemp := `_t0 := x + " world"`
-	result := runCanonicalize(t, src, BackendRust)
-	assertValidGo(t, result)
-	assertContains(t, result, wantTemp)
-	assertNotContains(t, result, "x += x")
-}
-
-func TestCanonicalizeRust_SelfRefConcat_SkipWhenNoRust(t *testing.T) {
-	src := `package test
-
-func main() {
-	x := "hello"
-	x += x + " world"
-	_ = x
-}
-`
-	// Reference: no transform (C++ doesn't need self-ref extraction)
-	//   x += x + " world" → x += x + " world"  (unchanged)
-	want := `x += x + " world"`
-	result := runCanonicalize(t, src, BackendCpp)
-	assertContains(t, result, want)
-}
-
-// --- 2. Slice self-reference ---
+// --- 1. Slice self-reference ---
 
 func TestCanonicalizeRust_SliceSelfRef_IndexAssign(t *testing.T) {
 	src := `package test

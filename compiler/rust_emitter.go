@@ -62,7 +62,8 @@ type RustEmitter struct {
 	funcReturnType      types.Type
 	savedFuncRetTypes   []types.Type // stack for nested closures
 	rangeVarCounter     int
-	inAssignLhs         bool // true when visiting LHS of assignment
+	inAssignLhs         bool   // true when visiting LHS of assignment
+	compoundAssignLhsName string // set when visiting RHS of compound assign (for .clone() insertion)
 	callExprArgDepth    int  // >0 when inside a call expression argument
 	compositeLitDepth   int  // >0 when inside a composite literal (struct/slice init)
 	localClosureBodies  map[string]string // maps local closure variable names to their body code
