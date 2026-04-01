@@ -3185,6 +3185,70 @@ func testCompoundAssignSelfRef() {
 	}
 }
 
+// Helper for multi-arg ownership tests
+func concatThree(a string, b string, c string) string {
+	return a + b + c
+}
+
+func concatTwo(a string, b string) string {
+	return a + b
+}
+
+func identity(s string) string {
+	return s
+}
+
+// Test: same non-Copy variable passed 3 times to a function
+func testSameVarThreeArgs() {
+	x := "hi"
+	r := concatThree(x, x, x)
+	if r == "hihihi" {
+		fmt.Println("PASS: same var three args")
+	} else {
+		panic("FAIL: same var three args")
+	}
+}
+
+// Test: same non-Copy variable in binary expr with 3 calls
+func testBinaryExprThreeCalls() {
+	x := "ab"
+	r := identity(x) + identity(x) + identity(x)
+	if r == "ababab" {
+		fmt.Println("PASS: binary expr three calls")
+	} else {
+		panic("FAIL: binary expr three calls")
+	}
+}
+
+// Test: nested call sharing with variable used 3 times
+func testNestedCallThreeUses() {
+	x := "ok"
+	r := concatTwo(x, concatTwo(x, x))
+	if r == "okokok" {
+		fmt.Println("PASS: nested call three uses")
+	} else {
+		panic("FAIL: nested call three uses")
+	}
+}
+
+// Test: same non-Copy variable passed as function arg in multiple statements
+// (string concat via function calls, not binary +, to exercise clone pipeline)
+func concatStr(a string, b string) string {
+	return a + b
+}
+
+func testStringReuseViaFunc() {
+	x := "hi"
+	y := concatStr(x, "-a")
+	z := concatStr(x, "-b")
+	w := concatStr(x, "-c")
+	if y == "hi-a" && z == "hi-b" && w == "hi-c" {
+		fmt.Println("PASS: string reuse via func")
+	} else {
+		panic("FAIL: string reuse via func")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -3296,6 +3360,10 @@ func main() {
 	testTypeAliasMethod()
 	testInterfaceReassignment()
 	testCompoundAssignSelfRef()
+	testSameVarThreeArgs()
+	testBinaryExprThreeCalls()
+	testNestedCallThreeUses()
+	testStringReuseViaFunc()
 
 	fmt.Println("=== Done ===")
 }
