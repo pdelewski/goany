@@ -252,7 +252,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 				var keyExpr string
 				if keyIsStr {
-					keyExpr = fmt.Sprintf("Rc::new(%s.to_string())", keyStr)
+					keyExpr = fmt.Sprintf("Rc::new(%s.clone())", keyStr)
 				} else {
 					keyExpr = fmt.Sprintf("Rc::new(%s%s)", keyStr, keyCast)
 				}
@@ -632,7 +632,18 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 
 	if needsRcWrap {
-		wrappedRhs := "Rc::new(" + rhsStr + ")"
+		// Clone non-Copy values inside Rc::new() to prevent move
+		rcInner := rhsStr
+		if len(node.Rhs) == 1 {
+			switch node.Rhs[0].(type) {
+			case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr:
+				rhsType := e.getExprGoType(node.Rhs[0])
+				if rhsType != nil && !isCopyType(rhsType) && !strings.HasSuffix(rcInner, ".clone()") {
+					rcInner = rcInner + ".clone()"
+				}
+			}
+		}
+		wrappedRhs := "Rc::new(" + rcInner + ")"
 		switch tokStr {
 		case ":=":
 			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
@@ -759,14 +770,34 @@ func (e *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int
 
 func (e *RustEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitDeclStmtValueSpecValue))
+
+	// Clone non-Copy identifier or selector RHS to prevent move
+	needsClone := false
+	switch node.(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		valType := e.getExprGoType(node)
+		if valType != nil && !isCopyType(valType) {
+			needsClone = true
+		}
+	}
+
 	if len(tokens) == 1 {
 		t := tokens[0]
+		if needsClone {
+			s := t.Serialize()
+			if !strings.HasSuffix(s, ".clone()") {
+				t = Leaf(Identifier, s+".clone()")
+			}
+		}
 		t.Kind = TagExpr
 		e.fs.AddTree(t)
 	} else {
 		valCode := ""
 		for _, t := range tokens {
 			valCode += t.Serialize()
+		}
+		if needsClone && !strings.HasSuffix(valCode, ".clone()") {
+			valCode += ".clone()"
 		}
 		e.fs.AddLeaf(valCode, TagExpr, nil)
 	}
@@ -807,6 +838,14 @@ func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		escapedName := escapeRustKeyword(nameStr)
 
 		if valueStr != "" {
+			// Wrap in Rc::new() when declared type is interface{}/any
+			needsRcWrap := false
+			if goType != nil {
+				goTypeStr := goType.String()
+				if goTypeStr == "interface{}" || goTypeStr == "any" {
+					needsRcWrap = true
+				}
+			}
 			children = append(children,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "let", TagRust),
@@ -820,7 +859,18 @@ func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 				Leaf(WhiteSpace, " "),
 				Leaf(Assignment, "="),
 				Leaf(WhiteSpace, " "),
-				valueToken,
+			)
+			if needsRcWrap {
+				children = append(children,
+					Leaf(Identifier, "Rc::new"),
+					Leaf(LeftParen, "("),
+					valueToken,
+					Leaf(RightParen, ")"),
+				)
+			} else {
+				children = append(children, valueToken)
+			}
+			children = append(children,
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
 			)

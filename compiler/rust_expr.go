@@ -584,7 +584,7 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 					Leaf(WhiteSpace, " "),
 					Leaf(Identifier, "Rc::new"),
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, keyStr),
+					Leaf(Identifier, keyStr+".clone()"),
 					Leaf(RightParen, ")"),
 					Leaf(RightParen, ")"),
 				))
@@ -1019,7 +1019,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		// Map read: hashMapGet(m, Rc::new(key))
 		var keyExpr string
 		if keyIsStr {
-			keyExpr = fmt.Sprintf("Rc::new(%s)", idxCode)
+			keyExpr = fmt.Sprintf("Rc::new(%s.clone())", idxCode)
 		} else {
 			keyExpr = fmt.Sprintf("Rc::new(%s%s)", idxCode, keyCast)
 		}
@@ -1605,7 +1605,10 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 				Leaf(Identifier, "vec!"),
 				Leaf(LeftBracket, "["),
 			}
+			// Check if slice element type is non-Copy (needs .clone() for variable elements)
+			elemNeedClone := !isCopyType(u.Elem())
 			first := true
+			eltIdx := 0
 			for _, t := range tokens {
 				s := t.Serialize()
 				if s == "" {
@@ -1614,8 +1617,20 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 				if !first {
 					vecChildren = append(vecChildren, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 				}
+				// Add .clone() for non-Copy variable elements to prevent move
+				if elemNeedClone && eltIdx < len(node.Elts) {
+					needsClone := false
+					switch node.Elts[eltIdx].(type) {
+					case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr:
+						needsClone = !strings.HasSuffix(s, ".clone()")
+					}
+					if needsClone {
+						t = Leaf(Identifier, s+".clone()")
+					}
+				}
 				vecChildren = append(vecChildren, t)
 				first = false
+				eltIdx++
 			}
 			vecChildren = append(vecChildren, Leaf(RightBracket, "]"))
 			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr, vecChildren...))
@@ -1665,9 +1680,13 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 					valStr := parts[1]
 					var keyExpr string
 					if keyIsStr {
-						keyExpr = "Rc::new(" + keyStr + ")"
+						keyExpr = "Rc::new(" + keyStr + ".clone())"
 					} else {
 						keyExpr = "Rc::new(" + keyStr + keyCast + ")"
+					}
+					valExpr := valStr
+					if !isCopyType(mapUnderlying.Elem()) {
+						valExpr = valStr + ".clone()"
 					}
 					children = append(children,
 						Leaf(Identifier, tmpVar),
@@ -1683,7 +1702,7 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 						Leaf(Comma, ","),
 						Leaf(WhiteSpace, " "),
 						Leaf(Identifier, "Rc::new("),
-						Leaf(Identifier, valStr),
+						Leaf(Identifier, valExpr),
 						Leaf(RightParen, ")"),
 						Leaf(RightParen, ")"),
 						Leaf(Semicolon, ";"),

@@ -3329,6 +3329,136 @@ func testVarToVarAssign() {
 	}
 }
 
+// Test: var declaration with non-Copy RHS identifier (DeclStmt path)
+func testVarDeclWithIdentRhs() {
+	var x string = "hello"
+	var y string = x
+	var z string = x
+	if y == "hello" && z == "hello" {
+		fmt.Println("PASS: var decl with ident rhs")
+	} else {
+		panic("FAIL: var decl with ident rhs")
+	}
+}
+
+// Test: slice literal with non-Copy variable elements reused afterwards
+func testSliceLitNonCopyElem() {
+	x := "hello"
+	y := "world"
+	s := []string{x, y}
+	// x and y must still be usable after being placed in the slice literal
+	if s[0] == "hello" && s[1] == "world" && x == "hello" && y == "world" {
+		fmt.Println("PASS: slice lit non-copy elem")
+	} else {
+		panic("FAIL: slice lit non-copy elem")
+	}
+}
+
+// Test: map set with non-Copy variable values reused afterwards
+func testMapSetNonCopyValue() {
+	v := "shared"
+	m := make(map[string]string)
+	m["a"] = v
+	m["b"] = v
+	// v must still be usable after being used as map values
+	r1 := m["a"]
+	r2 := m["b"]
+	if r1 == "shared" && r2 == "shared" && v == "shared" {
+		fmt.Println("PASS: map set non-copy value")
+	} else {
+		panic("FAIL: map set non-copy value")
+	}
+}
+
+// Test: interface{} assignment from non-Copy variable, source reused
+func testInterfaceAssignNonCopy() {
+	x := "hello"
+	var iface interface{} = x
+	// x must still be usable after being wrapped in Rc::new for interface{}
+	r := iface.(string)
+	if r == "hello" && x == "hello" {
+		fmt.Println("PASS: interface assign non-copy")
+	} else {
+		panic("FAIL: interface assign non-copy")
+	}
+}
+
+// Helper: return interface{} from a function where the argument is reused
+func returnAsInterface(x string) interface{} {
+	return x
+}
+
+// Test: return non-Copy value as interface{}, caller reuses
+func testReturnInterface() {
+	x := "hello"
+	iface := returnAsInterface(x)
+	// x must still be usable after being passed to function
+	r := iface.(string)
+	if r == "hello" && x == "hello" {
+		fmt.Println("PASS: return interface non-copy")
+	} else {
+		panic("FAIL: return interface non-copy")
+	}
+}
+
+// Test: map key variable reused after map operations
+func testMapKeyVarReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val1"
+	// k must still be usable after being used as a map key
+	m[k] = "val2"
+	r := m[k]
+	if r == "val2" && k == "mykey" {
+		fmt.Println("PASS: map key var reuse")
+	} else {
+		panic("FAIL: map key var reuse")
+	}
+}
+
+// Test: delete with variable key, key reused afterwards
+func testDeleteKeyReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val"
+	delete(m, k)
+	// k must still be usable after delete
+	if k == "mykey" {
+		fmt.Println("PASS: delete key reuse")
+	} else {
+		panic("FAIL: delete key reuse")
+	}
+}
+
+// Test: map read with variable key, key reused
+func testMapReadKeyReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val"
+	r1 := m[k]
+	r2 := m[k]
+	// k must still be usable after map reads
+	if r1 == "val" && r2 == "val" && k == "mykey" {
+		fmt.Println("PASS: map read key reuse")
+	} else {
+		panic("FAIL: map read key reuse")
+	}
+}
+
+// Test: comma-ok map read with variable key, key reused
+func testMapCommaOkKeyReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val"
+	v, ok := m[k]
+	// k must still be usable after comma-ok read
+	if ok && v == "val" && k == "mykey" {
+		fmt.Println("PASS: map comma-ok key reuse")
+	} else {
+		panic("FAIL: map comma-ok key reuse")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -3448,6 +3578,15 @@ func main() {
 	testVarToVarAssign()
 	testStringConcatComplex()
 	testStringPlusEqualReuse()
+	testVarDeclWithIdentRhs()
+	testSliceLitNonCopyElem()
+	testMapSetNonCopyValue()
+	testInterfaceAssignNonCopy()
+	testReturnInterface()
+	testMapKeyVarReuse()
+	testDeleteKeyReuse()
+	testMapReadKeyReuse()
+	testMapCommaOkKeyReuse()
 
 	fmt.Println("=== Done ===")
 }

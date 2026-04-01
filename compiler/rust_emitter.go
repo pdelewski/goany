@@ -303,7 +303,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	}
 	var keyExpr string
 	if keyIsStr {
-		keyExpr = fmt.Sprintf("Rc::new(%s)", e.mapAssignKey)
+		keyExpr = fmt.Sprintf("Rc::new(%s.clone())", e.mapAssignKey)
 	} else {
 		keyExpr = fmt.Sprintf("Rc::new(%s%s)", e.mapAssignKey, keyCast)
 	}
@@ -312,7 +312,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	chain := collectMapIndexChain(outerIdxExpr)
 	if len(chain) <= 1 {
 		// Simple case: m[k] = v
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
@@ -329,7 +329,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 		// No root map found, or root map is accessed through slice indices only.
 		// Simple case: the simple hashMapSet assignment works because Rust
 		// can assign to slice elements (vec[idx] = ...) directly.
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
@@ -337,13 +337,13 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	rootMapName := exprToString(rootMapExpr)
 	rootMapGoType := e.getExprGoType(rootMapExpr)
 	if rootMapGoType == nil {
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
 	rootMapUnderlying, ok := rootMapGoType.Underlying().(*types.Map)
 	if !ok {
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
@@ -353,7 +353,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	rootKey := exprToString(chain[rootMapIdx].Index)
 	var rootKeyExpr string
 	if rootKeyIsStr {
-		rootKeyExpr = fmt.Sprintf("Rc::new(%s.to_string())", rootKey)
+		rootKeyExpr = fmt.Sprintf("Rc::new(%s.clone())", rootKey)
 	} else {
 		rootKeyExpr = fmt.Sprintf("Rc::new(%s%s)", rootKey, rootKeyCast)
 	}
@@ -386,7 +386,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 					intermKey := exprToString(idx.Index)
 					var intermKeyExpr string
 					if intermKeyIsStr {
-						intermKeyExpr = fmt.Sprintf("Rc::new(%s.to_string())", intermKey)
+						intermKeyExpr = fmt.Sprintf("Rc::new(%s.clone())", intermKey)
 					} else {
 						intermKeyExpr = fmt.Sprintf("Rc::new(%s%s)", intermKey, intermKeyCast)
 					}
@@ -407,7 +407,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	}
 
 	// Apply the final map assign
-	sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+	sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 		ind, indexPrefix, indexPrefix, keyExpr, rhsStr))
 
 	// Write back: propagate temp vars to root
