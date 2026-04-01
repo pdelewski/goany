@@ -3265,6 +3265,70 @@ func testStringConcatReuse() {
 	}
 }
 
+// Test: complex string concat expressions
+type StringHolder struct {
+	val string
+}
+
+func testStringConcatComplex() {
+	// Chained: (x + y) + z
+	x := "a"
+	y := "b"
+	z := "c"
+	r1 := x + y + z
+	r2 := x + z // x reused after chain
+	if r1 == "abc" && r2 == "ac" {
+		fmt.Println("PASS: string concat chained")
+	} else {
+		panic("FAIL: string concat chained")
+	}
+
+	// Struct field as LHS
+	s := StringHolder{val: "hi"}
+	r3 := s.val + "-end"
+	r4 := s.val + "-end2"
+	if r3 == "hi-end" && r4 == "hi-end2" {
+		fmt.Println("PASS: string concat struct field")
+	} else {
+		panic("FAIL: string concat struct field")
+	}
+
+	// Slice element as LHS
+	arr := []string{"hello"}
+	r5 := arr[0] + "-x"
+	r6 := arr[0] + "-y"
+	if r5 == "hello-x" && r6 == "hello-y" {
+		fmt.Println("PASS: string concat slice elem")
+	} else {
+		panic("FAIL: string concat slice elem")
+	}
+}
+
+// Test: string += with variable RHS reused
+func testStringPlusEqualReuse() {
+	x := "a"
+	y := "b"
+	x += y
+	z := y
+	if x == "ab" && z == "b" {
+		fmt.Println("PASS: string += reuse")
+	} else {
+		panic("FAIL: string += reuse")
+	}
+}
+
+// Test: variable-to-variable assignment of non-Copy type, source reused
+func testVarToVarAssign() {
+	x := "hello"
+	y := x
+	z := x
+	if y == "hello" && z == "hello" {
+		fmt.Println("PASS: var to var assign reuse")
+	} else {
+		panic("FAIL: var to var assign reuse")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -3381,6 +3445,9 @@ func main() {
 	testNestedCallThreeUses()
 	testStringReuseViaFunc()
 	testStringConcatReuse()
+	testVarToVarAssign()
+	testStringConcatComplex()
+	testStringPlusEqualReuse()
 
 	fmt.Println("=== Done ===")
 }

@@ -154,11 +154,15 @@ func (e *RustEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 		if basic, ok := leftType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 			if op == "+" {
 				// String concat: left.clone() + &right
-				// The LHS is consumed by move in Rust. Add .clone() for variables
-				// so subsequent uses remain valid. CloneMovePass removes the
-				// last-use clone.
+				// The LHS is consumed by move in Rust. Add .clone() unless
+				// the LHS already produces a fresh owned value.
 				lhs := leftNode
-				if _, isIdent := node.X.(*ast.Ident); isIdent {
+				alreadyOwned := false
+				switch node.X.(type) {
+				case *ast.BasicLit, *ast.CompositeLit, *ast.CallExpr, *ast.BinaryExpr:
+					alreadyOwned = true
+				}
+				if !alreadyOwned {
 					lhs = IRTree(CallExpression, KindExpr, leftNode, Leaf(Dot, ".clone()"))
 					lhs.Content = lhs.Serialize()
 				}
