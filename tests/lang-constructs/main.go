@@ -3459,6 +3459,29 @@ func testMapCommaOkKeyReuse() {
 	}
 }
 
+// Test: append(slice, slice[i]) with non-Copy elements
+func testAppendSliceSelfRef() {
+	s := []string{"alpha", "beta"}
+	s = append(s, s[0])
+	if len(s) == 3 && s[2] == "alpha" && s[0] == "alpha" {
+		fmt.Println("PASS: append slice self-ref")
+	} else {
+		panic("FAIL: append slice self-ref")
+	}
+}
+
+// Test: slice[i] = slice[j] with non-Copy elements (string)
+func testSliceElemToElemAssign() {
+	s := []string{"alpha", "beta", "gamma"}
+	s[0] = s[2]
+	// s[2] must still be intact after the copy
+	if s[0] == "gamma" && s[2] == "gamma" {
+		fmt.Println("PASS: slice elem to elem assign")
+	} else {
+		panic("FAIL: slice elem to elem assign")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -3587,6 +3610,8 @@ func main() {
 	testDeleteKeyReuse()
 	testMapReadKeyReuse()
 	testMapCommaOkKeyReuse()
+	testSliceElemToElemAssign()
+	testAppendSliceSelfRef()
 
 	fmt.Println("=== Done ===")
 }

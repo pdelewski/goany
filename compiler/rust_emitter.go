@@ -498,6 +498,24 @@ func (e *RustEmitter) wrapSmallIntCastTree(fieldType types.Type, node IRNode) IR
 	return node
 }
 
+// exprNeedsClone checks whether an expression node is a non-Copy value reference
+// (identifier, selector, or index) that would be moved in Rust without .clone().
+// Returns false for literals, call results, composite literals, and Copy types.
+func (e *RustEmitter) exprNeedsClone(node ast.Expr) bool {
+	switch n := node.(type) {
+	case *ast.Ident:
+		if n.Name == "nil" || n.Name == "true" || n.Name == "false" {
+			return false
+		}
+	case *ast.SelectorExpr, *ast.IndexExpr:
+		// these reference existing values
+	default:
+		return false
+	}
+	t := e.getExprGoType(node)
+	return t != nil && !isCopyType(t)
+}
+
 // needsFieldClone checks whether a struct field value needs .clone() for Rust ownership.
 // Returns true for non-Copy types that are simple identifiers/selectors (not already owned values).
 func (e *RustEmitter) needsFieldClone(fieldType types.Type, val string) bool {

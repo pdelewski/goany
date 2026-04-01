@@ -516,73 +516,9 @@ func main() {
 // Rust Ownership Transform tests
 // =============================================
 
-// --- 1. Slice self-reference ---
-
-func TestCanonicalizeRust_SliceSelfRef_IndexAssign(t *testing.T) {
-	src := `package test
-
-func main() {
-	s := []string{"a", "b", "c"}
-	s[0] = s[1]
-	_ = s
-}
-`
-	// Reference: expected code after transform (Rust can't borrow s mutably and immutably)
-	//   s[0] = s[1]
-	// → _t0 := s[1]
-	//   s[0] = _t0
-	wantTemp := "_t0 := s[1]"
-	wantAssign := "s[0] = _t0"
-	result := runCanonicalize(t, src, BackendRust)
-	assertValidGo(t, result)
-	assertContains(t, result, wantTemp)
-	assertContains(t, result, wantAssign)
-}
-
-func TestCanonicalizeRust_SliceSelfRef_Append(t *testing.T) {
-	src := `package test
-
-func main() {
-	s := []string{"a", "b"}
-	s = append(s, s[0])
-	_ = s
-}
-`
-	// Reference: expected code after transform (Rust can't borrow s for append and index)
-	//   s = append(s, s[0])
-	// → _t0 := s[0]
-	//   s = append(s, _t0)
-	wantTemp := "_t0 := s[0]"
-	result := runCanonicalize(t, src, BackendRust)
-	assertValidGo(t, result)
-	assertContains(t, result, wantTemp)
-}
-
-func TestCanonicalizeRust_SliceSelfRef_CopyTypeSkipped(t *testing.T) {
-	src := `package test
-
-func main() {
-	s := []int{1, 2, 3}
-	s[0] = s[1]
-	_ = s
-}
-`
-	// Reference: no transform (int is a Copy type in Rust, no borrow conflict)
-	//   s[0] = s[1] → s[0] = s[1]  (unchanged)
-	want := "s[0] = s[1]"
-	result := runCanonicalize(t, src, BackendRust)
-	assertValidGo(t, result)
-	assertContains(t, result, want)
-	assertNotContains(t, result, "_t0 :=")
-}
-
-// Tests for transforms 3-5 (SameVarMultipleArgs, BinaryExprSameVar,
-// NestedCallSharing) were removed along with the transforms themselves.
-// These patterns are now handled by the emitter + CloneMovePass pipeline.
-
-// Tests for transforms 6-7 (StringReuseAfterConcat, MultiClosureSameVar)
-// were also removed — same issue as transforms 3-5: x_copy := x moves x
-// in Rust, making the original unusable. Handled by emitter + CloneMovePass.
+// Rust ownership tests (slice self-reference, same-var args, string reuse,
+// closures) were removed — all Rust ownership semantics are now handled
+// directly by the Rust emitter's .clone() additions and CloneMovePass.
 
 // =============================================
 // Named Return Lowering tests

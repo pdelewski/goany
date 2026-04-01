@@ -23,7 +23,7 @@ import (
 //   - MultiAssignSplit      (C++ lacks tuple destructuring in decls)
 //   - ShadowingRename       (C# forbids variable shadowing in same function)
 //   - FieldNameConflict     (C++ -Wchanges-meaning when field name == type name)
-//   - RustOwnership         (Rust borrow checker — slice self-reference)
+//   - RustOwnership         (no-op — emitter handles clone/move directly)
 type LangSemaLoweringPass struct {
 	Backends BackendSet
 }
@@ -1168,11 +1168,9 @@ func (v *canonicalizeVisitor) transformFieldConflicts(file *ast.File) {
 
 // transformRustOwnership applies all Rust ownership sub-pattern transforms.
 func (v *canonicalizeVisitor) transformRustOwnership(file *ast.File) {
-	if v.pkg == nil || v.pkg.TypesInfo == nil {
-		return
-	}
-	// Correctness transforms (Rust borrow checker rejects without these)
-	v.transformSliceSelfRef(file)
+	// All Rust ownership transforms (slice self-reference, clone insertion)
+	// are now handled directly by the Rust emitter's .clone() additions.
+	// No AST-level temp extraction needed.
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,134 +1256,11 @@ func (v *canonicalizeVisitor) applyBlockTransform(file *ast.File, fn func(*[]ast
 // 1. Self-referencing += concatenation
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// 1. Slice self-reference
-// ---------------------------------------------------------------------------
-
-// transformSliceSelfRef rewrites slice self-reference patterns that cause
-// simultaneous mutable + immutable borrow errors in Rust.
-//
-// Pattern A — index self-assignment:
-//
-//	slice[i] = slice[j]
-//
-// Pattern B — append with self-reference:
-//
-//	slice = append(slice, slice[i])
-//
-// Why: In Rust, `slice[i] = slice[j]` requires both &mut slice (for LHS)
-// and &slice (for RHS) simultaneously, which the borrow checker rejects.
-// Similarly, append mutates the slice while reading an element.
-//
-// Transform A:
-//
-//	slice[i] = slice[j]   →   _t0 := slice[j]
-//	                           slice[i] = _t0
-//
-// Transform B:
-//
-//	slice = append(slice, slice[i])  →  _t0 := slice[i]
-//	                                    slice = append(slice, _t0)
-//
-// Skipped:
-//   - Slices of Copy types (int, bool, etc.) — these are safe in Rust
-//     (only for pattern A; pattern B always applies due to &mut for append)
-func (v *canonicalizeVisitor) transformSliceSelfRef(file *ast.File) {
-	v.applyBlockTransform(file, func(list *[]ast.Stmt) {
-		var newList []ast.Stmt
-		changed := false
-		for _, stmt := range *list {
-			assign, ok := stmt.(*ast.AssignStmt)
-			if !ok {
-				newList = append(newList, stmt)
-				continue
-			}
-			prefixes := v.extractSliceSelfRefPrefixes(assign)
-			if len(prefixes) > 0 {
-				newList = append(newList, prefixes...)
-				changed = true
-			}
-			newList = append(newList, stmt)
-		}
-		if changed {
-			*list = newList
-		}
-	})
-}
-
-// extractSliceSelfRefPrefixes checks an assignment for slice self-reference
-// patterns and returns temp variable assignments to insert before it.
-// It also modifies the original assignment to use the temp variables.
-func (v *canonicalizeVisitor) extractSliceSelfRefPrefixes(assign *ast.AssignStmt) []ast.Stmt {
-	var prefixes []ast.Stmt
-
-	for i, lhs := range assign.Lhs {
-		if i >= len(assign.Rhs) {
-			continue
-		}
-		rhs := assign.Rhs[i]
-
-		// Pattern B: slice = append(slice, slice[i])
-		if lhsIdent, ok := lhs.(*ast.Ident); ok {
-			if t := v.exprType(lhs); t != nil {
-				if _, isSlice := t.Underlying().(*types.Slice); isSlice {
-					if call, ok := rhs.(*ast.CallExpr); ok {
-						if funId, ok := call.Fun.(*ast.Ident); ok && funId.Name == "append" && len(call.Args) >= 2 {
-							if firstArg, ok := call.Args[0].(*ast.Ident); ok && firstArg.Name == lhsIdent.Name {
-								for j := 1; j < len(call.Args); j++ {
-									if exprContainsSliceAccess(call.Args[j], lhsIdent.Name) {
-										tmpAssign, tmpObj := v.createTempAssign(call.Args[j], assign.TokPos)
-										prefixes = append(prefixes, tmpAssign)
-										call.Args[j] = v.createTempRef(tmpObj, assign.TokPos)
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Pattern A: slice[i] = slice[j]
-		if lhsIndex, ok := lhs.(*ast.IndexExpr); ok {
-			if lhsSlice, ok := lhsIndex.X.(*ast.Ident); ok {
-				if t := v.exprType(lhsIndex.X); t != nil {
-					if sliceType, isSlice := t.Underlying().(*types.Slice); isSlice {
-						// Skip Copy types for pattern A
-						if v.isCopyType(sliceType.Elem()) {
-							continue
-						}
-						if exprContainsSliceAccess(rhs, lhsSlice.Name) {
-							tmpAssign, tmpObj := v.createTempAssign(rhs, assign.TokPos)
-							prefixes = append(prefixes, tmpAssign)
-							assign.Rhs[i] = v.createTempRef(tmpObj, assign.TokPos)
-						}
-					}
-				}
-			}
-		}
-	}
-	return prefixes
-}
-
-// exprContainsSliceAccess checks if an expression contains an index access
-// to the named slice variable.
-func exprContainsSliceAccess(expr ast.Expr, sliceName string) bool {
-	found := false
-	ast.Inspect(expr, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		if indexExpr, ok := n.(*ast.IndexExpr); ok {
-			if ident, ok := indexExpr.X.(*ast.Ident); ok && ident.Name == sliceName {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
-}
+// Slice self-reference transforms (transformSliceSelfRef, extractSliceSelfRefPrefixes,
+// exprContainsSliceAccess) were removed — the Rust emitter now handles these cases
+// directly: exprNeedsClone adds .clone() for IndexExpr RHS in assignments, and
+// PostVisitCallExprArg adds .clone() for non-Copy call arguments (covering the
+// append(slice, slice[i]) pattern).
 
 // Transforms 3-5 (transformSameVarMultipleArgs, transformBinaryExprSameVar,
 // transformNestedCallSharing) were removed — the emitter + CloneMovePass

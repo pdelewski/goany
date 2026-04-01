@@ -605,43 +605,19 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 	}
 
-	// Clone RHS for non-Copy identifiers in := and = assignments to prevent move
+	// Clone RHS for non-Copy references (ident, selector, index) to prevent move
 	if len(node.Lhs) == 1 && len(node.Rhs) == 1 && !needsRcWrap && (tokStr == ":=" || tokStr == "=") {
-		if ident, ok := node.Rhs[0].(*ast.Ident); ok && ident.Name != "nil" && ident.Name != "true" && ident.Name != "false" {
-			rhsType := e.getExprGoType(node.Rhs[0])
-			if rhsType != nil && !isCopyType(rhsType) {
-				if !strings.HasSuffix(rhsStr, ".clone()") {
-					rhsStr = rhsStr + ".clone()"
-					rhsNode = Leaf(Identifier, rhsStr)
-				}
-			}
-		}
-	}
-
-	// Clone RHS for non-Copy selector expressions (struct field access) to prevent partial move
-	if len(node.Lhs) == 1 && len(node.Rhs) == 1 && !needsRcWrap && (tokStr == ":=" || tokStr == "=") {
-		if _, ok := node.Rhs[0].(*ast.SelectorExpr); ok {
-			rhsType := e.getExprGoType(node.Rhs[0])
-			if rhsType != nil && !isCopyType(rhsType) {
-				if !strings.HasSuffix(rhsStr, ".clone()") {
-					rhsStr = rhsStr + ".clone()"
-					rhsNode = Leaf(Identifier, rhsStr)
-				}
-			}
+		if e.exprNeedsClone(node.Rhs[0]) && !strings.HasSuffix(rhsStr, ".clone()") {
+			rhsStr = rhsStr + ".clone()"
+			rhsNode = Leaf(Identifier, rhsStr)
 		}
 	}
 
 	if needsRcWrap {
 		// Clone non-Copy values inside Rc::new() to prevent move
 		rcInner := rhsStr
-		if len(node.Rhs) == 1 {
-			switch node.Rhs[0].(type) {
-			case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr:
-				rhsType := e.getExprGoType(node.Rhs[0])
-				if rhsType != nil && !isCopyType(rhsType) && !strings.HasSuffix(rcInner, ".clone()") {
-					rcInner = rcInner + ".clone()"
-				}
-			}
+		if len(node.Rhs) == 1 && e.exprNeedsClone(node.Rhs[0]) && !strings.HasSuffix(rcInner, ".clone()") {
+			rcInner = rcInner + ".clone()"
 		}
 		wrappedRhs := "Rc::new(" + rcInner + ")"
 		switch tokStr {
@@ -771,15 +747,8 @@ func (e *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int
 func (e *RustEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitDeclStmtValueSpecValue))
 
-	// Clone non-Copy identifier or selector RHS to prevent move
-	needsClone := false
-	switch node.(type) {
-	case *ast.Ident, *ast.SelectorExpr:
-		valType := e.getExprGoType(node)
-		if valType != nil && !isCopyType(valType) {
-			needsClone = true
-		}
-	}
+	// Clone non-Copy references (ident, selector, index) to prevent move
+	needsClone := e.exprNeedsClone(node)
 
 	if len(tokens) == 1 {
 		t := tokens[0]
