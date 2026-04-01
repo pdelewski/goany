@@ -343,10 +343,28 @@ func (e *RustEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 func (e *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth++
 	e.Opt.argAlreadyCloned = false
+	// When entering an arg that will be extracted as a nested call,
+	// disable move optimization for its inner args — the outer call
+	// still needs the variable after this extracted call runs.
+	if e.Opt.moveOptActive && e.callExprArgDepth == 1 {
+		for _, ext := range e.Opt.moveOptTempExtractions {
+			if ext.ArgIndex == index {
+				if _, isCall := node.(*ast.CallExpr); isCall {
+					e.Opt.moveOptInsideExtractedCall = true
+				}
+				break
+			}
+		}
+	}
 }
 
 func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth--
+
+	// Clear the extracted-call flag when leaving the extracted arg
+	if e.Opt.moveOptInsideExtractedCall && e.callExprArgDepth == 0 {
+		e.Opt.moveOptInsideExtractedCall = false
+	}
 
 	// Move extraction: annotate for CloneMovePass instead of inline replacement
 	if e.Opt.moveOptActive && len(e.Opt.moveOptTempExtractions) > 0 && e.callExprArgDepth == 0 {
