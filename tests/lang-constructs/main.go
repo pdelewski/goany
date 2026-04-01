@@ -3156,6 +3156,332 @@ func testInterfaceReassignment() {
 	}
 }
 
+func testCompoundAssignSelfRef() {
+	// x += x + a — self-referencing compound string concat
+	x := "hello"
+	x += x + " world"
+	if x == "hellohello world" {
+		fmt.Println("PASS: compound assign self ref")
+	} else {
+		panic("FAIL: compound assign self ref")
+	}
+
+	// x += a (no self-ref, just basic compound concat)
+	y := "abc"
+	y += "def"
+	if y == "abcdef" {
+		fmt.Println("PASS: compound assign simple")
+	} else {
+		panic("FAIL: compound assign simple")
+	}
+
+	// x += x (self-ref without additional concat)
+	z := "ha"
+	z += z
+	if z == "haha" {
+		fmt.Println("PASS: compound assign self only")
+	} else {
+		panic("FAIL: compound assign self only")
+	}
+}
+
+// Helper for multi-arg ownership tests
+func concatThree(a string, b string, c string) string {
+	return a + b + c
+}
+
+func concatTwo(a string, b string) string {
+	return a + b
+}
+
+func identity(s string) string {
+	return s
+}
+
+// Test: same non-Copy variable passed 3 times to a function
+func testSameVarThreeArgs() {
+	x := "hi"
+	r := concatThree(x, x, x)
+	if r == "hihihi" {
+		fmt.Println("PASS: same var three args")
+	} else {
+		panic("FAIL: same var three args")
+	}
+}
+
+// Test: same non-Copy variable in binary expr with 3 calls
+func testBinaryExprThreeCalls() {
+	x := "ab"
+	r := identity(x) + identity(x) + identity(x)
+	if r == "ababab" {
+		fmt.Println("PASS: binary expr three calls")
+	} else {
+		panic("FAIL: binary expr three calls")
+	}
+}
+
+// Test: nested call sharing with variable used 3 times
+func testNestedCallThreeUses() {
+	x := "ok"
+	r := concatTwo(x, concatTwo(x, x))
+	if r == "okokok" {
+		fmt.Println("PASS: nested call three uses")
+	} else {
+		panic("FAIL: nested call three uses")
+	}
+}
+
+// Test: same non-Copy variable passed as function arg in multiple statements
+// (string concat via function calls, not binary +, to exercise clone pipeline)
+func concatStr(a string, b string) string {
+	return a + b
+}
+
+func testStringReuseViaFunc() {
+	x := "hi"
+	y := concatStr(x, "-a")
+	z := concatStr(x, "-b")
+	w := concatStr(x, "-c")
+	if y == "hi-a" && z == "hi-b" && w == "hi-c" {
+		fmt.Println("PASS: string reuse via func")
+	} else {
+		panic("FAIL: string reuse via func")
+	}
+}
+
+// Test: string variable used as LHS of + in multiple statements
+func testStringConcatReuse() {
+	x := "hi"
+	a := "-a"
+	b := "-b"
+	c := "-c"
+	y := x + a
+	z := x + b
+	w := x + c
+	if y == "hi-a" && z == "hi-b" && w == "hi-c" {
+		fmt.Println("PASS: string concat reuse")
+	} else {
+		panic("FAIL: string concat reuse")
+	}
+}
+
+// Test: complex string concat expressions
+type StringHolder struct {
+	val string
+}
+
+func testStringConcatComplex() {
+	// Chained: (x + y) + z
+	x := "a"
+	y := "b"
+	z := "c"
+	r1 := x + y + z
+	r2 := x + z // x reused after chain
+	if r1 == "abc" && r2 == "ac" {
+		fmt.Println("PASS: string concat chained")
+	} else {
+		panic("FAIL: string concat chained")
+	}
+
+	// Struct field as LHS
+	s := StringHolder{val: "hi"}
+	r3 := s.val + "-end"
+	r4 := s.val + "-end2"
+	if r3 == "hi-end" && r4 == "hi-end2" {
+		fmt.Println("PASS: string concat struct field")
+	} else {
+		panic("FAIL: string concat struct field")
+	}
+
+	// Slice element as LHS
+	arr := []string{"hello"}
+	r5 := arr[0] + "-x"
+	r6 := arr[0] + "-y"
+	if r5 == "hello-x" && r6 == "hello-y" {
+		fmt.Println("PASS: string concat slice elem")
+	} else {
+		panic("FAIL: string concat slice elem")
+	}
+}
+
+// Test: string += with variable RHS reused
+func testStringPlusEqualReuse() {
+	x := "a"
+	y := "b"
+	x += y
+	z := y
+	if x == "ab" && z == "b" {
+		fmt.Println("PASS: string += reuse")
+	} else {
+		panic("FAIL: string += reuse")
+	}
+}
+
+// Test: variable-to-variable assignment of non-Copy type, source reused
+func testVarToVarAssign() {
+	x := "hello"
+	y := x
+	z := x
+	if y == "hello" && z == "hello" {
+		fmt.Println("PASS: var to var assign reuse")
+	} else {
+		panic("FAIL: var to var assign reuse")
+	}
+}
+
+// Test: var declaration with non-Copy RHS identifier (DeclStmt path)
+func testVarDeclWithIdentRhs() {
+	var x string = "hello"
+	var y string = x
+	var z string = x
+	if y == "hello" && z == "hello" {
+		fmt.Println("PASS: var decl with ident rhs")
+	} else {
+		panic("FAIL: var decl with ident rhs")
+	}
+}
+
+// Test: slice literal with non-Copy variable elements reused afterwards
+func testSliceLitNonCopyElem() {
+	x := "hello"
+	y := "world"
+	s := []string{x, y}
+	// x and y must still be usable after being placed in the slice literal
+	if s[0] == "hello" && s[1] == "world" && x == "hello" && y == "world" {
+		fmt.Println("PASS: slice lit non-copy elem")
+	} else {
+		panic("FAIL: slice lit non-copy elem")
+	}
+}
+
+// Test: map set with non-Copy variable values reused afterwards
+func testMapSetNonCopyValue() {
+	v := "shared"
+	m := make(map[string]string)
+	m["a"] = v
+	m["b"] = v
+	// v must still be usable after being used as map values
+	r1 := m["a"]
+	r2 := m["b"]
+	if r1 == "shared" && r2 == "shared" && v == "shared" {
+		fmt.Println("PASS: map set non-copy value")
+	} else {
+		panic("FAIL: map set non-copy value")
+	}
+}
+
+// Test: interface{} assignment from non-Copy variable, source reused
+func testInterfaceAssignNonCopy() {
+	x := "hello"
+	var iface interface{} = x
+	// x must still be usable after being wrapped in Rc::new for interface{}
+	r := iface.(string)
+	if r == "hello" && x == "hello" {
+		fmt.Println("PASS: interface assign non-copy")
+	} else {
+		panic("FAIL: interface assign non-copy")
+	}
+}
+
+// Helper: return interface{} from a function where the argument is reused
+func returnAsInterface(x string) interface{} {
+	return x
+}
+
+// Test: return non-Copy value as interface{}, caller reuses
+func testReturnInterface() {
+	x := "hello"
+	iface := returnAsInterface(x)
+	// x must still be usable after being passed to function
+	r := iface.(string)
+	if r == "hello" && x == "hello" {
+		fmt.Println("PASS: return interface non-copy")
+	} else {
+		panic("FAIL: return interface non-copy")
+	}
+}
+
+// Test: map key variable reused after map operations
+func testMapKeyVarReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val1"
+	// k must still be usable after being used as a map key
+	m[k] = "val2"
+	r := m[k]
+	if r == "val2" && k == "mykey" {
+		fmt.Println("PASS: map key var reuse")
+	} else {
+		panic("FAIL: map key var reuse")
+	}
+}
+
+// Test: delete with variable key, key reused afterwards
+func testDeleteKeyReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val"
+	delete(m, k)
+	// k must still be usable after delete
+	if k == "mykey" {
+		fmt.Println("PASS: delete key reuse")
+	} else {
+		panic("FAIL: delete key reuse")
+	}
+}
+
+// Test: map read with variable key, key reused
+func testMapReadKeyReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val"
+	r1 := m[k]
+	r2 := m[k]
+	// k must still be usable after map reads
+	if r1 == "val" && r2 == "val" && k == "mykey" {
+		fmt.Println("PASS: map read key reuse")
+	} else {
+		panic("FAIL: map read key reuse")
+	}
+}
+
+// Test: comma-ok map read with variable key, key reused
+func testMapCommaOkKeyReuse() {
+	m := make(map[string]string)
+	k := "mykey"
+	m[k] = "val"
+	v, ok := m[k]
+	// k must still be usable after comma-ok read
+	if ok && v == "val" && k == "mykey" {
+		fmt.Println("PASS: map comma-ok key reuse")
+	} else {
+		panic("FAIL: map comma-ok key reuse")
+	}
+}
+
+// Test: append(slice, slice[i]) with non-Copy elements
+func testAppendSliceSelfRef() {
+	s := []string{"alpha", "beta"}
+	s = append(s, s[0])
+	if len(s) == 3 && s[2] == "alpha" && s[0] == "alpha" {
+		fmt.Println("PASS: append slice self-ref")
+	} else {
+		panic("FAIL: append slice self-ref")
+	}
+}
+
+// Test: slice[i] = slice[j] with non-Copy elements (string)
+func testSliceElemToElemAssign() {
+	s := []string{"alpha", "beta", "gamma"}
+	s[0] = s[2]
+	// s[2] must still be intact after the copy
+	if s[0] == "gamma" && s[2] == "gamma" {
+		fmt.Println("PASS: slice elem to elem assign")
+	} else {
+		panic("FAIL: slice elem to elem assign")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -3266,6 +3592,26 @@ func main() {
 	testMultiMethodDispatch()
 	testTypeAliasMethod()
 	testInterfaceReassignment()
+	testCompoundAssignSelfRef()
+	testSameVarThreeArgs()
+	testBinaryExprThreeCalls()
+	testNestedCallThreeUses()
+	testStringReuseViaFunc()
+	testStringConcatReuse()
+	testVarToVarAssign()
+	testStringConcatComplex()
+	testStringPlusEqualReuse()
+	testVarDeclWithIdentRhs()
+	testSliceLitNonCopyElem()
+	testMapSetNonCopyValue()
+	testInterfaceAssignNonCopy()
+	testReturnInterface()
+	testMapKeyVarReuse()
+	testDeleteKeyReuse()
+	testMapReadKeyReuse()
+	testMapCommaOkKeyReuse()
+	testSliceElemToElemAssign()
+	testAppendSliceSelfRef()
 
 	fmt.Println("=== Done ===")
 }

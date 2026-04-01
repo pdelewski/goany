@@ -1162,16 +1162,10 @@ func (sema *SemaChecker) collectCapturedIdentsForMutation(funcLit *ast.FuncLit) 
 // Note: getDirectFunctionArgs has been removed from SemaChecker.
 // The equivalent is now in LangSemaLoweringPass (lang_sema_lowering_pass.go).
 
-// Note: checkBinaryExprWithSameVar has been removed.
-// Same-variable binary expressions are now handled by LangSemaLoweringPass.transformBinaryExprSameVar
-// which rewrites the AST instead of rejecting.
-
-// Note: checkNestedCallArgSharing has been removed.
-// Nested call sharing is now handled by LangSemaLoweringPass.transformNestedCallSharing
-// which rewrites the AST instead of rejecting.
-
-// Note: collectDirectCallArgIdents has been removed from SemaChecker.
-// The equivalent is now in LangSemaLoweringPass (lang_sema_lowering_pass.go).
+// Note: checkBinaryExprWithSameVar, checkNestedCallArgSharing, and
+// collectDirectCallArgIdents have been removed. These patterns are handled
+// correctly by the emitter + CloneMovePass pipeline (conservative .clone()
+// on all non-Copy args, with last-use clone removal).
 
 // checkClosureCaptureMutation checks if a variable captured by a closure is mutated after capture
 func (sema *SemaChecker) checkClosureCaptureMutation(node *ast.AssignStmt) {

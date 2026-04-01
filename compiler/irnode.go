@@ -185,9 +185,7 @@ const (
 	OptFuncParam                // function parameter declaration
 	OptCallArg                  // function call argument (for ref-opt callee lookup)
 	OptMapOp                    // map operation (hashMapGet, hashMapLen, etc.)
-	OptReturnValue              // return value expression
 	OptAssignment               // full assignment statement
-	OptCompositeField           // composite literal field value
 )
 
 // TempExtraction describes an argument that must be extracted to a temp variable
@@ -224,9 +222,6 @@ type OptMeta struct {
 
 	// Ownership semantics (set by emitter analysis, consumed by CloneMovePass)
 
-	// NeedsCopy marks a value that must be deep-copied when passed to a function.
-	NeedsCopy bool
-
 	// CanTransfer marks a value whose ownership can be transferred to the callee
 	// because the source variable is immediately reassigned from this call's result.
 	CanTransfer bool
@@ -252,10 +247,6 @@ type OptMeta struct {
 	// IsElementCopy marks a collection element access that already produced an owned
 	// copy of the value. No additional copy is needed.
 	IsElementCopy bool
-
-	// NeedReturnCopy marks a return value that must be copied to avoid consuming a
-	// value that is still referenced by later return values in a multi-value return.
-	NeedReturnCopy bool
 
 	// TempExtractions holds args to extract to temp vars before assignment.
 	TempExtractions []TempExtraction

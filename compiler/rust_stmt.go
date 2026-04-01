@@ -44,6 +44,21 @@ func (e *RustEmitter) PreVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	e.mapAssignVar = ""
 	e.mapAssignKey = ""
 
+	// Track LHS name for compound assignment clone insertion
+	switch node.Tok {
+	case token.ADD_ASSIGN, token.SUB_ASSIGN, token.MUL_ASSIGN, token.QUO_ASSIGN,
+		token.REM_ASSIGN, token.AND_ASSIGN, token.OR_ASSIGN, token.XOR_ASSIGN,
+		token.SHL_ASSIGN, token.SHR_ASSIGN:
+		if len(node.Lhs) == 1 {
+			if ident, ok := node.Lhs[0].(*ast.Ident); ok {
+				lhsType := e.getExprGoType(node.Lhs[0])
+				if lhsType != nil && !isCopyType(lhsType) {
+					e.compoundAssignLhsName = ident.Name
+				}
+			}
+		}
+	}
+
 	// Track LHS names for move optimization
 	if e.Opt.OptimizeMoves && len(node.Lhs) >= 1 && len(node.Rhs) == 1 {
 		e.Opt.currentAssignLhsNames = make(map[string]bool)
@@ -125,6 +140,7 @@ func (e *RustEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	// Clean up move optimization tracking
 	defer func() {
+		e.compoundAssignLhsName = ""
 		e.Opt.currentAssignLhsNames = nil
 		if len(e.Opt.currentCallArgIdentsStack) > 0 {
 			e.Opt.currentCallArgIdentsStack = e.Opt.currentCallArgIdentsStack[:len(e.Opt.currentCallArgIdentsStack)-1]
@@ -236,7 +252,7 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 				}
 				var keyExpr string
 				if keyIsStr {
-					keyExpr = fmt.Sprintf("Rc::new(%s.to_string())", keyStr)
+					keyExpr = fmt.Sprintf("Rc::new(%s.clone())", keyStr)
 				} else {
 					keyExpr = fmt.Sprintf("Rc::new(%s%s)", keyStr, keyCast)
 				}
@@ -589,34 +605,21 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		}
 	}
 
-	// Clone RHS for non-Copy identifiers in := and = assignments to prevent move
+	// Clone RHS for non-Copy references (ident, selector, index) to prevent move
 	if len(node.Lhs) == 1 && len(node.Rhs) == 1 && !needsRcWrap && (tokStr == ":=" || tokStr == "=") {
-		if ident, ok := node.Rhs[0].(*ast.Ident); ok && ident.Name != "nil" && ident.Name != "true" && ident.Name != "false" {
-			rhsType := e.getExprGoType(node.Rhs[0])
-			if rhsType != nil && !isCopyType(rhsType) {
-				if !strings.HasSuffix(rhsStr, ".clone()") {
-					rhsStr = rhsStr + ".clone()"
-					rhsNode = Leaf(Identifier, rhsStr)
-				}
-			}
-		}
-	}
-
-	// Clone RHS for non-Copy selector expressions (struct field access) to prevent partial move
-	if len(node.Lhs) == 1 && len(node.Rhs) == 1 && !needsRcWrap && (tokStr == ":=" || tokStr == "=") {
-		if _, ok := node.Rhs[0].(*ast.SelectorExpr); ok {
-			rhsType := e.getExprGoType(node.Rhs[0])
-			if rhsType != nil && !isCopyType(rhsType) {
-				if !strings.HasSuffix(rhsStr, ".clone()") {
-					rhsStr = rhsStr + ".clone()"
-					rhsNode = Leaf(Identifier, rhsStr)
-				}
-			}
+		if e.exprNeedsClone(node.Rhs[0]) && !strings.HasSuffix(rhsStr, ".clone()") {
+			rhsStr = rhsStr + ".clone()"
+			rhsNode = Leaf(Identifier, rhsStr)
 		}
 	}
 
 	if needsRcWrap {
-		wrappedRhs := "Rc::new(" + rhsStr + ")"
+		// Clone non-Copy values inside Rc::new() to prevent move
+		rcInner := rhsStr
+		if len(node.Rhs) == 1 && e.exprNeedsClone(node.Rhs[0]) && !strings.HasSuffix(rcInner, ".clone()") {
+			rcInner = rcInner + ".clone()"
+		}
+		wrappedRhs := "Rc::new(" + rcInner + ")"
 		switch tokStr {
 		case ":=":
 			e.fs.AddTree(IRTree(AssignStatement, KindStmt,
@@ -674,8 +677,9 @@ func (e *RustEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 							Leaf(WhiteSpace, " "),
 							Leaf(ArithmeticOperator, "+="),
 							Leaf(WhiteSpace, " "),
-							Leaf(UnaryOperator, "&"),
+							Leaf(Identifier, "&("),
 							rhsNode,
+							Leaf(Identifier, ")"),
 							Leaf(Semicolon, ";"),
 							Leaf(NewLine, "\n"),
 						))
@@ -742,14 +746,27 @@ func (e *RustEmitter) PostVisitDeclStmtValueSpecNames(node *ast.Ident, index int
 
 func (e *RustEmitter) PostVisitDeclStmtValueSpecValue(node ast.Expr, index int, indent int) {
 	tokens := e.fs.CollectForest(string(PreVisitDeclStmtValueSpecValue))
+
+	// Clone non-Copy references (ident, selector, index) to prevent move
+	needsClone := e.exprNeedsClone(node)
+
 	if len(tokens) == 1 {
 		t := tokens[0]
+		if needsClone {
+			s := t.Serialize()
+			if !strings.HasSuffix(s, ".clone()") {
+				t = Leaf(Identifier, s+".clone()")
+			}
+		}
 		t.Kind = TagExpr
 		e.fs.AddTree(t)
 	} else {
 		valCode := ""
 		for _, t := range tokens {
 			valCode += t.Serialize()
+		}
+		if needsClone && !strings.HasSuffix(valCode, ".clone()") {
+			valCode += ".clone()"
 		}
 		e.fs.AddLeaf(valCode, TagExpr, nil)
 	}
@@ -790,6 +807,14 @@ func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 		escapedName := escapeRustKeyword(nameStr)
 
 		if valueStr != "" {
+			// Wrap in Rc::new() when declared type is interface{}/any
+			needsRcWrap := false
+			if goType != nil {
+				goTypeStr := goType.String()
+				if goTypeStr == "interface{}" || goTypeStr == "any" {
+					needsRcWrap = true
+				}
+			}
 			children = append(children,
 				Leaf(WhiteSpace, ind),
 				LeafTag(Keyword, "let", TagRust),
@@ -803,7 +828,18 @@ func (e *RustEmitter) PostVisitDeclStmt(node *ast.DeclStmt, indent int) {
 				Leaf(WhiteSpace, " "),
 				Leaf(Assignment, "="),
 				Leaf(WhiteSpace, " "),
-				valueToken,
+			)
+			if needsRcWrap {
+				children = append(children,
+					Leaf(Identifier, "Rc::new"),
+					Leaf(LeftParen, "("),
+					valueToken,
+					Leaf(RightParen, ")"),
+				)
+			} else {
+				children = append(children, valueToken)
+			}
+			children = append(children,
 				Leaf(Semicolon, ";"),
 				Leaf(NewLine, "\n"),
 			)
@@ -1033,8 +1069,10 @@ func (e *RustEmitter) PostVisitReturnStmt(node *ast.ReturnStmt, indent int) {
 							}
 						}
 						if needsClone {
-							// Annotate for CloneMovePass instead of inline .clone()
-							t.OptMeta = &OptMeta{Kind: OptReturnValue, NeedReturnCopy: true}
+							// Wrap with .clone() preserving inner tree structure
+							// so that OptMeta annotations on children survive for passes.
+							t = IRTree(CallExpression, KindExpr, t, Leaf(Dot, ".clone()"))
+							t.Content = t.Serialize()
 						}
 					}
 				}

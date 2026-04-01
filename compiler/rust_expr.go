@@ -109,6 +109,11 @@ func (e *RustEmitter) PreVisitIdent(node *ast.Ident, indent int) {
 	// Escape Rust keywords
 	name = escapeRustKeyword(name)
 	goType := e.getExprGoType(node)
+	// Clone non-Copy LHS variable when it reappears in RHS of compound assignment
+	if e.compoundAssignLhsName != "" && name == e.compoundAssignLhsName && !e.inAssignLhs {
+		e.fs.AddLeaf(name+".clone()", TagIdent, goType)
+		return
+	}
 	e.fs.AddLeaf(name, TagIdent, goType)
 }
 
@@ -148,9 +153,21 @@ func (e *RustEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	if leftType != nil {
 		if basic, ok := leftType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 			if op == "+" {
-				// String concat: left + &right — preserve tree nodes for OptCallArg
+				// String concat: left.clone() + &right
+				// The LHS is consumed by move in Rust. Add .clone() unless
+				// the LHS already produces a fresh owned value.
+				lhs := leftNode
+				alreadyOwned := false
+				switch node.X.(type) {
+				case *ast.BasicLit, *ast.CompositeLit, *ast.CallExpr, *ast.BinaryExpr:
+					alreadyOwned = true
+				}
+				if !alreadyOwned {
+					lhs = IRTree(CallExpression, KindExpr, leftNode, Leaf(Dot, ".clone()"))
+					lhs.Content = lhs.Serialize()
+				}
 				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-					leftNode,
+					lhs,
 					Leaf(WhiteSpace, " "),
 					Leaf(BinaryOperator, "+"),
 					Leaf(WhiteSpace, " "),
@@ -326,10 +343,28 @@ func (e *RustEmitter) PostVisitCallExprFun(node ast.Expr, indent int) {
 func (e *RustEmitter) PreVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth++
 	e.Opt.argAlreadyCloned = false
+	// When entering an arg that will be extracted as a nested call,
+	// disable move optimization for its inner args — the outer call
+	// still needs the variable after this extracted call runs.
+	if e.Opt.moveOptActive && e.callExprArgDepth == 1 {
+		for _, ext := range e.Opt.moveOptTempExtractions {
+			if ext.ArgIndex == index {
+				if _, isCall := node.(*ast.CallExpr); isCall {
+					e.Opt.moveOptInsideExtractedCall = true
+				}
+				break
+			}
+		}
+	}
 }
 
 func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) {
 	e.callExprArgDepth--
+
+	// Clear the extracted-call flag when leaving the extracted arg
+	if e.Opt.moveOptInsideExtractedCall && e.callExprArgDepth == 0 {
+		e.Opt.moveOptInsideExtractedCall = false
+	}
 
 	// Move extraction: annotate for CloneMovePass instead of inline replacement
 	if e.Opt.moveOptActive && len(e.Opt.moveOptTempExtractions) > 0 && e.callExprArgDepth == 0 {
@@ -356,16 +391,18 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 		return
 	}
 
-	// Vec element already cloned — annotate to skip redundant clone
-	if e.Opt.argAlreadyCloned && e.Opt.OptimizeMoves {
+	// Vec element already cloned — skip redundant clone regardless of optimization mode
+	if e.Opt.argAlreadyCloned {
 		e.Opt.argAlreadyCloned = false
-		e.Opt.MoveOptCount++
+		if e.Opt.OptimizeMoves {
+			e.Opt.MoveOptCount++
+		}
 		argNode.OptMeta = &OptMeta{IsElementCopy: true}
 		e.fs.AddTree(argNode)
 		return
 	}
 
-	// Annotate non-Copy types for CloneMovePass instead of inline .clone()
+	// Add .clone() inline for non-Copy types; CloneMovePass will remove where possible.
 	argType := e.getExprGoType(node)
 	if argType != nil && !isCopyType(argType) {
 		// Don't clone string literals (already .to_string())
@@ -376,13 +413,13 @@ func (e *RustEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int)
 				if _, isCallExpr := node.(*ast.CallExpr); !isCallExpr {
 					// Don't clone function literals (closures) — they are passed by value
 					if _, isFuncLit := node.(*ast.FuncLit); !isFuncLit {
-						// Move optimization: skip .clone() if the variable can be moved
+						// Add .clone() conservatively; flatten to leaf
+						argNode.Content = argNode.Content + ".clone()"
+						argNode.Children = nil
+						// Move optimization: mark CanTransfer so CloneMovePass removes clone
 						if identNode, isIdent := node.(*ast.Ident); isIdent && e.Opt.canMoveArg(identNode.Name) {
 							argNode.OptMeta = &OptMeta{CanTransfer: true}
-							e.fs.AddTree(argNode)
-							return
 						}
-						argNode.OptMeta = &OptMeta{NeedsCopy: true}
 						e.fs.AddTree(argNode)
 						return
 					}
@@ -421,7 +458,6 @@ func (e *RustEmitter) PostVisitCallExprArgs(node []ast.Expr, indent int) {
 			IsIdentArg: isIdent,
 		}
 		if existingMeta != nil {
-			t.OptMeta.NeedsCopy = existingMeta.NeedsCopy
 			t.OptMeta.CanTransfer = existingMeta.CanTransfer
 			t.OptMeta.IsOwnedValue = existingMeta.IsOwnedValue
 			t.OptMeta.IsReassignedSource = existingMeta.IsReassignedSource
@@ -476,9 +512,16 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		}
 	}
 
-	// Handle builtins
+	// Handle builtins — preserve arg tree nodes so CloneMovePass can strip .clone()
 	switch funName {
 	case "len":
+		// Get the first arg tree node (preserves OptMeta for pass processing)
+		var argNode IRNode
+		if len(tokens) > 1 {
+			argNode = tokens[1]
+		} else {
+			argNode = Leaf(Identifier, argsStr)
+		}
 		if len(node.Args) > 0 {
 			if e.isMapTypeExpr(node.Args[0]) {
 				lenNode := IRTree(CallExpression, KindExpr,
@@ -496,7 +539,7 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 			if argType != nil {
 				if basic, ok := argType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 					e.fs.AddTree(IRTree(CallExpression, KindExpr,
-						Leaf(Identifier, argsStr),
+						argNode,
 						Leaf(Dot, "."),
 						Leaf(Identifier, "len"),
 						Leaf(LeftParen, "("),
@@ -513,7 +556,8 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 		e.fs.AddTree(IRTree(CallExpression, KindExpr,
 			Leaf(Identifier, "len"),
 			Leaf(LeftParen, "("),
-			Leaf(Identifier, "&"+argsStr),
+			Leaf(Identifier, "&"),
+			argNode,
 			Leaf(RightParen, ")"),
 		))
 		return
@@ -558,7 +602,7 @@ func (e *RustEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 					Leaf(WhiteSpace, " "),
 					Leaf(Identifier, "Rc::new"),
 					Leaf(LeftParen, "("),
-					Leaf(Identifier, keyStr),
+					Leaf(Identifier, keyStr+".clone()"),
 					Leaf(RightParen, ")"),
 					Leaf(RightParen, ")"),
 				))
@@ -968,12 +1012,14 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 	xCode := ""
 	idxCode := ""
 	xNode := Leaf(Identifier, "")
+	idxNode := Leaf(Identifier, "")
 	if len(tokens) >= 1 {
 		xCode = tokens[0].Serialize()
 		xNode = tokens[0]
 	}
 	if len(tokens) >= 2 {
 		idxCode = tokens[1].Serialize()
+		idxNode = tokens[1]
 	}
 
 	if e.isMapTypeExpr(node.X) {
@@ -991,7 +1037,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		// Map read: hashMapGet(m, Rc::new(key))
 		var keyExpr string
 		if keyIsStr {
-			keyExpr = fmt.Sprintf("Rc::new(%s)", idxCode)
+			keyExpr = fmt.Sprintf("Rc::new(%s.clone())", idxCode)
 		} else {
 			keyExpr = fmt.Sprintf("Rc::new(%s%s)", idxCode, keyCast)
 		}
@@ -1048,7 +1094,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 				xNode,
 				Leaf(LeftBracket, "["),
 				Leaf(LeftParen, "("),
-				Leaf(Identifier, idxCode),
+				idxNode,
 				Leaf(RightParen, ")"),
 				Leaf(WhiteSpace, " "),
 				Leaf(Identifier, "as"),
@@ -1068,7 +1114,7 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 				xNode,
 				Leaf(LeftBracket, "["),
 				Leaf(LeftParen, "("),
-				Leaf(Identifier, idxCode),
+				idxNode,
 				Leaf(RightParen, ")"),
 				Leaf(WhiteSpace, " "),
 				Leaf(Identifier, "as"),
@@ -1477,9 +1523,7 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 							// Simple cast (nil sentinel, small int, etc.) — flat string is fine
 							children = append(children, Leaf(Identifier, castVal))
 						} else if needsRcWrap {
-							// Wrap in Rc::new(...clone()) preserving the inner tree structure
-							// so that OptMeta annotations (e.g. NeedsCopy on nested fields)
-							// survive for the CloneMovePass.
+							// Wrap in Rc::new(...clone()) preserving the inner tree structure.
 							if valNode, ok := kvNodeMap[fieldName]; ok {
 								children = append(children, IRTree(Identifier, KindExpr,
 									Leaf(Identifier, "Rc::new("),
@@ -1490,16 +1534,15 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 								children = append(children, Leaf(Identifier, "Rc::new("+val+".clone())"))
 							}
 						} else if valNode, ok := kvNodeMap[fieldName]; ok {
-							// Use tree node, annotate for clone if needed
+							// Use tree node, add .clone() inline if needed
 							if needsClone {
-								valNode.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
+								valNode.Content = valNode.Content + ".clone()"
+								valNode.Children = nil
 							}
 							children = append(children, valNode)
 						} else {
 							if needsClone {
-								valLeaf := Leaf(Identifier, val)
-								valLeaf.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
-								children = append(children, valLeaf)
+								children = append(children, Leaf(Identifier, val+".clone()"))
 							} else {
 								children = append(children, Leaf(Identifier, val))
 							}
@@ -1543,17 +1586,16 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 					// Cast modifies the value — use flat string
 					children = append(children, Leaf(Identifier, castVal))
 				} else if i < len(tokens) {
-					// Use tree node, annotate for clone if needed
+					// Use tree node, add .clone() inline if needed
 					valNode := tokens[i]
 					if needsClone {
-						valNode.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
+						valNode.Content = valNode.Content + ".clone()"
+						valNode.Children = nil
 					}
 					children = append(children, valNode)
 				} else {
 					if needsClone {
-						valLeaf := Leaf(Identifier, elt)
-						valLeaf.OptMeta = &OptMeta{Kind: OptCompositeField, NeedsCopy: true}
-						children = append(children, valLeaf)
+						children = append(children, Leaf(Identifier, elt+".clone()"))
 					} else {
 						children = append(children, Leaf(Identifier, elt))
 					}
@@ -1581,7 +1623,10 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 				Leaf(Identifier, "vec!"),
 				Leaf(LeftBracket, "["),
 			}
+			// Check if slice element type is non-Copy (needs .clone() for variable elements)
+			elemNeedClone := !isCopyType(u.Elem())
 			first := true
+			eltIdx := 0
 			for _, t := range tokens {
 				s := t.Serialize()
 				if s == "" {
@@ -1590,8 +1635,20 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 				if !first {
 					vecChildren = append(vecChildren, Leaf(Comma, ","), Leaf(WhiteSpace, " "))
 				}
+				// Add .clone() for non-Copy variable elements to prevent move
+				if elemNeedClone && eltIdx < len(node.Elts) {
+					needsClone := false
+					switch node.Elts[eltIdx].(type) {
+					case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr:
+						needsClone = !strings.HasSuffix(s, ".clone()")
+					}
+					if needsClone {
+						t = Leaf(Identifier, s+".clone()")
+					}
+				}
 				vecChildren = append(vecChildren, t)
 				first = false
+				eltIdx++
 			}
 			vecChildren = append(vecChildren, Leaf(RightBracket, "]"))
 			e.fs.AddTree(IRTree(CompositeLitExpression, KindExpr, vecChildren...))
@@ -1641,9 +1698,13 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 					valStr := parts[1]
 					var keyExpr string
 					if keyIsStr {
-						keyExpr = "Rc::new(" + keyStr + ")"
+						keyExpr = "Rc::new(" + keyStr + ".clone())"
 					} else {
 						keyExpr = "Rc::new(" + keyStr + keyCast + ")"
+					}
+					valExpr := valStr
+					if !isCopyType(mapUnderlying.Elem()) {
+						valExpr = valStr + ".clone()"
 					}
 					children = append(children,
 						Leaf(Identifier, tmpVar),
@@ -1659,7 +1720,7 @@ func (e *RustEmitter) PostVisitCompositeLit(node *ast.CompositeLit, indent int) 
 						Leaf(Comma, ","),
 						Leaf(WhiteSpace, " "),
 						Leaf(Identifier, "Rc::new("),
-						Leaf(Identifier, valStr),
+						Leaf(Identifier, valExpr),
 						Leaf(RightParen, ")"),
 						Leaf(RightParen, ")"),
 						Leaf(Semicolon, ";"),

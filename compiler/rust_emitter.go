@@ -62,7 +62,8 @@ type RustEmitter struct {
 	funcReturnType      types.Type
 	savedFuncRetTypes   []types.Type // stack for nested closures
 	rangeVarCounter     int
-	inAssignLhs         bool // true when visiting LHS of assignment
+	inAssignLhs         bool   // true when visiting LHS of assignment
+	compoundAssignLhsName string // set when visiting RHS of compound assign (for .clone() insertion)
 	callExprArgDepth    int  // >0 when inside a call expression argument
 	compositeLitDepth   int  // >0 when inside a composite literal (struct/slice init)
 	localClosureBodies  map[string]string // maps local closure variable names to their body code
@@ -302,7 +303,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	}
 	var keyExpr string
 	if keyIsStr {
-		keyExpr = fmt.Sprintf("Rc::new(%s)", e.mapAssignKey)
+		keyExpr = fmt.Sprintf("Rc::new(%s.clone())", e.mapAssignKey)
 	} else {
 		keyExpr = fmt.Sprintf("Rc::new(%s%s)", e.mapAssignKey, keyCast)
 	}
@@ -311,7 +312,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	chain := collectMapIndexChain(outerIdxExpr)
 	if len(chain) <= 1 {
 		// Simple case: m[k] = v
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
@@ -328,7 +329,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 		// No root map found, or root map is accessed through slice indices only.
 		// Simple case: the simple hashMapSet assignment works because Rust
 		// can assign to slice elements (vec[idx] = ...) directly.
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
@@ -336,13 +337,13 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	rootMapName := exprToString(rootMapExpr)
 	rootMapGoType := e.getExprGoType(rootMapExpr)
 	if rootMapGoType == nil {
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
 	rootMapUnderlying, ok := rootMapGoType.Underlying().(*types.Map)
 	if !ok {
-		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+		return fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 			ind, e.mapAssignVar, e.mapAssignVar, keyExpr, rhsStr)
 	}
 
@@ -352,7 +353,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	rootKey := exprToString(chain[rootMapIdx].Index)
 	var rootKeyExpr string
 	if rootKeyIsStr {
-		rootKeyExpr = fmt.Sprintf("Rc::new(%s.to_string())", rootKey)
+		rootKeyExpr = fmt.Sprintf("Rc::new(%s.clone())", rootKey)
 	} else {
 		rootKeyExpr = fmt.Sprintf("Rc::new(%s%s)", rootKey, rootKeyCast)
 	}
@@ -385,7 +386,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 					intermKey := exprToString(idx.Index)
 					var intermKeyExpr string
 					if intermKeyIsStr {
-						intermKeyExpr = fmt.Sprintf("Rc::new(%s.to_string())", intermKey)
+						intermKeyExpr = fmt.Sprintf("Rc::new(%s.clone())", intermKey)
 					} else {
 						intermKeyExpr = fmt.Sprintf("Rc::new(%s%s)", intermKey, intermKeyCast)
 					}
@@ -406,7 +407,7 @@ func (e *RustEmitter) emitMapAssign(node *ast.AssignStmt, rhsStr string, ind str
 	}
 
 	// Apply the final map assign
-	sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s));\n",
+	sb.WriteString(fmt.Sprintf("%s%s = hmap::hashMapSet(%s.clone(), %s, Rc::new(%s.clone()));\n",
 		ind, indexPrefix, indexPrefix, keyExpr, rhsStr))
 
 	// Write back: propagate temp vars to root
@@ -495,6 +496,24 @@ func (e *RustEmitter) wrapSmallIntCastTree(fieldType types.Type, node IRNode) IR
 		)
 	}
 	return node
+}
+
+// exprNeedsClone checks whether an expression node is a non-Copy value reference
+// (identifier, selector, or index) that would be moved in Rust without .clone().
+// Returns false for literals, call results, composite literals, and Copy types.
+func (e *RustEmitter) exprNeedsClone(node ast.Expr) bool {
+	switch n := node.(type) {
+	case *ast.Ident:
+		if n.Name == "nil" || n.Name == "true" || n.Name == "false" {
+			return false
+		}
+	case *ast.SelectorExpr, *ast.IndexExpr:
+		// these reference existing values
+	default:
+		return false
+	}
+	t := e.getExprGoType(node)
+	return t != nil && !isCopyType(t)
 }
 
 // needsFieldClone checks whether a struct field value needs .clone() for Rust ownership.

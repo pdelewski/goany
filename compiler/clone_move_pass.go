@@ -1,13 +1,29 @@
 package compiler
 
+import (
+	"strings"
+)
+
+// isBuiltinCallee returns true for Go builtin functions that handle their
+// arguments by reference or method call, making .clone() unnecessary.
+func isBuiltinCallee(name string) bool {
+	switch name {
+	case "len", "delete", "min", "max", "clear", "make":
+		return true
+	}
+	return false
+}
+
 // CloneMovePass is an IR pass that handles ownership semantics:
-// clone insertion, move optimization, std::mem::take.
+// clone removal (Rust), move wrapping (C++), std::mem::take, temp extraction.
 //
-// Emitters annotate nodes with semantic flags (NeedsCopy, CanTransfer, etc.)
-// and this pass translates them into language-specific code.
+// The emitter generates conservative code with .clone() on all non-Copy args,
+// composite field values, and multi-return values. This pass removes .clone()
+// where ownership can be transferred (CanTransfer → move, IsReassignedSource
+// → std::mem::take, IsExtractedArg → temp extraction).
 //
-// Runs BEFORE RefOptPass: adds .clone() where needed, then RefOptPass
-// removes .clone() and adds & where read-only.
+// Runs BEFORE RefOptPass: removes unnecessary .clone(), then RefOptPass
+// replaces remaining .clone() with & where read-only.
 type CloneMovePass struct {
 	Tag            int  // TagRust, TagCpp
 	Enabled        bool
@@ -56,10 +72,6 @@ func (p *CloneMovePass) transformNode(node IRNode) IRNode {
 	switch m.Kind {
 	case OptCallArg:
 		return p.transformCallArg(node)
-	case OptCompositeField:
-		return p.transformCompositeField(node)
-	case OptReturnValue:
-		return p.transformReturnValue(node)
 	case OptAssignment:
 		return p.transformAssignment(node)
 	}
@@ -67,6 +79,8 @@ func (p *CloneMovePass) transformNode(node IRNode) IRNode {
 }
 
 // transformCallArg handles ownership semantics for function call arguments.
+// For Rust: removes .clone() where ownership can be transferred.
+// For C++: wraps transferable args with std::move().
 func (p *CloneMovePass) transformCallArg(node IRNode) IRNode {
 	m := node.OptMeta
 	if m == nil {
@@ -76,6 +90,7 @@ func (p *CloneMovePass) transformCallArg(node IRNode) IRNode {
 	switch p.Tag {
 	case TagRust:
 		if m.IsReassignedSource {
+			// Replace entirely with std::mem::take
 			p.TransformCount++
 			node.Content = "std::mem::take(&mut " + m.ReassignedExpr + ")"
 			node.Children = nil
@@ -95,16 +110,22 @@ func (p *CloneMovePass) transformCallArg(node IRNode) IRNode {
 			node.Children = nil
 			return node
 		}
-		if m.IsElementCopy || m.CanTransfer || m.IsOwnedValue {
-			// No clone needed — element already copied, ownership transferred, or fresh value
-			return node
-		}
-		if m.NeedsCopy {
+		if m.CanTransfer {
+			// Remove .clone() — variable can be moved
 			p.TransformCount++
-			node.Content = node.Content + ".clone()"
+			node.Content = strings.TrimSuffix(node.Content, ".clone()")
 			node.Children = nil
 			return node
 		}
+		if isBuiltinCallee(m.CalleeName) {
+			// Remove .clone() — builtin handles value by reference or method call
+			p.TransformCount++
+			node.Content = strings.TrimSuffix(node.Content, ".clone()")
+			node.Children = nil
+			return node
+		}
+		// IsElementCopy, IsOwnedValue — no clone was added, nothing to remove
+		// Default (no optimization flag) — clone stays (conservative)
 	case TagCpp:
 		if m.CanTransfer {
 			p.TransformCount++
@@ -117,39 +138,6 @@ func (p *CloneMovePass) transformCallArg(node IRNode) IRNode {
 			node.Content = node.Serialize()
 			return node
 		}
-	}
-	return node
-}
-
-// transformCompositeField handles ownership for struct field values in composite literals.
-func (p *CloneMovePass) transformCompositeField(node IRNode) IRNode {
-	m := node.OptMeta
-	if m == nil {
-		return node
-	}
-
-	if p.Tag == TagRust && m.NeedsCopy {
-		p.TransformCount++
-		node.Content = node.Content + ".clone()"
-		node.Children = nil
-		return node
-	}
-	return node
-}
-
-// transformReturnValue handles ownership for return value expressions.
-func (p *CloneMovePass) transformReturnValue(node IRNode) IRNode {
-	m := node.OptMeta
-	if m == nil {
-		return node
-	}
-
-	if p.Tag == TagRust && m.NeedReturnCopy {
-		p.TransformCount++
-		// Wrap with .clone() preserving inner structure
-		node = IRTree(CallExpression, KindExpr, node, Leaf(Dot, ".clone()"))
-		node.Content = node.Serialize()
-		return node
 	}
 	return node
 }

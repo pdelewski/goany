@@ -40,9 +40,10 @@ type RustOptState struct {
 	calleeKeyStack  []string
 
 	// Move extraction (temp binding) state
-	moveOptActive          bool
-	moveOptModifiedCounts  map[string]int
-	moveOptTempExtractions []TempExtraction // structured extraction info for CloneMovePass
+	moveOptActive              bool
+	moveOptModifiedCounts      map[string]int
+	moveOptTempExtractions     []TempExtraction // structured extraction info for CloneMovePass
+	moveOptInsideExtractedCall bool              // true when emitting args of an extracted nested call
 
 	// Return temp extraction: extract later return results into temps so first result can be moved
 	// Pattern: return c, c.Memory[addr] → let __mv0: u8 = c.Memory[addr]; return (c, __mv0);
@@ -136,6 +137,10 @@ func (o *RustOptState) canMoveArg(varName string) bool {
 		return false
 	}
 	if o.currentAssignLhsNames == nil || !o.currentAssignLhsNames[varName] {
+		return false
+	}
+	// Inside an extracted nested call, don't move — the outer call still needs this variable
+	if o.moveOptInsideExtractedCall {
 		return false
 	}
 	// When temp extraction is active, use modified counts that exclude extracted fields
