@@ -153,9 +153,17 @@ func (e *RustEmitter) PostVisitBinaryExpr(node *ast.BinaryExpr, indent int) {
 	if leftType != nil {
 		if basic, ok := leftType.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
 			if op == "+" {
-				// String concat: left + &right — preserve tree nodes for OptCallArg
+				// String concat: left.clone() + &right
+				// The LHS is consumed by move in Rust. Add .clone() for variables
+				// so subsequent uses remain valid. CloneMovePass removes the
+				// last-use clone.
+				lhs := leftNode
+				if _, isIdent := node.X.(*ast.Ident); isIdent {
+					lhs = IRTree(CallExpression, KindExpr, leftNode, Leaf(Dot, ".clone()"))
+					lhs.Content = lhs.Serialize()
+				}
 				e.fs.AddTree(IRTree(BinaryExpression, KindExpr,
-					leftNode,
+					lhs,
 					Leaf(WhiteSpace, " "),
 					Leaf(BinaryOperator, "+"),
 					Leaf(WhiteSpace, " "),

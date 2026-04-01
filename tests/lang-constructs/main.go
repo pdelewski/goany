@@ -3249,6 +3249,22 @@ func testStringReuseViaFunc() {
 	}
 }
 
+// Test: string variable used as LHS of + in multiple statements
+func testStringConcatReuse() {
+	x := "hi"
+	a := "-a"
+	b := "-b"
+	c := "-c"
+	y := x + a
+	z := x + b
+	w := x + c
+	if y == "hi-a" && z == "hi-b" && w == "hi-c" {
+		fmt.Println("PASS: string concat reuse")
+	} else {
+		panic("FAIL: string concat reuse")
+	}
+}
+
 func main() {
 	fmt.Println("=== All Language Constructs Test ===")
 
@@ -3364,6 +3380,7 @@ func main() {
 	testBinaryExprThreeCalls()
 	testNestedCallThreeUses()
 	testStringReuseViaFunc()
+	testStringConcatReuse()
 
 	fmt.Println("=== Done ===")
 }
