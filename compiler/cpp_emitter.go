@@ -63,6 +63,8 @@ type CppEmitter struct {
 	// Move optimization guards
 	currentAssignLhsNames     map[string]bool
 	currentCallArgIdentsStack []map[string]int
+	// Self-slice optimization: x = x[low:] → x.erase(x.begin(), x.begin()+low)
+	selfSliceEraseStmt string // non-empty when a self-slice was detected
 	// Reference optimization
 	refOptReadOnly        *ReadOnlyAnalysis
 	refOptCurrentFunc     string
@@ -718,20 +720,19 @@ func (e *CppEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) 
 	tokens := e.fs.CollectForest(string(PreVisitCallExprArg))
 	argNode := collectToNode(tokens)
 
-	// Annotate struct args for ownership transfer (CloneMovePass applies std::move)
+	// Annotate args for ownership transfer (CloneMovePass applies std::move).
+	// In C++, std::move benefits all non-trivial types (vector, string, struct, map)
+	// and is a harmless no-op for primitives, so we apply it for any movable ident arg.
 	if e.OptimizeMoves && e.funcLitDepth == 0 {
 		if ident, isIdent := node.(*ast.Ident); isIdent {
-			tv := e.getExprGoType(node)
-			if tv != nil {
-				if named, ok := tv.(*types.Named); ok {
-					if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-						if e.canMoveArg(ident.Name) {
-							argNode.OptMeta = &OptMeta{CanTransfer: true}
-							e.fs.AddTree(argNode)
-							return
-						}
-					}
-				}
+			if DebugMode {
+				fmt.Printf("[DEBUG] PostVisitCallExprArg: ident=%s, lhsNames=%v, argIdentsStack=%v\n",
+					ident.Name, e.currentAssignLhsNames, e.currentCallArgIdentsStack)
+			}
+			if e.canMoveArg(ident.Name) {
+				argNode.OptMeta = &OptMeta{CanTransfer: true}
+				e.fs.AddTree(argNode)
+				return
 			}
 		}
 	}
@@ -1292,6 +1293,27 @@ func (e *CppEmitter) PostVisitSliceExpr(node *ast.SliceExpr, indent int) {
 			))
 		}
 		return
+	}
+
+	// Detect self-slice patterns to avoid vector reallocation:
+	// x = x[low:]  → x.erase(x.begin(), x.begin()+low)  (dequeue from front)
+	// x = x[:high] → x.erase(x.begin()+high, x.end())   (pop from back / resize)
+	if e.currentAssignLhsNames != nil {
+		if ident, ok := node.X.(*ast.Ident); ok && e.currentAssignLhsNames[ident.Name] {
+			if highCode == "" && lowCode != "0" {
+				// x = x[low:] → erase front elements
+				eraseEnd := xCode + ".begin() + " + lowCode
+				e.selfSliceEraseStmt = xCode + ".erase(" + xCode + ".begin(), " + eraseEnd + ")"
+				e.fs.AddTree(IRTree(SliceExpression, KindExpr, Leaf(Identifier, xCode)))
+				return
+			}
+			if highCode != "" && (lowCode == "0" || node.Low == nil) {
+				// x = x[:high] → erase tail elements (or use resize)
+				e.selfSliceEraseStmt = xCode + ".resize(" + highCode + ")"
+				e.fs.AddTree(IRTree(SliceExpression, KindExpr, Leaf(Identifier, xCode)))
+				return
+			}
+		}
 	}
 
 	// C++ slice: std::vector<T>(x.begin() + low, x.begin() + high) or x.end()
@@ -1919,6 +1941,11 @@ func (e *CppEmitter) PostVisitFuncDeclSignatureTypeParamsList(node *ast.Field, i
 		}
 		optMeta.IsReadOnly = isRefOpt
 		optMeta.IsMutRef = isMutRefOpt
+		// SoA pool structs (_SoA_*) contain only slice fields (reference-semantic).
+		// Force mutable-ref pass to avoid deep-copying vectors on every call.
+		if strings.HasPrefix(typeStr, "_SoA_") && !isRefOpt {
+			optMeta.IsMutRef = true
+		}
 		// Always emit base form; RefOptPass transforms to const T& / T&
 		paramNode := IRTree(Identifier, TagIdent,
 			Leaf(Identifier, typeStr),
@@ -2034,12 +2061,21 @@ func (e *CppEmitter) PostVisitFuncDecl(node *ast.FuncDecl, indent int) {
 	}
 	if len(tokens) >= 2 {
 		if node.Name.Name == "main" {
-			bodyCode := tokens[1].Serialize()
-			if strings.HasPrefix(bodyCode, "{\n") {
-				bodyCode = "{\n" + cppIndent(1) + "std::vector<std::string> goany_os_args(argv, argv + argc);\n" + bodyCode[2:]
+			// Inject goany_os_args into the body tree WITHOUT serializing
+			// (serializing destroys OptMeta annotations needed by CloneMovePass)
+			body := tokens[1]
+			argsLine := Leaf(Identifier, cppIndent(1)+"std::vector<std::string> goany_os_args(argv, argv + argc);\n")
+			if len(body.Children) >= 2 {
+				// Insert after "{\n" (first two children: LeftBrace + NewLine)
+				newBodyChildren := make([]IRNode, 0, len(body.Children)+1)
+				newBodyChildren = append(newBodyChildren, body.Children[0], body.Children[1])
+				newBodyChildren = append(newBodyChildren, argsLine)
+				newBodyChildren = append(newBodyChildren, body.Children[2:]...)
+				body.Children = newBodyChildren
+				body.Content = body.Serialize()
 			}
 			children = append(children, Leaf(NewLine, "\n"))
-			children = append(children, Leaf(Identifier, bodyCode))
+			children = append(children, body)
 		} else {
 			children = append(children, Leaf(NewLine, "\n"))
 			children = append(children, tokens[1])
@@ -2188,7 +2224,11 @@ func (e *CppEmitter) PostVisitAssignStmtRhs(node *ast.AssignStmt, indent int) {
 }
 
 func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
+	// Check for self-slice optimization: x = x[low:] → x.erase(...)
+	eraseStmt := e.selfSliceEraseStmt
+	e.selfSliceEraseStmt = ""
 	e.currentAssignLhsNames = nil
+
 	tokens := e.fs.CollectForest(string(PreVisitAssignStmt))
 	lhsStr := ""
 	rhsStr := ""
@@ -2200,6 +2240,17 @@ func (e *CppEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 	}
 
 	ind := cppIndent(indent)
+
+	// Self-slice: emit erase instead of assignment to avoid vector reallocation
+	if eraseStmt != "" {
+		e.fs.AddTree(IRTree(AssignStatement, KindStmt,
+			Leaf(WhiteSpace, ind),
+			Leaf(Identifier, eraseStmt),
+			Leaf(Semicolon, ";"),
+			Leaf(NewLine, "\n"),
+		))
+		return
+	}
 
 	// Pointer alias elimination: emit comment instead of assignment
 	if len(node.Lhs) == 1 {

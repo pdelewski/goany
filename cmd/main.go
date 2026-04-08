@@ -188,7 +188,12 @@ func main() {
 	ptrLowering := &compiler.PointerLoweringPass{}
 	frontendPasses = append(frontendPasses, ptrLowering)
 
-	// Pass 8: Semantic analysis (after pointer transform)
+	// Pass 8: Memory layout optimization (AoS→SoA for pools with 4+ field structs)
+	// Runs after pointer lowering, before sema. Rewrites pool types and access patterns.
+	memLayout := &compiler.MemoryLayoutPass{MinFields: 4}
+	frontendPasses = append(frontendPasses, memLayout)
+
+	// Pass 9: Semantic analysis (after pointer + memory layout transforms)
 	semaChecker3 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema3 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker3}
 	frontendPasses = append(frontendPasses, sema3)

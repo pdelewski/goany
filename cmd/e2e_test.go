@@ -63,6 +63,7 @@ var e2eTestCases = []TestCase{
 	{"macho-reader", "../examples/macho-reader", true, true, false, true, true, false, true, false, true, false},
 	{"macho-writer", "../examples/macho-writer", true, true, false, true, true, false, true, false, true, false},
 	{"arm64-asm-demo", "../examples/arm64-asm-demo", true, true, false, true, true, false, true, false, true, false},
+	{"particle-sim", "../examples/particle-sim", true, true, true, true, true, true, true, true, true, true},
 }
 
 func TestE2E(t *testing.T) {

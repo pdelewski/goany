@@ -1,6 +1,8 @@
 package compiler
 
 import (
+	"fmt"
+	"os"
 	"strings"
 )
 
@@ -37,6 +39,9 @@ func (p *CloneMovePass) Transform(root IRNode) IRNode {
 	if !p.Enabled {
 		return root
 	}
+	if DebugMode {
+		fmt.Fprintf(os.Stderr, "[CloneMovePass] Transform called, root type=%d children=%d\n", root.Type, len(root.Children))
+	}
 	return p.transformTree(root)
 }
 
@@ -61,6 +66,11 @@ func (p *CloneMovePass) transformTree(node IRNode) IRNode {
 	// Transform this node based on OptMeta annotations
 	if node.OptMeta != nil {
 		node = p.transformNode(node)
+	}
+
+	// C++ return statement optimization: wrap make_tuple args with std::move
+	if p.Tag == TagCpp && node.Type == ReturnStatement {
+		node = p.transformCppReturn(node)
 	}
 
 	return node
@@ -128,6 +138,12 @@ func (p *CloneMovePass) transformCallArg(node IRNode) IRNode {
 		// Default (no optimization flag) — clone stays (conservative)
 	case TagCpp:
 		if m.CanTransfer {
+			// SoA pool args (_pool_*) are passed by T& (MutRef) — lvalue required,
+			// so skip std::move() which produces an rvalue incompatible with T&.
+			argContent := strings.TrimSpace(node.Content)
+			if strings.HasPrefix(argContent, "_pool_") {
+				return node
+			}
 			p.TransformCount++
 			// Wrap with std::move()
 			node = IRTree(CallExpression, KindExpr,
@@ -139,6 +155,63 @@ func (p *CloneMovePass) transformCallArg(node IRNode) IRNode {
 			return node
 		}
 	}
+	return node
+}
+
+// splitTopLevelArgs splits a comma-separated argument list respecting nested
+// parentheses and braces. "a, f(b, c), d" → ["a", "f(b, c)", "d"]
+// Does NOT track <> because << and >> shift operators create false matches.
+func splitTopLevelArgs(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '{':
+			depth++
+		case ')', '}':
+			depth--
+		case ',':
+			if depth == 0 {
+				parts = append(parts, strings.TrimSpace(s[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	parts = append(parts, strings.TrimSpace(s[start:]))
+	return parts
+}
+
+// transformCppReturn wraps C++ make_tuple return value arguments with std::move.
+// The emitter creates return statements like: return std::make_tuple(a, b, c);
+// where the args leaf contains "a, b, c". This wraps each argument: std::move(a), std::move(b), ...
+// std::move is a no-op for trivially copyable types (int, bool) but avoids copies for vectors/strings.
+func (p *CloneMovePass) transformCppReturn(node IRNode) IRNode {
+	// Find the arguments Identifier leaf between LeftParen and RightParen
+	// Tree structure: [WhiteSpace, ReturnKeyword, " ", "std::make_tuple", "(", argsLeaf, ")", ";", "\n"]
+	hasMakeTuple := false
+	argsIdx := -1
+	for i, child := range node.Children {
+		if child.Content == "std::make_tuple" {
+			hasMakeTuple = true
+		}
+		if hasMakeTuple && child.Type == LeftParen && i+1 < len(node.Children) {
+			argsIdx = i + 1
+			break
+		}
+	}
+	if argsIdx < 0 {
+		return node
+	}
+
+	argsLeaf := node.Children[argsIdx]
+	parts := splitTopLevelArgs(argsLeaf.Content)
+	for i, part := range parts {
+		parts[i] = "std::move(" + part + ")"
+	}
+	node.Children[argsIdx] = Leaf(Identifier, strings.Join(parts, ", "))
+	node.Content = node.Serialize()
+	p.TransformCount++
 	return node
 }
 
