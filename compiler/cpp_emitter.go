@@ -237,6 +237,20 @@ func (e *CppEmitter) getExprGoType(expr ast.Expr) types.Type {
 	return tv.Type
 }
 
+// isSoAType returns true if the expression has a SoA struct type (_SoA_*).
+// SoA pools are passed by T& (mutable ref) and must not be wrapped in std::move().
+func (e *CppEmitter) isSoAType(expr ast.Expr) bool {
+	if e.pkg == nil || e.pkg.TypesInfo == nil {
+		return false
+	}
+	tv := e.pkg.TypesInfo.Types[expr]
+	if tv.Type == nil {
+		return false
+	}
+	typeName := tv.Type.String()
+	return strings.Contains(typeName, "_SoA_")
+}
+
 // cppLowerBuiltin maps Go stdlib selectors to C++ equivalents.
 func cppLowerBuiltin(selector string) string {
 	switch selector {
@@ -729,7 +743,7 @@ func (e *CppEmitter) PostVisitCallExprArg(node ast.Expr, index int, indent int) 
 				fmt.Printf("[DEBUG] PostVisitCallExprArg: ident=%s, lhsNames=%v, argIdentsStack=%v\n",
 					ident.Name, e.currentAssignLhsNames, e.currentCallArgIdentsStack)
 			}
-			if e.canMoveArg(ident.Name) {
+			if e.canMoveArg(ident.Name) && !e.isSoAType(node) {
 				argNode.OptMeta = &OptMeta{CanTransfer: true}
 				e.fs.AddTree(argNode)
 				return

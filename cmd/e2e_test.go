@@ -254,7 +254,21 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 			goExeSuffix = ".exe"
 		}
 		goBinary := filepath.Join(outputDir, tc.Name+"_go"+goExeSuffix)
-		t.Logf("Compiling Go for %s", tc.Name)
+		t.Logf("Compiling Go for %s (outputDir=%s, goGenFile=%s)", tc.Name, outputDir, goGenFile)
+		// Debug: check if directory and files exist before Go compilation
+		if _, statErr := os.Stat(outputDir); statErr != nil {
+			t.Logf("DEBUG: outputDir stat error: %v", statErr)
+		} else {
+			entries, _ := os.ReadDir(outputDir)
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Logf("DEBUG: outputDir contents: %v", names)
+		}
+		if _, statErr := os.Stat(goGenFile); statErr != nil {
+			t.Logf("DEBUG: goGenFile stat error: %v", statErr)
+		}
 		cmd = exec.Command("go", "build", "-o", goBinary, goGenFile)
 		cmd.Dir = outputDir
 		output, err = cmd.CombinedOutput()

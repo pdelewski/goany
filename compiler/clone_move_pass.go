@@ -138,12 +138,6 @@ func (p *CloneMovePass) transformCallArg(node IRNode) IRNode {
 		// Default (no optimization flag) — clone stays (conservative)
 	case TagCpp:
 		if m.CanTransfer {
-			// SoA pool args (_pool_*) are passed by T& (MutRef) — lvalue required,
-			// so skip std::move() which produces an rvalue incompatible with T&.
-			argContent := strings.TrimSpace(node.Content)
-			if strings.HasPrefix(argContent, "_pool_") {
-				return node
-			}
 			p.TransformCount++
 			// Wrap with std::move()
 			node = IRTree(CallExpression, KindExpr,
