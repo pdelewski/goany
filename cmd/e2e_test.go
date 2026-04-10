@@ -119,10 +119,7 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		fmt.Sprintf("--link-runtime=%s", runtimePath),
 		"--optimize-moves",
 		"--optimize-refs",
-	}
-	// Enable memory layout optimization for particle-sim (has pool structs with 4+ fields)
-	if tc.Name == "particle-sim" {
-		args = append(args, "--optimize-mem-layout")
+		"--optimize-mem-layout",
 	}
 	// Add opt-in backends (JS, Java are not included in "all")
 	optInBackends := []string{}
