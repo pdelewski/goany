@@ -63,6 +63,7 @@ var e2eTestCases = []TestCase{
 	{"macho-reader", "../examples/macho-reader", true, true, false, true, true, false, true, false, true, false},
 	{"macho-writer", "../examples/macho-writer", true, true, false, true, true, false, true, false, true, false},
 	{"arm64-asm-demo", "../examples/arm64-asm-demo", true, true, false, true, true, false, true, false, true, false},
+	{"particle-sim", "../examples/particle-sim", true, true, true, true, true, true, true, true, true, true},
 }
 
 func TestE2E(t *testing.T) {
@@ -118,6 +119,7 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 		fmt.Sprintf("--link-runtime=%s", runtimePath),
 		"--optimize-moves",
 		"--optimize-refs",
+		"--optimize-mem-layout",
 	}
 	// Add opt-in backends (JS, Java are not included in "all")
 	optInBackends := []string{}
@@ -253,7 +255,21 @@ func runE2ETest(t *testing.T, wd, buildDir string, tc TestCase) {
 			goExeSuffix = ".exe"
 		}
 		goBinary := filepath.Join(outputDir, tc.Name+"_go"+goExeSuffix)
-		t.Logf("Compiling Go for %s", tc.Name)
+		t.Logf("Compiling Go for %s (outputDir=%s, goGenFile=%s)", tc.Name, outputDir, goGenFile)
+		// Debug: check if directory and files exist before Go compilation
+		if _, statErr := os.Stat(outputDir); statErr != nil {
+			t.Logf("DEBUG: outputDir stat error: %v", statErr)
+		} else {
+			entries, _ := os.ReadDir(outputDir)
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Logf("DEBUG: outputDir contents: %v", names)
+		}
+		if _, statErr := os.Stat(goGenFile); statErr != nil {
+			t.Logf("DEBUG: goGenFile stat error: %v", statErr)
+		}
 		cmd = exec.Command("go", "build", "-o", goBinary, goGenFile)
 		cmd.Dir = outputDir
 		output, err = cmd.CombinedOutput()

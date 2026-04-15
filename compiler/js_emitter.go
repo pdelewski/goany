@@ -1974,7 +1974,7 @@ func (e *JSEmitter) PostVisitAssignStmt(node *ast.AssignStmt, indent int) {
 		for i, lhs := range node.Lhs {
 			if ident, ok := lhs.(*ast.Ident); ok {
 				if ident.Name == "_" {
-					lhsParts[i] = "_"
+					lhsParts[i] = "" // empty slot in JS destructuring (skips value)
 				} else {
 					lhsParts[i] = ident.Name
 				}

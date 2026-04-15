@@ -33,10 +33,12 @@ func main() {
 	flag.StringVar(&graphicsRuntime, "graphics-runtime", "tigr", "Graphics runtime: tigr (default), sdl2, none")
 	var optimizeMoves bool
 	var optimizeRefs bool
+	var optimizeMemLayout bool
 	var checkSema bool
 	flag.BoolVar(&compiler.DebugMode, "debug", false, "Enable debug output")
 	flag.BoolVar(&optimizeMoves, "optimize-moves", false, "Enable move optimizations to reduce struct cloning")
 	flag.BoolVar(&optimizeRefs, "optimize-refs", false, "Enable reference optimization for read-only parameters")
+	flag.BoolVar(&optimizeMemLayout, "optimize-mem-layout", false, "Enable automatic AoS-to-SoA memory layout optimization for pool structs")
 	flag.BoolVar(&checkSema, "check-sema", false, "Check syntax and semantics only, no transpilation")
 	flag.Parse()
 	if sourceDir == "" {
@@ -188,7 +190,14 @@ func main() {
 	ptrLowering := &compiler.PointerLoweringPass{}
 	frontendPasses = append(frontendPasses, ptrLowering)
 
-	// Pass 8: Semantic analysis (after pointer transform)
+	// Pass 8: Memory layout optimization (AoS→SoA for pools with 4+ field structs)
+	// Runs after pointer lowering, before sema. Rewrites pool types and access patterns.
+	if optimizeMemLayout {
+		memLayout := &compiler.MemoryLayoutPass{MinFields: 4}
+		frontendPasses = append(frontendPasses, memLayout)
+	}
+
+	// Pass 9: Semantic analysis (after pointer + memory layout transforms)
 	semaChecker3 := &compiler.SemaChecker{Emitter: &compiler.BaseEmitter{}}
 	sema3 := &compiler.BasePass{PassName: "Sema", Emitter: semaChecker3}
 	frontendPasses = append(frontendPasses, sema3)

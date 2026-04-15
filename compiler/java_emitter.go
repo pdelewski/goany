@@ -2073,6 +2073,15 @@ func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		idxCode = tokens[1].Serialize()
 	}
 
+	// Restore lastIndexXCode/lastIndexKeyCode to this level's values.
+	// Nested IndexExprs (e.g., pool.Field[arr[i]]) can overwrite these
+	// during Index processing. The parent needs the outer X code for
+	// assignment rewriting (e.g., .set() in PostVisitAssignStmt).
+	defer func() {
+		e.lastIndexXCode = xCode
+		e.lastIndexKeyCode = idxCode
+	}()
+
 	if e.isMapTypeExprJ(node.X) {
 		mapGoType := e.getExprGoTypeJ(node.X)
 		valType := "Object"

@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-The ULang transpiler generates Rust and C++ code from Go sources. Go's value semantics mean structs are implicitly copied when passed to functions. In Go, this is handled by the runtime with cheap stack copies. However, when transpiled:
+The GoAny transpiler generates Rust and C++ code from Go sources. Go's value semantics mean structs are implicitly copied when passed to functions. In Go, this is handled by the runtime with cheap stack copies. However, when transpiled:
 
 - **Rust**: The emitter adds `.clone()` to every struct argument to preserve Go's copy semantics, since Rust moves values by default.
 - **C++**: Structs are passed by value (implicit copy), which triggers the copy constructor.
@@ -91,6 +91,63 @@ C++ output:     return std::make_tuple(c, value);  // c copied into tuple
 
 ---
 
+## Architecture: Three-Stage IR Pipeline
+
+All move and reference optimizations are implemented via a three-stage IR pipeline. The emitter generates conservative code as an IR tree (`IRNode` with `Children`, `Content`, `OptMeta`), and two IR passes progressively optimize it.
+
+```
+Emitter (conservative .clone()) → CloneMovePass (remove clones / add moves) → RefOptPass (add references)
+```
+
+### Stage 1: Emitter (rust_expr.go, rust_stmt.go, rust_opt.go)
+
+The Rust emitter generates code with `.clone()` on all non-Copy call arguments and multi-return values. Each argument is collected as an `IRNode` tree using `IRForestBuilder` (scoped token collection). The emitter annotates nodes with `OptMeta` flags indicating optimization opportunities:
+
+- `CanTransfer` -- variable can be moved (last use before reassignment)
+- `IsReassignedSource` -- source location matches the assignment target (for `std::mem::take`)
+- `IsExtractedArg` -- argument extracted to a temp variable to avoid aliasing
+- `IsElementCopy` -- collection element already copied (no double-clone)
+- `IsOwnedValue` -- expression already produces a fresh owned value
+
+**Skipped cases** (no `.clone()` added):
+- Copy types (integers, booleans, floats) -- cheap bitwise copy
+- String literals -- already produce an owned `String` via `.to_string()`
+- Composite literals -- already produce a fresh owned value
+- Function call results -- already return an owned value
+- Function literals (closures) -- passed by value
+- Vec element accesses -- already produce an owned copy via index clone
+
+### Stage 2: CloneMovePass (clone_move_pass.go)
+
+The `CloneMovePass` is an `IRPass` that walks the IR tree bottom-up, reading `OptMeta` annotations:
+
+| Flag | Rust Transformation | C++ Transformation |
+|---|---|---|
+| `CanTransfer` | Remove `.clone()` (move) | Wrap with `std::move()` |
+| `IsReassignedSource` | Replace with `std::mem::take(&mut expr)` | -- |
+| `IsExtractedArg` | Extract to temp variable before assignment | -- |
+| Builtin callee (len, delete, etc.) | Remove `.clone()` | -- |
+| No flag | Clone stays (conservative) | No change |
+
+For `IsExtractedArg`, the pass saves the original arg tree and replaces it with the temp variable name. Then in `transformAssignment`, it builds `let __mv0: Type = <saved_tree>;` bindings before the assignment using `MultiNode` splicing.
+
+### Stage 3: RefOptPass (ref_opt_pass.go)
+
+The `RefOptPass` is an `IRPass` that transforms function parameters and call arguments to use reference semantics. It runs in two phases:
+
+1. **Collect**: Walk the tree to find all `OptFuncParam` annotations with `IsReadOnly` / `IsMutRef` flags
+2. **Transform**: For each `OptCallArg` whose callee has a read-only parameter at that index, strip `.clone()` and add `&` prefix
+
+| Language | Param Transform | Call-site Transform |
+|---|---|---|
+| Rust | `mut name: T` → `name: &T` | `x.clone()` → `&x` |
+| C++ | `Type name` → `const Type& name` | (unchanged) |
+| C# | `Type name` → `in Type name` | `x` → `in x` |
+
+See also: `docs/clone-optimization.md` for a concise pipeline overview.
+
+---
+
 ## Optimization 1: Move Detection for Reassigned Variables
 
 **Pattern**: `variable = Function(variable, ...)`
@@ -107,7 +164,7 @@ All conditions must be met:
 
 ### Rust Implementation
 
-When conditions are met, the emitter **omits `.clone()`**, allowing Rust's move semantics to transfer ownership:
+When conditions are met, the emitter sets `CanTransfer: true` on the `OptMeta` of the argument node (which has `.clone()` appended conservatively). The `CloneMovePass` then removes the `.clone()` suffix, allowing Rust's move semantics to transfer ownership:
 
 ```
 Go source:      c = Step(c)
@@ -127,7 +184,7 @@ After:          let (_c, _value) = FetchByte(c);
 
 ### C++ Implementation
 
-When conditions are met, the emitter wraps the argument with `std::move()`:
+When conditions are met, the emitter sets `CanTransfer: true`. The `CloneMovePass` wraps the argument with `std::move()`:
 
 ```
 Go source:      c = Step(c)
@@ -194,7 +251,7 @@ An argument is extractable when:
 
 1. **References the struct**: The argument expression contains the struct variable being moved.
 2. **Copy-type result**: The expression evaluates to a Rust Copy type (bool, integers, floats).
-3. **Convertible to string**: The `exprToString` function can generate a valid Rust expression for the argument.
+3. **Convertible to Rust code**: The `exprToRustCodeOpt` function (`rust_opt.go`) can generate a valid Rust expression for the argument (handles identifiers, selectors, basic literals, index expressions, binary expressions, paren expressions, and type conversions).
 4. **Not inside a closure**: `funcLitDepth == 0`.
 
 ### Multi-Argument Extraction
@@ -221,13 +278,35 @@ For `c = SetZN(c, c.A)`:
 - Modified count: 1 (only arg 0: `c`)
 - `canMoveArg("c")` returns true, `.clone()` omitted
 
-### Token Buffer Replacement
+### IR Tree Implementation
 
-The extraction uses a marker-based approach in the GIR (Generic Intermediate Representation) token buffer:
+The extraction uses the `IRForestBuilder` scoped collection and `OptMeta` annotations:
 
-1. `PreVisitCallExprArg` records the token buffer position before the argument is emitted.
-2. `PostVisitCallExprArg` truncates the buffer back to the marker and emits the temp variable name instead.
-3. A depth guard (`len(currentCallArgIdentsStack) == 1`) ensures nested `CallExpr` nodes (such as type conversions) don't interfere with the replacement.
+1. `PreVisitAssignStmt` calls `analyzeMoveOptExtraction` (`rust_opt.go`), which scans the RHS call's arguments to find field accesses on the struct being moved, creates `TempExtraction` records, and computes modified reference counts.
+2. `PostVisitCallExprArg` checks if the current arg index matches a `TempExtraction` slot. If so, it collects the emitted IR forest for the arg, attaches `OptMeta{IsExtractedArg: true, ExtractedName: "__mv0"}`, and adds it to the tree.
+3. `PostVisitAssignStmt` attaches `OptMeta{Kind: OptAssignment, TempExtractions: [...]}` to the assignment node.
+4. `CloneMovePass.transformCallArg` saves the original arg tree and replaces the node content with the temp variable name.
+5. `CloneMovePass.transformAssignment` builds `let __mv0: Type = <saved_tree>;` binding nodes and returns a `MultiNode` that splices them before the assignment.
+
+### Nested Call Extraction Safety
+
+When an extracted argument is itself a function call (e.g., `c = doADC(c, ReadIndirectX(c, zp))`), the inner call's arguments must NOT have their `.clone()` removed by `canMoveArg`. Otherwise, moving `c` inside `ReadIndirectX` would invalidate it before the outer `doADC` call.
+
+The `moveOptInsideExtractedCall` flag (`rust_opt.go`) handles this:
+
+1. `PreVisitCallExprArg` sets `moveOptInsideExtractedCall = true` when entering an arg that matches a `TempExtraction` slot and is a `*ast.CallExpr`.
+2. `canMoveArg` returns `false` when this flag is set, preserving `.clone()` on inner args.
+3. `PostVisitCallExprArg` clears the flag when `callExprArgDepth` returns to 0.
+
+```
+Go source:      c = doADC(c, ReadIndirectX(c, zp))
+
+Without fix:    let __mv0: u8 = ReadIndirectX(c, zp);   // ERROR: c moved
+                c = doADC(c, __mv0);
+
+With fix:       let __mv0: u8 = ReadIndirectX(c.clone(), zp);  // clone preserved
+                c = doADC(c, __mv0);
+```
 
 ### Impact
 
@@ -239,11 +318,11 @@ Eliminated **44 additional `.clone()` calls** (127 to 83), generating 161 tempor
 
 **Pattern**: `variable = Function(variable, variable.Field[TypeConversion(expr)])`
 
-Go type conversions like `int(addr)` and `uint8(c.A & val)` are represented as `CallExpr` nodes in the Go AST. The initial `exprToString` function could not handle `CallExpr`, causing extraction to fail for expressions containing type casts.
+Go type conversions like `int(addr)` and `uint8(c.A & val)` are represented as `CallExpr` nodes in the Go AST. The initial `exprToRustCodeOpt` function (`rust_opt.go`) could not handle `CallExpr`, causing extraction to fail for expressions containing type casts.
 
 ### Before
 
-Expressions with type conversions returned `""` from `exprToString`, blocking extraction:
+Expressions with type conversions returned `""` from `exprToRustCodeOpt`, blocking extraction:
 
 ```
 Go source:      c = doADC(c, c.Memory[int(addr)])
@@ -254,7 +333,7 @@ Result:         c = doADC(c.clone(), c.Memory[(addr as i32) as usize]);
 
 ### After
 
-`exprToString` now detects single-argument `CallExpr` where the function is a Go built-in type name (found in `rustTypesMap`), and emits a Rust `as` cast:
+`exprToRustCodeOpt` now detects single-argument `CallExpr` where the function is a Go built-in type name (found in `rustTypesMap`), and emits a Rust `as` cast:
 
 ```
 Go type conversion:    int(addr)
@@ -330,7 +409,7 @@ Rust output:    return (c.clone(), c.Memory[...]);  // clone needed
 
 ### Implementation
 
-`PostVisitReturnStmtResult` saves the current `ReturnStmt` node in `PreVisitReturnStmt`. When processing index 0, it walks the expressions at index 1..N with `exprContainsIdent` to check for references to the same variable.
+In `PostVisitReturnStmt` (`rust_stmt.go`), when processing the first return result (index 0) of a multi-value return, the emitter walks expressions at index 1..N with `ExprContainsIdent` to check for references to the same variable. If no later result references the first, `.clone()` is not appended. This is an emitter-level optimization (not pass-based) since it determines whether to add `.clone()` in the first place.
 
 ---
 
@@ -395,7 +474,7 @@ Rust output:    state.C = cpu::Run(std::mem::take(&mut state.C), 100000);   // z
 
 ### Implementation
 
-`analyzeMemTakeOpt` runs in `PreVisitAssignStmt` after `analyzeMoveOptExtraction`. It stores `memTakeLhsExpr` and `memTakeArgIdx`. In `PostVisitCallExprArg`, when the arg index matches, the emitted tokens are truncated and replaced with `std::mem::take(&mut <lhsExpr>)`.
+`analyzeMemTakeOpt` (`rust_opt.go`) runs in `PreVisitAssignStmt` after `analyzeMoveOptExtraction`. It stores `memTakeLhsExpr` and `memTakeArgIdx`. In `PostVisitCallExprArg`, when the arg index matches, the emitter sets `OptMeta{IsReassignedSource: true, ReassignedExpr: "state.C"}` on the argument node (which has `.clone()` appended). The `CloneMovePass` then replaces the entire node content with `std::mem::take(&mut state.C)`.
 
 ### Impact
 
@@ -409,9 +488,11 @@ This is critical for the c64-v2 emulator which uses a `State` struct containing 
 
 **Pattern**: Function parameters that are never mutated, returned, or assigned from can be passed by `&T` instead of by value, eliminating the `.clone()` at call sites.
 
+This optimization is implemented as an IR pass (`RefOptPass` in `ref_opt_pass.go`), separate from the emitter and `CloneMovePass`.
+
 ### Analysis Pass
 
-Before emitting code, `analyzeReadOnlyParamsForPackage` scans every function in the package:
+Before emitting code, `AnalyzeReadOnlyParams` (`rust_opt.go`) scans every function in the package:
 
 1. **Collect mutated variables**: Any parameter assigned to (LHS of `=`), or whose fields are assigned, is marked mutable.
 2. **Collect returned variables**: Parameters that appear in `return` statements are marked (they need ownership to be returned).
@@ -421,11 +502,25 @@ Before emitting code, `analyzeReadOnlyParamsForPackage` scans every function in 
 
 The result is stored in `refOptReadOnly[funcKey]` as a per-parameter boolean array.
 
-### Emission
+### Emitter Annotations
 
-**Function signatures**: Read-only parameters emit `name: &Type` instead of `mut name: Type`.
+The emitter annotates IR nodes with `OptMeta` for the `RefOptPass`:
 
-**Call sites**: In `PostVisitCallExprArg`, when `isRefOptArg(index)` returns true, the `.clone()` is skipped entirely. The `&` prefix is already emitted in `PreVisitCallExprArg`.
+**Function parameters**: Each parameter gets `OptMeta{Kind: OptFuncParam, FuncKey: "pkg.Func", ParamIndex: N, IsReadOnly: true/false, IsMutRef: true/false}`.
+
+**Call arguments**: Each argument gets `OptMeta{Kind: OptCallArg, FuncKey: "pkg.Func", ParamIndex: N}` (merged in `PostVisitCallExprArgs`).
+
+### RefOptPass Transformations
+
+The `RefOptPass` runs after `CloneMovePass` in the IR pipeline:
+
+1. **Phase 1**: Walks the tree to collect all `OptFuncParam` annotations into a `funcParams` map.
+2. **Phase 2**: For each `OptCallArg`, looks up the corresponding function's param info. If the param is read-only, strips `.clone()` and adds `&` prefix. If mut-ref, adds `&mut` prefix.
+
+**Function signatures** (param nodes):
+- Rust: `mut name: T` → `name: &T` (read-only) or `name: &mut T` (mut-ref)
+- C++: `Type name` → `const Type& name` (read-only) or `Type& name` (mut-ref)
+- C#: `Type name` → `in Type name` (read-only) or `ref Type name` (mut-ref)
 
 ### Before
 
@@ -511,21 +606,20 @@ pub fn PullByte(mut c: CPU) -> (CPU, u8) {
 2. **First result is an identifier**: e.g., `c`.
 3. **A later result references the identifier**: `exprContainsIdent` returns true.
 4. **The later result is a Copy type**: `isCopyType` returns true (bool, integers, floats).
-5. **The expression is stringifiable**: `exprToString` can generate valid Rust.
+5. **The expression is stringifiable**: `exprToRustCodeOpt` can generate valid Rust.
 
 ### Implementation
 
-In `PreVisitReturnStmt`, before emitting `return`, the optimization:
+In `PreVisitReturnStmt` (`rust_stmt.go`), before emitting `return`, the optimization:
 
 1. Walks each later result (index 1..N) that references the first result's identifier.
-2. For each that is Copy-type and stringifiable, emits `let __mv{N}: {type} = {expr};`.
+2. For each that is Copy-type and stringifiable via `exprToRustCodeOpt`, builds `let __mv{N}: {type} = {expr};` as IR nodes and stores them in `returnTempPreamble`.
 3. Records the replacement in `returnTempReplacements[index] = tempName`.
 
-In `PreVisitReturnStmtResult`, when entering a replaced result, the token buffer position is saved.
-
-In `PostVisitReturnStmtResult`:
-- For replaced results: truncate emitted tokens and substitute the temp variable name.
-- For index 0: if all conflicting results were extracted, skip `.clone()`.
+In `PostVisitReturnStmt`:
+- Emits the `returnTempPreamble` IR nodes before the return statement.
+- For replaced results: substitutes the temp variable name.
+- For index 0: if all conflicting results were extracted, skips `.clone()`.
 
 ### Impact
 
@@ -560,7 +654,7 @@ Rust output:    if (i >= len(&lines)) { break; }
 
 ### Implementation
 
-A `currentCallIsLen` flag (analogous to `currentCallIsAppend`) is set in `PostVisitCallExprArgs` when the function name contains `"len"`. In `PostVisitCallExprArg`, when this flag is set and `OptimizeMoves` is enabled, all cloning is skipped — the `&` prefix is sufficient.
+The `len()` builtin is handled in `PostVisitCallExprArgs` (`rust_expr.go`). Its argument is preserved as an IR tree node (not flattened to string), so `OptMeta` annotations survive for `CloneMovePass` and `RefOptPass` processing. The emitter wraps the argument with `&` (for slice len) or calls `.len()` (for string len). The `CloneMovePass` recognizes `len` as a builtin callee via `isBuiltinCallee()` and removes the redundant `.clone()`.
 
 ### Impact
 
@@ -640,7 +734,7 @@ Rust output:    let mut lineBytes = StringToBytes(lines[i as usize].clone());
 
 ### Implementation
 
-An `argAlreadyCloned` flag is set in `PostVisitIndexExpr` when a `.clone()` is emitted for a non-Copy vec element while inside a call expression argument (`inCallExprArg` is true). In `PostVisitCallExprArg`, if this flag is set and `OptimizeMoves` is enabled, the redundant second `.clone()` is skipped.
+An `argAlreadyCloned` flag is set in `PostVisitIndexExpr` (`rust_expr.go`) when a `.clone()` is emitted for a non-Copy vec element while inside a call expression argument (`callExprArgDepth > 0`). In `PostVisitCallExprArg`, if this flag is set, the argument gets `OptMeta{IsElementCopy: true}` instead of having another `.clone()` appended. The `CloneMovePass` sees `IsElementCopy` and leaves the node unchanged (no clone to add, no clone to remove).
 
 The flag is reset at the start of each argument in `PreVisitCallExprArg`.
 
@@ -668,7 +762,13 @@ Eliminated ~1000 redundant string clones per CLR command in the assembler path (
 
 ### Implementation Files
 
-- `compiler/rust_emitter.go` -- Rust emitter with all optimizations (1-4, 6-11)
+- `compiler/rust_expr.go` -- Rust expression emission, `PostVisitCallExprArg` (clone/move annotation), `PostVisitCallExprArgs` (OptMeta merging), `PostVisitIndexExpr` (element clone)
+- `compiler/rust_stmt.go` -- Rust statement emission, `PreVisitAssignStmt` (move analysis triggers), `PostVisitReturnStmt` (return clone/move), return temp extraction
+- `compiler/rust_opt.go` -- `RustOptState`: `canMoveArg`, `analyzeMoveOptExtraction`, `analyzeMemTakeOpt`, `exprToRustCodeOpt`, `moveOptInsideExtractedCall`, read-only analysis accumulation
+- `compiler/clone_move_pass.go` -- `CloneMovePass` IR pass: clone removal (Rust), `std::move()` wrapping (C++), `std::mem::take`, temp extraction assembly
+- `compiler/ref_opt_pass.go` -- `RefOptPass` IR pass: param signature and call-site reference transformations (Rust, C++, C#)
+- `compiler/irnode.go` -- `IRNode`, `OptMeta`, `OptKind`, `TempExtraction`, tree helpers
+- `compiler/pass_manager.go` -- Pass orchestration: frontend passes → backend pipeline (codegen + IR passes)
 - `compiler/cpp_emitter.go` -- C++ emitter with optimizations (1, 5)
 
 ### Flags
