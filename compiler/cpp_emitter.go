@@ -1141,35 +1141,59 @@ func (e *CppEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		idxCode = tokens[1].Serialize()
 	}
 
+	// Restore lastIndexXCode/lastIndexKeyCode to this level's values.
+	// Nested IndexExprs (e.g., seen[data[i]]) can overwrite these
+	// during Index processing.
+	defer func() {
+		e.lastIndexXCode = xCode
+		e.lastIndexKeyCode = idxCode
+	}()
+
 	// Check if this is a map index
 	if e.isMapTypeExpr(node.X) {
 		mapGoType := e.getExprGoType(node.X)
 		valueCppType := "std::any"
 		castPfx, castSfx := "", ""
+		isBoolMap := false
 		if mapGoType != nil {
 			if mapType, ok := mapGoType.Underlying().(*types.Map); ok {
 				valueCppType = getCppTypeName(mapType.Elem())
 				castPfx, castSfx = getCppKeyCast(mapType.Key())
+				if basic, ok := mapType.Elem().Underlying().(*types.Basic); ok && basic.Kind() == types.Bool {
+					isBoolMap = true
+				}
 			}
 		}
 		keyStr := idxCode
 		if castPfx != "" {
 			keyStr = castPfx + idxCode + castSfx
 		}
-		tree := IRTree(IndexExpression, KindExpr,
-			Leaf(Identifier, "std::any_cast"),
-			Leaf(LeftAngle, "<"),
-			Leaf(Identifier, valueCppType),
-			Leaf(RightAngle, ">"),
-			Leaf(LeftParen, "("),
-			Leaf(Identifier, "hmap::hashMapGet"),
-			Leaf(LeftParen, "("),
-			Leaf(Identifier, xCode),
-			Leaf(Comma, ", "),
-			Leaf(Identifier, keyStr),
-			Leaf(RightParen, ")"),
-			Leaf(RightParen, ")"),
-		)
+		var tree IRNode
+		if isBoolMap {
+			tree = IRTree(IndexExpression, KindExpr,
+				Leaf(Identifier, "hmap::hashMapContains"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, keyStr),
+				Leaf(RightParen, ")"),
+			)
+		} else {
+			tree = IRTree(IndexExpression, KindExpr,
+				Leaf(Identifier, "std::any_cast"),
+				Leaf(LeftAngle, "<"),
+				Leaf(Identifier, valueCppType),
+				Leaf(RightAngle, ">"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, "hmap::hashMapGet"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, keyStr),
+				Leaf(RightParen, ")"),
+				Leaf(RightParen, ")"),
+			)
+		}
 		tree.GoType = e.getExprGoType(node)
 		e.fs.AddTree(tree)
 	} else {

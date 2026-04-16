@@ -1022,16 +1022,28 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		idxNode = tokens[1]
 	}
 
+	// Restore lastIndexXCode/lastIndexKeyCode to this level's values.
+	// Nested IndexExprs (e.g., seen[data[i]]) can overwrite these
+	// during Index processing.
+	defer func() {
+		e.lastIndexXCode = xCode
+		e.lastIndexKeyCode = idxCode
+	}()
+
 	if e.isMapTypeExpr(node.X) {
 		mapGoType := e.getExprGoType(node.X)
 		valType := "Rc<dyn Any>"
 		keyCast := ""
 		keyIsStr := false
+		isBoolMap := false
 		if mapGoType != nil {
 			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
 				valType = e.qualifiedRustTypeName(mapUnderlying.Elem())
 				keyCast = getRustKeyCast(mapUnderlying.Key())
 				keyIsStr = isRustStringKey(mapUnderlying.Key())
+				if basic, ok := mapUnderlying.Elem().Underlying().(*types.Basic); ok && basic.Kind() == types.Bool {
+					isBoolMap = true
+				}
 			}
 		}
 		// Map read: hashMapGet(m, Rc::new(key))
@@ -1041,21 +1053,34 @@ func (e *RustEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		} else {
 			keyExpr = fmt.Sprintf("Rc::new(%s%s)", idxCode, keyCast)
 		}
-		castExpr := ""
-		if valType != "Rc<dyn Any>" {
-			castExpr = fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType)
-		}
 		mapRef := xCode + ".clone()"
-		token := IRTree(IndexExpression, KindExpr,
-			Leaf(Identifier, "hmap::hashMapGet"),
-			Leaf(LeftParen, "("),
-			Leaf(Identifier, mapRef),
-			Leaf(Comma, ","),
-			Leaf(WhiteSpace, " "),
-			Leaf(Identifier, keyExpr),
-			Leaf(RightParen, ")"),
-			Leaf(Identifier, castExpr),
-		)
+		var token IRNode
+		if isBoolMap {
+			token = IRTree(IndexExpression, KindExpr,
+				Leaf(Identifier, "hmap::hashMapContains"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, mapRef),
+				Leaf(Comma, ","),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keyExpr),
+				Leaf(RightParen, ")"),
+			)
+		} else {
+			castExpr := ""
+			if valType != "Rc<dyn Any>" {
+				castExpr = fmt.Sprintf(".downcast_ref::<%s>().unwrap().clone()", valType)
+			}
+			token = IRTree(IndexExpression, KindExpr,
+				Leaf(Identifier, "hmap::hashMapGet"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, mapRef),
+				Leaf(Comma, ","),
+				Leaf(WhiteSpace, " "),
+				Leaf(Identifier, keyExpr),
+				Leaf(RightParen, ")"),
+				Leaf(Identifier, castExpr),
+			)
+		}
 		token.GoType = e.getExprGoType(node)
 		token.OptMeta = &OptMeta{Kind: OptMapOp}
 		e.fs.AddTree(token)
