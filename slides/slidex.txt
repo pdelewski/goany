@@ -1,0 +1,124 @@
+Agenda
+
+1) Short bio
+
+I've spent almost 15 years in the observability space at Dynatrace and Sumo Logic in different roles, including engineer, tech lead, team lead, and architect. Besides that, I had a great adventure working on navigation software at TomTom. I enjoy working as an individual contributor, leading by example.
+I'm also an OpenTelemetry maintainer, working on compile-time Go instrumentation, and an emeritus PHP maintainer.
+Personally, I enjoy studying programming languages.
+
+2) Historical context
+
+I started working on goany as I've many times during my career that we needed to implement
+same thing few times in different languages. Perfect, would be to have just one language
+and then compile it/transpile it to other languages in deterministic way.
+
+There are some solutions now. First of all we write it once in native language and expose it via
+FFI API. There are also solutions similar to goany but they are based on concept of independent
+programming language for instance fusionlang and haxe. Both are independent languages that can be
+transpiled into several backends like C/C++, Rust, Java and so on.
+
+3) Most important challenges
+
+What primitives should choose?
+How to deal with potentially different memory models?
+
+4) Goany base principles and it's evolution
+
+I've chosen different way than previously described projects and approaches.
+I've chosen go programming language instead of designing new programming language
+with the goal to compile it / transpile it to other backends like C++/Rust/C#/Java.
+
+There are few reasons for that, tradeoffs and challenges. First if you design new programming
+language you have total freedom about syntax and semantics. You have to just design mapping
+to all supported backends which still is challenging.
+
+If you use existing language, there are questions about what features we would like support.
+Supporting whole language might be not realistic or hard to do, however seems feasible.
+
+5) What primitives are needed to write a program.
+
+To write a program only few primitives are needed:
+- expressions like arithmetic expressions, logical expressions.
+- control flow statement like if, switch, loops: for and so on.
+It would be good to show minimal assembler instructions that is needed to write a program
+and show how they map to above go constructs which are generic constructs also available
+in any programming language.
+
+One of the most important decision I've taken at the beginning was that goany will not
+support pointers and support only arrays (slices). Array is primitive that all programming
+language support is some form. Some of them have builin arrays, some supports them via standard library.
+
+The chosen subset is very important. Within this subset you can write real programs with specific
+characteristics. For instance many examples like all examples/mos6502, examples/gui and more
+was implemented using only this subset.
+
+It would be also good to have a graphic with circle that will contain all above primitives inside.
+This could be then reused to build larger circle around it on next slides (where will be description)
+of other primitives build on top of that showing maybe how passes (transformations) are connected to these
+primitives sets.
+
+You can use nanobana to generate images and this key GEMINI_API_KEY=AIzaSyAJcboPMS4XnjUN7reESAWbo2wdOLgh1Qw
+
+Short demo here to show these examples.
+
+6) Evolution of goany
+
+Support more and more constructs on top of core subset.
+
+7) Goany architecture
+
+Diagram of passes
+Compiler construction
+Passes architecture
+
+8) Description of each pass and what's doing
+This may require separate slide.
+Use what's in docs regarding lowering
+
+9) Translation to different backends
+
+Description of most important challenges in different backends
+Like C# aliases.
+Java signed types, lambda binding and mutation
+
+10) Translation to rust
+
+Translation to rust is very conservative without optimizations enabled.
+How it works.
+
+11) Optimizations
+Description of -optimize-refs, optimize-moves.
+Use docs/move-optimization.md
+
+Demo, show how this works with optimizations
+
+12) Other optimizations like -optimize-mem-layout
+with statistics and demo
+┌──────────────────────────┬───────┐
+ │     Version     │ Time │
+ ├──────────────────────────┼───────┤
+ │ Auto SoA, no hoist    │ 2.94s │
+ ├──────────────────────────┼───────┤
+ │ Direct index, no hoist  │ 2.80s │
+ ├──────────────────────────┼───────┤
+ │ Hoisting + pool indirect │ 1.45s │
+ ├──────────────────────────┼───────┤
+ │ Hoisting + direct index │ 0.90s │
+ └──────────────────────────┴───────┘
+
+What kind of optimizations goany wants to support (research)
+The big performance wins in real programs come from:
+
+  - Memory layout — cache misses cost 100+ cycles, an instruction costs 1
+  - Data movement — CPU↔GPU, RAM↔cache, core↔core
+  - Algorithmic access patterns — sequential vs random
+  - Parallelism — using all cores/threads
+
+  Instruction-level optimization — register allocation, instruction scheduling, peephole — saves single-digit percentages. Important, but incremental.
+
+  Your SoA transformation gave 3x on C++. No amount of instruction-level optimization would do that. LLVM was already doing its best on the AoS code — the bottleneck was cache misses, which no instruction reordering can fix.
+
+  The irony is that production compilers have spent decades perfecting the micro level while ignoring the macro level. They'll spend enormous effort to save one register spill but won't touch the data layout that causes millions of
+  cache misses.
+
+  Pointer lowering operates at the macro level — it changes how data is organized, not how instructions execute. That's where the 2x-10x wins live. And it's essentially uncontested territory.
