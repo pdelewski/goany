@@ -811,6 +811,15 @@ func javaHelperClassesString() string {
         return list;
     }
 
+    // Create a slice with n elements initialized to a default value
+    public static <T> ArrayList<T> MakeSlice(int size, T defaultValue) {
+        ArrayList<T> list = new ArrayList<T>(size);
+        for (int i = 0; i < size; i++) {
+            list.add(defaultValue);
+        }
+        return list;
+    }
+
     // Create a boolean slice with n elements initialized to false
     public static ArrayList<Boolean> MakeBoolSlice(int size) {
         ArrayList<Boolean> list = new ArrayList<Boolean>(size);
@@ -1713,12 +1722,21 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 				// make([]T, n) -> SliceBuiltins.MakeSlice(n) or MakeBoolSlice(n)
 				elemType := "Object"
 				isBool := false
+				isNumeric := false
+				numericDefault := "0"
 				if e.pkg != nil && e.pkg.TypesInfo != nil {
 					if tv, ok := e.pkg.TypesInfo.Types[node.Args[0]]; ok && tv.Type != nil {
 						if slice, ok := tv.Type.(*types.Slice); ok {
 							elemType = e.qualifiedJavaTypeName(slice.Elem())
-							if basic, ok := slice.Elem().Underlying().(*types.Basic); ok && basic.Kind() == types.Bool {
-								isBool = true
+							if basic, ok := slice.Elem().Underlying().(*types.Basic); ok {
+								if basic.Kind() == types.Bool {
+									isBool = true
+								} else if basic.Info()&types.IsNumeric != 0 {
+									isNumeric = true
+									if basic.Info()&types.IsFloat != 0 {
+										numericDefault = "0.0"
+									}
+								}
 							}
 						}
 					}
@@ -1730,6 +1748,20 @@ func (e *JavaEmitter) PostVisitCallExpr(node *ast.CallExpr, indent int) {
 							Leaf(Identifier, "SliceBuiltins.MakeBoolSlice"),
 							Leaf(LeftParen, "("),
 							Leaf(Identifier, parts[1]),
+							Leaf(RightParen, ")"),
+						))
+					} else if isNumeric {
+						boxed := toBoxedType(elemType)
+						e.fs.AddTree(IRTree(CallExpression, KindExpr,
+							Leaf(Identifier, "SliceBuiltins."),
+							Leaf(LeftAngle, "<"),
+							Leaf(Identifier, boxed),
+							Leaf(RightAngle, ">"),
+							Leaf(Identifier, "MakeSlice"),
+							Leaf(LeftParen, "("),
+							Leaf(Identifier, parts[1]),
+							Leaf(Comma, ", "),
+							Leaf(NumberLiteral, numericDefault),
 							Leaf(RightParen, ")"),
 						))
 					} else {
@@ -2087,15 +2119,26 @@ func (e *JavaEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		valType := "Object"
 		pfx := ""
 		sfx := ""
+		isBoolMap := false
 		if mapGoType != nil {
 			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
 				valType = e.qualifiedJavaTypeName(mapUnderlying.Elem())
 				pfx, sfx = getJavaKeyCastJ(mapUnderlying.Key())
+				if basic, ok := mapUnderlying.Elem().Underlying().(*types.Basic); ok && basic.Kind() == types.Bool {
+					isBoolMap = true
+				}
 			}
 		}
-		indexNode := IRTree(IndexExpression, KindExpr,
-			Leaf(Identifier, "((" + valType + ")hmap.hashMapGet(" + xCode + ", " + pfx + idxCode + sfx + "))"),
-		)
+		var indexNode IRNode
+		if isBoolMap {
+			indexNode = IRTree(IndexExpression, KindExpr,
+				Leaf(Identifier, "(boolean)hmap.hashMapContains("+xCode+", "+pfx+idxCode+sfx+")"),
+			)
+		} else {
+			indexNode = IRTree(IndexExpression, KindExpr,
+				Leaf(Identifier, "(("+valType+")hmap.hashMapGet("+xCode+", "+pfx+idxCode+sfx+"))"),
+			)
+		}
 		indexNode.GoType = e.getExprGoTypeJ(node)
 		e.fs.AddTree(indexNode)
 	} else {

@@ -87,6 +87,10 @@ func (v *memLayoutVisitor) transform() {
 		return
 	}
 
+	// Filter pools by field-access-ratio: only apply SoA when at least one loop
+	// accesses < 60% of the struct's fields, indicating a hot/cold field split.
+	v.filterByFieldAccessRatio()
+
 	// Generate SoA struct type declarations and insert into AST
 	v.generateSoATypes()
 
@@ -248,6 +252,88 @@ func (v *memLayoutVisitor) checkPoolCandidate(name string, typeExpr ast.Expr, st
 		fields:   fields,
 		soaName:  "_SoA_" + typeName,
 	}
+}
+
+// filterByFieldAccessRatio removes pools from poolInfo where no loop accesses < 60% of fields.
+// This prevents SoA transformation when all loops touch most fields anyway (no cache benefit).
+func (v *memLayoutVisitor) filterByFieldAccessRatio() {
+	for poolName, info := range v.poolInfo {
+		hasLowRatioLoop := false
+		totalFields := len(info.fields)
+		if totalFields == 0 {
+			continue
+		}
+
+		for _, fd := range v.funcs {
+			if fd.Body == nil {
+				continue
+			}
+			// Walk all for-loops in this function
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				forStmt, ok := n.(*ast.ForStmt)
+				if !ok || forStmt.Body == nil {
+					return true
+				}
+				// Count distinct fields of this pool accessed in this loop
+				accessedFields := make(map[string]bool)
+				v.collectAccessedFields(forStmt.Body, poolName, info, accessedFields)
+				if len(accessedFields) == 0 {
+					return true // loop doesn't touch this pool
+				}
+				ratio := float64(len(accessedFields)) / float64(totalFields)
+				if ratio < 0.6 {
+					hasLowRatioLoop = true
+				}
+				return !hasLowRatioLoop // stop early if found
+			})
+
+			if hasLowRatioLoop {
+				break
+			}
+		}
+
+		if !hasLowRatioLoop {
+			fmt.Printf("  SoA: skipping %s (all loops access >= 60%% of %d fields)\n",
+				poolName, totalFields)
+			delete(v.poolInfo, poolName)
+		}
+	}
+
+	if len(v.poolInfo) == 0 {
+		return
+	}
+}
+
+// collectAccessedFields finds all field names of a pool's struct accessed in a block.
+// Looks for patterns: pool[idx].Field (pre-SoA access after pointer lowering)
+func (v *memLayoutVisitor) collectAccessedFields(block *ast.BlockStmt, poolName string, info *poolLayoutInfo, result map[string]bool) {
+	if block == nil {
+		return
+	}
+	ast.Inspect(block, func(n ast.Node) bool {
+		// Match pool[idx].Field → SelectorExpr with IndexExpr X
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		indexExpr, ok := sel.X.(*ast.IndexExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := indexExpr.X.(*ast.Ident)
+		if !ok || ident.Name != poolName {
+			return true
+		}
+		// Verify this is a valid field of the struct
+		fieldName := sel.Sel.Name
+		for _, f := range info.fields {
+			if f.name == fieldName {
+				result[fieldName] = true
+				break
+			}
+		}
+		return true
+	})
 }
 
 // generateSoATypes creates type _SoA_T struct { Field1 []Type1; ... } declarations

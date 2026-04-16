@@ -1464,30 +1464,54 @@ func (e *CSharpEmitter) PostVisitIndexExpr(node *ast.IndexExpr, indent int) {
 		idxCode = tokens[1].Serialize()
 	}
 
+	// Restore lastIndexXCode/lastIndexKeyCode to this level's values.
+	// Nested IndexExprs (e.g., seen[data[i]]) can overwrite these
+	// during Index processing.
+	defer func() {
+		e.lastIndexXCode = xCode
+		e.lastIndexKeyCode = idxCode
+	}()
+
 	if e.isMapTypeExpr(node.X) {
 		mapGoType := e.getExprGoType(node.X)
 		valType := "object"
 		pfx := ""
 		sfx := ""
+		isBoolMap := false
 		if mapGoType != nil {
 			if mapUnderlying, ok := mapGoType.Underlying().(*types.Map); ok {
 				valType = e.qualifiedCsTypeName(mapUnderlying.Elem())
 				pfx, sfx = getCsKeyCast(mapUnderlying.Key())
+				if basic, ok := mapUnderlying.Elem().Underlying().(*types.Basic); ok && basic.Kind() == types.Bool {
+					isBoolMap = true
+				}
 			}
 		}
-		tree := IRTree(IndexExpression, KindExpr,
-			Leaf(LeftParen, "("),
-			Leaf(LeftParen, "("),
-			Leaf(Identifier, valType),
-			Leaf(RightParen, ")"),
-			Leaf(Identifier, "hmap.hashMapGet"),
-			Leaf(LeftParen, "("),
-			Leaf(Identifier, xCode),
-			Leaf(Comma, ", "),
-			Leaf(Identifier, pfx+idxCode+sfx),
-			Leaf(RightParen, ")"),
-			Leaf(RightParen, ")"),
-		)
+		var tree IRNode
+		if isBoolMap {
+			tree = IRTree(IndexExpression, KindExpr,
+				Leaf(Identifier, "hmap.hashMapContains"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, pfx+idxCode+sfx),
+				Leaf(RightParen, ")"),
+			)
+		} else {
+			tree = IRTree(IndexExpression, KindExpr,
+				Leaf(LeftParen, "("),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, valType),
+				Leaf(RightParen, ")"),
+				Leaf(Identifier, "hmap.hashMapGet"),
+				Leaf(LeftParen, "("),
+				Leaf(Identifier, xCode),
+				Leaf(Comma, ", "),
+				Leaf(Identifier, pfx+idxCode+sfx),
+				Leaf(RightParen, ")"),
+				Leaf(RightParen, ")"),
+			)
+		}
 		tree.GoType = e.getExprGoType(node)
 		e.fs.AddTree(tree)
 	} else {
