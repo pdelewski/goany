@@ -115,6 +115,14 @@ April 2025
 
 ---
 
+# Disclaimer
+
+This is the first time I'm talking about GoAny publicly.
+
+The flow might not be perfect.
+
+---
+
 # Agenda
 
 1. **The Problem** — why transpile at all?
@@ -157,7 +165,19 @@ All independent-language solutions share one problem:
 
 ---
 
-<!-- Section 3: Key Challenges -->
+<!-- Section 3: GoAny Base Principles -->
+
+# A Different Approach
+
+Instead of designing a new language, **GoAny uses Go**.
+
+![bg right:55% contain](img/transpiler-overview.png)
+
+Go is a real language with a real ecosystem, tooling, and community.
+
+---
+
+<!-- Section 4: Key Challenges -->
 
 # Key Challenges
 
@@ -173,18 +193,6 @@ All independent-language solutions share one problem:
 - C++: manual memory, RAII
 - Java/C#: garbage collected, reference semantics
 - JavaScript: garbage collected, prototype-based
-
----
-
-<!-- Section 4: GoAny Base Principles -->
-
-# A Different Approach
-
-Instead of designing a new language, **GoAny uses Go**.
-
-![bg right:55% contain](img/transpiler-overview.png)
-
-Go is a real language with a real ecosystem, tooling, and community.
 
 ---
 
@@ -231,32 +239,10 @@ These exist in **every** language.
 </div>
 <div>
 
-```go
-const mask byte = 0x80
-
-func decode(data []byte) int {
-    result := 0
-    for i := 0; i < len(data); i++ {
-        b := data[i]
-        result = result | (int(b&0x7F) << (i * 7))
-        if b&mask == 0 {
-            return result
-        }
-    }
-    return result
-}
-```
+![w:500](img/go-to-cpu-mapping.png)
 
 </div>
 </div>
-
----
-
-# Mapping to Machine Instructions
-
-![center w:900](img/go-to-cpu-mapping.png)
-
-With just these primitives, you can write real programs.
 
 ---
 
@@ -455,6 +441,12 @@ Pools are passed as extra function arguments and returned as extra return values
 
 ---
 
+# Pointer Lowering: Function Signatures
+
+![center w:950](img/pointer-lowering-signatures.png)
+
+---
+
 <!-- Section 9: Backend Challenges -->
 
 # Backend Challenges: C# and Java
@@ -489,7 +481,26 @@ Pools are passed as extra function arguments and returned as extra return values
 
 ---
 
-<!-- Section 10: Translation to Rust -->
+<!-- Section 10: Optimizations Overview -->
+
+# Optimizations: Beyond Correctness
+
+Transpilation produces **correct** code — but correct is not enough.
+The same Go source hits different performance walls on each target:
+
+| Target | Problem | Solution |
+|---|---|---|
+| **C++** | Value-copy semantics → quadratic deep copies | `std::move()` insertion (CloneMovePass) |
+| **Rust** | Borrow checker rejects shared access | `.clone()` elimination + temp extraction |
+| **All** | Cache misses from AoS layout | Automatic AoS → SoA (MemoryLayoutPass) |
+| **C++/Rust** | Read-only params copied unnecessarily | `const T&` / `&T` references (RefOptPass) |
+
+GoAny applies **IR-level passes** that optimize across all backends —
+the same pass pipeline, different results per target.
+
+---
+
+<!-- Section 10 cont: Translation to Rust -->
 
 # Translation to Rust: The Conservative Approach
 
@@ -520,19 +531,29 @@ deep copy. A single frame generates **~300MB of unnecessary memcpy**.
 Rust's ownership rules create unique challenges:
 
 ```rust
-// Can't move c twice:
+// 1. Can't move c twice:
 c = SetZN(c, c.A);  // ERROR: c moved on first arg, used on second
 
-// Can't move out of closures:
+// 2. Can't move out of closures:
 graphics::RunLoop(w, |w| {
     c = Step(c);     // ERROR: can't move out of FnMut closure
 });
 
-// Can't move out of struct fields:
+// 3. Can't move out of struct fields:
 state.C = Run(state.C);  // ERROR: can't move out of borrowed field
 ```
 
-Each of these requires a different optimization strategy.
+---
+
+# The Borrow Checker Challenge (cont.)
+
+**Case 2 — Closures:** `FnMut` closures borrow their environment mutably.
+Moving `c` out would leave the closure's captured state invalid for the next
+invocation. In Go, the closure simply captures a copy — no ownership issue.
+
+**Case 3 — Struct fields:** `state` is borrowed by the enclosing scope.
+Moving a field out would leave `state` partially initialized, which Rust
+forbids. In Go, `state.C` is just a value copy — always safe.
 
 ---
 
