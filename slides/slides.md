@@ -624,6 +624,115 @@ state.C = Run(std::mem::take(&mut state.C));  // zero-cost swap
 
 ---
 
+# `--optimize-moves`: Type Conversion in Extraction
+
+**Pattern:** `variable = Function(variable, variable.Field[TypeConversion(expr)])`
+
+Go type conversions (`int(addr)`) are AST call expressions — extraction must handle them:
+
+```rust
+// Before (extraction fails — can't handle int(addr)):
+c = doADC(c.clone(), c.Memory[(addr as i32) as usize]);
+
+// After (type conversion supported):
+let __mv0: u8 = c.Memory[(addr as i32) as usize];
+c = doADC(c, __mv0);
+```
+
+**-17 additional clones eliminated.**
+
+---
+
+# `--optimize-moves`: Conditional Return Clone
+
+**Pattern:** `return variable, expression`
+
+Only clone when a later result actually references the same variable:
+
+```rust
+// return c, value — value doesn't reference c:
+return (c, value);           // no clone needed
+
+// return c, c.Memory[...] — later result references c:
+return (c.clone(), c.Memory[...]);  // clone needed
+```
+
+---
+
+# `--optimize-moves`: Return Temp Extraction
+
+**Pattern:** `return variable, expression_referencing_variable`
+
+Extract conflicting Copy-type results into temps before return:
+
+```rust
+// Before:
+return (c.clone(), c.Memory[(0x100 + (c.SP as i32)) as usize]);
+
+// After:
+let __mv0: u8 = c.Memory[(0x100 + (c.SP as i32)) as usize];
+return (c, __mv0);           // zero-cost move
+```
+
+---
+
+# `--optimize-moves`: C++ `std::move()` for Returns
+
+**Pattern:** `return variable, expression` where variable is a struct
+
+```cpp
+// Before:
+return std::make_tuple(c, value);         // c is copied into tuple
+
+// After:
+return std::make_tuple(std::move(c), value);  // zero-cost move
+```
+
+Applied when later results don't reference the first result.
+
+---
+
+# `--optimize-moves`: `len()` and Slice Move
+
+**Patterns:** `len(collection)` / `variable = Function(variable)` for slices
+
+**`len()` clone elimination** — `len()` only needs a reference, not a copy:
+
+```rust
+// Before:                              // After:
+if (i >= len(&lines.clone()))           if (i >= len(&lines))
+// deep copies entire Vec<String>!      // zero cost
+```
+
+**Slice/Vec move** — same move pattern as structs, for slice types:
+
+```rust
+// Before:                              // After:
+allBytes = Func(allBytes.clone());      allBytes = Func(allBytes);
+// O(n²) growing buffer copies          // zero-cost move
+```
+
+---
+
+# `--optimize-moves`: Double-Clone Suppression
+
+**Pattern:** `Function(collection[index])` where element type is non-Copy
+
+Vec element access already clones (can't move out of indexed collection).
+Don't clone again when passing to a function:
+
+```rust
+// Before:
+let lineBytes = Func(lines[i as usize].clone().clone());
+//                                      ^^^^^^^^^^^^^^^^ two clones!
+
+// After:
+let lineBytes = Func(lines[i as usize].clone());
+//                                      ^^^^^^^^ one clone (necessary)
+```
+
+---
+
 # `--optimize-refs`: Reference Optimization
 
 Analyzes function bodies to find **read-only parameters** — parameters that
@@ -653,14 +762,30 @@ Results on the C64 emulator codebase (MOS 6502 CPU with 64KB memory):
 
 | Optimization | Clones Removed |
 |---|---|
-| Move detection (reassigned variables) | -192 |
-| Temp extraction (field accesses) | -44 |
-| Type conversion support | -17 |
-| Reference optimization (read-only params) | -162 |
-| Misc (len, slice moves, double-clone) | -69 |
+| Move detection + temp extraction (#1-3, 6) | -253 |
+| Multi-value return + builtins (#4, 5, 8-11) | -69 |
+| Reference optimization (#7) | -162 |
 | **Total** | **-484 clones eliminated** |
 
 From ~500 `.clone()` calls down to **~16** (closures only).
+
+---
+
+# Demo: Clone Optimization
+
+### Without optimization switches
+```
+./goany -source=../examples/mos6502/textscroll \
+  -output=./build/textscroll -backend=rust \
+  -link-runtime=../runtime
+```
+
+### With `--optimize-moves --optimize-refs`
+```
+./goany -source=../examples/mos6502/textscroll \
+  -output=./build/textscroll -backend=rust \
+  -link-runtime=../runtime -optimize-moves -optimize-refs
+```
 
 ---
 
@@ -720,7 +845,7 @@ This is why GoAny can do what LLVM cannot.
 
 # Performance Results: C++ Particle Simulation
 
-![center w:900](img/performance-chart.png)
+![center w:750](img/performance-chart.png)
 
 The compiler generates code **as fast as what an expert would write by hand**.
 
