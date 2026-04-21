@@ -726,67 +726,29 @@ The compiler generates code **as fast as what an expert would write by hand**.
 
 ---
 
-# Additional SoA Optimizations
-
-**Nested loop hoisting**: outer-loop-invariant SoA reads lifted out
-
-```go
-// Before:                              // After:
-for i := 0; i < N; i++ {               for i := 0; i < N; i++ {
-  for j := 0; j < N; j++ {               _hoist_X := pool.X[i]
-    dx := pool.X[j] - pool.X[i]          _acc_FX := 0.0
-    // pool.X[i] read N times!            for j := 0; j < N; j++ {
-  }                                         dx := pool.X[j] - _hoist_X
-}                                           _acc_FX += ...
-                                          }
-                                          pool.FX[i] += _acc_FX
-                                        }
-```
-
-**Pool index slice elimination**: removes `[]int` indirection layer
-
-`particles[i]` → `i` (pool indices are always sequential)
-
----
-
-<!-- Section 12 cont: Research Directions -->
-
-# The Macro vs Micro Optimization Gap
-
-> **Cache misses cost 100+ cycles. An instruction costs 1.**
-
-Production compilers perfect the **micro** level (single-digit % gains):
-- Register allocation, instruction scheduling, peephole optimization
-
-Meanwhile, they **ignore the macro level** (2x-10x gains):
-- Memory layout (AoS vs SoA)
-- Data movement (CPU ↔ GPU, RAM ↔ cache)
-- Access patterns (sequential vs random)
-
-**That's where the 2x-10x wins live. And it's uncontested territory.**
-
----
-
-# Pointer Lowering Opens New Doors
-
-Once pointers are eliminated, entirely new optimizations become possible:
-
-| Optimization | Description |
-|---|---|
-| **AoS → SoA** | Automatic data layout transformation (done!) |
-| **Parallelization** | No aliasing → safe automatic parallelism |
-| **GPU extraction** | Sequential pool access → GPU kernel candidate |
-| **Dead field elimination** | Remove struct fields never read |
-| **Data compression** | Pack sparse fields into denser layouts |
-| **Prefetch insertion** | Predictable access patterns → HW prefetch |
-
-This is **essentially uncontested territory** in compiler research.
-
----
-
 # Demo
 
-<!-- Live demo placeholder -->
+### Go backend without memory layout optimization
+```
+./goany -source=../examples/particle-sim -output=./build/particle-sim \
+  -backend=go -link-runtime=../runtime -optimize-moves -optimize-refs
+```
+
+### Go backend with memory layout optimization
+```
+./goany -source=../examples/particle-sim -output=./build/particle-sim \
+  -backend=go -link-runtime=../runtime -optimize-moves -optimize-refs \
+  -optimize-mem-layout
+```
+
+---
+
+# Ongoing Research
+
+- **IR Design** — language-independent intermediate representation
+- **Compiler Architecture** — pass pipeline, modularity, extensibility
+- **Memory Model** — ownership inference, lifetime analysis, GC-to-deterministic translation
+- **Optimizations** — data layout, access patterns, cache-aware transformations
 
 ---
 
