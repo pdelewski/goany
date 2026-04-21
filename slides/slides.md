@@ -125,15 +125,12 @@ The flow might not be perfect.
 
 # Agenda
 
-1. **The Problem** — why transpile at all?
+1. **Background** — why transpile at all?
 2. **GoAny's Approach** — using Go as the source language
 3. **Core Primitives** — the minimal universal subset
-4. **Runtime Packages** — native escape hatch per backend
-5. **Compiler Architecture** — frontend passes and lowering
-6. **Backend Challenges** — C++, Rust, C#, Java, JavaScript
-7. **Rust Optimization** — clone elimination and borrow checker
-8. **Memory Layout** — automatic AoS to SoA transformation
-9. **Demo**
+4. **Compiler Architecture** — frontend passes and lowering
+5. **Backend Challenges** — C++, Rust, C#, Java, JavaScript
+6. **Optimizations** — clone elimination, memory layout, performance
 
 ---
 
@@ -330,9 +327,6 @@ content, err := fs.ReadFile("data.txt")
 | Rust | `mod fs_runtime` with native Rust I/O |
 | C# | `fs_runtime.cs` included in project |
 | Java | `FsRuntime.java` class |
-
-**SIMD math example**: `runtime/math` delegates to C SIMD intrinsics —
-portable Go call, native AVX/NEON execution.
 
 ---
 

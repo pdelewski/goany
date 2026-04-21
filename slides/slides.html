@@ -709,15 +709,12 @@ section::after {
 ;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="agenda">Agenda</h1>
 <ol>
-<li><strong>The Problem</strong> — why transpile at all?</li>
+<li><strong>Background</strong> — why transpile at all?</li>
 <li><strong>GoAny's Approach</strong> — using Go as the source language</li>
 <li><strong>Core Primitives</strong> — the minimal universal subset</li>
-<li><strong>Runtime Packages</strong> — native escape hatch per backend</li>
 <li><strong>Compiler Architecture</strong> — frontend passes and lowering</li>
 <li><strong>Backend Challenges</strong> — C++, Rust, C#, Java, JavaScript</li>
-<li><strong>Rust Optimization</strong> — clone elimination and borrow checker</li>
-<li><strong>Memory Layout</strong> — automatic AoS to SoA transformation</li>
-<li><strong>Demo</strong></li>
+<li><strong>Optimizations</strong> — clone elimination, memory layout, performance</li>
 </ol>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="5" data-paginate="true" data-class="title" data-theme="default" data-style="section {
@@ -3560,8 +3557,6 @@ content, err := fs.ReadFile(<span class="hljs-string">&quot;data.txt&quot;</span
 </tr>
 </tbody>
 </table>
-<p><strong>SIMD math example</strong>: <code>runtime/math</code> delegates to C SIMD intrinsics —<br />
-portable Go call, native AVX/NEON execution.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="19" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
