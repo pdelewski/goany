@@ -137,6 +137,12 @@ The flow might not be perfect.
 
 ---
 
+<!-- _class: title -->
+
+# Background
+
+---
+
 <!-- Section 2: Historical Context -->
 
 # The Problem
@@ -162,6 +168,12 @@ Every organization eventually faces this:
 
 All independent-language solutions share one problem:
 **you must design and learn a new language.**
+
+---
+
+<!-- _class: title -->
+
+# GoAny's Approach
 
 ---
 
@@ -217,6 +229,12 @@ Every GoAny program is a **valid Go program** — but not vice versa.
 ![center w:750](img/goany-subset.png)
 
 You develop and test in Go, then transpile.
+
+---
+
+<!-- _class: title -->
+
+# Core Primitives
 
 ---
 
@@ -327,6 +345,12 @@ portable Go call, native AVX/NEON execution.
 - Same Go code → C++ (TIGR), Rust (TIGR), JS (Canvas), ...
 
 <!-- Live demo here -->
+
+---
+
+<!-- _class: title -->
+
+# Compiler Architecture
 
 ---
 
@@ -447,6 +471,12 @@ Pools are passed as extra function arguments and returned as extra return values
 
 ---
 
+<!-- _class: title -->
+
+# Backend Challenges
+
+---
+
 <!-- Section 9: Backend Challenges -->
 
 # Backend Challenges: C# and Java
@@ -465,19 +495,31 @@ Pools are passed as extra function arguments and returned as extra return values
 
 ---
 
-# Backend Challenges: C++ and JavaScript
+# Backend Challenges: C++ and Rust
 
 ### C++
-- **No string switch** — `switch(std::string)` is illegal
-  - Lowered to if/else with `==` comparisons
-- **Field name conflicts** — `struct { Baz Baz; }` triggers `-Wchanges-meaning`
-  - Renamed to `BazVal`
-- **Operator precedence** — `prot & VMProtRead != 0` needs explicit parens
+- **No string switch** — `switch(std::string)` is illegal → lowered to if/else
+- **Field name conflicts** — `struct { Baz Baz; }` → renamed to `BazVal`
 - **Multi-assignment** — `a, b := 1, 2` has no direct equivalent
 
-### JavaScript
+### Rust
+- **Move semantics by default** — Go copies implicitly; Rust moves, so every reuse needs `.clone()`
+- **Borrow checker** — `c = SetZN(c, c.A)` illegal — `c` moved on first arg, used on second
+- **No implicit numeric conversions** — every `int(x)` needs explicit `as i32` cast
+
+---
+
+# Backend Challenges: JavaScript
+
 - **No blank identifier** — `_` in destructuring becomes empty slot: `[, x]`
 - **No integer types** — everything is `Number` (float64)
+- **No struct types** — structs mapped to plain objects / classes
+
+---
+
+<!-- _class: title -->
+
+# Optimizations
 
 ---
 
@@ -523,37 +565,6 @@ Adding `.clone()` preserves Go's value semantics safely.
 
 **Problem:** For a CPU struct with 64KB memory array, each `.clone()` is a
 deep copy. A single frame generates **~300MB of unnecessary memcpy**.
-
----
-
-# The Borrow Checker Challenge
-
-Rust's ownership rules create unique challenges:
-
-```rust
-// 1. Can't move c twice:
-c = SetZN(c, c.A);  // ERROR: c moved on first arg, used on second
-
-// 2. Can't move out of closures:
-graphics::RunLoop(w, |w| {
-    c = Step(c);     // ERROR: can't move out of FnMut closure
-});
-
-// 3. Can't move out of struct fields:
-state.C = Run(state.C);  // ERROR: can't move out of borrowed field
-```
-
----
-
-# The Borrow Checker Challenge (cont.)
-
-**Case 2 — Closures:** `FnMut` closures borrow their environment mutably.
-Moving `c` out would leave the closure's captured state invalid for the next
-invocation. In Go, the closure simply captures a copy — no ownership issue.
-
-**Case 3 — Struct fields:** `state` is borrowed by the enclosing scope.
-Moving a field out would leave `state` partially initialized, which Rust
-forbids. In Go, `state.C` is just a value copy — always safe.
 
 ---
 

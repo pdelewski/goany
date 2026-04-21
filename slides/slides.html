@@ -176,7 +176,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
+;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="transpiling-go-to-rust-and-others">Transpiling Go To Rust and Others</h1>
 <h3 id="goany-go-to-multilanguage-transpiler">GoAny: Go-to-Multilanguage Transpiler</h3>
 <p><strong>Przemyslaw Delewski</strong><br />
@@ -350,7 +350,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
+;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="about-me">About Me</h1>
 <ul>
 <li><strong>Founding engineer at Quesma</strong> — working on Reinforcement Learning datasets</li>
@@ -533,7 +533,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
+;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="disclaimer">Disclaimer</h1>
 <p>This is the first time I'm talking about GoAny publicly.</p>
 <p>The flow might not be perfect.</p>
@@ -706,7 +706,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
+;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="agenda">Agenda</h1>
 <ol>
 <li><strong>The Problem</strong> — why transpile at all?</li>
@@ -720,7 +720,7 @@ section::after {
 <li><strong>Demo</strong></li>
 </ol>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="5" data-paginate="true" data-theme="default" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="5" data-paginate="true" data-class="title" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -804,7 +804,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-" lang="en-US" data-marpit-pagination="5" style="--paginate:true;--theme:default;--style:section {
+" lang="en-US" class="title" data-marpit-pagination="5" style="--paginate:true;--class:title;--theme:default;--style:section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -888,16 +888,8 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="the-problem">The Problem</h1>
-<p><strong>The same thing implemented multiple times in different languages.</strong></p>
-<p>Every organization eventually faces this:</p>
-<ul>
-<li>Shared libraries needed across backend services in different languages</li>
-<li>Algorithmic code duplicated for each platform</li>
-<li>Bugs fixed in one language, forgotten in another</li>
-</ul>
-<p><strong>Ideal:</strong> write once, transpile deterministically to all targets.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="background">Background</h1>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="6" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -1067,7 +1059,186 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="the-problem">The Problem</h1>
+<p><strong>The same thing implemented multiple times in different languages.</strong></p>
+<p>Every organization eventually faces this:</p>
+<ul>
+<li>Shared libraries needed across backend services in different languages</li>
+<li>Algorithmic code duplicated for each platform</li>
+<li>Bugs fixed in one language, forgotten in another</li>
+</ul>
+<p><strong>Ideal:</strong> write once, transpile deterministically to all targets.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="7" data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="7" style="--paginate:true;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="existing-solutions">Existing Solutions</h1>
 <table>
 <thead>
@@ -1098,617 +1269,178 @@ section::after {
 <p>All independent-language solutions share one problem:<br />
 <strong>you must design and learn a new language.</strong></p>
 </section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="8" data-paginate="true" data-class="title" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" class="title" data-marpit-pagination="8" style="--paginate:true;--class:title;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="goanys-approach">GoAny's Approach</h1>
+</section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section data-paginate="true" data-theme="default" data-style="section {
-  font-size: 28px;
-  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
-  color: #e0e6ed;
-}
-h1 {
-  color: #7ec8e3;
-}
-h2 {
-  color: #58a6c7;
-}
-h3 {
-  color: #a8c7d8;
-}
-strong {
-  color: #4dd0e1;
-}
-code {
-  font-size: 22px;
-  background-color: rgba(255,255,255,0.08);
-  color: #80cbc4;
-}
-pre {
-  font-size: 20px;
-  background-color: rgba(0,0,0,0.35) !important;
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 8px;
-}
-pre code {
-  background-color: transparent;
-  color: #e0e6ed;
-}
-table {
-  font-size: 22px;
-}
-table * {
-  color: #e0e6ed !important;
-  background: transparent !important;
-  border-color: rgba(126,200,227,0.25) !important;
-}
-table th {
-  color: #7ec8e3 !important;
-  background-color: rgba(126,200,227,0.15) !important;
-}
-table tr:nth-child(even) td {
-  background-color: rgba(126,200,227,0.06) !important;
-}
-blockquote {
-  color: #4dd0e1;
-  border-left-color: #4dd0e1;
-}
-a {
-  color: #7ec8e3;
-}
-li {
-  color: #e0e6ed;
-}
-section.title {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-section.title h1 {
-  font-size: 52px;
-  color: #7ec8e3;
-}
-section.title h3 {
-  color: #a8c7d8;
-}
-img {
-  border-radius: 8px;
-}
-section::after {
-  color: rgba(126,200,227,0.4);
-  font-size: 18px;
-}
-.columns {
-  display: flex;
-  gap: 30px;
-}
-.columns &gt; div {
-  flex: 1;
-}
-" lang="en-US" data-marpit-pagination="7" style="--paginate:true;--theme:default;--style:section {
-  font-size: 28px;
-  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
-  color: #e0e6ed;
-}
-h1 {
-  color: #7ec8e3;
-}
-h2 {
-  color: #58a6c7;
-}
-h3 {
-  color: #a8c7d8;
-}
-strong {
-  color: #4dd0e1;
-}
-code {
-  font-size: 22px;
-  background-color: rgba(255,255,255,0.08);
-  color: #80cbc4;
-}
-pre {
-  font-size: 20px;
-  background-color: rgba(0,0,0,0.35) !important;
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 8px;
-}
-pre code {
-  background-color: transparent;
-  color: #e0e6ed;
-}
-table {
-  font-size: 22px;
-}
-table * {
-  color: #e0e6ed !important;
-  background: transparent !important;
-  border-color: rgba(126,200,227,0.25) !important;
-}
-table th {
-  color: #7ec8e3 !important;
-  background-color: rgba(126,200,227,0.15) !important;
-}
-table tr:nth-child(even) td {
-  background-color: rgba(126,200,227,0.06) !important;
-}
-blockquote {
-  color: #4dd0e1;
-  border-left-color: #4dd0e1;
-}
-a {
-  color: #7ec8e3;
-}
-li {
-  color: #e0e6ed;
-}
-section.title {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-section.title h1 {
-  font-size: 52px;
-  color: #7ec8e3;
-}
-section.title h3 {
-  color: #a8c7d8;
-}
-img {
-  border-radius: 8px;
-}
-section::after {
-  color: rgba(126,200,227,0.4);
-  font-size: 18px;
-}
-.columns {
-  display: flex;
-  gap: 30px;
-}
-.columns &gt; div {
-  flex: 1;
-}
-;--marpit-advanced-background-split:55%;" data-marpit-pagination-total="44" data-size="16:9" data-marpit-advanced-background="background" data-marpit-advanced-background-split="right"><div data-marpit-advanced-background-container="true" data-marpit-advanced-background-direction="horizontal"><figure style="background-image:url(&quot;img/transpiler-overview.png&quot;);background-size:contain;"></figure></div></section></foreignObject><foreignObject width="45%" height="720"><section id="7" data-paginate="true" data-theme="default" data-style="section {
-  font-size: 28px;
-  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
-  color: #e0e6ed;
-}
-h1 {
-  color: #7ec8e3;
-}
-h2 {
-  color: #58a6c7;
-}
-h3 {
-  color: #a8c7d8;
-}
-strong {
-  color: #4dd0e1;
-}
-code {
-  font-size: 22px;
-  background-color: rgba(255,255,255,0.08);
-  color: #80cbc4;
-}
-pre {
-  font-size: 20px;
-  background-color: rgba(0,0,0,0.35) !important;
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 8px;
-}
-pre code {
-  background-color: transparent;
-  color: #e0e6ed;
-}
-table {
-  font-size: 22px;
-}
-table * {
-  color: #e0e6ed !important;
-  background: transparent !important;
-  border-color: rgba(126,200,227,0.25) !important;
-}
-table th {
-  color: #7ec8e3 !important;
-  background-color: rgba(126,200,227,0.15) !important;
-}
-table tr:nth-child(even) td {
-  background-color: rgba(126,200,227,0.06) !important;
-}
-blockquote {
-  color: #4dd0e1;
-  border-left-color: #4dd0e1;
-}
-a {
-  color: #7ec8e3;
-}
-li {
-  color: #e0e6ed;
-}
-section.title {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-section.title h1 {
-  font-size: 52px;
-  color: #7ec8e3;
-}
-section.title h3 {
-  color: #a8c7d8;
-}
-img {
-  border-radius: 8px;
-}
-section::after {
-  color: rgba(126,200,227,0.4);
-  font-size: 18px;
-}
-.columns {
-  display: flex;
-  gap: 30px;
-}
-.columns &gt; div {
-  flex: 1;
-}
-" lang="en-US" data-marpit-pagination="7" style="--paginate:true;--theme:default;--style:section {
-  font-size: 28px;
-  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
-  color: #e0e6ed;
-}
-h1 {
-  color: #7ec8e3;
-}
-h2 {
-  color: #58a6c7;
-}
-h3 {
-  color: #a8c7d8;
-}
-strong {
-  color: #4dd0e1;
-}
-code {
-  font-size: 22px;
-  background-color: rgba(255,255,255,0.08);
-  color: #80cbc4;
-}
-pre {
-  font-size: 20px;
-  background-color: rgba(0,0,0,0.35) !important;
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 8px;
-}
-pre code {
-  background-color: transparent;
-  color: #e0e6ed;
-}
-table {
-  font-size: 22px;
-}
-table * {
-  color: #e0e6ed !important;
-  background: transparent !important;
-  border-color: rgba(126,200,227,0.25) !important;
-}
-table th {
-  color: #7ec8e3 !important;
-  background-color: rgba(126,200,227,0.15) !important;
-}
-table tr:nth-child(even) td {
-  background-color: rgba(126,200,227,0.06) !important;
-}
-blockquote {
-  color: #4dd0e1;
-  border-left-color: #4dd0e1;
-}
-a {
-  color: #7ec8e3;
-}
-li {
-  color: #e0e6ed;
-}
-section.title {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-section.title h1 {
-  font-size: 52px;
-  color: #7ec8e3;
-}
-section.title h3 {
-  color: #a8c7d8;
-}
-img {
-  border-radius: 8px;
-}
-section::after {
-  color: rgba(126,200,227,0.4);
-  font-size: 18px;
-}
-.columns {
-  display: flex;
-  gap: 30px;
-}
-.columns &gt; div {
-  flex: 1;
-}
-;--marpit-advanced-background-split:55%;" data-marpit-pagination-total="44" data-size="16:9" data-marpit-advanced-background="content" data-marpit-advanced-background-split="right">
-<h1 id="a-different-approach">A Different Approach</h1>
-<p>Instead of designing a new language, <strong>GoAny uses Go</strong>.</p>
-
-<p>Go is a real language with a real ecosystem, tooling, and community.</p>
-</section>
-</foreignObject><foreignObject width="1280" height="720" data-marpit-advanced-background="pseudo"><section data-paginate="true" data-theme="default" data-style="section {
-  font-size: 28px;
-  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
-  color: #e0e6ed;
-}
-h1 {
-  color: #7ec8e3;
-}
-h2 {
-  color: #58a6c7;
-}
-h3 {
-  color: #a8c7d8;
-}
-strong {
-  color: #4dd0e1;
-}
-code {
-  font-size: 22px;
-  background-color: rgba(255,255,255,0.08);
-  color: #80cbc4;
-}
-pre {
-  font-size: 20px;
-  background-color: rgba(0,0,0,0.35) !important;
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 8px;
-}
-pre code {
-  background-color: transparent;
-  color: #e0e6ed;
-}
-table {
-  font-size: 22px;
-}
-table * {
-  color: #e0e6ed !important;
-  background: transparent !important;
-  border-color: rgba(126,200,227,0.25) !important;
-}
-table th {
-  color: #7ec8e3 !important;
-  background-color: rgba(126,200,227,0.15) !important;
-}
-table tr:nth-child(even) td {
-  background-color: rgba(126,200,227,0.06) !important;
-}
-blockquote {
-  color: #4dd0e1;
-  border-left-color: #4dd0e1;
-}
-a {
-  color: #7ec8e3;
-}
-li {
-  color: #e0e6ed;
-}
-section.title {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-section.title h1 {
-  font-size: 52px;
-  color: #7ec8e3;
-}
-section.title h3 {
-  color: #a8c7d8;
-}
-img {
-  border-radius: 8px;
-}
-section::after {
-  color: rgba(126,200,227,0.4);
-  font-size: 18px;
-}
-.columns {
-  display: flex;
-  gap: 30px;
-}
-.columns &gt; div {
-  flex: 1;
-}
-" lang="en-US" data-marpit-pagination="7" style="" data-marpit-pagination-total="44" data-size="16:9" data-marpit-advanced-background="pseudo" data-marpit-advanced-background-split="right"></section></foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="8" data-paginate="true" data-theme="default" data-style="section {
-  font-size: 28px;
-  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
-  color: #e0e6ed;
-}
-h1 {
-  color: #7ec8e3;
-}
-h2 {
-  color: #58a6c7;
-}
-h3 {
-  color: #a8c7d8;
-}
-strong {
-  color: #4dd0e1;
-}
-code {
-  font-size: 22px;
-  background-color: rgba(255,255,255,0.08);
-  color: #80cbc4;
-}
-pre {
-  font-size: 20px;
-  background-color: rgba(0,0,0,0.35) !important;
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 8px;
-}
-pre code {
-  background-color: transparent;
-  color: #e0e6ed;
-}
-table {
-  font-size: 22px;
-}
-table * {
-  color: #e0e6ed !important;
-  background: transparent !important;
-  border-color: rgba(126,200,227,0.25) !important;
-}
-table th {
-  color: #7ec8e3 !important;
-  background-color: rgba(126,200,227,0.15) !important;
-}
-table tr:nth-child(even) td {
-  background-color: rgba(126,200,227,0.06) !important;
-}
-blockquote {
-  color: #4dd0e1;
-  border-left-color: #4dd0e1;
-}
-a {
-  color: #7ec8e3;
-}
-li {
-  color: #e0e6ed;
-}
-section.title {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-section.title h1 {
-  font-size: 52px;
-  color: #7ec8e3;
-}
-section.title h3 {
-  color: #a8c7d8;
-}
-img {
-  border-radius: 8px;
-}
-section::after {
-  color: rgba(126,200,227,0.4);
-  font-size: 18px;
-}
-.columns {
-  display: flex;
-  gap: 30px;
-}
-.columns &gt; div {
-  flex: 1;
-}
-" lang="en-US" data-marpit-pagination="8" style="--paginate:true;--theme:default;--style:section {
-  font-size: 28px;
-  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
-  color: #e0e6ed;
-}
-h1 {
-  color: #7ec8e3;
-}
-h2 {
-  color: #58a6c7;
-}
-h3 {
-  color: #a8c7d8;
-}
-strong {
-  color: #4dd0e1;
-}
-code {
-  font-size: 22px;
-  background-color: rgba(255,255,255,0.08);
-  color: #80cbc4;
-}
-pre {
-  font-size: 20px;
-  background-color: rgba(0,0,0,0.35) !important;
-  border: 1px solid rgba(126,200,227,0.2);
-  border-radius: 8px;
-}
-pre code {
-  background-color: transparent;
-  color: #e0e6ed;
-}
-table {
-  font-size: 22px;
-}
-table * {
-  color: #e0e6ed !important;
-  background: transparent !important;
-  border-color: rgba(126,200,227,0.25) !important;
-}
-table th {
-  color: #7ec8e3 !important;
-  background-color: rgba(126,200,227,0.15) !important;
-}
-table tr:nth-child(even) td {
-  background-color: rgba(126,200,227,0.06) !important;
-}
-blockquote {
-  color: #4dd0e1;
-  border-left-color: #4dd0e1;
-}
-a {
-  color: #7ec8e3;
-}
-li {
-  color: #e0e6ed;
-}
-section.title {
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-section.title h1 {
-  font-size: 52px;
-  color: #7ec8e3;
-}
-section.title h3 {
-  color: #a8c7d8;
-}
-img {
-  border-radius: 8px;
-}
-section::after {
-  color: rgba(126,200,227,0.4);
-  font-size: 18px;
-}
-.columns {
-  display: flex;
-  gap: 30px;
-}
-.columns &gt; div {
-  flex: 1;
-}
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="key-challenges">Key Challenges</h1>
-<h3 id="1-what-primitives-to-choose">1. What primitives to choose?</h3>
-<ul>
-<li>Which language constructs form a universal subset?</li>
-<li>What can be mapped to every target language?</li>
-</ul>
-<h3 id="2-how-to-deal-with-different-memory-models">2. How to deal with different memory models?</h3>
-<ul>
-<li>Go: garbage collected, value semantics</li>
-<li>Rust: ownership + borrow checker</li>
-<li>C++: manual memory, RAII</li>
-<li>Java/C#: garbage collected, reference semantics</li>
-<li>JavaScript: garbage collected, prototype-based</li>
-</ul>
-</section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="9" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -1876,47 +1608,265 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="tradeoffs-existing-language-vs-new-language">Tradeoffs: Existing Language vs New Language</h1>
-<table>
-<thead>
-<tr>
-<th></th>
-<th>New Language</th>
-<th>Existing Language (Go)</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Syntax freedom</strong></td>
-<td>Total control</td>
-<td>Constrained by Go spec</td>
-</tr>
-<tr>
-<td><strong>Tooling</strong></td>
-<td>Must build from scratch</td>
-<td>IDE, debugger, linter for free</td>
-</tr>
-<tr>
-<td><strong>Learning curve</strong></td>
-<td>Users must learn it</td>
-<td>Many already know Go</td>
-</tr>
-<tr>
-<td><strong>Ecosystem</strong></td>
-<td>None</td>
-<td>Go standard library, packages</td>
-</tr>
-<tr>
-<td><strong>Feature scope</strong></td>
-<td>Design what you need</td>
-<td>Must choose a subset</td>
-</tr>
-</tbody>
-</table>
-<p>GoAny's approach: <strong>support a subset of Go</strong> that maps cleanly to all backends.</p>
+;--marpit-advanced-background-split:55%;" data-marpit-pagination-total="49" data-size="16:9" data-marpit-advanced-background="background" data-marpit-advanced-background-split="right"><div data-marpit-advanced-background-container="true" data-marpit-advanced-background-direction="horizontal"><figure style="background-image:url(&quot;img/transpiler-overview.png&quot;);background-size:contain;"></figure></div></section></foreignObject><foreignObject width="45%" height="720"><section id="9" data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="9" style="--paginate:true;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;--marpit-advanced-background-split:55%;" data-marpit-pagination-total="49" data-size="16:9" data-marpit-advanced-background="content" data-marpit-advanced-background-split="right">
+<h1 id="a-different-approach">A Different Approach</h1>
+<p>Instead of designing a new language, <strong>GoAny uses Go</strong>.</p>
+
+<p>Go is a real language with a real ecosystem, tooling, and community.</p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="10" data-paginate="true" data-theme="default" data-style="section {
+</foreignObject><foreignObject width="1280" height="720" data-marpit-advanced-background="pseudo"><section data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="9" style="" data-marpit-pagination-total="49" data-size="16:9" data-marpit-advanced-background="pseudo" data-marpit-advanced-background-split="right"></section></foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="10" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -2084,11 +2034,21 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="goany-%E2%8A%82-go">GoAny ⊂ Go</h1>
-<p>Every GoAny program is a <strong>valid Go program</strong> — but not vice versa.</p>
-<p><img src="img/goany-subset.png" alt="center" style="width:750px;" /></p>
-<p>You develop and test in Go, then transpile.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="key-challenges">Key Challenges</h1>
+<h3 id="1-what-primitives-to-choose">1. What primitives to choose?</h3>
+<ul>
+<li>Which language constructs form a universal subset?</li>
+<li>What can be mapped to every target language?</li>
+</ul>
+<h3 id="2-how-to-deal-with-different-memory-models">2. How to deal with different memory models?</h3>
+<ul>
+<li>Go: garbage collected, value semantics</li>
+<li>Rust: ownership + borrow checker</li>
+<li>C++: manual memory, RAII</li>
+<li>Java/C#: garbage collected, reference semantics</li>
+<li>JavaScript: garbage collected, prototype-based</li>
+</ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="11" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -2258,24 +2218,45 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="what-primitives-are-needed">What Primitives Are Needed?</h1>
-<div class="columns">
-<div>
-<ul>
-<li><strong>Types</strong> — <code>int</code>, <code>float64</code>, <code>bool</code>, <code>string</code></li>
-<li><strong>Variables</strong> — declaration, assignment, constants</li>
-<li><strong>Expressions</strong> — arithmetic, logical,<br />
-comparison, bitwise</li>
-<li><strong>Control flow</strong> — <code>if</code>/<code>else</code>, <code>switch</code>, <code>for</code></li>
-<li><strong>Functions</strong> — declaration, call, return</li>
-</ul>
-<p>These exist in <strong>every</strong> language.</p>
-</div>
-<div>
-<p><img src="img/go-to-cpu-mapping.png" alt="" style="width:500px;" /></p>
-</div>
-</div>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="tradeoffs-existing-language-vs-new-language">Tradeoffs: Existing Language vs New Language</h1>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>New Language</th>
+<th>Existing Language (Go)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Syntax freedom</strong></td>
+<td>Total control</td>
+<td>Constrained by Go spec</td>
+</tr>
+<tr>
+<td><strong>Tooling</strong></td>
+<td>Must build from scratch</td>
+<td>IDE, debugger, linter for free</td>
+</tr>
+<tr>
+<td><strong>Learning curve</strong></td>
+<td>Users must learn it</td>
+<td>Many already know Go</td>
+</tr>
+<tr>
+<td><strong>Ecosystem</strong></td>
+<td>None</td>
+<td>Go standard library, packages</td>
+</tr>
+<tr>
+<td><strong>Feature scope</strong></td>
+<td>Design what you need</td>
+<td>Must choose a subset</td>
+</tr>
+</tbody>
+</table>
+<p>GoAny's approach: <strong>support a subset of Go</strong> that maps cleanly to all backends.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="12" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -2445,47 +2426,13 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="the-key-decision-no-explicit-pointers-and-references">The Key Decision: No explicit Pointers and References</h1>
-<p><strong>GoAny's initial subset does not support pointers.</strong></p>
-<p>Only arrays (slices) as the universal data container:</p>
-<table>
-<thead>
-<tr>
-<th>Language</th>
-<th>Array Type</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Go</td>
-<td><code>[]T</code></td>
-</tr>
-<tr>
-<td>C++</td>
-<td><code>std::vector&lt;T&gt;</code></td>
-</tr>
-<tr>
-<td>Rust</td>
-<td><code>Vec&lt;T&gt;</code></td>
-</tr>
-<tr>
-<td>Java</td>
-<td><code>ArrayList&lt;T&gt;</code></td>
-</tr>
-<tr>
-<td>C#</td>
-<td><code>List&lt;T&gt;</code></td>
-</tr>
-<tr>
-<td>JavaScript</td>
-<td><code>Array</code></td>
-</tr>
-</tbody>
-</table>
-<p>Arrays are the one primitive every language supports natively.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="goany-%E2%8A%82-go">GoAny ⊂ Go</h1>
+<p>Every GoAny program is a <strong>valid Go program</strong> — but not vice versa.</p>
+<p><img src="img/goany-subset.png" alt="center" style="width:750px;" /></p>
+<p>You develop and test in Go, then transpile.</p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="13" data-paginate="true" data-theme="default" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="13" data-paginate="true" data-class="title" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -2569,7 +2516,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-" lang="en-US" data-marpit-pagination="13" style="--paginate:true;--theme:default;--style:section {
+" lang="en-US" class="title" data-marpit-pagination="13" style="--paginate:true;--class:title;--theme:default;--style:section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -2653,13 +2600,8 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="demo-what-you-can-build-with-the-core-subset">Demo: What You Can Build with the Core Subset</h1>
-<h3 id="mos-6502-cpu-emulator-examplesmos6502">MOS 6502 CPU Emulator (<code>examples/mos6502</code>)</h3>
-<ul>
-<li>Full instruction set emulation with 64KB memory — <a href="https://pdelewski.github.io/goany/docs/demos/c64.html">C64 Demo</a></li>
-<li><code>./goany -source=../examples/mos6502/cmd/c64 -output=./build/c64 -backend=rust -link-runtime=../runtime -optimize-moves -optimize-refs</code></li>
-</ul>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="core-primitives">Core Primitives</h1>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="14" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -2829,16 +2771,22 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="runtime-packages-the-native-escape-hatch">Runtime Packages: The Native Escape Hatch</h1>
-<p>Every language ships with a runtime library — native intrinsics that expose APIs to user code.<br />
-GoAny is no different: each backend gets its own native implementation.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="what-primitives-are-needed">What Primitives Are Needed?</h1>
 <div class="columns">
 <div>
-<p><img src="img/runtime-concept.png" alt="" style="width:580px;" /></p>
+<ul>
+<li><strong>Types</strong> — <code>int</code>, <code>float64</code>, <code>bool</code>, <code>string</code></li>
+<li><strong>Variables</strong> — declaration, assignment, constants</li>
+<li><strong>Expressions</strong> — arithmetic, logical,<br />
+comparison, bitwise</li>
+<li><strong>Control flow</strong> — <code>if</code>/<code>else</code>, <code>switch</code>, <code>for</code></li>
+<li><strong>Functions</strong> — declaration, call, return</li>
+</ul>
+<p>These exist in <strong>every</strong> language.</p>
 </div>
 <div>
-<p><img src="img/runtime-packages.png" alt="" style="width:580px;" /></p>
+<p><img src="img/go-to-cpu-mapping.png" alt="" style="width:500px;" /></p>
 </div>
 </div>
 </section>
@@ -3010,45 +2958,45 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="how-runtime-linking-works">How Runtime Linking Works</h1>
-<p>The compiler <strong>auto-detects</strong> <code>runtime/</code> imports and generates per-backend linking:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Your Go code:</span>
-<span class="hljs-keyword">import</span> <span class="hljs-string">&quot;runtime/fs&quot;</span>
-content, err := fs.ReadFile(<span class="hljs-string">&quot;data.txt&quot;</span>)
-</code></pre>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="the-key-decision-no-explicit-pointers-and-references">The Key Decision: No explicit Pointers and References</h1>
+<p><strong>GoAny's initial subset does not support pointers.</strong></p>
+<p>Only arrays (slices) as the universal data container:</p>
 <table>
 <thead>
 <tr>
-<th>Backend</th>
-<th>What Gets Generated</th>
+<th>Language</th>
+<th>Array Type</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>Go</td>
-<td><code>go.mod</code> replace directive → local runtime package</td>
+<td><code>[]T</code></td>
 </tr>
 <tr>
 <td>C++</td>
-<td>Makefile with <code>-I/runtime</code>, <code>#include &lt;fs/fs_runtime.hpp&gt;</code></td>
+<td><code>std::vector&lt;T&gt;</code></td>
 </tr>
 <tr>
 <td>Rust</td>
-<td><code>mod fs_runtime</code> with native Rust I/O</td>
-</tr>
-<tr>
-<td>C#</td>
-<td><code>fs_runtime.cs</code> included in project</td>
+<td><code>Vec&lt;T&gt;</code></td>
 </tr>
 <tr>
 <td>Java</td>
-<td><code>FsRuntime.java</code> class</td>
+<td><code>ArrayList&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td>C#</td>
+<td><code>List&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td>JavaScript</td>
+<td><code>Array</code></td>
 </tr>
 </tbody>
 </table>
-<p><strong>SIMD math example</strong>: <code>runtime/math</code> delegates to C SIMD intrinsics —<br />
-portable Go call, native AVX/NEON execution.</p>
+<p>Arrays are the one primitive every language supports natively.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="16" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -3218,14 +3166,12 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="demo-runtime-in-action">Demo: Runtime in Action</h1>
-<h3 id="gui-demo-examplesgui-demo">GUI Demo (<code>examples/gui-demo</code>)</h3>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="demo-what-you-can-build-with-the-core-subset">Demo: What You Can Build with the Core Subset</h1>
+<h3 id="mos-6502-cpu-emulator-examplesmos6502">MOS 6502 CPU Emulator (<code>examples/mos6502</code>)</h3>
 <ul>
-<li>Interactive widgets: buttons, checkboxes, sliders, menus, tabs — <a href="https://pdelewski.github.io/goany/docs/demos/gui.html">GUI Demo</a></li>
-<li><code>./goany -source=../examples/gui-demo -output=./build/gui-demo -backend=rust -link-runtime=../runtime -optimize-moves -optimize-refs</code></li>
-<li>Imports <code>runtime/graphics</code> — native window rendering per backend</li>
-<li>Same Go code → C++ (TIGR), Rust (TIGR), JS (Canvas), ...</li>
+<li>Full instruction set emulation with 64KB memory — <a href="https://pdelewski.github.io/goany/docs/demos/c64.html">C64 Demo</a></li>
+<li><code>./goany -source=../examples/mos6502/cmd/c64 -output=./build/c64 -backend=rust -link-runtime=../runtime -optimize-moves -optimize-refs</code></li>
 </ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="17" data-paginate="true" data-theme="default" data-style="section {
@@ -3396,11 +3342,18 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="evolution-growing-the-circle">Evolution: Growing the Circle</h1>
-<p><img src="img/concentric-circles.png" alt="center" style="width:720px;" /></p>
-<p>Each new construct is built on top of the core via <strong>compiler passes</strong><br />
-that lower it to constructs already supported.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="runtime-packages-the-native-escape-hatch">Runtime Packages: The Native Escape Hatch</h1>
+<p>Every language ships with a runtime library — native intrinsics that expose APIs to user code.<br />
+GoAny is no different: each backend gets its own native implementation.</p>
+<div class="columns">
+<div>
+<p><img src="img/runtime-concept.png" alt="" style="width:580px;" /></p>
+</div>
+<div>
+<p><img src="img/runtime-packages.png" alt="" style="width:580px;" /></p>
+</div>
+</div>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="18" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -3570,13 +3523,45 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="goany-architecture">GoAny Architecture</h1>
-<p>All passes operate on <strong>Go AST/IR</strong> — frontend passes are shared, backend<br />
-passes are language-specific.</p>
-<p><img src="img/frontend-backend-pipeline.png" alt="center" style="width:820px;" /></p>
-<p><strong>Frontend</strong>: lowers Go constructs (interfaces, pointers, methods) into simpler IR.<br />
-<strong>Backend</strong>: emits target code + IR optimization passes (C++/Rust only).</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="how-runtime-linking-works">How Runtime Linking Works</h1>
+<p>The compiler <strong>auto-detects</strong> <code>runtime/</code> imports and generates per-backend linking:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Your Go code:</span>
+<span class="hljs-keyword">import</span> <span class="hljs-string">&quot;runtime/fs&quot;</span>
+content, err := fs.ReadFile(<span class="hljs-string">&quot;data.txt&quot;</span>)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>What Gets Generated</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Go</td>
+<td><code>go.mod</code> replace directive → local runtime package</td>
+</tr>
+<tr>
+<td>C++</td>
+<td>Makefile with <code>-I/runtime</code>, <code>#include &lt;fs/fs_runtime.hpp&gt;</code></td>
+</tr>
+<tr>
+<td>Rust</td>
+<td><code>mod fs_runtime</code> with native Rust I/O</td>
+</tr>
+<tr>
+<td>C#</td>
+<td><code>fs_runtime.cs</code> included in project</td>
+</tr>
+<tr>
+<td>Java</td>
+<td><code>FsRuntime.java</code> class</td>
+</tr>
+</tbody>
+</table>
+<p><strong>SIMD math example</strong>: <code>runtime/math</code> delegates to C SIMD intrinsics —<br />
+portable Go call, native AVX/NEON execution.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="19" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -3746,52 +3731,17 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="langsemalowering-12-transforms">LangSemaLowering: 12 Transforms</h1>
-<p>Rewrites Go patterns that lack direct equivalents in target backends:</p>
-<table>
-<thead>
-<tr>
-<th>#</th>
-<th>Transform</th>
-<th>Example</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1</td>
-<td>Named Returns</td>
-<td><code>func f() (x int) { return }</code> → explicit return</td>
-</tr>
-<tr>
-<td>2</td>
-<td>Iota Expansion</td>
-<td><code>A = iota</code> → <code>A = 0</code>, <code>B = 1</code>, ...</td>
-</tr>
-<tr>
-<td>3</td>
-<td>Variadics</td>
-<td><code>f(args ...int)</code> → <code>f(args []int)</code></td>
-</tr>
-<tr>
-<td>4</td>
-<td>Make Capacity</td>
-<td><code>make([]T, n, cap)</code> → <code>make([]T, n)</code></td>
-</tr>
-<tr>
-<td>5</td>
-<td>Integer Range</td>
-<td><code>for i := range 10</code> → classic for loop</td>
-</tr>
-<tr>
-<td>6</td>
-<td>Type Switch</td>
-<td><code>switch v := x.(type)</code> → if/else chain</td>
-</tr>
-</tbody>
-</table>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="demo-runtime-in-action">Demo: Runtime in Action</h1>
+<h3 id="gui-demo-examplesgui-demo">GUI Demo (<code>examples/gui-demo</code>)</h3>
+<ul>
+<li>Interactive widgets: buttons, checkboxes, sliders, menus, tabs — <a href="https://pdelewski.github.io/goany/docs/demos/gui.html">GUI Demo</a></li>
+<li><code>./goany -source=../examples/gui-demo -output=./build/gui-demo -backend=rust -link-runtime=../runtime -optimize-moves -optimize-refs</code></li>
+<li>Imports <code>runtime/graphics</code> — native window rendering per backend</li>
+<li>Same Go code → C++ (TIGR), Rust (TIGR), JS (Canvas), ...</li>
+</ul>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="20" data-paginate="true" data-theme="default" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="20" data-paginate="true" data-class="title" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -3875,7 +3825,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-" lang="en-US" data-marpit-pagination="20" style="--paginate:true;--theme:default;--style:section {
+" lang="en-US" class="title" data-marpit-pagination="20" style="--paginate:true;--class:title;--theme:default;--style:section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -3959,51 +3909,8 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="langsemalowering-continued">LangSemaLowering (continued)</h1>
-<table>
-<thead>
-<tr>
-<th>#</th>
-<th>Transform</th>
-<th>Condition</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>7</td>
-<td>Tagless Switch</td>
-<td><code>switch { case x&gt;0: }</code> → if/else</td>
-</tr>
-<tr>
-<td>8</td>
-<td>String Switch</td>
-<td><code>switch s { case &quot;a&quot;: }</code> → if/else with <code>==</code></td>
-</tr>
-<tr>
-<td>9</td>
-<td>Defer</td>
-<td><code>defer f()</code> → inline before returns (LIFO)</td>
-</tr>
-<tr>
-<td>10</td>
-<td>Multi-Assign</td>
-<td>C++ only: <code>a, b := 1, 2</code> → split</td>
-</tr>
-<tr>
-<td>11</td>
-<td>Shadowed Vars</td>
-<td>C# only: rename <code>x</code> → <code>x_2</code></td>
-</tr>
-<tr>
-<td>12</td>
-<td>Field Conflicts</td>
-<td>C++ only: <code>struct { Baz Baz }</code> → <code>BazVal Baz</code></td>
-</tr>
-</tbody>
-</table>
-<p>Each transform lowers an unsupported pattern into constructs<br />
-that <strong>all backends</strong> can handle.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="compiler-architecture">Compiler Architecture</h1>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="21" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -4173,18 +4080,11 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="methodreceiverlowering">MethodReceiverLowering</h1>
-<p>Transforms methods into free functions:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Before:</span>
-<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(f File)</span></span> Write(data []<span class="hljs-type">byte</span>) <span class="hljs-type">int</span> { ... }
-
-<span class="hljs-comment">// After:</span>
-<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">File_Write</span><span class="hljs-params">(f File, data []<span class="hljs-type">byte</span>)</span></span> <span class="hljs-type">int</span> { ... }
-</code></pre>
-<p><strong>Why?</strong> Not all backends support Go-style method receivers. Free functions<br />
-are universally supported.</p>
-<p>Call sites are rewritten: <code>f.Write(data)</code> → <code>File_Write(f, data)</code></p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="evolution-growing-the-circle">Evolution: Growing the Circle</h1>
+<p><img src="img/concentric-circles.png" alt="center" style="width:720px;" /></p>
+<p>Each new construct is built on top of the core via <strong>compiler passes</strong><br />
+that lower it to constructs already supported.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="22" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -4354,23 +4254,13 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="interfacelowering">InterfaceLowering</h1>
-<p>Transforms interfaces into structs with function pointer fields:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Before:</span>
-<span class="hljs-keyword">type</span> Writer <span class="hljs-keyword">interface</span> {
-    Write(data []<span class="hljs-type">byte</span>) <span class="hljs-type">int</span>
-}
-
-<span class="hljs-comment">// After:</span>
-<span class="hljs-keyword">type</span> Writer <span class="hljs-keyword">struct</span> {
-    _data     <span class="hljs-keyword">interface</span>{}                    <span class="hljs-comment">// type-erased value</span>
-    _hasValue <span class="hljs-type">bool</span>                           <span class="hljs-comment">// nil check flag</span>
-    _Write    <span class="hljs-function"><span class="hljs-keyword">func</span><span class="hljs-params">(<span class="hljs-keyword">interface</span>{}, []<span class="hljs-type">byte</span>)</span></span> <span class="hljs-type">int</span>  <span class="hljs-comment">// method dispatch</span>
-}
-</code></pre>
-<p>Method calls become: <code>w.Write(buf)</code> → <code>w._Write(w._data, buf)</code></p>
-<p>Wrapper lambdas bridge type-erased <code>_data</code> to concrete <code>Type_Method</code> functions.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="goany-architecture">GoAny Architecture</h1>
+<p>All passes operate on <strong>Go AST/IR</strong> — frontend passes are shared, backend<br />
+passes are language-specific.</p>
+<p><img src="img/frontend-backend-pipeline.png" alt="center" style="width:820px;" /></p>
+<p><strong>Frontend</strong>: lowers Go constructs (interfaces, pointers, methods) into simpler IR.<br />
+<strong>Backend</strong>: emits target code + IR optimization passes (C++/Rust only).</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="23" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -4540,11 +4430,50 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="pointerlowering">PointerLowering</h1>
-<p>Transforms pointers into pool-based indexing:</p>
-<p><img src="img/pointer-lowering.png" alt="center" style="width:900px;" /></p>
-<p>Pools are passed as extra function arguments and returned as extra return values.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="langsemalowering-12-transforms">LangSemaLowering: 12 Transforms</h1>
+<p>Rewrites Go patterns that lack direct equivalents in target backends:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Transform</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Named Returns</td>
+<td><code>func f() (x int) { return }</code> → explicit return</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Iota Expansion</td>
+<td><code>A = iota</code> → <code>A = 0</code>, <code>B = 1</code>, ...</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Variadics</td>
+<td><code>f(args ...int)</code> → <code>f(args []int)</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Make Capacity</td>
+<td><code>make([]T, n, cap)</code> → <code>make([]T, n)</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Integer Range</td>
+<td><code>for i := range 10</code> → classic for loop</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Type Switch</td>
+<td><code>switch v := x.(type)</code> → if/else chain</td>
+</tr>
+</tbody>
+</table>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="24" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -4714,9 +4643,51 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="pointer-lowering-function-signatures">Pointer Lowering: Function Signatures</h1>
-<p><img src="img/pointer-lowering-signatures.png" alt="center" style="width:950px;" /></p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="langsemalowering-continued">LangSemaLowering (continued)</h1>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Transform</th>
+<th>Condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>7</td>
+<td>Tagless Switch</td>
+<td><code>switch { case x&gt;0: }</code> → if/else</td>
+</tr>
+<tr>
+<td>8</td>
+<td>String Switch</td>
+<td><code>switch s { case &quot;a&quot;: }</code> → if/else with <code>==</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td>Defer</td>
+<td><code>defer f()</code> → inline before returns (LIFO)</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Multi-Assign</td>
+<td>C++ only: <code>a, b := 1, 2</code> → split</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Shadowed Vars</td>
+<td>C# only: rename <code>x</code> → <code>x_2</code></td>
+</tr>
+<tr>
+<td>12</td>
+<td>Field Conflicts</td>
+<td>C++ only: <code>struct { Baz Baz }</code> → <code>BazVal Baz</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each transform lowers an unsupported pattern into constructs<br />
+that <strong>all backends</strong> can handle.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="25" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -4886,25 +4857,18 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="backend-challenges-c-and-java">Backend Challenges: C# and Java</h1>
-<h3 id="c">C#</h3>
-<ul>
-<li><strong>Variable shadowing</strong> forbidden (CS0136)
-<ul>
-<li><code>x := 1; if true { x := 2 }</code> — illegal in C#</li>
-<li>LangSemaLowering renames: <code>x_2</code></li>
-</ul>
-</li>
-<li><strong><code>in</code> keyword</strong> for read-only reference parameters</li>
-</ul>
-<h3 id="java">Java</h3>
-<ul>
-<li><strong>Only signed integer types</strong> — no <code>uint8</code>, <code>uint16</code>, etc.</li>
-<li><strong>Lambda variable binding</strong> — captured variables must be effectively final</li>
-<li><strong>Lambda mutation</strong> — can't mutate captured variables directly</li>
-<li><strong>Functional interfaces</strong> — <code>BiFunction.apply()</code> for calling function fields</li>
-</ul>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="methodreceiverlowering">MethodReceiverLowering</h1>
+<p>Transforms methods into free functions:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Before:</span>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(f File)</span></span> Write(data []<span class="hljs-type">byte</span>) <span class="hljs-type">int</span> { ... }
+
+<span class="hljs-comment">// After:</span>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">File_Write</span><span class="hljs-params">(f File, data []<span class="hljs-type">byte</span>)</span></span> <span class="hljs-type">int</span> { ... }
+</code></pre>
+<p><strong>Why?</strong> Not all backends support Go-style method receivers. Free functions<br />
+are universally supported.</p>
+<p>Call sites are rewritten: <code>f.Write(data)</code> → <code>File_Write(f, data)</code></p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="26" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -5074,28 +5038,23 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="backend-challenges-c-and-javascript">Backend Challenges: C++ and JavaScript</h1>
-<h3 id="c-1">C++</h3>
-<ul>
-<li><strong>No string switch</strong> — <code>switch(std::string)</code> is illegal
-<ul>
-<li>Lowered to if/else with <code>==</code> comparisons</li>
-</ul>
-</li>
-<li><strong>Field name conflicts</strong> — <code>struct { Baz Baz; }</code> triggers <code>-Wchanges-meaning</code>
-<ul>
-<li>Renamed to <code>BazVal</code></li>
-</ul>
-</li>
-<li><strong>Operator precedence</strong> — <code>prot &amp; VMProtRead != 0</code> needs explicit parens</li>
-<li><strong>Multi-assignment</strong> — <code>a, b := 1, 2</code> has no direct equivalent</li>
-</ul>
-<h3 id="javascript">JavaScript</h3>
-<ul>
-<li><strong>No blank identifier</strong> — <code>_</code> in destructuring becomes empty slot: <code>[, x]</code></li>
-<li><strong>No integer types</strong> — everything is <code>Number</code> (float64)</li>
-</ul>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="interfacelowering">InterfaceLowering</h1>
+<p>Transforms interfaces into structs with function pointer fields:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Before:</span>
+<span class="hljs-keyword">type</span> Writer <span class="hljs-keyword">interface</span> {
+    Write(data []<span class="hljs-type">byte</span>) <span class="hljs-type">int</span>
+}
+
+<span class="hljs-comment">// After:</span>
+<span class="hljs-keyword">type</span> Writer <span class="hljs-keyword">struct</span> {
+    _data     <span class="hljs-keyword">interface</span>{}                    <span class="hljs-comment">// type-erased value</span>
+    _hasValue <span class="hljs-type">bool</span>                           <span class="hljs-comment">// nil check flag</span>
+    _Write    <span class="hljs-function"><span class="hljs-keyword">func</span><span class="hljs-params">(<span class="hljs-keyword">interface</span>{}, []<span class="hljs-type">byte</span>)</span></span> <span class="hljs-type">int</span>  <span class="hljs-comment">// method dispatch</span>
+}
+</code></pre>
+<p>Method calls become: <code>w.Write(buf)</code> → <code>w._Write(w._data, buf)</code></p>
+<p>Wrapper lambdas bridge type-erased <code>_data</code> to concrete <code>Type_Method</code> functions.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="27" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -5265,43 +5224,11 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="optimizations-beyond-correctness">Optimizations: Beyond Correctness</h1>
-<p>Transpilation produces <strong>correct</strong> code — but correct is not enough.<br />
-The same Go source hits different performance walls on each target:</p>
-<table>
-<thead>
-<tr>
-<th>Target</th>
-<th>Problem</th>
-<th>Solution</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>C++</strong></td>
-<td>Value-copy semantics → quadratic deep copies</td>
-<td><code>std::move()</code> insertion (CloneMovePass)</td>
-</tr>
-<tr>
-<td><strong>Rust</strong></td>
-<td>Borrow checker rejects shared access</td>
-<td><code>.clone()</code> elimination + temp extraction</td>
-</tr>
-<tr>
-<td><strong>All</strong></td>
-<td>Cache misses from AoS layout</td>
-<td>Automatic AoS → SoA (MemoryLayoutPass)</td>
-</tr>
-<tr>
-<td><strong>C++/Rust</strong></td>
-<td>Read-only params copied unnecessarily</td>
-<td><code>const T&amp;</code> / <code>&amp;T</code> references (RefOptPass)</td>
-</tr>
-</tbody>
-</table>
-<p>GoAny applies <strong>IR-level passes</strong> that optimize across all backends —<br />
-the same pass pipeline, different results per target.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="pointerlowering">PointerLowering</h1>
+<p>Transforms pointers into pool-based indexing:</p>
+<p><img src="img/pointer-lowering.png" alt="center" style="width:900px;" /></p>
+<p>Pools are passed as extra function arguments and returned as extra return values.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="28" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -5471,23 +5398,11 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="translation-to-rust-the-conservative-approach">Translation to Rust: The Conservative Approach</h1>
-<p>Without optimizations, the Rust emitter adds <code>.clone()</code> everywhere:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Go source:</span>
-c = Step(c)
-c = SetZN(c, c.A)
-</code></pre>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Rust output (conservative):</span>
-c = <span class="hljs-title function_ invoke__">Step</span>(c.<span class="hljs-title function_ invoke__">clone</span>());
-c = <span class="hljs-title function_ invoke__">SetZN</span>(c.<span class="hljs-title function_ invoke__">clone</span>(), c.A);
-</code></pre>
-<p><strong>Why?</strong> Go passes structs by value (implicit copy). Rust moves by default.<br />
-Adding <code>.clone()</code> preserves Go's value semantics safely.</p>
-<p><strong>Problem:</strong> For a CPU struct with 64KB memory array, each <code>.clone()</code> is a<br />
-deep copy. A single frame generates <strong>~300MB of unnecessary memcpy</strong>.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="pointer-lowering-function-signatures">Pointer Lowering: Function Signatures</h1>
+<p><img src="img/pointer-lowering-signatures.png" alt="center" style="width:950px;" /></p>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="29" data-paginate="true" data-theme="default" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="29" data-paginate="true" data-class="title" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -5571,7 +5486,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-" lang="en-US" data-marpit-pagination="29" style="--paginate:true;--theme:default;--style:section {
+" lang="en-US" class="title" data-marpit-pagination="29" style="--paginate:true;--class:title;--theme:default;--style:section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -5655,20 +5570,8 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="the-borrow-checker-challenge">The Borrow Checker Challenge</h1>
-<p>Rust's ownership rules create unique challenges:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// 1. Can&#x27;t move c twice:</span>
-c = <span class="hljs-title function_ invoke__">SetZN</span>(c, c.A);  <span class="hljs-comment">// ERROR: c moved on first arg, used on second</span>
-
-<span class="hljs-comment">// 2. Can&#x27;t move out of closures:</span>
-graphics::<span class="hljs-title function_ invoke__">RunLoop</span>(w, |w| {
-    c = <span class="hljs-title function_ invoke__">Step</span>(c);     <span class="hljs-comment">// ERROR: can&#x27;t move out of FnMut closure</span>
-});
-
-<span class="hljs-comment">// 3. Can&#x27;t move out of struct fields:</span>
-state.C = <span class="hljs-title function_ invoke__">Run</span>(state.C);  <span class="hljs-comment">// ERROR: can&#x27;t move out of borrowed field</span>
-</code></pre>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="backend-challenges">Backend Challenges</h1>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="30" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -5838,14 +5741,25 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="the-borrow-checker-challenge-cont">The Borrow Checker Challenge (cont.)</h1>
-<p><strong>Case 2 — Closures:</strong> <code>FnMut</code> closures borrow their environment mutably.<br />
-Moving <code>c</code> out would leave the closure's captured state invalid for the next<br />
-invocation. In Go, the closure simply captures a copy — no ownership issue.</p>
-<p><strong>Case 3 — Struct fields:</strong> <code>state</code> is borrowed by the enclosing scope.<br />
-Moving a field out would leave <code>state</code> partially initialized, which Rust<br />
-forbids. In Go, <code>state.C</code> is just a value copy — always safe.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="backend-challenges-c-and-java">Backend Challenges: C# and Java</h1>
+<h3 id="c">C#</h3>
+<ul>
+<li><strong>Variable shadowing</strong> forbidden (CS0136)
+<ul>
+<li><code>x := 1; if true { x := 2 }</code> — illegal in C#</li>
+<li>LangSemaLowering renames: <code>x_2</code></li>
+</ul>
+</li>
+<li><strong><code>in</code> keyword</strong> for read-only reference parameters</li>
+</ul>
+<h3 id="java">Java</h3>
+<ul>
+<li><strong>Only signed integer types</strong> — no <code>uint8</code>, <code>uint16</code>, etc.</li>
+<li><strong>Lambda variable binding</strong> — captured variables must be effectively final</li>
+<li><strong>Lambda mutation</strong> — can't mutate captured variables directly</li>
+<li><strong>Functional interfaces</strong> — <code>BiFunction.apply()</code> for calling function fields</li>
+</ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="31" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -6015,15 +5929,20 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="three-stage-optimization-pipeline">Three-Stage Optimization Pipeline</h1>
-<p><img src="img/optimization-pipeline.png" alt="center" style="width:1050px;" /></p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="backend-challenges-c-and-rust">Backend Challenges: C++ and Rust</h1>
+<h3 id="c-1">C++</h3>
 <ul>
-<li><strong>Emitter</strong>: Adds <code>.clone()</code> conservatively, sets optimization flags</li>
-<li><strong>CloneMovePass</strong>: Removes clones where ownership transfers, adds <code>std::move()</code></li>
-<li><strong>RefOptPass</strong>: Converts read-only params to references (<code>&amp;T</code>, <code>const T&amp;</code>)</li>
+<li><strong>No string switch</strong> — <code>switch(std::string)</code> is illegal → lowered to if/else</li>
+<li><strong>Field name conflicts</strong> — <code>struct { Baz Baz; }</code> → renamed to <code>BazVal</code></li>
+<li><strong>Multi-assignment</strong> — <code>a, b := 1, 2</code> has no direct equivalent</li>
 </ul>
-<p>All optimizations operate on the <strong>IR tree</strong>, not on emitted text.</p>
+<h3 id="rust">Rust</h3>
+<ul>
+<li><strong>Move semantics by default</strong> — Go copies implicitly; Rust moves, so every reuse needs <code>.clone()</code></li>
+<li><strong>Borrow checker</strong> — <code>c = SetZN(c, c.A)</code> illegal — <code>c</code> moved on first arg, used on second</li>
+<li><strong>No implicit numeric conversions</strong> — every <code>int(x)</code> needs explicit <code>as i32</code> cast</li>
+</ul>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="32" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -6193,25 +6112,15 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="optimize-moves-move-detection"><code>--optimize-moves</code>: Move Detection</h1>
-<p><strong>Pattern:</strong> <code>variable = Function(variable, ...)</code></p>
-<p>When a variable appears on both sides of an assignment, the old value is consumed.<br />
-This is semantically a <strong>move</strong>, not a copy.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
-c = <span class="hljs-title function_ invoke__">Step</span>(c.<span class="hljs-title function_ invoke__">clone</span>());           <span class="hljs-comment">// 64KB deep copy</span>
-
-<span class="hljs-comment">// After (move detected):</span>
-c = <span class="hljs-title function_ invoke__">Step</span>(c);                   <span class="hljs-comment">// zero-cost move</span>
-</code></pre>
-<p><strong>Conditions for safe move:</strong></p>
-<ol>
-<li>Variable appears on LHS of the assignment</li>
-<li>Variable appears only once across all call arguments</li>
-<li>Not inside a closure (<code>funcLitDepth == 0</code>)</li>
-</ol>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="backend-challenges-javascript">Backend Challenges: JavaScript</h1>
+<ul>
+<li><strong>No blank identifier</strong> — <code>_</code> in destructuring becomes empty slot: <code>[, x]</code></li>
+<li><strong>No integer types</strong> — everything is <code>Number</code> (float64)</li>
+<li><strong>No struct types</strong> — structs mapped to plain objects / classes</li>
+</ul>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="33" data-paginate="true" data-theme="default" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="33" data-paginate="true" data-class="title" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -6295,7 +6204,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-" lang="en-US" data-marpit-pagination="33" style="--paginate:true;--theme:default;--style:section {
+" lang="en-US" class="title" data-marpit-pagination="33" style="--paginate:true;--class:title;--theme:default;--style:section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -6379,24 +6288,8 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="optimize-moves-temp-extraction"><code>--optimize-moves</code>: Temp Extraction</h1>
-<p><strong>Pattern:</strong> <code>variable = Function(variable, variable.Field)</code></p>
-<p>When a variable appears multiple times (blocking move), extract field accesses:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
-c = <span class="hljs-title function_ invoke__">SetZN</span>(c.<span class="hljs-title function_ invoke__">clone</span>(), c.A);          <span class="hljs-comment">// clone required: c used twice</span>
-
-<span class="hljs-comment">// After (field extracted to temp):</span>
-<span class="hljs-keyword">let</span> <span class="hljs-variable">__mv0</span>: <span class="hljs-type">u8</span> = c.A;                <span class="hljs-comment">// extract Copy-type field</span>
-c = <span class="hljs-title function_ invoke__">SetZN</span>(c, __mv0);                <span class="hljs-comment">// now c appears once → move!</span>
-</code></pre>
-<p>Also works for <code>std::mem::take</code> on struct fields:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
-state.C = <span class="hljs-title function_ invoke__">Run</span>(state.C.<span class="hljs-title function_ invoke__">clone</span>());     <span class="hljs-comment">// 64KB deep copy</span>
-
-<span class="hljs-comment">// After:</span>
-state.C = <span class="hljs-title function_ invoke__">Run</span>(std::mem::<span class="hljs-title function_ invoke__">take</span>(&amp;<span class="hljs-keyword">mut</span> state.C));  <span class="hljs-comment">// zero-cost swap</span>
-</code></pre>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="optimizations">Optimizations</h1>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="34" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -6566,44 +6459,43 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="optimize-refs-reference-optimization"><code>--optimize-refs</code>: Reference Optimization</h1>
-<p>Analyzes function bodies to find <strong>read-only parameters</strong> — parameters that<br />
-are never mutated, returned, or assigned from.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
-<span class="hljs-keyword">fn</span> <span class="hljs-title function_">CompileImmediate</span>(<span class="hljs-keyword">mut</span> state: BasicState, line: <span class="hljs-type">String</span>) <span class="hljs-punctuation">-&gt;</span> <span class="hljs-type">Vec</span>&lt;<span class="hljs-type">u8</span>&gt; { ... }
-<span class="hljs-keyword">let</span> <span class="hljs-variable">code</span> = <span class="hljs-title function_ invoke__">CompileImmediate</span>(state.<span class="hljs-title function_ invoke__">clone</span>(), line.<span class="hljs-title function_ invoke__">clone</span>());
-
-<span class="hljs-comment">// After:</span>
-<span class="hljs-keyword">fn</span> <span class="hljs-title function_">CompileImmediate</span>(state: &amp;BasicState, line: <span class="hljs-type">String</span>) <span class="hljs-punctuation">-&gt;</span> <span class="hljs-type">Vec</span>&lt;<span class="hljs-type">u8</span>&gt; { ... }
-<span class="hljs-keyword">let</span> <span class="hljs-variable">code</span> = <span class="hljs-title function_ invoke__">CompileImmediate</span>(&amp;state, line.<span class="hljs-title function_ invoke__">clone</span>());
-</code></pre>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="optimizations-beyond-correctness">Optimizations: Beyond Correctness</h1>
+<p>Transpilation produces <strong>correct</strong> code — but correct is not enough.<br />
+The same Go source hits different performance walls on each target:</p>
 <table>
 <thead>
 <tr>
-<th>Language</th>
-<th>Param Transform</th>
-<th>Call-site Transform</th>
+<th>Target</th>
+<th>Problem</th>
+<th>Solution</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Rust</td>
-<td><code>mut name: T</code> → <code>name: &amp;T</code></td>
-<td><code>.clone()</code> → <code>&amp;</code></td>
+<td><strong>C++</strong></td>
+<td>Value-copy semantics → quadratic deep copies</td>
+<td><code>std::move()</code> insertion (CloneMovePass)</td>
 </tr>
 <tr>
-<td>C++</td>
-<td><code>Type name</code> → <code>const Type&amp; name</code></td>
-<td>(unchanged)</td>
+<td><strong>Rust</strong></td>
+<td>Borrow checker rejects shared access</td>
+<td><code>.clone()</code> elimination + temp extraction</td>
 </tr>
 <tr>
-<td>C#</td>
-<td><code>Type name</code> → <code>in Type name</code></td>
-<td><code>x</code> → <code>in x</code></td>
+<td><strong>All</strong></td>
+<td>Cache misses from AoS layout</td>
+<td>Automatic AoS → SoA (MemoryLayoutPass)</td>
+</tr>
+<tr>
+<td><strong>C++/Rust</strong></td>
+<td>Read-only params copied unnecessarily</td>
+<td><code>const T&amp;</code> / <code>&amp;T</code> references (RefOptPass)</td>
 </tr>
 </tbody>
 </table>
+<p>GoAny applies <strong>IR-level passes</strong> that optimize across all backends —<br />
+the same pass pipeline, different results per target.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="35" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -6773,44 +6665,21 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="optimization-impact-clone-reduction">Optimization Impact: Clone Reduction</h1>
-<p>Results on the C64 emulator codebase (MOS 6502 CPU with 64KB memory):</p>
-<table>
-<thead>
-<tr>
-<th>Optimization</th>
-<th>Clones Removed</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Move detection (reassigned variables)</td>
-<td>-192</td>
-</tr>
-<tr>
-<td>Temp extraction (field accesses)</td>
-<td>-44</td>
-</tr>
-<tr>
-<td>Type conversion support</td>
-<td>-17</td>
-</tr>
-<tr>
-<td>Reference optimization (read-only params)</td>
-<td>-162</td>
-</tr>
-<tr>
-<td>Misc (len, slice moves, double-clone)</td>
-<td>-69</td>
-</tr>
-<tr>
-<td><strong>Total</strong></td>
-<td><strong>-484 clones eliminated</strong></td>
-</tr>
-</tbody>
-</table>
-<p>From ~500 <code>.clone()</code> calls down to <strong>~16</strong> (closures only).</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="translation-to-rust-the-conservative-approach">Translation to Rust: The Conservative Approach</h1>
+<p>Without optimizations, the Rust emitter adds <code>.clone()</code> everywhere:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Go source:</span>
+c = Step(c)
+c = SetZN(c, c.A)
+</code></pre>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Rust output (conservative):</span>
+c = <span class="hljs-title function_ invoke__">Step</span>(c.<span class="hljs-title function_ invoke__">clone</span>());
+c = <span class="hljs-title function_ invoke__">SetZN</span>(c.<span class="hljs-title function_ invoke__">clone</span>(), c.A);
+</code></pre>
+<p><strong>Why?</strong> Go passes structs by value (implicit copy). Rust moves by default.<br />
+Adding <code>.clone()</code> preserves Go's value semantics safely.</p>
+<p><strong>Problem:</strong> For a CPU struct with 64KB memory array, each <code>.clone()</code> is a<br />
+deep copy. A single frame generates <strong>~300MB of unnecessary memcpy</strong>.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="36" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -6980,22 +6849,15 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="optimize-mem-layout-automatic-aos-%E2%86%92-soa"><code>--optimize-mem-layout</code>: Automatic AoS → SoA</h1>
-<p><strong>Array of Structs</strong> → <strong>Struct of Arrays</strong> transformation:</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// AoS (original):                    // SoA (transformed):</span>
-<span class="hljs-keyword">type</span> Particle <span class="hljs-keyword">struct</span> {                <span class="hljs-keyword">type</span> _SoA_Particle <span class="hljs-keyword">struct</span> {
-    X, Y   <span class="hljs-type">float64</span>                        X  []<span class="hljs-type">float64</span>
-    VX, VY <span class="hljs-type">float64</span>                        Y  []<span class="hljs-type">float64</span>
-    FX, FY <span class="hljs-type">float64</span>                        VX []<span class="hljs-type">float64</span>
-    Mass   <span class="hljs-type">float64</span>                        VY []<span class="hljs-type">float64</span>
-}                                         FX []<span class="hljs-type">float64</span>
-                                          FY []<span class="hljs-type">float64</span>
-<span class="hljs-keyword">var</span> pool []Particle                       Mass []<span class="hljs-type">float64</span>
-                                      }
-                                      pool := _SoA_Particle{}
-</code></pre>
-<p>Field access <code>pool[i].X</code> → <code>pool.X[i]</code> — sequential memory access.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="three-stage-optimization-pipeline">Three-Stage Optimization Pipeline</h1>
+<p><img src="img/optimization-pipeline.png" alt="center" style="width:1050px;" /></p>
+<ul>
+<li><strong>Emitter</strong>: Adds <code>.clone()</code> conservatively, sets optimization flags</li>
+<li><strong>CloneMovePass</strong>: Removes clones where ownership transfers, adds <code>std::move()</code></li>
+<li><strong>RefOptPass</strong>: Converts read-only params to references (<code>&amp;T</code>, <code>const T&amp;</code>)</li>
+</ul>
+<p>All optimizations operate on the <strong>IR tree</strong>, not on emitted text.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="37" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -7165,10 +7027,23 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="why-soa-matters-the-cache-miss-problem">Why SoA Matters: The Cache Miss Problem</h1>
-<p><img src="img/aos-vs-soa.png" alt="center" style="width:820px;" /></p>
-<p>Cache miss: <strong>~100+ cycles</strong> vs cache hit: <strong>~1 cycle</strong> — SoA gives <strong>8x better cache utilization</strong>.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="optimize-moves-move-detection"><code>--optimize-moves</code>: Move Detection</h1>
+<p><strong>Pattern:</strong> <code>variable = Function(variable, ...)</code></p>
+<p>When a variable appears on both sides of an assignment, the old value is consumed.<br />
+This is semantically a <strong>move</strong>, not a copy.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
+c = <span class="hljs-title function_ invoke__">Step</span>(c.<span class="hljs-title function_ invoke__">clone</span>());           <span class="hljs-comment">// 64KB deep copy</span>
+
+<span class="hljs-comment">// After (move detected):</span>
+c = <span class="hljs-title function_ invoke__">Step</span>(c);                   <span class="hljs-comment">// zero-cost move</span>
+</code></pre>
+<p><strong>Conditions for safe move:</strong></p>
+<ol>
+<li>Variable appears on LHS of the assignment</li>
+<li>Variable appears only once across all call arguments</li>
+<li>Not inside a closure (<code>funcLitDepth == 0</code>)</li>
+</ol>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="38" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -7338,22 +7213,24 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="pointer-lowering-as-the-key-enabler">Pointer Lowering as the Key Enabler</h1>
-<p><strong>Why can't production compilers (GCC, LLVM, MSVC) do AoS→SoA?</strong></p>
-<p>The <strong>aliasing barrier</strong>: pointers can alias any memory location.</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-c"><span class="hljs-type">void</span> <span class="hljs-title function_">update</span><span class="hljs-params">(Particle* p, Particle* particles, <span class="hljs-type">int</span> n)</span> {
-    <span class="hljs-comment">// Does p point into particles[]?</span>
-    <span class="hljs-comment">// The compiler can&#x27;t know → can&#x27;t rearrange memory layout</span>
-}
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="optimize-moves-temp-extraction"><code>--optimize-moves</code>: Temp Extraction</h1>
+<p><strong>Pattern:</strong> <code>variable = Function(variable, variable.Field)</code></p>
+<p>When a variable appears multiple times (blocking move), extract field accesses:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
+c = <span class="hljs-title function_ invoke__">SetZN</span>(c.<span class="hljs-title function_ invoke__">clone</span>(), c.A);          <span class="hljs-comment">// clone required: c used twice</span>
+
+<span class="hljs-comment">// After (field extracted to temp):</span>
+<span class="hljs-keyword">let</span> <span class="hljs-variable">__mv0</span>: <span class="hljs-type">u8</span> = c.A;                <span class="hljs-comment">// extract Copy-type field</span>
+c = <span class="hljs-title function_ invoke__">SetZN</span>(c, __mv0);                <span class="hljs-comment">// now c appears once → move!</span>
 </code></pre>
-<p><strong>GoAny's pointer lowering</strong> eliminates pointers before the memory layout pass:</p>
-<ul>
-<li><code>*T</code> → <code>int</code> index into <code>_pool_T</code></li>
-<li>No aliasing possible — indices are just integers</li>
-<li>The compiler has <strong>full knowledge</strong> of data layout</li>
-</ul>
-<p>This is why GoAny can do what LLVM cannot.</p>
+<p>Also works for <code>std::mem::take</code> on struct fields:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
+state.C = <span class="hljs-title function_ invoke__">Run</span>(state.C.<span class="hljs-title function_ invoke__">clone</span>());     <span class="hljs-comment">// 64KB deep copy</span>
+
+<span class="hljs-comment">// After:</span>
+state.C = <span class="hljs-title function_ invoke__">Run</span>(std::mem::<span class="hljs-title function_ invoke__">take</span>(&amp;<span class="hljs-keyword">mut</span> state.C));  <span class="hljs-comment">// zero-cost swap</span>
+</code></pre>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="39" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -7523,10 +7400,44 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="performance-results-c-particle-simulation">Performance Results: C++ Particle Simulation</h1>
-<p><img src="img/performance-chart.png" alt="center" style="width:900px;" /></p>
-<p>The compiler generates code <strong>as fast as what an expert would write by hand</strong>.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="optimize-refs-reference-optimization"><code>--optimize-refs</code>: Reference Optimization</h1>
+<p>Analyzes function bodies to find <strong>read-only parameters</strong> — parameters that<br />
+are never mutated, returned, or assigned from.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-rust"><span class="hljs-comment">// Before:</span>
+<span class="hljs-keyword">fn</span> <span class="hljs-title function_">CompileImmediate</span>(<span class="hljs-keyword">mut</span> state: BasicState, line: <span class="hljs-type">String</span>) <span class="hljs-punctuation">-&gt;</span> <span class="hljs-type">Vec</span>&lt;<span class="hljs-type">u8</span>&gt; { ... }
+<span class="hljs-keyword">let</span> <span class="hljs-variable">code</span> = <span class="hljs-title function_ invoke__">CompileImmediate</span>(state.<span class="hljs-title function_ invoke__">clone</span>(), line.<span class="hljs-title function_ invoke__">clone</span>());
+
+<span class="hljs-comment">// After:</span>
+<span class="hljs-keyword">fn</span> <span class="hljs-title function_">CompileImmediate</span>(state: &amp;BasicState, line: <span class="hljs-type">String</span>) <span class="hljs-punctuation">-&gt;</span> <span class="hljs-type">Vec</span>&lt;<span class="hljs-type">u8</span>&gt; { ... }
+<span class="hljs-keyword">let</span> <span class="hljs-variable">code</span> = <span class="hljs-title function_ invoke__">CompileImmediate</span>(&amp;state, line.<span class="hljs-title function_ invoke__">clone</span>());
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Language</th>
+<th>Param Transform</th>
+<th>Call-site Transform</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rust</td>
+<td><code>mut name: T</code> → <code>name: &amp;T</code></td>
+<td><code>.clone()</code> → <code>&amp;</code></td>
+</tr>
+<tr>
+<td>C++</td>
+<td><code>Type name</code> → <code>const Type&amp; name</code></td>
+<td>(unchanged)</td>
+</tr>
+<tr>
+<td>C#</td>
+<td><code>Type name</code> → <code>in Type name</code></td>
+<td><code>x</code> → <code>in x</code></td>
+</tr>
+</tbody>
+</table>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="40" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -7696,22 +7607,44 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="additional-soa-optimizations">Additional SoA Optimizations</h1>
-<p><strong>Nested loop hoisting</strong>: outer-loop-invariant SoA reads lifted out</p>
-<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Before:                              // After:</span>
-<span class="hljs-keyword">for</span> i := <span class="hljs-number">0</span>; i &lt; N; i++ {               <span class="hljs-keyword">for</span> i := <span class="hljs-number">0</span>; i &lt; N; i++ {
-  <span class="hljs-keyword">for</span> j := <span class="hljs-number">0</span>; j &lt; N; j++ {               _hoist_X := pool.X[i]
-    dx := pool.X[j] - pool.X[i]          _acc_FX := <span class="hljs-number">0.0</span>
-    <span class="hljs-comment">// pool.X[i] read N times!            for j := 0; j &lt; N; j++ {</span>
-  }                                         dx := pool.X[j] - _hoist_X
-}                                           _acc_FX += ...
-                                          }
-                                          pool.FX[i] += _acc_FX
-                                        }
-</code></pre>
-<p><strong>Pool index slice elimination</strong>: removes <code>[]int</code> indirection layer</p>
-<p><code>particles[i]</code> → <code>i</code> (pool indices are always sequential)</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="optimization-impact-clone-reduction">Optimization Impact: Clone Reduction</h1>
+<p>Results on the C64 emulator codebase (MOS 6502 CPU with 64KB memory):</p>
+<table>
+<thead>
+<tr>
+<th>Optimization</th>
+<th>Clones Removed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Move detection (reassigned variables)</td>
+<td>-192</td>
+</tr>
+<tr>
+<td>Temp extraction (field accesses)</td>
+<td>-44</td>
+</tr>
+<tr>
+<td>Type conversion support</td>
+<td>-17</td>
+</tr>
+<tr>
+<td>Reference optimization (read-only params)</td>
+<td>-162</td>
+</tr>
+<tr>
+<td>Misc (len, slice moves, double-clone)</td>
+<td>-69</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>-484 clones eliminated</strong></td>
+</tr>
+</tbody>
+</table>
+<p>From ~500 <code>.clone()</code> calls down to <strong>~16</strong> (closures only).</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="41" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -7881,22 +7814,22 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="the-macro-vs-micro-optimization-gap">The Macro vs Micro Optimization Gap</h1>
-<blockquote>
-<p><strong>Cache misses cost 100+ cycles. An instruction costs 1.</strong></p>
-</blockquote>
-<p>Production compilers perfect the <strong>micro</strong> level (single-digit % gains):</p>
-<ul>
-<li>Register allocation, instruction scheduling, peephole optimization</li>
-</ul>
-<p>Meanwhile, they <strong>ignore the macro level</strong> (2x-10x gains):</p>
-<ul>
-<li>Memory layout (AoS vs SoA)</li>
-<li>Data movement (CPU <img class="emoji" draggable="false" alt="↔" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2194.svg" data-marp-twemoji=""/> GPU, RAM <img class="emoji" draggable="false" alt="↔" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2194.svg" data-marp-twemoji=""/> cache)</li>
-<li>Access patterns (sequential vs random)</li>
-</ul>
-<p><strong>That's where the 2x-10x wins live. And it's uncontested territory.</strong></p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="optimize-mem-layout-automatic-aos-%E2%86%92-soa"><code>--optimize-mem-layout</code>: Automatic AoS → SoA</h1>
+<p><strong>Array of Structs</strong> → <strong>Struct of Arrays</strong> transformation:</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// AoS (original):                    // SoA (transformed):</span>
+<span class="hljs-keyword">type</span> Particle <span class="hljs-keyword">struct</span> {                <span class="hljs-keyword">type</span> _SoA_Particle <span class="hljs-keyword">struct</span> {
+    X, Y   <span class="hljs-type">float64</span>                        X  []<span class="hljs-type">float64</span>
+    VX, VY <span class="hljs-type">float64</span>                        Y  []<span class="hljs-type">float64</span>
+    FX, FY <span class="hljs-type">float64</span>                        VX []<span class="hljs-type">float64</span>
+    Mass   <span class="hljs-type">float64</span>                        VY []<span class="hljs-type">float64</span>
+}                                         FX []<span class="hljs-type">float64</span>
+                                          FY []<span class="hljs-type">float64</span>
+<span class="hljs-keyword">var</span> pool []Particle                       Mass []<span class="hljs-type">float64</span>
+                                      }
+                                      pool := _SoA_Particle{}
+</code></pre>
+<p>Field access <code>pool[i].X</code> → <code>pool.X[i]</code> — sequential memory access.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="42" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -8066,44 +7999,10 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
-<h1 id="pointer-lowering-opens-new-doors">Pointer Lowering Opens New Doors</h1>
-<p>Once pointers are eliminated, entirely new optimizations become possible:</p>
-<table>
-<thead>
-<tr>
-<th>Optimization</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>AoS → SoA</strong></td>
-<td>Automatic data layout transformation (done!)</td>
-</tr>
-<tr>
-<td><strong>Parallelization</strong></td>
-<td>No aliasing → safe automatic parallelism</td>
-</tr>
-<tr>
-<td><strong>GPU extraction</strong></td>
-<td>Sequential pool access → GPU kernel candidate</td>
-</tr>
-<tr>
-<td><strong>Dead field elimination</strong></td>
-<td>Remove struct fields never read</td>
-</tr>
-<tr>
-<td><strong>Data compression</strong></td>
-<td>Pack sparse fields into denser layouts</td>
-</tr>
-<tr>
-<td><strong>Prefetch insertion</strong></td>
-<td>Predictable access patterns → HW prefetch</td>
-</tr>
-</tbody>
-</table>
-<p>This is <strong>essentially uncontested territory</strong> in compiler research.</p>
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="why-soa-matters-the-cache-miss-problem">Why SoA Matters: The Cache Miss Problem</h1>
+<p><img src="img/aos-vs-soa.png" alt="center" style="width:820px;" /></p>
+<p>Cache miss: <strong>~100+ cycles</strong> vs cache hit: <strong>~1 cycle</strong> — SoA gives <strong>8x better cache utilization</strong>.</p>
 </section>
 </foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="43" data-paginate="true" data-theme="default" data-style="section {
   font-size: 28px;
@@ -8273,10 +8172,945 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="pointer-lowering-as-the-key-enabler">Pointer Lowering as the Key Enabler</h1>
+<p><strong>Why can't production compilers (GCC, LLVM, MSVC) do AoS→SoA?</strong></p>
+<p>The <strong>aliasing barrier</strong>: pointers can alias any memory location.</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-c"><span class="hljs-type">void</span> <span class="hljs-title function_">update</span><span class="hljs-params">(Particle* p, Particle* particles, <span class="hljs-type">int</span> n)</span> {
+    <span class="hljs-comment">// Does p point into particles[]?</span>
+    <span class="hljs-comment">// The compiler can&#x27;t know → can&#x27;t rearrange memory layout</span>
+}
+</code></pre>
+<p><strong>GoAny's pointer lowering</strong> eliminates pointers before the memory layout pass:</p>
+<ul>
+<li><code>*T</code> → <code>int</code> index into <code>_pool_T</code></li>
+<li>No aliasing possible — indices are just integers</li>
+<li>The compiler has <strong>full knowledge</strong> of data layout</li>
+</ul>
+<p>This is why GoAny can do what LLVM cannot.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="44" data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="44" style="--paginate:true;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="performance-results-c-particle-simulation">Performance Results: C++ Particle Simulation</h1>
+<p><img src="img/performance-chart.png" alt="center" style="width:900px;" /></p>
+<p>The compiler generates code <strong>as fast as what an expert would write by hand</strong>.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="45" data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="45" style="--paginate:true;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="additional-soa-optimizations">Additional SoA Optimizations</h1>
+<p><strong>Nested loop hoisting</strong>: outer-loop-invariant SoA reads lifted out</p>
+<pre is="marp-pre" data-auto-scaling="downscale-only"><code class="language-go"><span class="hljs-comment">// Before:                              // After:</span>
+<span class="hljs-keyword">for</span> i := <span class="hljs-number">0</span>; i &lt; N; i++ {               <span class="hljs-keyword">for</span> i := <span class="hljs-number">0</span>; i &lt; N; i++ {
+  <span class="hljs-keyword">for</span> j := <span class="hljs-number">0</span>; j &lt; N; j++ {               _hoist_X := pool.X[i]
+    dx := pool.X[j] - pool.X[i]          _acc_FX := <span class="hljs-number">0.0</span>
+    <span class="hljs-comment">// pool.X[i] read N times!            for j := 0; j &lt; N; j++ {</span>
+  }                                         dx := pool.X[j] - _hoist_X
+}                                           _acc_FX += ...
+                                          }
+                                          pool.FX[i] += _acc_FX
+                                        }
+</code></pre>
+<p><strong>Pool index slice elimination</strong>: removes <code>[]int</code> indirection layer</p>
+<p><code>particles[i]</code> → <code>i</code> (pool indices are always sequential)</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="46" data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="46" style="--paginate:true;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="the-macro-vs-micro-optimization-gap">The Macro vs Micro Optimization Gap</h1>
+<blockquote>
+<p><strong>Cache misses cost 100+ cycles. An instruction costs 1.</strong></p>
+</blockquote>
+<p>Production compilers perfect the <strong>micro</strong> level (single-digit % gains):</p>
+<ul>
+<li>Register allocation, instruction scheduling, peephole optimization</li>
+</ul>
+<p>Meanwhile, they <strong>ignore the macro level</strong> (2x-10x gains):</p>
+<ul>
+<li>Memory layout (AoS vs SoA)</li>
+<li>Data movement (CPU <img class="emoji" draggable="false" alt="↔" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2194.svg" data-marp-twemoji=""/> GPU, RAM <img class="emoji" draggable="false" alt="↔" src="https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.2/assets/svg/2194.svg" data-marp-twemoji=""/> cache)</li>
+<li>Access patterns (sequential vs random)</li>
+</ul>
+<p><strong>That's where the 2x-10x wins live. And it's uncontested territory.</strong></p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="47" data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="47" style="--paginate:true;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;" data-marpit-pagination-total="49" data-size="16:9">
+<h1 id="pointer-lowering-opens-new-doors">Pointer Lowering Opens New Doors</h1>
+<p>Once pointers are eliminated, entirely new optimizations become possible:</p>
+<table>
+<thead>
+<tr>
+<th>Optimization</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AoS → SoA</strong></td>
+<td>Automatic data layout transformation (done!)</td>
+</tr>
+<tr>
+<td><strong>Parallelization</strong></td>
+<td>No aliasing → safe automatic parallelism</td>
+</tr>
+<tr>
+<td><strong>GPU extraction</strong></td>
+<td>Sequential pool access → GPU kernel candidate</td>
+</tr>
+<tr>
+<td><strong>Dead field elimination</strong></td>
+<td>Remove struct fields never read</td>
+</tr>
+<tr>
+<td><strong>Data compression</strong></td>
+<td>Pack sparse fields into denser layouts</td>
+</tr>
+<tr>
+<td><strong>Prefetch insertion</strong></td>
+<td>Predictable access patterns → HW prefetch</td>
+</tr>
+</tbody>
+</table>
+<p>This is <strong>essentially uncontested territory</strong> in compiler research.</p>
+</section>
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="48" data-paginate="true" data-theme="default" data-style="section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+" lang="en-US" data-marpit-pagination="48" style="--paginate:true;--theme:default;--style:section {
+  font-size: 28px;
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
+  color: #e0e6ed;
+}
+h1 {
+  color: #7ec8e3;
+}
+h2 {
+  color: #58a6c7;
+}
+h3 {
+  color: #a8c7d8;
+}
+strong {
+  color: #4dd0e1;
+}
+code {
+  font-size: 22px;
+  background-color: rgba(255,255,255,0.08);
+  color: #80cbc4;
+}
+pre {
+  font-size: 20px;
+  background-color: rgba(0,0,0,0.35) !important;
+  border: 1px solid rgba(126,200,227,0.2);
+  border-radius: 8px;
+}
+pre code {
+  background-color: transparent;
+  color: #e0e6ed;
+}
+table {
+  font-size: 22px;
+}
+table * {
+  color: #e0e6ed !important;
+  background: transparent !important;
+  border-color: rgba(126,200,227,0.25) !important;
+}
+table th {
+  color: #7ec8e3 !important;
+  background-color: rgba(126,200,227,0.15) !important;
+}
+table tr:nth-child(even) td {
+  background-color: rgba(126,200,227,0.06) !important;
+}
+blockquote {
+  color: #4dd0e1;
+  border-left-color: #4dd0e1;
+}
+a {
+  color: #7ec8e3;
+}
+li {
+  color: #e0e6ed;
+}
+section.title {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+section.title h1 {
+  font-size: 52px;
+  color: #7ec8e3;
+}
+section.title h3 {
+  color: #a8c7d8;
+}
+img {
+  border-radius: 8px;
+}
+section::after {
+  color: rgba(126,200,227,0.4);
+  font-size: 18px;
+}
+.columns {
+  display: flex;
+  gap: 30px;
+}
+.columns &gt; div {
+  flex: 1;
+}
+;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="demo">Demo</h1>
 </section>
-</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="44" data-paginate="true" data-class="title" data-theme="default" data-style="section {
+</foreignObject></svg><svg data-marpit-svg="" viewBox="0 0 1280 720"><foreignObject width="1280" height="720"><section id="49" data-paginate="true" data-class="title" data-theme="default" data-style="section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -8360,7 +9194,7 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-" lang="en-US" class="title" data-marpit-pagination="44" style="--paginate:true;--class:title;--theme:default;--style:section {
+" lang="en-US" class="title" data-marpit-pagination="49" style="--paginate:true;--class:title;--theme:default;--style:section {
   font-size: 28px;
   background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #16213e 100%);
   color: #e0e6ed;
@@ -8444,11 +9278,11 @@ section::after {
 .columns &gt; div {
   flex: 1;
 }
-;" data-marpit-pagination-total="44" data-size="16:9">
+;" data-marpit-pagination-total="49" data-size="16:9">
 <h1 id="thank-you">Thank You!</h1>
 <h3 id="questions">Questions?</h3>
 <p><strong>github.com/nicholasgasior/goany</strong></p>
 </section>
 <script>!function(){"use strict";const t={h1:{proto:()=>HTMLHeadingElement,attrs:{role:"heading","aria-level":"1"},style:"display: block; font-size: 2em; margin-block-start: 0.67em; margin-block-end: 0.67em; margin-inline-start: 0px; margin-inline-end: 0px; font-weight: bold;"},h2:{proto:()=>HTMLHeadingElement,attrs:{role:"heading","aria-level":"2"},style:"display: block; font-size: 1.5em; margin-block-start: 0.83em; margin-block-end: 0.83em; margin-inline-start: 0px; margin-inline-end: 0px; font-weight: bold;"},h3:{proto:()=>HTMLHeadingElement,attrs:{role:"heading","aria-level":"3"},style:"display: block; font-size: 1.17em; margin-block-start: 1em; margin-block-end: 1em; margin-inline-start: 0px; margin-inline-end: 0px; font-weight: bold;"},h4:{proto:()=>HTMLHeadingElement,attrs:{role:"heading","aria-level":"4"},style:"display: block; margin-block-start: 1.33em; margin-block-end: 1.33em; margin-inline-start: 0px; margin-inline-end: 0px; font-weight: bold;"},h5:{proto:()=>HTMLHeadingElement,attrs:{role:"heading","aria-level":"5"},style:"display: block; font-size: 0.83em; margin-block-start: 1.67em; margin-block-end: 1.67em; margin-inline-start: 0px; margin-inline-end: 0px; font-weight: bold;"},h6:{proto:()=>HTMLHeadingElement,attrs:{role:"heading","aria-level":"6"},style:"display: block; font-size: 0.67em; margin-block-start: 2.33em; margin-block-end: 2.33em; margin-inline-start: 0px; margin-inline-end: 0px; font-weight: bold;"},span:{proto:()=>HTMLSpanElement},pre:{proto:()=>HTMLElement,style:"display: block; font-family: monospace; white-space: pre; margin: 1em 0; --marp-auto-scaling-white-space: pre;"}},e="data-marp-auto-scaling-wrapper",i="data-marp-auto-scaling-svg",n="data-marp-auto-scaling-container";class s extends HTMLElement{container;containerSize;containerObserver;svg;svgComputedStyle;svgPreserveAspectRatio="xMinYMid meet";wrapper;wrapperSize;wrapperObserver;constructor(){super();const t=t=>([e])=>{const{width:i,height:n}=e.contentRect;this[t]={width:i,height:n},this.updateSVGRect()};this.attachShadow({mode:"open"}),this.containerObserver=new ResizeObserver(t("containerSize")),this.wrapperObserver=new ResizeObserver((...e)=>{t("wrapperSize")(...e),this.flushSvgDisplay()})}static get observedAttributes(){return["data-downscale-only"]}connectedCallback(){this.shadowRoot.innerHTML=`\n<style>\n  svg[${i}] { display: block; width: 100%; height: auto; vertical-align: top; }\n  span[${n}] { display: table; white-space: var(--marp-auto-scaling-white-space, nowrap); width: max-content; }\n</style>\n<div ${e}>\n  <svg part="svg" ${i}>\n    <foreignObject><span ${n}><slot></slot></span></foreignObject>\n  </svg>\n</div>\n    `.split(/\n\s*/).join(""),this.wrapper=this.shadowRoot.querySelector(`div[${e}]`)??void 0;const t=this.svg;this.svg=this.wrapper?.querySelector(`svg[${i}]`)??void 0,this.svg!==t&&(this.svgComputedStyle=this.svg?window.getComputedStyle(this.svg):void 0),this.container=this.svg?.querySelector(`span[${n}]`)??void 0,this.observe()}disconnectedCallback(){this.svg=void 0,this.svgComputedStyle=void 0,this.wrapper=void 0,this.container=void 0,this.observe()}attributeChangedCallback(){this.observe()}flushSvgDisplay(){const{svg:t}=this;t&&(t.style.display="inline",requestAnimationFrame(()=>{t.style.display=""}))}observe(){this.containerObserver.disconnect(),this.wrapperObserver.disconnect(),this.wrapper&&this.wrapperObserver.observe(this.wrapper),this.container&&this.containerObserver.observe(this.container),this.svgComputedStyle&&this.observeSVGStyle(this.svgComputedStyle)}observeSVGStyle(t){const e=()=>{const i=(()=>{const e=t.getPropertyValue("--preserve-aspect-ratio");if(e)return e.trim();return`x${(({textAlign:t,direction:e})=>{if(t.endsWith("left"))return"Min";if(t.endsWith("right"))return"Max";if("start"===t||"end"===t){let i="rtl"===e;return"end"===t&&(i=!i),i?"Max":"Min"}return"Mid"})(t)}YMid meet`})();i!==this.svgPreserveAspectRatio&&(this.svgPreserveAspectRatio=i,this.updateSVGRect()),t===this.svgComputedStyle&&requestAnimationFrame(e)};e()}updateSVGRect(){let t=Math.ceil(this.containerSize?.width??0);const e=Math.ceil(this.containerSize?.height??0);void 0!==this.dataset.downscaleOnly&&(t=Math.max(t,this.wrapperSize?.width??0));const i=this.svg?.querySelector(":scope > foreignObject");if(i?.setAttribute("width",`${t}`),i?.setAttribute("height",`${e}`),this.svg&&(this.svg.setAttribute("viewBox",`0 0 ${t} ${e}`),this.svg.setAttribute("preserveAspectRatio",this.svgPreserveAspectRatio),this.svg.style.height=t<=0||e<=0?"0":""),this.container){const t=this.svgPreserveAspectRatio.toLowerCase();this.container.style.marginLeft=t.startsWith("xmid")||t.startsWith("xmax")?"auto":"0",this.container.style.marginRight=t.startsWith("xmi")?"auto":"0"}}}const r=(t,{attrs:e={},style:i})=>class extends t{constructor(...t){super(...t);for(const[t,i]of Object.entries(e))this.hasAttribute(t)||this.setAttribute(t,i);this._shadow()}static get observedAttributes(){return["data-auto-scaling"]}connectedCallback(){this._update()}attributeChangedCallback(){this._update()}_shadow(){if(!this.shadowRoot)try{this.attachShadow({mode:"open"})}catch(t){if(!(t instanceof Error&&"NotSupportedError"===t.name))throw t}return this.shadowRoot}_update(){const t=this._shadow();if(t){const e=i?`<style>:host { ${i} }</style>`:"";let n="<slot></slot>";const{autoScaling:s}=this.dataset;if(void 0!==s){n=`<marp-auto-scaling exportparts="svg:auto-scaling" ${"downscale-only"===s?"data-downscale-only":""}>${n}</marp-auto-scaling>`}t.innerHTML=e+n}}};let o;const a=Symbol(),l=()=>o??(o=!!document.createElement("div",{is:"marp-auto-scaling"}).outerHTML.startsWith("<div is"),o);let c;const d="marpitSVGPolyfill:setZoomFactor,",h=Symbol(),g=Symbol();const p=()=>{const t="Apple Computer, Inc."===navigator.vendor,e=t?[v]:[],i={then:e=>(t?(async()=>{if(void 0===c){const t=document.createElement("canvas");t.width=10,t.height=10;const e=t.getContext("2d"),i=new Image(10,10),n=new Promise(t=>{i.addEventListener("load",()=>t())});i.crossOrigin="anonymous",i.src="data:image/svg+xml;charset=utf8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2210%22%20height%3D%2210%22%20viewBox%3D%220%200%201%201%22%3E%3CforeignObject%20width%3D%221%22%20height%3D%221%22%20requiredExtensions%3D%22http%3A%2F%2Fwww.w3.org%2F1999%2Fxhtml%22%3E%3Cdiv%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F1999%2Fxhtml%22%20style%3D%22width%3A%201px%3B%20height%3A%201px%3B%20background%3A%20red%3B%20position%3A%20relative%22%3E%3C%2Fdiv%3E%3C%2FforeignObject%3E%3C%2Fsvg%3E",await n,e.drawImage(i,0,0),c=e.getImageData(5,5,1,1).data[3]<128}return c})().then(t=>{null==e||e(t?[v]:[])}):null==e||e([]),i)};return Object.assign(e,i)};let m,u;function v(t){const e="object"==typeof t&&t.target||document,i="object"==typeof t?t.zoom:t;window[g]||(Object.defineProperty(window,g,{configurable:!0,value:!0}),document.body.style.zoom=1.0001,document.body.offsetHeight,document.body.style.zoom=1,window.addEventListener("message",({data:t,origin:e})=>{if(e===window.origin)try{if(t&&"string"==typeof t&&t.startsWith(d)){const[,e]=t.split(","),i=Number.parseFloat(e);Number.isNaN(i)||(u=i)}}catch(t){console.error(t)}}));let n=!1;Array.from(e.querySelectorAll("svg[data-marpit-svg]"),t=>{var e,s,r,o;t.style.transform||(t.style.transform="translateZ(0)");const a=i||u||t.currentScale||1;m!==a&&(m=a,n=a);const l=t.getBoundingClientRect(),{length:c}=t.children;for(let i=0;i<c;i+=1){const n=t.children[i];if(n.getScreenCTM){const t=n.getScreenCTM();if(t){const i=null!==(s=null===(e=n.x)||void 0===e?void 0:e.baseVal.value)&&void 0!==s?s:0,c=null!==(o=null===(r=n.y)||void 0===r?void 0:r.baseVal.value)&&void 0!==o?o:0,d=n.children.length;for(let e=0;e<d;e+=1){const s=n.children[e];if("SECTION"===s.tagName){const{style:e}=s;e.transformOrigin||(e.transformOrigin=`${-i}px ${-c}px`),e.transform=`scale(${a}) matrix(${t.a}, ${t.b}, ${t.c}, ${t.d}, ${t.e-l.left}, ${t.f-l.top}) translateZ(0.0001px)`;break}}}}}}),!1!==n&&Array.from(e.querySelectorAll("iframe"),({contentWindow:t})=>{null==t||t.postMessage(`${d}${n}`,"null"===window.origin?"*":window.origin)})}function w({once:t=!1,target:e=document}={}){const i=function(t=document){if(t[h])return t[h];let e=!0;const i=()=>{e=!1,delete t[h]};Object.defineProperty(t,h,{configurable:!0,value:i});let n=[],s=!1;(async()=>{try{n=await p()}finally{s=!0}})();const r=()=>{for(const e of n)e({target:t});s&&0===n.length||e&&window.requestAnimationFrame(r)};return r(),i}(e);return t?(i(),()=>{}):i}m=1,u=void 0;const b=Symbol(),y=(e=document)=>{if("undefined"==typeof window)throw new Error("Marp Core's browser script is valid only in browser context.");if(((e=document)=>{const i=window[a];i||customElements.define("marp-auto-scaling",s);for(const n of Object.keys(t)){const s=`marp-${n}`,o=t[n].proto();l()&&o!==HTMLElement?i||customElements.define(s,r(o,{style:t[n].style}),{extends:n}):(i||customElements.define(s,r(HTMLElement,t[n])),e.querySelectorAll(`${n}[is="${s}"]`).forEach(t=>{t.outerHTML=t.outerHTML.replace(new RegExp(`^<${n}`,"i"),`<${s}`).replace(new RegExp(`</${n}>$`,"i"),`</${s}>`)}))}window[a]=!0})(e),e[b])return e[b];const i=w({target:e}),n=()=>{i(),delete e[b]},o=Object.assign(n,{cleanup:n,update:()=>y(e)});return Object.defineProperty(e,b,{configurable:!0,value:o}),o},f=document.currentScript;y(f?f.getRootNode():document)}();
-</script></foreignObject></svg></div><div class="bespoke-marp-note" data-index="1" tabindex="0"><p>Section 1: About Me</p></div><div class="bespoke-marp-note" data-index="4" tabindex="0"><p>Section 2: Historical Context</p></div><div class="bespoke-marp-note" data-index="6" tabindex="0"><p>Section 3: GoAny Base Principles</p></div><div class="bespoke-marp-note" data-index="7" tabindex="0"><p>Section 4: Key Challenges</p></div><div class="bespoke-marp-note" data-index="10" tabindex="0"><p>Section 5: Core Primitives</p></div><div class="bespoke-marp-note" data-index="12" tabindex="0"><p>Live demo here</p></div><div class="bespoke-marp-note" data-index="15" tabindex="0"><p>Live demo here</p></div><div class="bespoke-marp-note" data-index="16" tabindex="0"><p>Section 6: Evolution</p></div><div class="bespoke-marp-note" data-index="17" tabindex="0"><p>Section 7: Architecture</p></div><div class="bespoke-marp-note" data-index="18" tabindex="0"><p>Section 8: Pass Descriptions</p></div><div class="bespoke-marp-note" data-index="24" tabindex="0"><p>Section 9: Backend Challenges</p></div><div class="bespoke-marp-note" data-index="26" tabindex="0"><p>Section 10: Optimizations Overview</p></div><div class="bespoke-marp-note" data-index="27" tabindex="0"><p>Section 10 cont: Translation to Rust</p></div><div class="bespoke-marp-note" data-index="30" tabindex="0"><p>Section 11: Optimizations</p></div><div class="bespoke-marp-note" data-index="35" tabindex="0"><p>Section 12: Memory Layout Optimization</p></div><div class="bespoke-marp-note" data-index="40" tabindex="0"><p>Section 12 cont: Research Directions</p></div><div class="bespoke-marp-note" data-index="42" tabindex="0"><p>Live demo placeholder</p></div><script>/*!! License: https://unpkg.com/@marp-team/marp-cli@4.3.1/lib/bespoke.js.LICENSE.txt */
+</script></foreignObject></svg></div><div class="bespoke-marp-note" data-index="1" tabindex="0"><p>Section 1: About Me</p></div><div class="bespoke-marp-note" data-index="5" tabindex="0"><p>Section 2: Historical Context</p></div><div class="bespoke-marp-note" data-index="8" tabindex="0"><p>Section 3: GoAny Base Principles</p></div><div class="bespoke-marp-note" data-index="9" tabindex="0"><p>Section 4: Key Challenges</p></div><div class="bespoke-marp-note" data-index="13" tabindex="0"><p>Section 5: Core Primitives</p></div><div class="bespoke-marp-note" data-index="15" tabindex="0"><p>Live demo here</p></div><div class="bespoke-marp-note" data-index="18" tabindex="0"><p>Live demo here</p></div><div class="bespoke-marp-note" data-index="20" tabindex="0"><p>Section 6: Evolution</p></div><div class="bespoke-marp-note" data-index="21" tabindex="0"><p>Section 7: Architecture</p></div><div class="bespoke-marp-note" data-index="22" tabindex="0"><p>Section 8: Pass Descriptions</p></div><div class="bespoke-marp-note" data-index="29" tabindex="0"><p>Section 9: Backend Challenges</p></div><div class="bespoke-marp-note" data-index="33" tabindex="0"><p>Section 10: Optimizations Overview</p></div><div class="bespoke-marp-note" data-index="34" tabindex="0"><p>Section 10 cont: Translation to Rust</p></div><div class="bespoke-marp-note" data-index="35" tabindex="0"><p>Section 11: Optimizations</p></div><div class="bespoke-marp-note" data-index="40" tabindex="0"><p>Section 12: Memory Layout Optimization</p></div><div class="bespoke-marp-note" data-index="45" tabindex="0"><p>Section 12 cont: Research Directions</p></div><div class="bespoke-marp-note" data-index="47" tabindex="0"><p>Live demo placeholder</p></div><script>/*!! License: https://unpkg.com/@marp-team/marp-cli@4.3.1/lib/bespoke.js.LICENSE.txt */
 !function(){"use strict";function e(e){return e&&e.__esModule&&Object.prototype.hasOwnProperty.call(e,"default")?e.default:e}var t,n,r=(n||(n=1,t={from:function(e,t){var n,r=1===(e.parent||e).nodeType?e.parent||e:document.querySelector(e.parent||e),o=[].filter.call("string"==typeof e.slides?r.querySelectorAll(e.slides):e.slides||r.children,function(e){return"SCRIPT"!==e.nodeName}),i={},a=function(e,t){return(t=t||{}).index=o.indexOf(e),t.slide=e,t},s=function(e,t){i[e]=(i[e]||[]).filter(function(e){return e!==t})},l=function(e,t){return(i[e]||[]).reduce(function(e,n){return e&&!1!==n(t)},!0)},c=function(e,t){o[e]&&(n&&l("deactivate",a(n,t)),n=o[e],l("activate",a(n,t)))},d=function(e,t){var r=o.indexOf(n)+e;l(e>0?"next":"prev",a(n,t))&&c(r,t)},u={off:s,on:function(e,t){return(i[e]||(i[e]=[])).push(t),s.bind(null,e,t)},fire:l,slide:function(e,t){if(!arguments.length)return o.indexOf(n);l("slide",a(o[e],t))&&c(e,t)},next:d.bind(null,1),prev:d.bind(null,-1),parent:r,slides:o,destroy:function(e){l("destroy",a(n,e)),i={}}};return(t||[]).forEach(function(e){e(u)}),n||c(0),u}}),t),o=e(r);const i=document.body,a=(...e)=>history.replaceState(...e),s="",l="presenter",c="next",d="overview",u=["",l,d,c],f="bespoke-marp-",m=`data-${f}`,g=(e,{protocol:t,host:n,pathname:r,hash:o}=location)=>{const i=e.toString();return`${t}//${n}${r}${i?"?":""}${i}${o}`},p=()=>i.dataset.bespokeView,v=e=>new URLSearchParams(location.search).get(e),h=(e,t={})=>{const n={location,setter:a,...t},r=new URLSearchParams(n.location.search);for(const t of Object.keys(e)){const n=e[t];"string"==typeof n?r.set(t,n):r.delete(t)}try{n.setter({...window.history.state??{}},"",g(r,n.location))}catch(e){console.error(e)}},w=(()=>{const e="bespoke-marp";try{return localStorage.setItem(e,e),localStorage.removeItem(e),!0}catch{return!1}})(),y=e=>{try{return localStorage.getItem(e)}catch{return null}},b=(e,t)=>{try{return localStorage.setItem(e,t),!0}catch{return!1}},k=e=>{try{return localStorage.removeItem(e),!0}catch{return!1}},x=(e,t)=>{const n="aria-hidden";t?e.setAttribute(n,"true"):e.removeAttribute(n)},E=e=>{e.parent.classList.add(`${f}parent`),e.slides.forEach(e=>e.classList.add(`${f}slide`)),e.on("activate",t=>{const n=`${f}active`,r=t.slide,o=r.classList,i=!o.contains(n);if(e.slides.forEach(e=>{e.classList.remove(n),x(e,!0)}),o.add(n),x(r,!1),i){const e=`${n}-ready`;o.add(e),document.body.clientHeight,o.remove(e)}})},$=e=>{let t=0,n=0;Object.defineProperty(e,"fragments",{enumerable:!0,value:e.slides.map(e=>[null,...e.querySelectorAll("[data-marpit-fragment]")])});const r=r=>void 0!==e.fragments[t][n+r],o=(r,o)=>{t=r,n=o,e.fragments.forEach((e,t)=>{e.forEach((e,n)=>{if(null==e)return;const i=t<r||t===r&&n<=o;e.setAttribute(`${m}fragment`,(i?"":"in")+"active");const a=`${m}current-fragment`;t===r&&n===o?e.setAttribute(a,"current"):e.removeAttribute(a)})}),e.fragmentIndex=o;const i={slide:e.slides[r],index:r,fragments:e.fragments[r],fragmentIndex:o};e.fire("fragment",i)};e.on("next",({fragment:i=!0})=>{if(i){if(r(1))return o(t,n+1),!1;const i=t+1;e.fragments[i]&&o(i,0)}else{const r=e.fragments[t].length;if(n+1<r)return o(t,r-1),!1;const i=e.fragments[t+1];i&&o(t+1,i.length-1)}}),e.on("prev",({fragment:i=!0})=>{if(r(-1)&&i)return o(t,n-1),!1;const a=t-1;e.fragments[a]&&o(a,e.fragments[a].length-1)}),e.on("slide",({index:t,fragment:n})=>{let r=0;if(void 0!==n){const o=e.fragments[t];if(o){const{length:e}=o;r=-1===n?e-1:Math.min(Math.max(n,0),e-1)}}o(t,r)}),o(0,0)},L=document,S=()=>!(!L.fullscreenEnabled&&!L.webkitFullscreenEnabled),P=()=>!(!L.fullscreenElement&&!L.webkitFullscreenElement),_=e=>{e.fullscreen=()=>{S()&&(async()=>{P()?(L.exitFullscreen||L.webkitExitFullscreen)?.call(L):((e=L.body)=>{(e.requestFullscreen||e.webkitRequestFullscreen)?.call(e)})()})()},document.addEventListener("keydown",t=>{"f"!==t.key&&"F11"!==t.key||t.altKey||t.ctrlKey||t.metaKey||!S()||(e.fullscreen(),t.preventDefault())})},O=`${f}inactive`,T=(e=2e3)=>({parent:t,fire:n})=>{const r=t.classList,o=e=>n(`marp-${e?"":"in"}active`);let i;const a=()=>{i&&clearTimeout(i),i=setTimeout(()=>{r.add(O),o()},e),r.contains(O)&&(r.remove(O),o(!0))};for(const e of["mousedown","mousemove","touchend"])document.addEventListener(e,a);setTimeout(a,0)},I=["AUDIO","BUTTON","INPUT","SELECT","TEXTAREA","VIDEO"],M=e=>{e.parent.addEventListener("keydown",e=>{if(!e.target)return;const t=e.target;(I.includes(t.nodeName)||"true"===t.contentEditable)&&e.stopPropagation()})},A=e=>{window.addEventListener("load",()=>{for(const t of e.slides){const e=t.querySelector("marp-auto-scaling, [data-auto-scaling], [data-marp-fitting]");t.setAttribute(`${m}load`,e?"":"hideable")}})},C=({interval:e=250}={})=>t=>{document.addEventListener("keydown",e=>{if(" "===e.key&&e.shiftKey)t.prev();else if("ArrowLeft"===e.key||"ArrowUp"===e.key||"PageUp"===e.key)t.prev({fragment:!e.shiftKey});else if(" "!==e.key||e.shiftKey)if("ArrowRight"===e.key||"ArrowDown"===e.key||"PageDown"===e.key)t.next({fragment:!e.shiftKey});else if("End"===e.key)t.slide(t.slides.length-1,{fragment:-1});else{if("Home"!==e.key)return;t.slide(0)}else t.next();e.preventDefault()});let n,r,o=0;t.parent.addEventListener("wheel",i=>{let a=!1;const s=(e,t)=>{e&&(a=a||((e,t)=>((e,t)=>{const n="X"===t?"Width":"Height";return e[`client${n}`]<e[`scroll${n}`]})(e,t)&&((e,t)=>{const{overflow:n}=e,r=e[`overflow${t}`];return"auto"===n||"scroll"===n||"auto"===r||"scroll"===r})(getComputedStyle(e),t))(e,t)),e?.parentElement&&s(e.parentElement,t)};if(0!==i.deltaX&&s(i.target,"X"),0!==i.deltaY&&s(i.target,"Y"),a)return;i.preventDefault();const l=Math.sqrt(i.deltaX**2+i.deltaY**2);if(void 0!==i.wheelDelta){if(void 0===i.webkitForce&&Math.abs(i.wheelDelta)<40)return;if(i.deltaMode===i.DOM_DELTA_PIXEL&&l<4)return}else if(i.deltaMode===i.DOM_DELTA_PIXEL&&l<12)return;r&&clearTimeout(r),r=setTimeout(()=>{n=0},e);const c=Date.now()-o<e,d=l<=n;if(n=l,c||d)return;let u;(i.deltaX>0||i.deltaY>0)&&(u="next"),(i.deltaX<0||i.deltaY<0)&&(u="prev"),u&&(t[u](),o=Date.now())})},D=(e=`.${f}osc`)=>{const t=document.querySelector(e);if(!t)return()=>{};const n=(e,n)=>{t.querySelectorAll(`[${m}osc=${JSON.stringify(e)}]`).forEach(n)};if(S()||n("fullscreen",e=>e.style.display="none"),!w){const e=(e,t)=>{e.disabled=!0,e.title=`${t} is disabled due to restricted localStorage.`};n("presenter",t=>e(t,"Presenter view")),n("overview",t=>e(t,"Overview view"))}return e=>{t.addEventListener("click",t=>{if(t.target instanceof HTMLElement){const{bespokeMarpOsc:n}=t.target.dataset;n&&t.target.blur();const r={fragment:!t.shiftKey};"next"===n?e.next(r):"prev"===n?e.prev(r):"fullscreen"===n?e?.fullscreen():"presenter"===n?e.openPresenterView():"overview"===n&&e.toggleOverviewView()}}),e.parent.appendChild(t),e.on("activate",({index:t})=>{n("page",n=>n.textContent=`Page ${t+1} of ${e.slides.length}`)}),e.on("fragment",({index:t,fragments:r,fragmentIndex:o})=>{n("prev",e=>e.disabled=0===t&&0===o),n("next",n=>n.disabled=t===e.slides.length-1&&o===r.length-1)}),e.on("marp-active",()=>x(t,!1)),e.on("marp-inactive",()=>x(t,!0)),S()&&(e=>{for(const t of["","webkit"])L.addEventListener(t+"fullscreenchange",e)})(()=>n("fullscreen",e=>e.classList.toggle("exit",S()&&P())))}},N=e=>{if(e.syncKey&&"string"==typeof e.syncKey)return!0;throw new Error("The current instance of Bespoke.js is incompatible with Marp bespoke sync plugin.")},B=(e={})=>{const t=e.key||window.history.state?.marpBespokeSyncKey||Math.random().toString(36).slice(2),n=`bespoke-marp-sync-${t}`;var r;r={marpBespokeSyncKey:t},h({},{setter:(e,...t)=>a({...e,...r},...t)});const o=()=>{const e=y(n);return e?JSON.parse(e):Object.create(null)},i=e=>{const t=o(),r={...t,...e(t)};return b(n,JSON.stringify(r)),r},s=()=>{window.removeEventListener("pageshow",s),i(e=>({reference:(e.reference||0)+1}))};return e=>{s(),Object.defineProperty(e,"syncKey",{value:t,enumerable:!0});let r=!0;setTimeout(()=>{e.on("fragment",e=>{r&&i(()=>({index:e.index,fragmentIndex:e.fragmentIndex}))})},0),window.addEventListener("storage",t=>{if(t.key===n&&t.oldValue&&t.newValue){const n=JSON.parse(t.oldValue),o=JSON.parse(t.newValue);if(n.index!==o.index||n.fragmentIndex!==o.fragmentIndex)try{r=!1,e.slide(o.index,{fragment:o.fragmentIndex,forSync:!0})}finally{r=!0}}});const a=()=>{const{reference:e}=o();void 0===e||e<=1?k(n):i(()=>({reference:e-1}))};window.addEventListener("pagehide",e=>{e.persisted&&window.addEventListener("pageshow",s),a()}),e.on("destroy",a)}},K=e=>{w&&document.addEventListener("keydown",t=>{("o"!==t.key||t.altKey||t.ctrlKey||t.metaKey)&&"Escape"!==t.key||(t.preventDefault(),e())})};let q=null;const V=({closeOnSelect:e=!0}={})=>t=>{N(t);const n=n=>{const r=(()=>{if(!q||!q.isConnected){q=document.createElement("div"),q.className=`${f}overview`,q.inert=!0;const n=document.createElement("iframe");n.src=(()=>{const n=new URLSearchParams(location.search);return n.set("view","overview"),n.set("sync",t.syncKey),e&&n.set("closeOnSelect","1"),g(n)})(),q.append(n),document.body.append(q)}return q})(),o=n??!r.dataset.open;setTimeout(()=>{if(r.dataset.open=o?"1":"",r.inert=!o,t.skipTransition=o,o){const e=r.querySelector("iframe");try{e?.contentWindow?.focus()}catch{e?.focus()}}else window.focus()},0)};Object.defineProperties(t,{toggleOverviewView:{enumerable:!0,value:n}}),window.addEventListener("message",e=>{e.origin===window.origin&&"closeOverview"===e.data&&n(!1)}),K(n)},j=e=>{const{title:t}=document;document.title="[Overview]"+(t?` - ${t}`:"");const n=!!v("closeOnSelect"),r=()=>{window.parent.postMessage("closeOverview","null"===window.origin?"*":window.origin)};if(e.slides.forEach((t,o)=>{t.tabIndex=0;const i=()=>{e.slide(o,{fragment:-1}),n&&r()};t.addEventListener("click",i),t.addEventListener("keydown",e=>{"Enter"!==e.key&&" "!==e.key||(e.preventDefault(),i())})}),window.addEventListener("keydown",t=>{const n=e.slide(),r=t=>{const r=t=>{const n=e.slides[t].getBoundingClientRect();return[Math.round((n.left+n.right)/2),Math.round((n.top+n.bottom)/2)]};let o=null,i=n;do{const e=r(i);if(o){if(Math.abs(e[0]-o[0])<2)return i}else o=e;i+=t}while(i>=0&&i<e.slides.length);return n};if("ArrowLeft"===t.key)e.slide(Math.max(n-1,0),{fragment:-1});else if("ArrowRight"===t.key)e.slide(Math.min(n+1,e.slides.length-1),{fragment:-1});else if("ArrowUp"===t.key)e.slide(r(-1),{fragment:-1});else if("ArrowDown"===t.key)e.slide(r(1),{fragment:-1});else if("End"===t.key)e.slide(e.slides.length-1,{fragment:-1});else{if("Home"!==t.key)return;e.slide(0,{fragment:-1})}t.preventDefault();const o=e.slide();e.slides[o]?.focus?.(),e.slides[o]?.scrollIntoView?.({behavior:"smooth",block:"nearest"})}),e.on("slide",({index:t})=>{e.slides[t]?.scrollIntoView?.({behavior:"smooth",block:"nearest"})}),window.parent!==window){K(r);const e=document.createElement("header");e.className=`${f}overview-header`;const t=document.createElement("button");t.className=`${f}overview-close`,t.type="button",t.title="Close overview",t.textContent=t.title,t.addEventListener("click",r),e.append(t),document.body.prepend(e)}},F=()=>{const e=p();return{[s]:V(),[l]:V({closeOnSelect:!1}),[d]:j}[e]},U=e=>{window.addEventListener("message",t=>{if(t.origin!==window.origin)return;const[n,r]=t.data.split(":");if("navigate"===n){const[t,n]=r.split(",");let o=Number.parseInt(t,10),i=Number.parseInt(n,10)+1;i>=e.fragments[o].length&&(o+=1,i=0),e.slide(o,{fragment:i})}})};var R,X,H,W,J,Y,z,G={exports:{}},Q=(R||(R=1,G.exports=(X=["area","base","br","col","command","embed","hr","img","input","keygen","link","meta","param","source","track","wbr"],H=function(e){return String(e).replace(/[&<>"']/g,function(e){return"&"+W[e]+";"})},W={"&":"amp","<":"lt",">":"gt",'"':"quot","'":"apos"},J="dangerouslySetInnerHTML",Y={className:"class",htmlFor:"for"},z={},function(e,t){var n=[],r="";t=t||{};for(var o=arguments.length;o-- >2;)n.push(arguments[o]);if("function"==typeof e)return t.children=n.reverse(),e(t);if(e){if(r+="<"+e,t)for(var i in t)!1!==t[i]&&null!=t[i]&&i!==J&&(r+=" "+(Y[i]?Y[i]:H(i))+'="'+H(t[i])+'"');r+=">"}if(-1===X.indexOf(e)){if(t[J])r+=t[J].__html;else for(;n.length;){var a=n.pop();if(a)if(a.pop)for(var s=a.length;s--;)n.push(a[s]);else r+=!0===z[a]?a:H(a)}r+=e?"</"+e+">":""}return z[r]=!0,r})),G.exports),Z=e(Q);const ee=({children:e})=>Z(null,null,...e),te=`${f}presenter-`,ne={container:`${te}container`,dragbar:`${te}dragbar-container`,next:`${te}next`,nextContainer:`${te}next-container`,noteContainer:`${te}note-container`,noteWrapper:`${te}note-wrapper`,noteButtons:`${te}note-buttons`,infoContainer:`${te}info-container`,infoPageArea:`${te}info-page-area`,infoPage:`${te}info-page`,infoPagePrev:`${te}info-page-prev`,infoPageNext:`${te}info-page-next`,noteButtonsBigger:`${te}note-bigger`,noteButtonsSmaller:`${te}note-smaller`,infoTime:`${te}info-time`,infoTimer:`${te}info-timer`},re=e=>{const{title:t}=document;document.title="[Presenter view]"+(t?` - ${t}`:"");const n={},r=e=>(n[e]=n[e]||document.querySelector(`.${e}`),n[e]);document.body.appendChild((e=>{const t=document.createElement("div");return t.className=ne.container,t.appendChild(e),t.insertAdjacentHTML("beforeend",Z(ee,null,Z("div",{class:ne.nextContainer},Z("iframe",{class:ne.next,src:"?view=next"})),Z("div",{class:ne.dragbar}),Z("div",{class:ne.noteContainer},Z("div",{class:ne.noteWrapper}),Z("div",{class:ne.noteButtons},Z("button",{class:ne.noteButtonsSmaller,tabindex:"-1",title:"Smaller notes font size"},"Smaller notes font size"),Z("button",{class:ne.noteButtonsBigger,tabindex:"-1",title:"Bigger notes font size"},"Bigger notes font size"))),Z("div",{class:ne.infoContainer},Z("div",{class:ne.infoPageArea},Z("button",{class:ne.infoPagePrev,tabindex:"-1",title:"Previous"},"Previous"),Z("button",{class:ne.infoPage}),Z("button",{class:ne.infoPageNext,tabindex:"-1",title:"Next"},"Next")),Z("time",{class:ne.infoTime,title:"Current time"}),Z("time",{class:ne.infoTimer,title:"Timer"})))),t})(e.parent)),(e=>{let t=!1;r(ne.dragbar).addEventListener("mousedown",()=>{t=!0,r(ne.dragbar).classList.add("active")}),window.addEventListener("mouseup",()=>{t=!1,r(ne.dragbar).classList.remove("active")}),window.addEventListener("mousemove",e=>{if(!t)return;const n=e.clientX/document.documentElement.clientWidth*100;r(ne.container).style.setProperty("--bespoke-marp-presenter-split-ratio",`${Math.max(0,Math.min(100,n))}%`)}),r(ne.nextContainer).addEventListener("click",()=>e.next());const n=r(ne.next),o=(i=n,(e,t)=>i.contentWindow?.postMessage(`navigate:${e},${t}`,"null"===window.origin?"*":window.origin));var i;n.addEventListener("load",()=>{r(ne.nextContainer).classList.add("active"),o(e.slide(),e.fragmentIndex),e.on("fragment",({index:e,fragmentIndex:t})=>o(e,t))});const a=document.querySelectorAll(".bespoke-marp-note");a.forEach(e=>{e.addEventListener("keydown",e=>e.stopPropagation()),r(ne.noteWrapper).appendChild(e)}),e.on("activate",()=>a.forEach(t=>t.classList.toggle("active",t.dataset.index==e.slide())));let s=0;const l=e=>{s=Math.max(-5,s+e),r(ne.noteContainer).style.setProperty("--bespoke-marp-note-font-scale",(1.2**s).toFixed(4))},c=()=>l(1),d=()=>l(-1),u=r(ne.noteButtonsBigger),f=r(ne.noteButtonsSmaller);u.addEventListener("click",()=>{u.blur(),c()}),f.addEventListener("click",()=>{f.blur(),d()}),document.addEventListener("keydown",e=>{"+"===e.key&&c(),"-"===e.key&&d()},!0);const m=r(ne.infoPage);e.on("activate",({index:t})=>{m.textContent=`${t+1} / ${e.slides.length}`}),m.addEventListener("click",()=>{m.blur(),e.toggleOverviewView()});const g=r(ne.infoPagePrev),p=r(ne.infoPageNext);g.addEventListener("click",t=>{g.blur(),e.prev({fragment:!t.shiftKey})}),p.addEventListener("click",t=>{p.blur(),e.next({fragment:!t.shiftKey})}),e.on("fragment",({index:t,fragments:n,fragmentIndex:r})=>{g.disabled=0===t&&0===r,p.disabled=t===e.slides.length-1&&r===n.length-1});let v=new Date;const h=()=>{const e=new Date,t=e=>`${Math.floor(e)}`.padStart(2,"0"),n=e.getTime()-v.getTime(),o=t(n/1e3%60),i=t(n/1e3/60%60),a=t(n/36e5%24);r(ne.infoTime).textContent=e.toLocaleTimeString(),r(ne.infoTimer).textContent=`${a}:${i}:${o}`};h(),setInterval(h,250),r(ne.infoTimer).addEventListener("click",()=>{v=new Date})})(e)},oe=e=>{N(e),Object.defineProperties(e,{openPresenterView:{enumerable:!0,value:ie},presenterUrl:{enumerable:!0,get:ae}}),w&&document.addEventListener("keydown",t=>{"p"!==t.key||t.altKey||t.ctrlKey||t.metaKey||(t.preventDefault(),e.openPresenterView())})};function ie(){const{max:e,floor:t}=Math,n=e(t(.85*window.innerWidth),640),r=e(t(.85*window.innerHeight),360);return window.open(this.presenterUrl,te+this.syncKey,`width=${n},height=${r},menubar=no,toolbar=no`)}function ae(){const e=new URLSearchParams(location.search);return e.set("view","presenter"),e.set("sync",this.syncKey),g(e)}const se=e=>{const t=p();return t===c&&e.appendChild(document.createElement("span")),{[s]:oe,[l]:re,[c]:U}[t]},le=e=>{e.on("activate",t=>{document.querySelectorAll(".bespoke-progress-parent > .bespoke-progress-bar").forEach(n=>{n.style.flexBasis=100*t.index/(e.slides.length-1)+"%"})})},ce=e=>{const t=Number.parseInt(e,10);return Number.isNaN(t)?null:t},de=(e={})=>{const t={history:!0,...e};return e=>{let n=!0;const r=e=>{const t=n;try{return n=!0,e()}finally{n=t}},o=(t={fragment:!0})=>{let n=t.fragment?ce(v("f")||""):null;((t,n)=>{const{min:r,max:o}=Math,{fragments:i,slides:a}=e,s=o(0,r(t,a.length-1)),l=o(0,r(n||0,i[s].length-1));s===e.slide()&&l===e.fragmentIndex||e.slide(s,{fragment:l})})((()=>{if(location.hash){const[t]=location.hash.slice(1).split(":~:");if(/^\d+$/.test(t))return(ce(t)??1)-1;const r=document.getElementById(t)||document.querySelector(`a[name="${CSS.escape(t)}"]`);if(r){const{length:t}=e.slides;for(let o=0;o<t;o+=1)if(e.slides[o].contains(r)){const t=e.fragments?.[o],i=r.closest("[data-marpit-fragment]");if(t&&i){const e=t.indexOf(i);e>=0&&(n=e)}return o}}}return 0})(),n)};e.on("fragment",({index:e,fragmentIndex:r})=>{n||h({f:0===r||r.toString()},{location:{...location,hash:`#${e+1}`},setter:(...e)=>t.history?history.pushState(...e):history.replaceState(...e)})}),setTimeout(()=>{o(),window.addEventListener("hashchange",()=>r(()=>{o({fragment:!1}),h({f:void 0})})),window.addEventListener("popstate",()=>{n||r(()=>o())}),n=!1},0)}},{PI:ue,abs:fe,sqrt:me,atan2:ge}=Math,pe={passive:!0},ve=({slope:e=-.7,swipeThreshold:t=30}={})=>n=>{let r;const o=n.parent,i=e=>{const t=o.getBoundingClientRect();return{x:e.pageX-(t.left+t.right)/2,y:e.pageY-(t.top+t.bottom)/2}};o.addEventListener("touchstart",({touches:e})=>{r=1===e.length?i(e[0]):void 0},pe),o.addEventListener("touchmove",e=>{if(r)if(1===e.touches.length){e.preventDefault();const t=i(e.touches[0]),n=t.x-r.x,o=t.y-r.y;r.delta=me(fe(n)**2+fe(o)**2),r.radian=ge(n,o)}else r=void 0}),o.addEventListener("touchend",o=>{if(r){if(r.delta&&r.delta>=t&&r.radian){const t=(r.radian-e+ue)%(2*ue)-ue;n[t<0?"next":"prev"](),o.stopPropagation()}r=void 0}},pe)},he=new Map;he.clear(),he.set("none",{backward:{both:void 0,incoming:void 0,outgoing:void 0},forward:{both:void 0,incoming:void 0,outgoing:void 0}});const we={both:"",outgoing:"outgoing-",incoming:"incoming-"},ye={forward:"",backward:"-backward"},be=e=>`--marp-bespoke-transition-animation-${e}`,ke=e=>`--marp-transition-${e}`,xe=be("name"),Ee=be("duration"),$e=e=>new Promise(t=>{const n={},r=document.createElement("div"),o=e=>{r.remove(),t(e)};r.addEventListener("animationstart",()=>o(n)),Object.assign(r.style,{animationName:e,animationDuration:"1s",animationFillMode:"both",animationPlayState:"paused",position:"absolute",pointerEvents:"none"}),document.body.appendChild(r);const i=getComputedStyle(r).getPropertyValue(ke("duration"));i&&Number.parseFloat(i)>=0&&(n.defaultDuration=i),((e,t)=>{requestAnimationFrame(()=>{e.style.animationPlayState="running",requestAnimationFrame(()=>t(void 0))})})(r,o)}),Le=async e=>he.has(e)?he.get(e):(e=>{const t={},n=[];for(const[r,o]of Object.entries(we))for(const[i,a]of Object.entries(ye)){const s=`marp-${o}transition${a}-${e}`;n.push($e(s).then(e=>{t[i]=t[i]||{},t[i][r]=e?{...e,name:s}:void 0}))}return Promise.all(n).then(()=>t)})(e).then(t=>(he.set(e,t),t)),Se=e=>Object.values(e).flatMap(Object.values).every(e=>!e),Pe=(e,{type:t,backward:n})=>{const r=e[n?"backward":"forward"],o=(()=>{const e=r[t],n=e=>({[xe]:e.name});if(e)return n(e);if(r.both){const e=n(r.both);return"incoming"===t&&(e[be("direction")]="reverse"),e}})();return!o&&n?Pe(e,{type:t,backward:!1}):o||{[xe]:"__bespoke_marp_transition_no_animation__"}},_e=e=>{if(e)try{const t=JSON.parse(e);if((e=>{if("object"!=typeof e)return!1;const t=e;return"string"==typeof t.name&&(void 0===t.duration||"string"==typeof t.duration)})(t))return t}catch{}},Oe="_tSId",Te="_tA",Ie="bespoke-marp-transition-warming-up",Me=window.matchMedia("(prefers-reduced-motion: reduce)"),Ae="__bespoke_marp_transition_reduced_outgoing__",Ce="__bespoke_marp_transition_reduced_incoming__",De={forward:{both:void 0,incoming:{name:Ce},outgoing:{name:Ae}},backward:{both:void 0,incoming:{name:Ce},outgoing:{name:Ae}}},Ne=e=>{if(!document.startViewTransition)return;const t=t=>(void 0!==t&&(e._tD=t),e._tD);let n;t(!1),((...e)=>{CSS.registerProperty({name:ke("duration"),syntax:"<time>",inherits:!0,initialValue:"-1s"});const t=[...new Set(e).values()];return Promise.all(t.map(e=>Le(e))).then()})(...Array.from(document.querySelectorAll("section[data-transition], section[data-transition-back]")).flatMap(e=>[e.dataset.transition,e.dataset.transitionBack].flatMap(e=>{const t=_e(e);return[t?.name,t?.builtinFallback?`__builtin__${t.name}`:void 0]}).filter(e=>!!e))).then(()=>{document.querySelectorAll("style").forEach(e=>{e.innerHTML=e.innerHTML.replace(/--marp-transition-duration:[^;}]*[;}]/g,e=>e.slice(0,-1)+"!important"+e.slice(-1))})});const r=(n,{back:r,cond:o})=>i=>{const a=t();if(a)return!!i[Te]||!("object"!=typeof a||(a.skipTransition(),!i.forSync));if(e.skipTransition)return!0;if(!o(i))return!0;const s=e.slides[e.slide()],l=()=>i.back??r,c="data-transition"+(l()?"-back":""),d=s.querySelector(`section[${c}]`);if(!d)return!0;const u=_e(d.getAttribute(c)??void 0);return!u||((async(e,{builtinFallback:t=!0}={})=>{let n=await Le(e);if(Se(n)){if(!t)return;return n=await Le(`__builtin__${e}`),Se(n)?void 0:n}return n})(u.name,{builtinFallback:u.builtinFallback}).then(e=>{if(!e){t(!0);try{n(i)}finally{t(!1)}return}let r=e;Me.matches&&(console.warn("Use a constant animation to transition because preferring reduced motion by viewer has detected."),r=De);const o=document.getElementById(Oe);o&&o.remove();const a=document.createElement("style");a.id=Oe,document.head.appendChild(a),((e,t)=>{const n=[`:root{${ke("direction")}:${t.backward?-1:1};}`,":root:has(.bespoke-marp-inactive){cursor:none;}"],r=t=>{const n=e[t].both?.defaultDuration||e[t].outgoing?.defaultDuration||e[t].incoming?.defaultDuration;return"forward"===t?n:n||r("forward")},o=t.duration||r(t.backward?"backward":"forward");void 0!==o&&n.push(`::view-transition-group(*){${Ee}:${o};}`);const i=e=>Object.entries(e).map(([e,t])=>`${e}:${t};`).join("");return n.push(`::view-transition-old(root){${i(Pe(e,{...t,type:"outgoing"}))}}`,`::view-transition-new(root){${i(Pe(e,{...t,type:"incoming"}))}}`),n})(r,{backward:l(),duration:u.duration}).forEach(e=>a.sheet?.insertRule(e));const s=document.documentElement.classList;s.add(Ie);let c=!1;const d=()=>{c||(n(i),c=!0,s.remove(Ie))},f=()=>{t(!1),a.remove(),s.remove(Ie)};try{t(!0);const e=document.startViewTransition(d);t(e),e.finished.finally(f)}catch(e){console.error(e),d(),f()}}),!1)};e.on("prev",r(t=>e.prev({...t,[Te]:!0}),{back:!0,cond:e=>e.index>0&&!((e.fragment??1)&&n.fragmentIndex>0)})),e.on("next",r(t=>e.next({...t,[Te]:!0}),{cond:t=>t.index+1<e.slides.length&&!(n.fragmentIndex+1<n.fragments.length)})),setTimeout(()=>{e.on("slide",r(t=>e.slide(t.index,{...t,[Te]:!0}),{cond:t=>{const n=e.slide();return t.index!==n&&(t.back=t.index<n,!0)}}))},0),e.on("fragment",e=>{n=e})};let Be;const Ke=()=>(void 0===Be&&(Be="wakeLock"in navigator&&navigator.wakeLock),Be),qe=async()=>{const e=Ke();if(e)try{return await e.request("screen")}catch(e){console.warn(e)}return null},Ve=async()=>{if(!Ke())return;let e;const t=()=>{e&&"visible"===document.visibilityState&&qe()};for(const e of["visibilitychange","fullscreenchange"])document.addEventListener(e,t);return e=await qe(),e};((e=document.getElementById(":$p"))=>{(()=>{const e=v("view");i.dataset.bespokeView=u.some(t=>t&&t===e)?e:""})();const t=(e=>{const t=v(e);return h({[e]:void 0}),t})("sync")||void 0;o.from(e,((...e)=>{const t=u.findIndex(e=>p()===e);return e.map(([e,n])=>e[t]&&n).filter(e=>e)})([[1,1,1,0],B({key:t})],[[1,1,0,1],se(e)],[[1,1,0,0],M],[[1,1,1,1],E],[[1,0,0,0],T()],[[1,1,1,1],A],[[1,1,1,1],de({history:!1})],[[1,1,0,0],C()],[[1,1,1,0],_],[[1,0,0,0],le],[[1,1,0,0],ve()],[[1,0,0,0],D()],[[1,1,1,0],F()],[[1,0,0,0],Ne],[[1,1,1,1],$],[[1,1,1,0],Ve]))})()}();</script><script>window.__marpCliWatchWS="ws://localhost:37717/d0b10493629e554be5183f1821872a7f791c16f684ad0fa923a7866dd1a92898";!function(){"use strict";const e=(n,o=!1)=>{const t=new WebSocket(n);return t.addEventListener("open",()=>{console.info("[Marp CLI] Observing the change of file..."),o&&location.reload()}),t.addEventListener("close",()=>{console.warn("[Marp CLI] WebSocket for file watcher was disconnected. Try re-connecting in 5000ms..."),setTimeout(()=>e(n,!0),5e3)}),t.addEventListener("message",e=>{"reload"===e.data&&location.reload()}),t};(()=>{const n=window.__marpCliWatchWS;n&&e(n)})()}();</script></body></html>
